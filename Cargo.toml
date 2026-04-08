@@ -1,0 +1,62 @@
+[package]
+name = "timslite"
+version = "0.1.0"
+edition = "2021"
+authors = ["MonitorCare Team"]
+description = "A lightweight time-series data storage library"
+license = "MIT"
+
+[lib]
+name = "timslite"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# 序列化
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+
+# 内存映射
+memmap2 = "0.7"
+
+# 压缩
+flate2 = "1.0"
+
+# 并发
+parking_lot = "0.12"
+dashmap = "5.5"
+
+# 时间
+chrono = "0.4"
+
+# 错误处理
+thiserror = "1.0"
+anyhow = "1.0"
+
+# 日志
+log = "0.4"
+
+# 工具
+byteorder = "1.4"
+fs-err = "2.9"
+
+[build-dependencies]
+
+[dev-dependencies]
+tempfile = "3.8"
+env_logger = "0.10"
+
+[features]
+default = []
+ffi = []
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"
+
+[[example]]
+name = "config"
+path = "examples/config.rs"
+
+[[example]]
+name = "performance"
+path = "examples/performance.rs"
