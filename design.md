@@ -147,32 +147,71 @@ Offset  Size  Field                    Description
 - `block_offset`: 对应 Block 在数据段中的**绝对字节偏移** (指向 BlockHeader 起始)
 - `in_block_offset`: record 在 Block Payload 中的**相对偏移** (从 payload 起始算, 指向该 record 的 data_len 字段)
 
-### 3.5 FileMetadata (文件头, 80 字节)
+### 3.5 FileMetadata (文件头, 128 字节)
 
-每个数据段和索引段的头部元数据:
+每个数据段和索引段的头部元数据。
+
+#### 设计原则: 固定核心 + 可扩展元数据区
 
 ```
-Offset  Size  Field                        Description
+┌─────────────────────────────────────────────┐
+│ 固定核心 (10 bytes)                          │  ← 所有版本都能解析
+│  magic:4 + version:2 + file_flags:2          │
+├─────────────────────────────────────────────┤
+│ 元数据扩展长度 (2 bytes)                     │  ← 告知后续元数据总长度
+├─────────────────────────────────────────────┤
+│ 扩展元数据区 (当前 52 bytes)                  │  ← 可随意增删字段
+│  file_type, file_offset, file_size, ...      │
+├─────────────────────────────────────────────┤
+│ 预留区 (64 bytes)                            │  ← 未来扩展用
+└─────────────────────────────────────────────┘
+```
+
+#### 详细偏移
+
+```
+Offset  Size  Field                    Description
+────────────────────────────────────────────────── 固定核心 (v1+)
 0-3     4     magic = b"TMSL"
-4-5     u16   version                      = 1
+4-5     u16   version                  = 1
 6-7     u16   file_flags
-                  bit 0: 文件已 sealed (不再写入)
-                  bit 1: 有 pending block (未压缩/未密封)
-8-15    i64   file_type
-                  >0 = data segment, <0 = index segment
-16-23   i64   file_offset
-                  data segment: 起始字节offset
-                  index segment: 起始秒级timestamp
-24-31   i64   file_size                    文件总大小(字节)
-32-39   i64   wrote_position               已写入位置(从数据区起始)
-40-47   i64   created_at                   创建时间(unix ms)
-48-55   i64   record_count                 文件内总记录条数
-56-63   u64   total_uncompressed_size      文件内所有 record 原始数据总大小
-64-71   i64   pending_block_offset         当前未完成 Block 的相对偏移 (-1表示无)
-72-79   u64   reserved                     保留
+                bit 0: 文件已 sealed
+                bit 1: 有 pending block
+                bit 2-15: 保留
+────────────────────────────────────────────────── 元数据扩展长度
+8-9     u16   meta_data_len            其后扩展元数据字节数 (当前=52)
+                                     HEADER_SIZE = 10 + 2 + meta_data_len + reserved
+                                     读者通过此值跳过未知元数据字段
+────────────────────────────────────────────────── 扩展元数据区 (v1: 52 bytes)
+10-17   i64   file_type
+                >0 = data segment, <0 = index segment
+18-25   i64   file_offset
+                data segment: 起始字节offset
+                index segment: 起始秒级timestamp
+26-33   i64   file_size                文件总大小(字节)
+34-41   i64   created_at               创建时间(unix ms)
+42-49   i64   wrote_position           已写入位置(从数据区起始) ← moved after created_at
+50-57   i64   record_count             文件内总记录条数
+58-63   u64   total_uncompressed_size  文件内所有 record 原始数据总大小
+────────────────────────────────────────────────── 预留区 (64 bytes, 未来扩展)
+64-71   i64   pending_block_offset     当前未完成 Block 相对偏移 (-1表示无)
+72-75   u32   pending_uncomp_size      pending block 内原始数据累计大小
+76-77   u16   pending_record_count     pending block 内 record 数量
+78-127  50    reserved                 保留 (50 bytes)
+
+HEADER_SIZE = 128 bytes
 ```
 
-> 数据区起始位置 = `HEADER_SIZE = 80` 字节。
+#### 兼容性设计
+
+| 场景 | 行为 |
+|------|------|
+| v1 reader 读 v1 文件 | 正常读取, `meta_data_len=52` |
+| v2 reader 读 v1 文件 | 读 `meta_data_len=52`, 只解析已知字段, 跳过未知 |
+| v1 reader 读 v2 文件 | 读固定核心 (10B) + `meta_data_len` 值, 跳过扩展元数据到预留区解析 |
+| 未来添加新字段 | 增加 `meta_data_len` 值, 在预留区写入, 旧版本安全跳过 |
+
+> **数据区起始位置 = `HEADER_SIZE = 128` 字节**
 
 ---
 
@@ -241,6 +280,32 @@ const BLOCK_FLAG_SINGLE_RECORD: u16  = 0x0004;
 const FILE_FLAG_SEALED: u16          = 0x0001;
 const FILE_FLAG_HAS_PENDING: u16     = 0x0002;
 
+/// 文件元数据头 (Header)
+///
+/// 布局: 固定核心(10B) + meta_data_len(2B) + 扩展元数据(52B) + 预留(64B) = 128B
+struct FileMetadata {
+    // === 固定核心 (所有版本必须可读, 10 bytes) ===
+    magic: [u8; 4],                  // b"TMSL"
+    version: u16,                    // = 1
+    file_flags: u16,
+    // === 扩展信息 ===
+    meta_data_len: u16,              // = 52 (v1)
+                                     // 其后扩展元数据的总字节数
+    file_type: i64,                  // >0=data, <0=index
+    file_offset: i64,                // 数据段:字节offset / 索引段:秒级timestamp
+    file_size: i64,                  // 文件总大小
+    created_at: i64,                 // 创建时间(unix ms)
+    wrote_position: i64,             // 已写入位置(从 HEADER_SIZE 起算) ← after created_at
+    record_count: i64,               // 总记录数
+    total_uncompressed_size: u64,    // 所有 record 原始数据总大小
+    pending_block_offset: i64,       // 未完成 Block 相对偏移 (-1=无)
+    pending_uncomp_size: u32,        // pending block 未压缩大小
+    pending_record_count: u16,       // pending block record 数量
+    _reserved: [u8; 50],            // 预留 (50 bytes)
+}
+
+const HEADER_SIZE: u64 = 128;
+
 /// 索引条目
 #[derive(Clone, Copy, Debug)]
 struct IndexEntry {
@@ -285,7 +350,7 @@ struct DataSegment {
     path: PathBuf,
     file_offset: u64,
     file_size: u64,
-    wrote_position: u64,            // 从 data_start(80) 起算
+    wrote_position: u64,            // 从 data_start(128) 起算
     record_count: u64,
     total_uncompressed_size: u64,
     created_at: i64,
@@ -297,7 +362,6 @@ struct DataSegment {
     pending_block_record_count: u16,
 }
 
-const HEADER_SIZE: u64 = 80;
 const BLOCK_HEADER_SIZE: u64 = 16;
 ```
 
@@ -305,9 +369,12 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ FileHeader (80 bytes)                            │
-│ - "TMSL", version, flags, type, offset, size...  │
-│ - total_uncompressed_size, pending_block_offset  │
+│ FileHeader (128 bytes)                           │
+│ - "TMSL", version, flags, meta_data_len          │
+│ - file_type, file_offset, file_size, created_at  │
+│ - wrote_position, record_count, uncompressed,    │
+│   pending_block_offset, pending_uncomp/counts,   │
+│   reserved (50 bytes)                            │
 ├──────────────────────────────────────────────────┤
 │ Block 1 (sealed, compressed)                     │
 │   BlockHeader (16 bytes)                         │
@@ -670,7 +737,7 @@ impl IndexSegment {
 
 ```
 ┌──────────────────────────────────────────────┐
-│ FileHeader (80 bytes)                        │
+│ FileHeader (128 bytes)                       │
 │ - magic "TMSL", version, ...                 │
 │ - file_offset = start_timestamp              │
 ├──────────────────────────────────────────────┤
@@ -951,10 +1018,10 @@ libc = "0.2"
 | 压缩粒度 | record | Block |
 | 压缩时机 | 立即 | 延迟 (pending→sealed) |
 | 内存映射 | MappedByteBuffer | memmap2::MmapMut |
-| 元数据 | Protobuf | 80字节固定 header |
+| 元数据 | Protobuf | 128字节 header (固定10B+扩展长度52B+预留64B) |
 | 索引目录 | 同级子目录 | `.index/` 独立子目录 |
 | 索引条目 | 16B (ts+offset) | 18B (ts+block+in_block) |
-| 文件头 | 64B | 80B (含 pending/uncompressed) |
+| 文件头 | 64B | 128B (含meta_data_len+pending扩展+预留) |
 | Record编码 | size+ts+data | data_len+ts+data |
 | FFI | 无 | `extern "C"` |
 
@@ -974,7 +1041,7 @@ src/
 ├── index/
 │   ├── mod.rs          # TimeIndex
 │   └── segment.rs      # IndexSegment
-├── header.rs           # FileMetadata (80B)
+├── header.rs           # FileMetadata (128B, 固定10B+扩展52B+预留64B)
 ├── ffi.rs              # extern "C"
 ├── error.rs
 ├── compress.rs
@@ -997,6 +1064,8 @@ src/
 | 超大 record | 独占 block | 不截断数据 |
 | Record 编码 | data_len(2)+ts(8)+data | 支持 block 内随机定位 |
 | 索引条目 | 18 字节 | 精确定位到 block 内 record |
-| 文件头 | 80 字节 | 容纳 pending/uncompressed 元信息 |
+| 文件头 | 128 字节 | 固定10B核心+扩展长度2B+扩展52B+预留64B, 向后兼容 |
+| 元数据扩展 | meta_data_len (u16) | 告知后续字节数, 未知字段安全跳过 |
 | 索引目录 | `.index/` 独立 | 与数据隔离 |
+| wrote_position 位置 | created_at 之后 | 时间字段集中存放, 便于版本迁移 |
 | 并发 | DataSet 级 Mutex | 不同数据集独立 |
