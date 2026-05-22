@@ -2,7 +2,7 @@
 
 > 参考: monitorcare-orbit TimeStore (Java)
 > 目标: Rust 动态库(`cdylib`), 提供 FFI 可调用 C ABI
-> 核心: 按数据集名称+类型分段 + 内存映射 + 时间索引 + Block 压缩
+> 核心: 按数据集名称+类型分段 + 内存映射(mmap) + 时间索引 + Block 延迟压缩 + 懒加载生命周期
 
 ---
 
@@ -251,6 +251,8 @@ struct DataSetConfig {
     index_segment_size: u64,    // 默认 4MB
     block_max_size: u32,        // 默认 65536 (64KB)
     compress_level: u8,         // 默认 6
+    flush_interval: Duration,   // 默认 10 分钟 (mmap sync, 不密封/不压缩)
+    idle_timeout: Duration,     // 默认 30 分钟 (sync + 密封 pending + unmmap + close)
 }
 
 impl Default for DataSetConfig {
@@ -794,10 +796,9 @@ impl DataSet {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        for seg in &mut self.segments.segments {
-            seg.flush_pending_blocks()?;
-        }
-        self.time_index.flush_to_disk()?;
+        // flush 仅执行 mmap.sync(), 不密封/不压缩 pending block
+        self.segments.sync_all()?;
+        self.time_index.sync_all()?;
         Ok(())
     }
 }
@@ -844,20 +845,20 @@ impl DataSet {
        返回
 ```
 
-### 9.1 Flush 时的 Pending Block 处理
+### 9.1 Flush 行为 (mmap sync only)
 
 ```
-flush:
-  for each segment:
-    if pending exists:
-      1. 读取 raw payload
-      2. 压缩
-      3. compressed < raw → 写压缩数据, flags=SEALED|COMPRESSED
-         compressed >= raw → 保留 raw, flags=SEALED
-      4. 清除 pending
-      5. 更新 header (pending_block_offset=-1)
-  flush all index
+flush (配置化，默认10分钟):
+  for each dataset:
+    for each open segment (data + index):
+      1. mmap.flush() (msync / MS_SYNC)
+      2. 不密封 pending block
+      3. 不压缩任何数据
+  注: flush 仅确保数据持久化到磁盘，不改变 block 状态
+      pending block 继续保持 raw 状态留在 mmap 中
 ```
+
+> **关键区别**: flush ≠ seal。flush 只 msync，密封/压缩只发生在 block 溢出或 idle-close 时。
 
 ---
 
@@ -956,8 +957,11 @@ tmsl_store_close(store, err_buf, sizeof(err_buf));
 
 - `memmap2`: MmapMut (写入), Mmap (只读)
 - `madvise`: SEQUENTIAL (写), WILLNEED (读)
-- `flush`: `msync(MS_SYNC)`
-- 空闲 30min → flush pending blocks → munmap
+- `flush`: mmap.flush() (MS_SYNC) — 仅同步到磁盘, **不改变任何 block 状态**
+- 数据/索引 segment 均使用 mmap, 生命周期相同
+- 空闲 30min → msync → 密封 pending (不压缩) → munmap → close file
+- 下次访问 → on-demand open + mmap → 检测/恢复 pending block
+- 任意时刻只有活跃 segment 持有 mmap 文件句柄
 
 ---
 
@@ -975,8 +979,10 @@ DataSet: Arc<Mutex<DataSet>>        (读写互斥)
 
 - `miniz_oxide`: 纯 Rust deflate
 - Block 级压缩, 不是 record 级
-- 延迟压缩: pending 时 raw, sealed 时压缩
+- 延迟压缩: pending 时 raw, 溢出时 seal+压缩
 - 如果压缩后不缩小, 保留 raw (不设 COMPRESSED flag)
+- **idle-close 仅密封 pending, 不压缩** — 压缩延迟至 next write overflow
+- 超大 record (独占 block) → 立即 seal+压缩 (因为不存在 pending)
 
 ---
 
@@ -984,8 +990,49 @@ DataSet: Arc<Mutex<DataSet>>        (读写互斥)
 
 | 任务 | 间隔 | 行为 |
 |------|------|------|
-| Flush | 5s | 密封 pending blocks → 压缩 → flush index → msync |
-| Idle Check | 60s | 30min 未使用 → flush → munmap → mark idle |
+| Flush | 可配置, 默认 10min | 遍历所有打开的 segment, mmap.flush() (MS_SYNC) |
+| Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + 密封 pending + unmmap + close |
+
+### 17.1 Flush 行为详解
+
+```
+flush (每 10 分钟):
+  for each dataset:
+    for each open segment (data + index):
+      mmap.flush() — MS_SYNC
+  注: flush 不密封 pending block, 不压缩
+```
+
+### 17.2 Idle-Close 行为详解
+
+```
+idle-check (每 60s):
+  for each dataset (30min 未读写):
+    for each open segment:
+      1. mmap.flush() (MS_SYNC)
+      2. 如果 data segment 有 pending block:
+         密封 (不压缩), block.flags |= BLOCK_FLAG_SEALED
+      3. 清除 pending_file_flags (如果有)
+      4. mmap.close() (munmap + close file)
+    last_used_at = closed → dataset 进入 idle 状态
+
+on-demand reopen:
+  当读取/写入操作命中已关闭的 segment:
+    - data segment: open + mmap, 检测 pending → 密封恢复
+    - index segment: open + mmap, 直接恢复
+```
+
+### 17.3 mmap 生命周期
+
+```
+┌─────────┐  write/read    ┌────────┐   idle 30min   ┌────────┐
+│ closed  │ ─────────────→ │  open  │ ──────────────→ │ closed │
+│         │ ←─ on-demand ──│(mmap) │                 │(unmap) │
+└─────────┘                └────────┘                 └────────┘
+    ↑                          │
+    │      flush (10min)       │ msync only
+    └──────────────────────────┘
+```
 
 ---
 
@@ -1016,8 +1063,8 @@ libc = "0.2"
 |--------|------------------|-----------------|
 | 存储单元 | 单条 record | Block (多条聚合, ≤64KB) |
 | 压缩粒度 | record | Block |
-| 压缩时机 | 立即 | 延迟 (pending→sealed) |
-| 内存映射 | MappedByteBuffer | memmap2::MmapMut |
+| 压缩时机 | 立即 | 延迟 (pending→sealed, 溢出或 idle-close 时) |
+| 内存映射 | MappedByteBuffer | memmap2::MmapMut, 懒加载/超时关闭(30min) |
 | 元数据 | Protobuf | 128字节 header (固定10B+扩展长度52B+预留64B) |
 | 索引目录 | 同级子目录 | `.index/` 独立子目录 |
 | 索引条目 | 16B (ts+offset) | 18B (ts+block+in_block) |
@@ -1069,3 +1116,7 @@ src/
 | 索引目录 | `.index/` 独立 | 与数据隔离 |
 | wrote_position 位置 | created_at 之后 | 时间字段集中存放, 便于版本迁移 |
 | 并发 | DataSet 级 Mutex | 不同数据集独立 |
+| flush 行为 | 仅 msync (不 seal/不压缩) | 降低 flush CPU 开销, 压缩延迟至 block 溢出 |
+| flush 间隔 | 可配置, 默认 10min | 平衡数据持久化与性能, mmap 本身已有 OS page cache 保护 |
+| segment 生命周期 | 懒打开/超时关闭 (30min) | 控制内存占用, 避免大量数据集同时持有 mmap |
+| idle-close pending | 密封 (不压缩) | 保证 reopen 后 block flag 一致, 延迟压缩至下次 overflow |
