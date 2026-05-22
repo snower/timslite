@@ -28,7 +28,8 @@ Phase 8: 集成测试 + 性能调优     ▓▓▓
 - 创建 `cargo init --lib timslite`
 - 配置 `Cargo.toml`:
   - `[lib] crate-type = ["cdylib", "rlib"]`
-  - 添加依赖: `memmap2 = "0.9"`, `miniz_oxide = "0.7"`, `log = "0.4"`, `libc = "0.2"`
+  - 添加依赖: `memmap2 = "0.9"`, `miniz_oxide = "0.8"`, `log = "0.4"`, `libc = "0.2"`
+  - `[dev-dependencies]`: `criterion = "0.5"`
   - `edition = "2021"`
 
 ### 1.2 创建模块目录结构
@@ -48,6 +49,7 @@ src/
 ├── ffi.rs
 ├── error.rs
 ├── compress.rs
+├── config.rs             # StoreConfig + builder + DataSetConfig (internal)
 ├── util.rs
 └── bg/
     ├── mod.rs
@@ -248,19 +250,19 @@ const BLOCK_HEADER_SIZE: u64 = 16;
   - **情况 3**: 无 pending → 创建新 pending
   - 返回 `(block_relative_offset, in_block_offset)`
 
-### 3.4 方法: write_raw_record_to_pending
+### 3.5 方法: write_raw_record_to_pending
 - 写入 `[data_len:2][timestamp:8][data:N]` 到 pending block payload
 - 更新 block header 的 `payload_size` 和 `record_count`
 - 更新 `self.wrote_position`
 - 更新 file header 的 `wrote_position`
 
-### 3.5 方法: create_pending_and_append
+### 3.6 方法: create_pending_and_append
 - 在当前 wrote_position 创建新 BlockHeader (flags=0)
 - 写入第一条 record (raw)
 - 设置 `pending_block_offset`, `pending_block_uncomp_size`, `pending_block_record_count`
 - 更新 file header 的 `pending_block_offset`, `FILE_FLAG_HAS_PENDING`
 
-### 3.6 方法: seal_pending_block
+### 3.7 方法: seal_pending_block
 - 读取 pending block payload (raw data)
 - 压缩 (deflate)
 - 比较压缩后与原始大小:
@@ -270,7 +272,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 - 清除 pending 状态
 - 更新 file header (`pending_block_offset = -1`, 清除 `FILE_FLAG_HAS_PENDING`)
 
-### 3.7 方法: create_single_record_block
+### 3.8 方法: create_single_record_block
 - record_size > 64KB 的场景
 - 构建 record payload `[data_len:2][ts:8][data:N]`
 - 压缩
@@ -279,7 +281,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 - 写入 payload 到 mmap
 - 更新计数器
 
-### 3.8 读取逻辑
+### 3.9 读取逻辑
 - `pub fn read_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)>`
   1. 通过 `entry.block_offset` 定位 BlockHeader
   2. 读取 BlockHeader, 检查 compressed flag
@@ -288,7 +290,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
   5. 读取 `data_len`, `timestamp`, `data`
   6. 返回
 
-### 3.9 sync 方法 (flush loop 调用)
+### 3.10 sync 方法 (flush loop 调用)
 - `fn sync(&mut self) -> Result<()>`
   - `self.mmap.flush()` (MS_SYNC)
   - **不密封 pending block, 不压缩**
@@ -376,9 +378,16 @@ pub struct TimeIndex {
   - 检查 buffer len >= threshold → flush_to_disk
 - `fn flush_to_disk(&mut self) -> Result<()>`
   - 对 in_memory_buffer 按 timestamp 排序
-  - 按段分配: `segment_index = timestamp / entries_per_segment`
-  - 获取或创建 segment
-  - 批量 append_entry
+  - 获取或创建当前写入段:
+    - 检查最后一段是否已满 (`wrote_count >= entries_capacity`)
+    - 已满 → 密封 (更新 header), 创建新段 (文件名 = buffer[0].timestamp)
+    - 未满 → 使用最后一段
+  - 批量 append_entry 到当前段
+
+> **索引段路由**: 索引段按写入顺序填充, 不按 timestamp 哈希。
+> 每段文件名 = 该段第一条 entry 的 timestamp (20位零填充)。
+> 段满后创建新段, 新段文件名 = 当前第一条待写入 entry 的 timestamp。
+> 查询时: 遍历所有段, 用 lower_bound 在每个段中二分查找。
 
 ### 4.8 TimeIndex 查询
 - `fn get_or_create_segment(&mut self, timestamp: i64) -> Result<&mut IndexSegment>`
@@ -438,7 +447,7 @@ struct DataSegmentMeta {
   - 未找到 → 在 `closed_segments` 中查找 meta
   - 找到 meta → `DataSegment::open(path, ...)` → 移入 `segments`
 
-### 5.4 DataSegmentSet 写入
+### 5.3 DataSegmentSet 写入
 - `fn append(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u64, u16)>`
   - `segment = lazy_open(next_offset)` (if current closed, reopen)
   - `segment.append_record(...)`
@@ -449,20 +458,21 @@ struct DataSegmentMeta {
   - 查找最后一个非密封 segment
   - 如满/密封 → 创建新文件
 
-### 5.3 DataSegmentSet 读取/查询
+### 5.4 DataSegmentSet 读取/查询
 - `fn find_segment(&self, block_absolute_offset: u64) -> Result<&DataSegment>`
   - `relative = block_absolute_offset - absolute_base`
   - 找到包含 relative 偏移的 segment
+  - 如果 segment 已关闭 → lazy_open → 返回
 - `fn read_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)>`
   - 定位 segment → 调用 segment.read_at_index
 
-### 5.4 DataSegmentSet flush/load
+### 5.5 DataSegmentSet flush/load
 - `fn flush_all(&mut self) -> Result<()>` - flush 所有 segments
 - `fn load_existing(base_dir: &Path, segment_size: u64, block_max_size: u32, compress_level: u8) -> Result<Self>`
   - 扫描 `{base_dir}/*`, 排除 `.index/`
   - 按 file_offset 排序加载
 
-### 5.5 DataSet 整合
+### 5.6 DataSet 整合
 ```rust
 pub struct DataSet {
     id: DataSetKey,
@@ -474,25 +484,25 @@ pub struct DataSet {
 }
 ```
 
-### 5.6 DataSet 写入
+### 5.7 DataSet 写入
 - `fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()>`
   - write to DataSegmentSet
   - add to TimeIndex (block_offset = seg_file_offset + block_rel_offset)
   - `last_used_at = Instant::now()`
 
-### 5.7 DataSet 读取
+### 5.8 DataSet 读取
 - `fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>>`
   - TimeIndex.query → Vec<IndexEntry>
   - 逐 entry 读取 data
   - 按 timestamp 排序
 
-### 5.8 DataSet flush/close
+### 5.9 DataSet flush/close
 - `fn flush(&mut self) -> Result<()>`
 - `fn close(&mut self) -> Result<()>` = flush + 释放 mmap
 
-### 5.9 DataSet 加载
-- `fn load(id: DataSetKey, base_dir: PathBuf, config: DataSetConfig) -> Result<Self>`
-  - 加载 DataSegmentSet
+### 5.10 DataSet 加载
+- `fn load(id: DataSetKey, base_dir: PathBuf, config: &StoreConfig) -> Result<Self>`
+  - 加载 DataSegmentSet (初始所有 segment closed)
   - 加载 TimeIndex
   - 恢复 last_used_at
 
@@ -540,10 +550,21 @@ pub struct Store {
   - 从 HashMap 移除 key
 
 ### 6.5 Store::close (self)
-- 发送 shutdown 信号
-- 等待后台线程 join
-- flush 所有 datasets → idle_close_all
-- 释放所有数据
+
+```
+关闭流程:
+1. 发送 shutdown 信号 (mpsc::channel send)
+   → 后台线程在下一次 loop 检查时退出
+2. join flush_handle (等待当前 flush 循环完成, timeout 30s)
+3. join idle_handle (等待当前 idle check 完成, timeout 30s)
+4. 此时所有后台线程已退出, 安全执行 final flush:
+   for each dataset: flush() + idle_close_all()
+5. clear datasets HashMap
+6. 释放 Store (self dropped)
+```
+
+> **关键**: join 必须等待后台线程退出, 否则 final flush 可能与后台 flush 并发
+> timeout 保护: 如果线程卡住, 30s 后 force 继续 (log warning)
 
 ### 6.6 bg/flush.rs - Flush 线程
 ```rust
@@ -617,8 +638,9 @@ pub fn spawn_idle_loop(
   - 0 = success (有数据)
   - 1 = 无更多数据 (iterator exhausted)
   - -1 = error
-- `tmsl_iter_free_data(data: *mut c_uchar)` - 释放 tmsl_iter_next 分配的内存
-- `tmsl_iter_close(iter: *mut c_void)` - 关闭迭代器
+  - **内存分配**: `out_data` 指向的内存由 Rust `libc::malloc` 分配, C 侧必须调用 `tmsl_iter_free_data` 释放
+- `tmsl_iter_free_data(data: *mut c_uchar)` - 释放 `tmsl_iter_next` 分配的内存 (对应 `libc::free`)
+- `tmsl_iter_close(iter: *mut c_void)` - 关闭迭代器, 释放迭代器本身 (对应 `Box::into_raw`/`Box::from_raw`)
 
 ### 7.6 头文件生成 (.h)
 - 创建 `include/timslite.h` C 头文件, 包含所有 FFI 声明
@@ -659,15 +681,33 @@ pub fn spawn_idle_loop(
 - IndexSegment 二分查找边界
 - TimeIndex 内存缓冲 flush
 - StoreConfig builder pattern 测试
+- StoreConfig → DataSetConfig conversion (From impl)
+- DataSegment lifecycle: create → idle_close → ensure_open → write → verify pending sealed
+- IndexSegment lifecycle: create → idle_close → ensure_open → append → verify
+- Idle-check double-check race condition: simulate write between read-lock and write-lock
 
 ### 8.3 性能基准测试 (benches/)
-```rust
-#[bench] fn bench_write_small_100b(b: &mut Bencher)
-#[bench] fn bench_write_large_10kb(b: &mut Bencher)
-#[bench] fn bench_write_mixed_sizes(b: &mut Bencher)
-#[bench] fn bench_query_1000_records(b: &mut Bencher)
-#[bench] fn bench_query_time_range(b: &mut Bencher)
+
+使用 [criterion](https://github.com/bheisler/criterion.rs) (stable Rust, 不是 nightly-only `#[bench]`):
+
+`Cargo.toml` 添加:
+```toml
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "timslite_benchmarks"
+harness = false
 ```
+
+基准测试覆盖:
+- `bench_write_small_100b` — 写入 100B 小数据
+- `bench_write_large_10kb` — 写入 10KB 数据
+- `bench_write_mixed_sizes` — 混合大小写入
+- `bench_query_1000_records` — 查询 1000 条记录
+- `bench_query_time_range` — 时间范围查询
+
+运行: `cargo bench`
 
 ### 8.4 内存安全验证
 - `cargo test` under `valgrind` (如果环境支持)
@@ -733,10 +773,12 @@ Phase 8 (集成测试 + 性能 + idle-close 恢复测试)
 | memmap2 在 Windows 上行为差异 | Phase 3 延迟 | 提前在 Windows 上做 mmap 原型验证 |
 | miniz_oxide 压缩率不足 | Phase 3 压缩效果差 | 预留切换 zstd 的能力 |
 | FFI panic 跨语言 | 崩溃调用方 | 所有 FFI 函数必须 `catch_unwind` |
-| 大量数据集同时打开 | Phase 6 OOM | idle-close 30min 及时释放 mmap, lazy open/reopen |
+| 大量数据集同时打开 | Phase 6 OOM | Store open 时初始所有 segment → closed, 30min idle-close 释放 mmap (即使未访问), 按需 lazy open |
 | 索引 binary search 溢出 | 查询错误 | 边界条件充分测试 (0, 1, n entries) |
 | pending block crash 恢复失败 | 数据丢失 | reopen 时完整校验 header 一致性, 密封 pending 但不压缩 |
 | idle-close 后 reopen 性能 | 延迟增加 | mmap open 开销小 (<1ms), 可接受 |
+| idle-check 竞态 (write between read-lock and write-lock) | 错误关闭活跃 dataset | double-check last_used_at after write-lock acquired |
+| index segment 查询时需遍历所有段 (含 closed) | 查询延迟 | 时间范围过滤: skip 段时间范围不在查询区间内的段 |
 | 10min flush 间隔过长 | crash 损失数据 | mmap 写入已有 OS page cache 保护, 实际风险可控 |
 
 ---

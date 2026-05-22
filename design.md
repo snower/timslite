@@ -222,11 +222,21 @@ HEADER_SIZE = 128 bytes
 pub struct Store {
     data_dir: PathBuf,
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
-    flush_interval: Duration,
-    idle_timeout: Duration,
+    config: StoreConfig,
     flush_handle: Option<JoinHandle<()>>,
     idle_handle: Option<JoinHandle<()>>,
+    shutdown_tx: Option<mpsc::Sender<()>>,
 }
+
+/// 数据集唯一标识
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct DataSetKey {
+    name: String,
+    dataset_type: String,
+}
+
+/// FFI 数据集句柄 (不透明指针, 内部为 Arc ID)
+pub struct DataSetHandle(pub(crate) u64);
 
 /// 数据集句柄
 struct DataSet {
@@ -238,30 +248,49 @@ struct DataSet {
     last_used_at: Instant,
 }
 
-/// 数据集唯一标识
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-struct DataSetKey {
-    name: String,
-    dataset_type: String,
+/// 存储全局配置 (Store 级别, 所有 DataSet 共享)
+pub struct StoreConfig {
+    pub flush_interval: Duration,    // 默认 10 分钟 (mmap sync, 不密封/不压缩)
+    pub idle_timeout: Duration,      // 默认 30 分钟 (sync + 密封 pending + unmmap + close)
+    pub data_segment_size: u64,      // 默认 64MB
+    pub index_segment_size: u64,     // 默认 4MB
+    pub block_max_size: u32,         // 默认 65536 (64KB)
+    pub compress_level: u8,          // 默认 6
 }
 
-/// 数据集配置
-struct DataSetConfig {
-    data_segment_size: u64,     // 默认 64MB
-    index_segment_size: u64,    // 默认 4MB
-    block_max_size: u32,        // 默认 65536 (64KB)
-    compress_level: u8,         // 默认 6
-    flush_interval: Duration,   // 默认 10 分钟 (mmap sync, 不密封/不压缩)
-    idle_timeout: Duration,     // 默认 30 分钟 (sync + 密封 pending + unmmap + close)
-}
-
-impl Default for DataSetConfig {
+impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            data_segment_size: 64 * 1024 * 1024,
-            index_segment_size: 4 * 1024 * 1024,
-            block_max_size: 65536,
+            flush_interval: Duration::from_secs(600),    // 10 分钟
+            idle_timeout: Duration::from_secs(1800),     // 30 分钟
+            data_segment_size: 64 * 1024 * 1024,         // 64MB
+            index_segment_size: 4 * 1024 * 1024,         // 4MB
+            block_max_size: 65536,                       // 64KB
             compress_level: 6,
+        }
+    }
+}
+
+impl StoreConfig {
+    /// Builder 模式
+    pub fn builder() -> StoreConfigBuilder { StoreConfigBuilder::default() }
+}
+
+/// 数据集内部配置 (从 StoreConfig 派生)
+struct DataSetConfig {
+    data_segment_size: u64,
+    index_segment_size: u64,
+    block_max_size: u32,
+    compress_level: u8,
+}
+
+impl From<&StoreConfig> for DataSetConfig {
+    fn from(config: &StoreConfig) -> Self {
+        Self {
+            data_segment_size: config.data_segment_size,
+            index_segment_size: config.index_segment_size,
+            block_max_size: config.block_max_size,
+            compress_level: config.compress_level,
         }
     }
 }
@@ -336,10 +365,92 @@ struct DataSegmentSet {
     segment_size: u64,
     block_max_size: u32,
     compress_level: u8,
-    segments: Vec<DataSegment>,
+    segments: Vec<DataSegment>,           // 打开中的 data segment
+    closed_segments: Vec<DataSegmentMeta>, // 已关闭的 data segment (path, offset, size)
     next_offset: u64,
+    last_used_at: Instant,                // 最近操作时间
+}
+
+struct DataSegmentMeta {
+    path: PathBuf,
+    file_offset: u64,
+    file_size: u64,
 }
 ```
+
+### 5.3 生命周期管理 (仅 Data Segment)
+
+```rust
+impl DataSegmentSet {
+    /// sync 所有打开的 data segment
+    pub fn sync_all(&mut self) -> Result<()> {
+        for seg in &mut self.segments {
+            seg.sync()?;
+        }
+        Ok(())
+    }
+
+    /// idle-close 所有 data segment
+    pub fn idle_close_all(&mut self) -> Result<()> {
+        let mut closed = Vec::new();
+        for seg in self.segments.drain(..) {
+            let path = seg.path.clone();
+            let file_offset = seg.file_offset;
+            let file_size = seg.file_size;
+            seg.idle_close()?;
+            closed.push(DataSegmentMeta { path, file_offset, file_size });
+        }
+        self.closed_segments.extend(closed);
+        Ok(())
+    }
+
+    /// 按需打开已关闭的 segment
+    pub fn lazy_open(&mut self, file_offset: u64) -> Result<&mut DataSegment> {
+        // 1. 先在打开中的 segments 查找
+        if let Some(idx) = self.segments.iter().position(|s| s.file_offset == file_offset) {
+            return Ok(&mut self.segments[idx]);
+        }
+        // 2. 在 closed_segments 查找
+        let meta = self.closed_segments.iter()
+            .find(|m| m.file_offset == file_offset)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no segment at offset"))?;
+        // 3. 打开 + mmap + pending 恢复
+        let seg = DataSegment::open(&meta.path, meta.file_offset, meta.file_size)?;
+        self.segments.push(seg);
+        let idx = self.segments.len() - 1;
+        Ok(&mut self.segments[idx])
+    }
+
+    /// 加载已有的 data segment 元数据 (Store open 时)
+    pub fn load_existing(base_dir: &Path, segment_size: u64,
+                         block_max_size: u32, compress_level: u8) -> Result<Self> {
+        let mut metas: Vec<DataSegmentMeta> = Vec::new();
+        for entry in std::fs::read_dir(base_dir)? {
+            let p = entry?.path();
+            if p.is_dir() || p.file_name().map(|n| n == ".index").unwrap_or(false) {
+                continue;
+            }
+            let offset = u64::from_str_radix(p.file_stem().and_then(|n| n.to_str()).unwrap_or("0"), 10)?;
+            let file_size = std::fs::metadata(&p)?.len();
+            metas.push(DataSegmentMeta { path: p, file_offset: offset, file_size });
+        }
+        metas.sort_by_key(|m| m.file_offset);
+        let next_offset = metas.last().map(|m| m.file_offset + segment_size).unwrap_or(0);
+        Ok(Self {
+            base_dir: base_dir.to_path_buf(),
+            segment_size, block_max_size, compress_level,
+            segments: Vec::new(),
+            closed_segments: metas,
+            next_offset,
+            last_used_at: Instant::now(),
+        })
+    }
+}
+```
+
+> **注意**: DataSegmentSet 只管理 **data segment**。Index segment 由 TimeIndex 管理（见第七节）。
+> `DataSet::sync_all()` 需要同时调用 `segments.sync_all()` + `time_index.sync_all()`。
+> `DataSet::idle_close_all()` 同理。
 
 ---
 
@@ -356,12 +467,19 @@ struct DataSegment {
     record_count: u64,
     total_uncompressed_size: u64,
     created_at: i64,
-    mmap: MmapMut,
+    mmap: Option<MmapMut>,           // None = closed/unmapped
     sealed: bool,
+    lifecycle: SegmentLifecycle,     // Closed / OpenReady
+    last_accessed_at: Instant,       // 最近读写时间
     // Pending Block 状态
     pending_block_offset: Option<u64>,
     pending_block_uncomp_size: u32,
     pending_block_record_count: u16,
+}
+
+enum SegmentLifecycle {
+    Closed,          // 文件未打开, mmap=None
+    OpenReady,       // 打开中, mmap 有效, 可读写
 }
 
 const BLOCK_HEADER_SIZE: u64 = 16;
@@ -577,25 +695,33 @@ impl DataSegment {
 }
 ```
 
+
+> **注意**: Section 6.3 写入核心逻辑中的 `self.mmap[...]` 访问是伪代码。
+> 实际实现须使用 `self.mmap.as_mut().unwrap()[...]` 或 `self.mmap.as_ref().unwrap()[...]`。
+> 所有写入方法须先调用 `ensure_open()` 确保 mmap 有效。
+> 读取方法须先确保 segment 已打开 (e.g., DataSet::query 中 lazy_open)。
+
 ### 6.4 读取: 通过索引定位 Block 内 record
 
 ```rust
 impl DataSegment {
     fn read_at_index(&self, entry: &IndexEntry) -> io::Result<(i64, Vec<u8>)> {
+        // 调用者须确保 mmap 有效 (e.g., 先 ensure_open)
+        let m = self.mmap.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "segment closed"))?;
         let hdr_pos = HEADER_SIZE as usize + entry.block_offset as usize;
 
         // 读取 block header
         let payload_size = u32::from_le_bytes(
-            self.mmap[hdr_pos..hdr_pos+4].try_into().unwrap()
+            m[hdr_pos..hdr_pos+4].try_into().unwrap()
         ) as usize;
         let flags = u16::from_le_bytes(
-            self.mmap[hdr_pos+4..hdr_pos+6].try_into().unwrap()
+            m[hdr_pos+4..hdr_pos+6].try_into().unwrap()
         );
         let is_compressed = flags & BLOCK_FLAG_COMPRESSED != 0;
 
         // 读取 payload
         let pay_start = hdr_pos + BLOCK_HEADER_SIZE as usize;
-        let payload = &self.mmap[pay_start..pay_start + payload_size];
+        let payload = &m[pay_start..pay_start + payload_size];
 
         // 解压
         let block_data: Vec<u8>;
@@ -622,6 +748,139 @@ impl DataSegment {
 }
 ```
 
+### 6.5 DataSegment 生命周期方法
+
+```rust
+impl DataSegment {
+    /// 确保 mmap 有效 (closed → open + mmap + pending恢复)
+    pub fn ensure_open(&mut self, compress_level: u8) -> Result<()> {
+        if self.mmap.is_some() { return Ok(()); }
+        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        
+        // 读取 header, 恢复状态
+        let metadata = FileMetadata::read_from(&mmap)?;
+        self.wrote_position = metadata.wrote_position as u64;
+        self.record_count = metadata.record_count as u64;
+        self.total_uncompressed_size = metadata.total_uncompressed_size;
+        
+        // Pending 恢复: 检测 FILE_FLAG_HAS_PENDING
+        if metadata.file_flags & FILE_FLAG_HAS_PENDING != 0 {
+            // pending 存在 → 密封 (不压缩) 确保 reopen 后一致性
+            self.pending_block_offset = Some(metadata.pending_block_offset as u64);
+            self.pending_block_uncomp_size = metadata.pending_uncomp_size;
+            self.pending_block_record_count = metadata.pending_record_count;
+            self.seal_pending_block_no_compress(compress_level)?;
+            self.clear_pending();
+            // 清除 header 中的 pending flag
+            FileMetadata::clear_pending(&mut mmap, self.wrote_position as i64);
+        }
+        
+        self.mmap = Some(mmap);
+        self.lifecycle = SegmentLifecycle::OpenReady;
+        self.last_accessed_at = Instant::now();
+        Ok(())
+    }
+
+    /// sync → unmmap → close
+    pub fn idle_close(&mut self, compress_level: u8) -> Result<()> {
+        if let Some(ref mut m) = self.mmap {
+            m.flush(MmapSync::Sync, None, 0)?;
+        }
+        // 如有 pending → 密封 (不压缩)
+        if self.pending_block_offset.is_some() {
+            self.seal_pending_block_no_compress(compress_level)?;
+            self.clear_pending();
+            FileMetadata::clear_pending(self.mmap.as_mut().unwrap(), self.wrote_position as i64);
+        }
+        self.mmap = None;
+        self.lifecycle = SegmentLifecycle::Closed;
+        Ok(())
+    }
+
+    /// 仅 msync (不 seal/不压缩)
+    pub fn sync(&mut self) -> Result<()> {
+        if let Some(ref mut m) = self.mmap {
+            m.flush(MmapSync::Sync, None, 0)?;
+        }
+        self.last_accessed_at = Instant::now();
+        Ok(())
+    }
+
+    /// 密封 pending 但不压缩 (用于 idle-close 和 reopen recovery)
+    fn seal_pending_block_no_compress(&mut self, _compress_level: u8) -> Result<()> {
+        let block_rel_offset = self.pending_block_offset.unwrap();
+        let hdr_pos = HEADER_SIZE as usize + block_rel_offset as usize;
+        let header_off = hdr_pos;
+        
+        // 读取当前 payload_size
+        let payload_size = u32::from_le_bytes(
+            self.mmap.as_mut().unwrap()[hdr_pos..hdr_pos+4].try_into()?
+        );
+        let record_count = self.pending_block_record_count;
+        let uncomp_size = self.pending_block_uncomp_size;
+        
+        // 更新 flags: SEALED (no COMPRESSED)
+        write_block_header(&mut self.mmap.as_mut().unwrap(), header_off,
+            payload_size, BLOCK_FLAG_SEALED, record_count, uncomp_size);
+        Ok(())
+    }
+}
+```
+
+#### 6.6 DataSegment 创建/打开
+
+```rust
+impl DataSegment {
+    /// 创建新 segment
+    pub fn create(path: &Path, file_offset: u64, file_size: u64) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true).write(true).create(true).open(path)?;
+        file.set_len(file_size)?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        let metadata = FileMetadata::create_default(1, file_offset as i64, file_size as i64);
+        metadata.write_to(&mut mmap);
+        Ok(Self {
+            path: path.to_path_buf(),
+            file_offset, file_size,
+            wrote_position: 0, record_count: 0, total_uncompressed_size: 0,
+            created_at: unix_ms_now(),
+            mmap: Some(mmap),
+            sealed: false, lifecycle: SegmentLifecycle::OpenReady,
+            last_accessed_at: Instant::now(),
+            pending_block_offset: None, pending_block_uncomp_size: 0,
+            pending_block_record_count: 0,
+        })
+    }
+
+    /// 打开已有 segment
+    pub fn open(path: &Path, file_offset: u64, file_size: u64) -> Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        let metadata = FileMetadata::read_from(&mmap)?;
+        // 校验 magic/version
+        if metadata.magic != MAGIC { return Err(TmslError::InvalidMagic); }
+        if metadata.version != VERSION { return Err(TmslError::InvalidVersion(metadata.version)); }
+        Ok(Self {
+            path: path.to_path_buf(), file_offset, file_size,
+            wrote_position: metadata.wrote_position as u64,
+            record_count: metadata.record_count as u64,
+            total_uncompressed_size: metadata.total_uncompressed_size,
+            created_at: metadata.created_at,
+            mmap: Some(mmap),
+            sealed: metadata.file_flags & FILE_FLAG_SEALED != 0,
+            lifecycle: SegmentLifecycle::OpenReady,
+            last_accessed_at: Instant::now(),
+            pending_block_offset: if metadata.file_flags & FILE_FLAG_HAS_PENDING != 0 {
+                Some(metadata.pending_block_offset as u64)
+            } else { None },
+            pending_block_uncomp_size: metadata.pending_uncomp_size,
+            pending_block_record_count: metadata.pending_record_count,
+        })
+    }
+}
+```
+
 ---
 
 ## 七、TimeIndex: 时间索引
@@ -632,9 +891,124 @@ impl DataSegment {
 struct TimeIndex {
     base_dir: PathBuf,
     segment_size: u64,
-    index_segments: Vec<IndexSegment>,
+    index_segments: Vec<IndexSegment>,              // 打开中的 index segment
+    closed_index_segments: Vec<IndexSegmentMeta>,   // 已关闭的 index segment
     in_memory_buffer: Vec<IndexEntry>,
-    in_memory_flush_threshold: usize,   // 默认 1024
+    in_memory_flush_threshold: usize,               // 默认 1024
+}
+
+struct IndexSegmentMeta {
+    path: PathBuf,
+    start_timestamp: i64,
+    entries_capacity: usize,
+}
+```
+
+### 7.1.1 TimeIndex 生命周期管理
+
+```rust
+impl TimeIndex {
+    /// sync 所有打开的 index segment
+    pub fn sync_all(&mut self) -> io::Result<()> {
+        for seg in &mut self.index_segments {
+            seg.sync()?;
+        }
+        Ok(())
+    }
+
+    /// idle-close 所有 index segment
+    pub fn idle_close_all(&mut self) -> Result<()> {
+        let mut closed = Vec::new();
+        for seg in self.index_segments.drain(..) {
+            closed.push(IndexSegmentMeta {
+                path: seg.path.clone(),
+                start_timestamp: seg.start_timestamp,
+                entries_capacity: seg.entries_capacity,
+            });
+            seg.idle_close()?;
+        }
+        self.closed_index_segments.extend(closed);
+        Ok(())
+    }
+
+    /// 按需打开已关闭的 index segment
+    fn ensure_segment_open(&mut self, start_ts: i64) -> Result<&mut IndexSegment> {
+        // 先在 segments 中查找
+        if let Some(idx) = self.index_segments.iter().position(|s| s.start_timestamp == start_ts) {
+            return Ok(&mut self.index_segments[idx]);
+        }
+        // 在 closed 中查找 meta
+        let meta = self.closed_index_segments.iter()
+            .find(|m| m.start_timestamp == start_ts)?;
+        // 打开
+        let seg = IndexSegment::open(&meta.path, meta.start_timestamp, meta.entries_capacity)?;
+        self.index_segments.push(seg);
+        Ok(self.index_segments.last_mut().unwrap())
+    }
+}
+```
+
+### 7.1.2 TimeIndex 查询与加载
+
+```rust
+impl TimeIndex {
+    /// 查询时间范围 [start_ts, end_ts] 内的所有 entries
+    pub fn query(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<IndexEntry>> {
+        let mut results = Vec::new();
+        
+        // 1. 内存缓冲中的 entries
+        for entry in &self.in_memory_buffer {
+            if entry.timestamp >= start_ts && entry.timestamp <= end_ts {
+                results.push(*entry);
+            }
+        }
+        
+        // 2. 所有段 (打开 + 关闭)
+        // 打开中的 segments
+        for seg in &mut self.index_segments {
+            seg.ensure_open()?;
+            results.extend(seg.query_range(start_ts, end_ts));
+        }
+        // 已关闭的 segments (需要临时打开)
+        for meta in &self.closed_index_segments {
+            // 优化: 如果 meta 的时间范围不在 [start_ts, end_ts] 内, skip
+            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, meta.entries_capacity)?;
+            // 需要临时确保 mmap 有效
+            results.extend(seg.query_range(start_ts, end_ts));
+            // 不保持打开, 查询后立即关闭
+        }
+        
+        // 3. 去重 + 排序
+        results.sort_by_key(|e| e.timestamp);
+        results.dedup_by_key(|e| e.timestamp);
+        Ok(results)
+    }
+
+    /// 从磁盘加载已有 index segments
+    pub fn load_existing(base_dir: &Path, segment_size: u64) -> io::Result<Self> {
+        let mut metas: Vec<IndexSegmentMeta> = Vec::new();
+        if base_dir.exists() {
+            for entry in std::fs::read_dir(base_dir)? {
+                let p = entry?.path();
+                if !p.is_file() { continue; }
+                let stem = p.file_stem().and_then(|n| n.to_str()).unwrap_or("0");
+                let start_ts = i64::from_str_radix(stem, 10)?;
+                let file_size = std::fs::metadata(&p)?.len();
+                let entries_capacity = ((file_size - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+                metas.push(IndexSegmentMeta { path: p, start_timestamp: start_ts, entries_capacity });
+            }
+        }
+        metas.sort_by_key(|m| m.start_timestamp);
+        // 初始所有 segment 进入 closed_segments, 按需打开
+        Ok(Self {
+            base_dir: base_dir.to_path_buf(),
+            segment_size,
+            index_segments: Vec::new(),
+            closed_index_segments: metas,
+            in_memory_buffer: Vec::new(),
+            in_memory_flush_threshold: 1024,
+        })
+    }
 }
 ```
 
@@ -670,31 +1044,36 @@ struct IndexSegment {
     start_timestamp: i64,
     entries_capacity: usize,
     wrote_count: usize,
-    mmap: MmapMut,
+    mmap: Option<MmapMut>,           // None = closed/unmapped
     sealed: bool,
+    last_accessed_at: Instant,       // 最近读写时间
 }
 
 impl IndexSegment {
     fn append_entry(&mut self, entry: &IndexEntry) -> io::Result<()> {
+        // 确保 mmap 有效 (closed → open on-demand)
+        self.ensure_open()?;
         if self.wrote_count >= self.entries_capacity {
             self.seal()?;
             return Err(io::Error::new(io::ErrorKind::OutOfMemory, "index segment full"));
         }
         let pos = HEADER_SIZE as usize + self.wrote_count * INDEX_ENTRY_SIZE;
-        self.mmap[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&entry.to_bytes());
+        let m = self.mmap.as_mut().unwrap();
+        m[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&entry.to_bytes());
         self.wrote_count += 1;
-        write_u64_le(&mut self.mmap, 32, self.wrote_count as u64);
-        write_i64_le(&mut self.mmap, 48, self.wrote_count as i64);
+        write_u64_le(m, 32, self.wrote_count as u64);
+        write_i64_le(m, 48, self.wrote_count as i64);
         Ok(())
     }
 
     /// lower_bound: 查找 >= target_ts 的第一个位置
     fn lower_bound(&self, target_ts: i64) -> usize {
+        let m = self.mmap.as_ref().unwrap();  // 调用者须确保 mmap 有效
         let (mut lo, mut hi) = (0usize, self.wrote_count);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let pos = HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
-            let ts = i64::from_le_bytes(self.mmap[pos..pos+8].try_into().unwrap());
+            let ts = i64::from_le_bytes(m[pos..pos+8].try_into().unwrap());
             if ts < target_ts { lo = mid + 1; } else { hi = mid; }
         }
         lo
@@ -702,14 +1081,15 @@ impl IndexSegment {
 
     /// 精确查找
     fn find_exact(&self, target_ts: i64) -> Option<IndexEntry> {
+        let m = self.mmap.as_ref().unwrap();  // 调用者须确保 mmap 有效
         let (mut lo, mut hi) = (0usize, self.wrote_count.saturating_sub(1));
         while lo <= hi {
             let mid = lo + (hi - lo) / 2;
             let pos = HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
-            let ts = i64::from_le_bytes(self.mmap[pos..pos+8].try_into().unwrap());
+            let ts = i64::from_le_bytes(m[pos..pos+8].try_into().unwrap());
             match ts.cmp(&target_ts) {
                 Ordering::Equal => {
-                    let buf: [u8; 18] = self.mmap[pos..pos+18].try_into().unwrap();
+                    let buf: [u8; 18] = m[pos..pos+18].try_into().unwrap();
                     return Some(IndexEntry::from_bytes(&buf));
                 }
                 Ordering::Less => lo = mid + 1,
@@ -721,19 +1101,62 @@ impl IndexSegment {
 
     /// 范围查询
     fn query_range(&self, start_ts: i64, end_ts: i64) -> Vec<IndexEntry> {
+        let m = self.mmap.as_ref().unwrap();  // 调用者须确保 mmap 有效
         let mut results = Vec::new();
         let start_idx = self.lower_bound(start_ts);
         for i in start_idx..self.wrote_count {
             let pos = HEADER_SIZE as usize + i * INDEX_ENTRY_SIZE;
-            let ts = i64::from_le_bytes(self.mmap[pos..pos+8].try_into().unwrap());
+            let ts = i64::from_le_bytes(m[pos..pos+8].try_into().unwrap());
             if ts > end_ts { break; }
-            let buf: [u8; 18] = self.mmap[pos..pos+18].try_into().unwrap();
+            let buf: [u8; 18] = m[pos..pos+18].try_into().unwrap();
             results.push(IndexEntry::from_bytes(&buf));
         }
         results
     }
 }
 ```
+
+### 7.3.1 IndexSegment 生命周期方法
+
+```rust
+impl IndexSegment {
+    /// 确保 mmap 有效 (closed → open)
+    pub fn ensure_open(&mut self) -> Result<()> {
+        if self.mmap.is_some() {
+            return Ok(());
+        }
+        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        self.mmap = Some(mmap);
+        self.last_accessed_at = Instant::now();
+        // 注意: index segment 无 pending recovery
+        Ok(())
+    }
+
+    /// sync → unmmap → close
+    pub fn idle_close(&mut self) -> Result<()> {
+        if let Some(ref mut m) = self.mmap {
+            m.flush(MmapSync::Sync, None, 0)?;
+        }
+        self.mmap = None;
+        self.last_accessed_at = Instant::now();
+        Ok(())
+    }
+
+    /// 仅 msync
+    pub fn sync(&mut self) -> Result<()> {
+        if let Some(ref mut m) = self.mmap {
+            m.flush(MmapSync::Sync, None, 0)?;
+        }
+        self.last_accessed_at = Instant::now();
+        Ok(())
+    }
+}
+```
+
+> **注意**: 上述 IndexSegment 的 `lower_bound`, `find_exact`, `query_range` 方法中
+> `self.mmap[...]` 访问需在实现时改为 `self.mmap.as_ref().unwrap()[...]`,
+> 或在方法内部先 `ensure_open()`。
 
 ### 7.4 索引文件布局
 
@@ -799,7 +1222,36 @@ impl DataSet {
         // flush 仅执行 mmap.sync(), 不密封/不压缩 pending block
         self.segments.sync_all()?;
         self.time_index.sync_all()?;
+        self.last_used_at = Instant::now();
         Ok(())
+    }
+
+    fn idle_close_all(&mut self) -> io::Result<()> {
+        // 关闭所有 data segment + index segment
+        self.segments.idle_close_all()?;
+        self.time_index.idle_close_all()?;
+        self.last_used_at = Instant::now();
+        Ok(())
+    }
+
+    /// 从磁盘加载已有数据集
+    fn load(
+        id: DataSetKey, base_dir: PathBuf, config: &StoreConfig,
+    ) -> io::Result<Self> {
+        let segments = DataSegmentSet::load_existing(
+            &base_dir, config.data_segment_size,
+            config.block_max_size, config.compress_level,
+        )?;
+        let index_dir = base_dir.join(".index");
+        let time_index = TimeIndex::load_existing(
+            &index_dir, config.index_segment_size,
+        )?;
+        Ok(Self {
+            id, base_dir,
+            config: DataSetConfig::from(config),
+            segments, time_index,
+            last_used_at: Instant::now(),
+        })
     }
 }
 ```
@@ -886,20 +1338,23 @@ flush (配置化，默认10分钟):
 ## 十一、Store: 存储门面
 
 ```rust
+/// FFI 数据集句柄 (不透明指针)
+pub struct DataSetHandle(pub u64);  // 内部为 Arc<Mutex<DataSet>> 的 ID
+
 pub struct Store {
     data_dir: PathBuf,
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
-    flush_interval: Duration,
-    idle_timeout: Duration,
+    config: StoreConfig,                     // 统一配置, 替代扁平字段
     flush_handle: Option<JoinHandle<()>>,
     idle_handle: Option<JoinHandle<()>>,
+    shutdown_tx: Option<mpsc::Sender<()>>,   // 优雅关闭信号
 }
 
 impl Store {
-    pub fn open<P: AsRef<Path>>(data_dir: P) -> io::Result<Self>;
-    pub fn open_dataset(&self, name: &str, dataset_type: &str) -> io::Result<DataSetHandle>;
-    pub fn close_dataset(&self, handle: DataSetHandle) -> io::Result<()>;
-    pub fn close(self) -> io::Result<()>;
+    pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self>;
+    pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
+    pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>;
+    pub fn close(self) -> Result<()>;
 }
 ```
 
@@ -908,17 +1363,31 @@ impl Store {
 ## 十二、FFI API
 
 ```rust
-#[no_mangle] pub extern "C" fn tmsl_store_open(...) -> *mut c_void;
-#[no_mangle] pub extern "C" fn tmsl_store_close(...) -> c_int;
-#[no_mangle] pub extern "C" fn tmsl_dataset_open(...) -> *mut c_void;
-#[no_mangle] pub extern "C" fn tmsl_dataset_write(...) -> c_int;
-#[no_mangle] pub extern "C" fn tmsl_dataset_query(...) -> *mut c_void;    // → iterator
-#[no_mangle] pub extern "C" fn tmsl_iter_next(...) -> c_int;              // 0=ok, 1=done, -1=err
+// Store 管理
+#[no_mangle] pub extern "C" fn tmsl_store_open(data_dir: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_store_open_with_config(data_dir: *const c_char, config_ptr: *const StoreConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_store_close(store: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+// 数据集管理
+#[no_mangle] pub extern "C" fn tmsl_dataset_open(store: *mut c_void, name: *const c_char, dataset_type: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_dataset_close(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_dataset_flush(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+// 数据写入
+#[no_mangle] pub extern "C" fn tmsl_dataset_write(dataset: *mut c_void, timestamp: c_longlong, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+// 查询迭代器
+#[no_mangle] pub extern "C" fn tmsl_dataset_query(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_iter_next(iter: *mut c_void, out_ts: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar);
 #[no_mangle] pub extern "C" fn tmsl_iter_close(iter: *mut c_void);
-#[no_mangle] pub extern "C" fn tmsl_dataset_close(...) -> c_int;
-#[no_mangle] pub extern "C" fn tmsl_dataset_flush(...) -> c_int;
 ```
+
+> **内存所有权**:
+> - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_iter_free_data` 释放
+> - `tmsl_iter_close` 释放迭代器本身 (Rust `Box::from_raw` + drop)
+> - Store/dataset 指针为 `Box::into_raw` → 对应 `tmsl_store_close`/`tmsl_dataset_close` 调用 `Box::from_raw` + drop
+> - 所有 FFI 函数用 `catch_unwind` 包裹, panic 时返回 -1/null + err_buf 写错误信息
 
 ---
 
@@ -1007,20 +1476,32 @@ flush (每 10 分钟):
 
 ```
 idle-check (每 60s):
-  for each dataset (30min 未读写):
-    for each open segment:
-      1. mmap.flush() (MS_SYNC)
-      2. 如果 data segment 有 pending block:
-         密封 (不压缩), block.flags |= BLOCK_FLAG_SEALED
-      3. 清除 pending_file_flags (如果有)
-      4. mmap.close() (munmap + close file)
-    last_used_at = closed → dataset 进入 idle 状态
+  1. 读锁遍历 datasets
+     收集 last_used_at.elapsed() >= idle_timeout 的 dataset keys
+  2. 对每个 idle dataset key:
+     写锁获取 → 获取 dataset 引用
+     ⚠️ **二次检查 (race condition 防护)**:
+       获取写锁后再次检查 last_used_at.elapsed() >= idle_timeout
+       如果是 → 执行 idle-close (可能有 concurrent write 刚刚更新了 last_used_at)
+       如果否 → 跳过 (并发写操作已经"唤醒"了这个 dataset)
+  3. 对每个打开的 segment:
+     a. mmap.flush() (MS_SYNC)
+     b. 如果 data segment 有 pending block:
+        密封 (不压缩), block.flags |= BLOCK_FLAG_SEALED
+     c. 清除 header FILE_FLAG_HAS_PENDING
+     d. munmap + close file
+  4. dataset 进入 idle 状态 (last_used_at 不变, segments 清空)
 
 on-demand reopen:
   当读取/写入操作命中已关闭的 segment:
-    - data segment: open + mmap, 检测 pending → 密封恢复
-    - index segment: open + mmap, 直接恢复
+    - data segment: open + mmap, 检测 FILE_FLAG_HAS_PENDING → 密封恢复
+    - index segment: open + mmap, 直接恢复 (无 pending)
 ```
+
+> **Race Condition 详述**:
+> 后台线程读锁收集 idle datasets → 在获取写锁前, 前台写操作可能命中该 dataset
+> → 更新 `last_used_at` → 写锁获取后必须重新检查, 否则会把刚写入的 dataset
+> 错误地 idle-close。解决方案: **double-check last_used_at after write lock acquired**。
 
 ### 17.3 mmap 生命周期
 
@@ -1033,6 +1514,35 @@ on-demand reopen:
     │      flush (10min)       │ msync only
     └──────────────────────────┘
 ```
+
+### 17.4 Pending Block 恢复详情
+
+```
+reopen 时 pending block 恢复流程:
+  1. 读取 FileMetadata, 校验 magic/version
+     - magic != "TMSL" → 返回 InvalidMagic (文件损坏/非本库文件)
+     - version 不兼容 → 返回 InvalidVersion
+  2. 检查 FILE_FLAG_HAS_PENDING flag
+     - 无 → 直接 OpenReady, 无 pending
+     - 有 → 进入恢复流程
+  3. 恢复流程:
+     a. 从 header 恢复 pending_block_offset, pending_uncomp_size, pending_record_count
+     b. 验证: pending_block_offset + HEADER_SIZE + pending_uncomp_size <= file_size
+        - 不满足 → header 损坏, 回退到 wrote_position (丢弃 pending 数据)
+     c. 密封 pending block (FLAGS=SEALED, 不压缩)
+        - 读取当前 payload_size (可能已被部分写入)
+        - 用 pending_record_count + payload_size 更新 block header
+        - 设置 flags = BLOCK_FLAG_SEALED
+     d. 清除 header: pending_block_offset=-1, 清 FILE_FLAG_HAS_PENDING
+     e. wrote_position = sealed block 末尾
+     f. 返回 OpenReady (pending 已清除)
+```
+
+> **Crash 安全分析**:
+> idle-close 时 msync 已确保 header 和 block payload 同步到磁盘。
+> Reopen 时如果 pending 数据已写入但 header 未 seal → 恢复流程可以安全密封。
+> 如果 crash 发生在 msync 前 → 部分数据丢失 (但 header 记录的是 msync 前的状态)。
+> 这 10min flush 间隔内的 crash 损失可接受 (mmap 本身已有 OS page cache 保护)。
 
 ---
 
@@ -1050,10 +1560,20 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 memmap2 = "0.9"
-miniz_oxide = "0.7"
+miniz_oxide = "0.8"
 log = "0.4"
 libc = "0.2"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "timslite_benchmarks"
+harness = false
 ```
+
+> **注意**: miniz_oxide 0.8 支持更新的 API (e.g., `compress_with_level`)
+> criterion 替换 nightly-only `#[bench]`, 运行 `cargo bench`
 
 ---
 
@@ -1078,25 +1598,26 @@ libc = "0.2"
 
 ```
 src/
-├── lib.rs              # 入口
-├── store.rs            # Store
-├── dataset.rs          # DataSet
+├── lib.rs              # 入口, re-exports: Store, StoreConfig, TmslError, Result
+├── store.rs            # Store (门面, 数据集管理, 后台任务启动)
+├── dataset.rs          # DataSet (name+type 级别, sync_all/idle_close_all)
 ├── segment/
-│   ├── mod.rs          # DataSegmentSet
-│   └── data.rs         # DataSegment
-├── block.rs            # BlockHeader
+│   ├── mod.rs          # DataSegmentSet (~data segment, lazy open/close)
+│   └── data.rs         # DataSegment (Block 管理, lifecycle, pending recovery)
+├── block.rs            # BlockHeader (16B, read/write/flags)
 ├── index/
-│   ├── mod.rs          # TimeIndex
-│   └── segment.rs      # IndexSegment
+│   ├── mod.rs          # TimeIndex (~index segment, lazy open/close, query)
+│   └── segment.rs      # IndexSegment (18B entries, lifecycle, binary search)
 ├── header.rs           # FileMetadata (128B, 固定10B+扩展52B+预留64B)
-├── ffi.rs              # extern "C"
-├── error.rs
-├── compress.rs
-├── util.rs
+├── ffi.rs              # extern "C" (catch_unwind, opaque handles, memory mgmt)
+├── error.rs            # TmslError enum + From impls
+├── compress.rs         # deflate_compress/decompress + size comparison
+├── config.rs           # StoreConfig + StoreConfigBuilder + DataSetConfig (internal)
+├── util.rs             # endian helpers, mmap read/write macros
 └── bg/
-    ├── mod.rs
-    ├── flush.rs
-    └── idle.rs
+    ├── mod.rs          # BackgroundTasks (start/stop)
+    ├── flush.rs        # flush loop (msync only, configurable interval)
+    └── idle.rs         # idle-check loop (30min timeout, double-check race guard)
 ```
 
 ---
