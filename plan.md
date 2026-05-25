@@ -440,12 +440,18 @@ const BLOCK_HEADER_SIZE: u64 = 16;
   - 清理 handle
 
 ### ☐ 6.7 Store::close (self)
-### ✅ 6.8 bg/flush.rs - Flush 线程
-### ✅ 6.9 bg/idle.rs - Idle Check 线程
-### ✅ 6.10 bg/mod.rs - 后台管理
-- `pub struct BackgroundTasks { flush_handle, idle_handle, shutdown_tx }`
-- `fn start(datasets, flush_interval, idle_timeout) -> Self`
+### ☐ 6.8 bg/mod.rs - 单线程后台循环 (合并 flush + idle)
+- 重构: 将 `bg/flush.rs` 和 `bg/idle.rs` 合并到 `bg/mod.rs` 中的单一循环
+- `pub struct BackgroundTasks { handle: Option<JoinHandle<()>>, shutdown_tx: Option<mpsc::Sender<()>> }`
+- `fn start(datasets, flush_interval, idle_timeout) -> Self`:
+  - 创建单一 mpsc channel
+  - 启动单一线程, 内部循环:
+    - 计算 `next_flush = last_flush + flush_interval`
+    - 计算 `next_idle = last_idle_check + idle_check_interval` (默认 60s)
+    - `recv_timeout(min(next_flush, next_idle) - now)` 等待
+    - 超时后检查: 如果到了 flush 时间 → 执行 flush; 如果到了 idle 时间 → 执行 idle check
 - `fn stop(self)` - 发送信号, join, 返回
+- **删除 `bg/flush.rs` 和 `bg/idle.rs`** (逻辑合并到 mod.rs)
 
 ### ✅ Phase 6 验收标准
 - 集成测试: `Store::create_dataset` → 创建成功, `create_dataset` 再次调用 → `AlreadyExists`
@@ -541,7 +547,7 @@ Phase 4 (索引 + 生命周期)  Phase 3
 Phase 5 (DataSet + DataSegmentSet + lazy open/close + meta file)
        │
        ▼
-Phase 6 (Store + 后台任务: flush 10min / idle 30min)
+Phase 6 (Store + 单线程后台任务: flush 10min / idle 60s 统一循环)
        │
        ▼
 Phase 7 (FFI 接口)
@@ -567,10 +573,11 @@ Phase 8 (集成测试 + 性能 + idle-close 恢复测试 + 目录结构验证)
 | index segment 查询时需遍历所有段 (含 closed) | 查询延迟 | 时间范围过滤: skip 段时间范围不在查询区间内的段 |
 | 10min flush 间隔过长 | crash 损失数据 | mmap 写入已有 OS page cache 保护, 实际风险可控 |
 | meta 文件与 config 不一致 | 数据损坏风险 | data_segment_size / index_segment_size 不一致时直接拒绝打开; compress_level 不一致仅警告 |
-| `.index` 迁移到 `index/` | 旧数据不可读 | 打开时检测 `.index/` 目录, 自动重命名为 `index/` (向后兼容迁移) |
-| 数据文件迁移到 `data/` | 旧数据不可读 | 打开时检测 base_dir 下的 segment 文件, 自动移动到 `data/` 子目录 (向后兼容迁移) |
-| `create` vs `open` 混淆 | 误创建已存在数据集 | `create` 检查 meta 文件已存在则返回明确错误, 文档明确区分两种操作 |
-| 误删数据集 (drop) | 数据丢失不可恢复 | `drop_dataset` 使用 `remove_dir_all` 删除整个目录, 不可恢复; FFI 层添加确认参数 |
+| index 迁移到 index/ | 旧数据不可读 | 打开时检测 `.index/` 目录, 自动重命名为 `index/` (向后兼容迁移) |
+| 数据文件迁移到 data/ | 旧数据不可读 | 打开时检测 base_dir 下的 segment 文件, 自动移动到 `data/` 子目录 (向后兼容迁移) |
+| create vs open 混淆 | 误创建已存在数据集 | create 检查 meta 文件已存在则返回明确错误, 文档明确区分两种操作 |
+| 误删数据集 (drop) | 数据丢失不可恢复 | drop_dataset 使用 remove_dir_all 删除整个目录, 不可恢复; FFI 层添加确认参数 |
+| 单线程后台任务阻塞 | flush/idle 互相延迟 | flush 和 idle 在同一线程顺序执行, 但 idle-close 涉及磁盘 I/O, 可能延迟下一次 flush; 如有性能问题可拆分回双线程 |
 
 ---
 

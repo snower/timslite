@@ -248,8 +248,8 @@ impl Store {
     /// Close the store completely.
     pub fn close(mut self) -> Result<()> {
         // 1. Stop background tasks
-        if let Some(mut bg) = self.bg_tasks.take() {
-            bg.stop();
+        if let Some(bg) = self.bg_tasks.take() {
+            drop(bg);
         }
 
         // 2. Flush and close all datasets

@@ -365,8 +365,7 @@ pub struct Store {
     data_dir: PathBuf,
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
     config: StoreConfig,
-    flush_handle: Option<JoinHandle<()>>,
-    idle_handle: Option<JoinHandle<()>>,
+    bg_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
 }
 
@@ -1576,8 +1575,7 @@ pub struct Store {
     data_dir: PathBuf,
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
     config: StoreConfig,                     // 统一配置, 包含 flush_interval, idle_timeout, block_max_size
-    flush_handle: Option<JoinHandle<()>>,
-    idle_handle: Option<JoinHandle<()>>,
+    bg_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,   // 优雅关闭信号
 }
 
@@ -1727,10 +1725,33 @@ DataSet: Arc<Mutex<DataSet>>        (读写互斥)
 
 ## 十七、后台任务
 
+> **核心设计**: 单一线程执行 flush 和 idle check 两个任务, 通过动态计算下一次唤醒时间来避免轮询浪费。
+
+### 17.0 单线程统一循环
+
 | 任务 | 间隔 | 行为 |
 |------|------|------|
 | Flush | 可配置, 默认 10min | 遍历所有打开的 segment, mmap.flush() (MS_SYNC) |
 | Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + 密封 pending + unmmap + close |
+
+**线程模型**:
+```
+后台单线程:
+  loop:
+    1. 计算下一次 flush 和 idle check 的到期时间
+    2. wait_timeout = min(next_flush, next_idle) - now
+    3. shutdown_rx.recv_timeout(wait_timeout)
+       - 收到信号 → break
+       - 超时 → 继续执行到期任务
+    4. 如果 now >= next_flush → 执行 flush
+    5. 如果 now >= next_idle → 执行 idle check
+```
+
+**优势**:
+- 减少线程数量 (2 → 1)
+- 无固定轮询间隔 (动态计算, 精确到毫秒)
+- 单一 shutdown channel (简化资源管理)
+- 两个任务共享 datasets 读锁 (减少锁竞争)
 
 ### 17.1 Flush 行为详解
 
@@ -1773,7 +1794,110 @@ on-demand reopen:
 > → 更新 `last_used_at` → 写锁获取后必须重新检查, 否则会把刚写入的 dataset
 > 错误地 idle-close。解决方案: **double-check last_used_at after write lock acquired**。
 
-### 17.3 mmap 生命周期
+### 17.3 后台线程 Rust 实现
+
+```rust
+/// 单一线程执行 flush 和 idle check。
+pub fn spawn_bg_loop(
+    datasets: Arc<RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
+    shutdown_rx: mpsc::Receiver<()>,
+    flush_interval: Duration,
+    idle_check_interval: Duration,  // 默认 60s
+    idle_timeout: Duration,          // 默认 30min
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut last_flush = Instant::now();
+        let mut last_idle_check = Instant::now();
+
+        loop {
+            let now = Instant::now();
+            let next_flush = last_flush + flush_interval;
+            let next_idle = last_idle_check + idle_check_interval;
+            let wait_time = next_flush.min(next_idle).saturating_duration_since(now);
+
+            // 等待直到超时或收到 shutdown 信号
+            if wait_time.is_zero() {
+                // 立即执行, 不等待
+            } else if shutdown_rx.recv_timeout(wait_time).is_ok() {
+                log::info!("[bg] received shutdown signal");
+                break;
+            }
+
+            let now = Instant::now();
+
+            // Flush
+            if now >= next_flush {
+                if let Ok(guard) = datasets.read() {
+                    for (_key, ds_arc) in guard.iter() {
+                        let mut ds = ds_arc.lock().unwrap();
+                        if let Err(e) = ds.flush() {
+                            log::error!("[bg flush] failed: {}", e);
+                        }
+                    }
+                }
+                last_flush = now;
+            }
+
+            // Idle Check
+            if now >= next_idle {
+                // 1. 读锁收集 idle keys
+                let idle_keys = {
+                    let guard = match datasets.read() {
+                        Ok(g) => g,
+                        Err(_) => { last_idle_check = now; continue; }
+                    };
+                    guard.iter()
+                        .filter(|(_k, ds_arc)| {
+                            let ds = ds_arc.lock().unwrap();
+                            ds.last_used_at().elapsed() >= idle_timeout
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect::<Vec<_>>()
+                };
+
+                // 2. 对每个 idle key 执行 close
+                for key in idle_keys {
+                    let ds_arc = {
+                        let guard = match datasets.read() {
+                            Ok(g) => g,
+                            Err(_) => continue,
+                        };
+                        match guard.get(&key) {
+                            Some(ds) => Arc::clone(ds),
+                            None => continue,
+                        }
+                    };
+                    // Double-check
+                    {
+                        let mut ds = ds_arc.lock().unwrap();
+                        if ds.last_used_at().elapsed() >= idle_timeout {
+                            if let Err(e) = ds.close() {
+                                log::error!("[bg idle] close failed for {:?}: {}", key, e);
+                            } else {
+                                log::info!("[bg idle] closed dataset {:?}", key);
+                            }
+                        }
+                    }
+                }
+                last_idle_check = now;
+            }
+        }
+    })
+}
+```
+
+### 17.5 BackgroundTasks 结构
+
+```rust
+pub struct BackgroundTasks {
+    handle: Option<JoinHandle<()>>,
+    shutdown_tx: Option<mpsc::Sender<()>>,
+}
+```
+
+> 之前是两个线程 (flush_handle + idle_handle), 现在简化为单一线程。
+
+### 17.6 mmap 生命周期
 
 ```
 ┌─────────┐  write/read    ┌────────┐   idle 30min   ┌────────┐
@@ -1785,7 +1909,7 @@ on-demand reopen:
     └──────────────────────────┘
 ```
 
-### 17.4 Pending Block 恢复详情
+### 17.7 Pending Block 恢复详情
 
 ```
 reopen 时 pending block 恢复流程:
