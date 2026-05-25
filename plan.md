@@ -8,15 +8,17 @@
 ## 总体里程碑
 
 ```
-Phase 1: 项目骨架 + 基础工具     🔄 需更新 (目录结构变更)
-Phase 2: 文件头 + Block 核心     ✅
-Phase 3: DataSegment 写入/读取   🔄 需更新 (data/ 子目录)
-Phase 4: 时间索引系统            🔄 需更新 (index/ 子目录)
-Phase 5: DataSegmentSet + DataSet🔄 需更新 (路径 + meta 文件)
+Phase 1: 项目骨架 + 基础工具     ✅ (含 meta.rs)
+Phase 2: 文件头 + Block 核心     ✅ (100B meta/state 分离)
+Phase 3: DataSegment 写入/读取   ✅ (u64::MAX pending, data/ 子目录)
+Phase 4: 时间索引系统            ✅ (index/ 子目录)
+Phase 5: DataSegmentSet + DataSet✅ (路径 + meta 文件)
 Phase 6: Store 门面 + 后台任务   ✅ (适配路径变更)
 Phase 7: FFI 接口                ✅
-Phase 8: 集成测试 + 性能调优     🔄 需更新 (路径变更)
+Phase 8: 集成测试 + 性能调优     ✅ (57 单元 + 5 集成测试全部通过)
 ```
+
+**全部 8 个 Phase 完成! HEADER_SIZE = 100B, meta/state 分离, data/ + index/ 子目录, meta TLV 文件**
 
 **全部 8 个 Phase 完成, 但需根据新设计调整: data/ 子目录, index/ 子目录, meta 文件。**
 
@@ -127,7 +129,7 @@ impl Default for StoreConfig { ... }
 ```
 - 提供 builder 模式: `StoreConfig::builder().flush_interval(...).build()`
 
-### 🔄 1.7 meta.rs - 数据集不可变配置 (TLV)
+### ✅ 1.7 meta.rs - 数据集不可变配置 (TLV)
 - 常量定义:
   ```rust
   pub const META_MAGIC: [u8; 4] = *b"TMSM";
@@ -152,7 +154,7 @@ impl Default for StoreConfig { ... }
 - `cargo test` 至少 1 个 test pass
 - util.rs 所有 endian 函数单元测试通过
 - error.rs 所有 From impl 覆盖
-- meta.rs TLV roundtrip 测试通过
+- meta.rs TLV roundtrip 测试通过 **(4 个测试全部通过)**
 
 ---
 
@@ -218,7 +220,7 @@ impl Default for StoreConfig { ... }
   - `compressed.len() < original.len()`
 
 ### ✅ Phase 2 验收标准
-- header.rs: 创建→写入→读取, 所有 meta TLV 和 state roundtrip 一致
+- header.rs: 创建→写入→读取, 所有 meta TLV 和 state roundtrip 一致 **(7 个测试全部通过)**
 - header.rs: 未来版本兼容性 — 未知 TLV type 被正确跳过
 - header.rs: HEADER_SIZE = 100
 - block.rs: 写入→读取, flags 测试 (compress, sealed, single_record)

@@ -7,8 +7,10 @@ mod segment;
 
 use std::path::Path;
 
-use self::segment::{IndexEntry, IndexSegment, IndexSegmentMeta, INDEX_ENTRY_SIZE};
+use self::segment::{IndexEntry, IndexSegment, IndexSegmentMeta};
 use crate::error::Result;
+
+pub use self::segment::INDEX_ENTRY_SIZE;
 
 // ─── TimeIndex ─────────────────────────────────────────────────────────────
 
@@ -184,6 +186,7 @@ impl TimeIndex {
     }
 
     /// Load existing index segments from disk.
+    /// Index files are in the `index/` subdirectory.
     pub fn load_existing(base_dir: &Path, segment_size: u64) -> Result<Self> {
         let mut metas: Vec<IndexSegmentMeta> = Vec::new();
         if base_dir.exists() {

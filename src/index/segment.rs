@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crate::error::{Result, TmslError};
 use crate::header::{FileMetadata, HEADER_SIZE};
-use crate::util::{read_i64_from_mmap, read_u16_from_mmap, write_i64_to_mmap};
+use crate::util::{read_i64_from_mmap, read_u16_from_mmap, write_u64_to_mmap};
 
 // ─── IndexEntry ──────────────────────────────────────────────────────────────
 
@@ -96,7 +96,11 @@ impl IndexSegment {
         file.set_len(file_size)?;
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
 
-        let metadata = FileMetadata::create_default(-1, start_timestamp, file_size as i64);
+        let metadata = FileMetadata::create_default(
+            crate::header::FILE_TYPE_INDEX,
+            start_timestamp,
+            file_size as u32,
+        );
         metadata.write_to(&mut mmap);
         metadata.sync(&mut mmap)?;
 
@@ -131,7 +135,7 @@ impl IndexSegment {
             entries_capacity,
             wrote_count,
             mmap: Some(mmap),
-            sealed: metadata.file_flags & crate::header::FILE_FLAG_SEALED != 0,
+            sealed: false,
             last_accessed_at: Instant::now(),
         })
     }
@@ -151,10 +155,12 @@ impl IndexSegment {
         mmap[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&entry.to_bytes());
         self.wrote_count += 1;
 
-        // Update file header
-        let abs_pos = (HEADER_SIZE + self.wrote_count as u64 * INDEX_ENTRY_SIZE as u64) as i64;
-        write_i64_to_mmap(mmap, 42, abs_pos);
-        write_i64_to_mmap(mmap, 50, self.wrote_count as i64);
+        // Update file header (state fields at offset 44)
+        let abs_pos = (HEADER_SIZE + self.wrote_count as u64 * INDEX_ENTRY_SIZE as u64);
+        // wrote_position at offset 44
+        mmap[44..52].copy_from_slice(&abs_pos.to_le_bytes());
+        // record_count at offset 52
+        mmap[52..60].copy_from_slice(&(self.wrote_count as u64).to_le_bytes());
 
         self.last_accessed_at = Instant::now();
         Ok(())
@@ -167,11 +173,7 @@ impl IndexSegment {
 
     /// Seal the segment.
     pub fn seal(&mut self) -> Result<()> {
-        if let Some(ref mut m) = self.mmap {
-            let flags = read_u16_from_mmap(m, 6);
-            let sealed_flags = flags | crate::header::FILE_FLAG_SEALED;
-            m[6..8].copy_from_slice(&sealed_flags.to_le_bytes());
-        }
+        // Mark as full in header (wrote_position and record_count already updated via append_entry)
         self.sealed = true;
         Ok(())
     }

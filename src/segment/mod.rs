@@ -81,6 +81,7 @@ impl DataSegmentSet {
     }
 
     /// Load existing data segments from disk (all start closed).
+    /// Scans the `data/` subdirectory for segment files.
     pub fn load_existing(
         base_dir: &Path,
         segment_size: u64,
@@ -88,8 +89,10 @@ impl DataSegmentSet {
         compress_level: u8,
     ) -> Result<Self> {
         let mut metas: Vec<DataSegmentMeta> = Vec::new();
-        if base_dir.exists() {
-            for entry in std::fs::read_dir(base_dir)? {
+        // Data files are in `base_dir/data/`
+        let data_dir = base_dir.join("data");
+        if data_dir.exists() {
+            for entry in std::fs::read_dir(data_dir)? {
                 let p = entry?.path();
                 if p.is_dir() {
                     continue;
@@ -114,7 +117,7 @@ impl DataSegmentSet {
             .unwrap_or(0);
 
         Ok(Self {
-            base_dir: base_dir.to_path_buf(),
+            base_dir: base_dir.to_path_buf().join("data"),
             segment_size,
             block_max_size,
             compress_level,

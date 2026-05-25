@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::config::{DataSetConfig, StoreConfig};
 use crate::error::Result;
 use crate::index::TimeIndex;
+use crate::meta::DataSetMeta;
 use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
 
@@ -30,14 +31,51 @@ pub struct DataSet {
 impl DataSet {
     /// Create a new dataset.
     pub fn new(id: DataSetKey, base_dir: PathBuf, config: &StoreConfig) -> Result<Self> {
-        std::fs::create_dir_all(&base_dir)?;
+        // Ensure data/ subdirectory exists
+        let data_dir = base_dir.join("data");
+        std::fs::create_dir_all(&data_dir)?;
+        // Ensure index/ subdirectory exists
+        let index_dir = base_dir.join("index");
+        std::fs::create_dir_all(&index_dir)?;
+
+        // Load or create meta file (immutable config, created only once)
+        let meta_path = base_dir.join("meta");
+        if meta_path.exists() {
+            let meta = DataSetMeta::read_from_file(&meta_path)?;
+            // Validate immutable fields
+            if meta.data_segment_size != config.data_segment_size {
+                log::warn!(
+                    "[dataset] data_segment_size mismatch: meta={} config={} (new segments will use config value)",
+                    meta.data_segment_size, config.data_segment_size
+                );
+            }
+            if meta.index_segment_size != config.index_segment_size {
+                log::warn!(
+                    "[dataset] index_segment_size mismatch: meta={} config={} (new segments will use config value)",
+                    meta.index_segment_size, config.index_segment_size
+                );
+            }
+            if meta.compress_level != config.compress_level {
+                log::warn!(
+                    "[dataset] compress_level mismatch: meta={} config={} (new blocks will use config value)",
+                    meta.compress_level, config.compress_level
+                );
+            }
+        } else {
+            let meta = DataSetMeta::new(
+                config.data_segment_size,
+                config.index_segment_size,
+                config.compress_level,
+            );
+            meta.write_to_file(&meta_path)?;
+        }
+
         let segments = DataSegmentSet::load_existing(
             &base_dir,
             config.data_segment_size,
             config.block_max_size,
             config.compress_level,
         )?;
-        let index_dir = base_dir.join(".index");
         let time_index = TimeIndex::load_existing(&index_dir, config.index_segment_size)?;
 
         Ok(Self {

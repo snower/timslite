@@ -42,17 +42,17 @@ impl Store {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
-            // Scan types
+            // Scan types (skip internal `data/` and `index/` directories)
             for type_entry in std::fs::read_dir(&path)? {
                 let type_path = type_entry?.path();
                 if !type_path.is_dir() {
                     continue;
                 }
-                let dataset_type = type_path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
+                let type_name = type_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if type_name == "data" || type_name == "index" {
+                    continue; // Internal subdirectory, not a dataset type
+                }
+                let dataset_type = type_name.to_string();
 
                 let key = DataSetKey {
                     name: name.clone(),
