@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::bg::BackgroundTasks;
 use crate::config::StoreConfig;
 use crate::dataset::{DataSet, DataSetKey};
-use crate::error::Result;
+use crate::error::{Result, TmslError};
 
 /// Opaque handle for FFI consumers.
 #[derive(Clone, Copy)]
@@ -54,11 +54,16 @@ impl Store {
                 }
                 let dataset_type = type_name.to_string();
 
+                // Only open datasets that have a meta file (explicitly created)
+                if !type_path.join("meta").exists() {
+                    continue;
+                }
+
                 let key = DataSetKey {
                     name: name.clone(),
                     dataset_type: dataset_type.clone(),
                 };
-                let ds = DataSet::new(key.clone(), type_path.clone(), &config)?;
+                let ds = DataSet::open(key.clone(), type_path.clone(), config.block_max_size)?;
                 log::info!("[store] loaded existing dataset: {}/{}", name, dataset_type);
                 datasets.insert(key, Arc::new(Mutex::new(ds)));
             }
@@ -85,7 +90,55 @@ impl Store {
         Ok(store)
     }
 
-    /// Open or create a dataset.
+    /// Create a new dataset (explicit, errors if already exists).
+    pub fn create_dataset(
+        &mut self,
+        name: &str,
+        dataset_type: &str,
+        data_segment_size: u64,
+        index_segment_size: u64,
+        compress_level: u8,
+    ) -> Result<DataSetHandle> {
+        let key = DataSetKey {
+            name: name.to_string(),
+            dataset_type: dataset_type.to_string(),
+        };
+
+        // Check if already open
+        {
+            let guard = self.datasets.read().unwrap();
+            if guard.contains_key(&key) {
+                return Err(TmslError::AlreadyExists(format!(
+                    "dataset {}/{} is already open",
+                    name, dataset_type
+                )));
+            }
+        }
+
+        // Create new dataset
+        let dir = self.data_dir.join(name).join(dataset_type);
+        let ds = DataSet::create(
+            key.clone(),
+            dir,
+            data_segment_size,
+            index_segment_size,
+            compress_level,
+            self.config.block_max_size,
+        )?;
+
+        let ds = Arc::new(Mutex::new(ds));
+        {
+            let mut guard = self.datasets.write().unwrap();
+            guard.insert(key.clone(), ds);
+        }
+
+        let id = self.next_handle_id;
+        self.next_handle_id += 1;
+        self.handles.insert(id, key);
+        Ok(DataSetHandle(id))
+    }
+
+    /// Open an existing dataset (errors if not found).
     pub fn open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetHandle> {
         let key = DataSetKey {
             name: name.to_string(),
@@ -103,10 +156,9 @@ impl Store {
             }
         }
 
-        // Create new dataset
+        // Open existing dataset
         let dir = self.data_dir.join(name).join(dataset_type);
-        std::fs::create_dir_all(&dir)?;
-        let ds = DataSet::new(key.clone(), dir, &self.config)?;
+        let ds = DataSet::open(key.clone(), dir, self.config.block_max_size)?;
 
         let ds = Arc::new(Mutex::new(ds));
         {
@@ -129,6 +181,54 @@ impl Store {
                 ds.close()?;
             }
         }
+        Ok(())
+    }
+
+    /// Drop (delete) an entire dataset by handle.
+    pub fn drop_dataset(&mut self, handle: DataSetHandle) -> Result<()> {
+        let key = self
+            .handles
+            .remove(&handle.0)
+            .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?;
+
+        let base_dir = {
+            let mut guard = self.datasets.write().unwrap();
+            let ds_arc = guard
+                .remove(&key)
+                .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?;
+            let mut ds = ds_arc.lock().unwrap();
+            ds.close()?;
+            ds.base_dir.clone()
+        };
+
+        DataSet::drop_dataset(&base_dir)?;
+        log::info!("[store] dropped dataset: {}/{}", key.name, key.dataset_type);
+        Ok(())
+    }
+
+    /// Drop (delete) an entire dataset by name and type.
+    pub fn drop_dataset_by_name(&mut self, name: &str, dataset_type: &str) -> Result<()> {
+        let key = DataSetKey {
+            name: name.to_string(),
+            dataset_type: dataset_type.to_string(),
+        };
+
+        // Remove from handles
+        self.handles.retain(|_id, k| *k != key);
+
+        let base_dir = self.data_dir.join(name).join(dataset_type);
+
+        // Remove from open datasets if present
+        {
+            let mut guard = self.datasets.write().unwrap();
+            if let Some(ds_arc) = guard.remove(&key) {
+                let mut ds = ds_arc.lock().unwrap();
+                let _ = ds.close(); // best-effort close
+            }
+        }
+
+        DataSet::drop_dataset(&base_dir)?;
+        log::info!("[store] dropped dataset: {}/{}", name, dataset_type);
         Ok(())
     }
 

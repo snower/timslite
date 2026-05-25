@@ -33,6 +33,25 @@ pub struct DataSegmentSet {
 }
 
 impl DataSegmentSet {
+    /// Create a new (empty) DataSegmentSet for a freshly created dataset.
+    pub fn new(
+        base_dir: &Path,
+        segment_size: u64,
+        block_max_size: u32,
+        compress_level: u8,
+    ) -> Result<Self> {
+        Ok(Self {
+            base_dir: base_dir.to_path_buf().join("data"),
+            segment_size,
+            block_max_size,
+            compress_level,
+            segments: Vec::new(),
+            closed_segments: Vec::new(),
+            next_offset: 0,
+            last_used_at: Instant::now(),
+        })
+    }
+
     /// Sync all open data segments.
     pub fn sync_all(&mut self) -> Result<()> {
         for seg in &mut self.segments {

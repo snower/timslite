@@ -134,7 +134,47 @@ pub extern "C" fn tmsl_store_close(
 
 // ─── Dataset Management ────────────────────────────────────────────────────
 
-/// Open a dataset. Returns opaque pointer or NULL on error.
+/// Create a new dataset (explicit, errors if already exists).
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_create(
+    store: *mut c_void,
+    name: *const c_char,
+    dataset_type: *const c_char,
+    data_segment_size: u64,
+    index_segment_size: u64,
+    compress_level: c_uchar,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> *mut c_void {
+    ffi_catch_ptr!(err_buf, err_buf_len, {
+        if store.is_null() || name.is_null() || dataset_type.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
+        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let name_str = unsafe { CStr::from_ptr(name) }
+            .to_str()
+            .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
+        let type_str = unsafe { CStr::from_ptr(dataset_type) }
+            .to_str()
+            .map_err(|e| TmslError::InvalidData(format!("invalid type: {}", e)))?;
+
+        let handle = store_inner.create_dataset(
+            name_str,
+            type_str,
+            data_segment_size,
+            index_segment_size,
+            compress_level,
+        )?;
+        let boxed = Box::new(FfiDataset {
+            store_ptr: ffi_store.0,
+            handle,
+        });
+        Ok(Box::into_raw(boxed) as *mut c_void)
+    })
+}
+
+/// Open a dataset (reads config from meta file).
 #[no_mangle]
 pub extern "C" fn tmsl_dataset_open(
     store: *mut c_void,
@@ -184,6 +224,33 @@ pub extern "C" fn tmsl_dataset_close(
                 e.to_string(),
             ))
         })?;
+        Ok(0)
+    })
+}
+
+/// Drop (delete) an entire dataset. Destroys all data.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_drop(
+    store: *mut c_void,
+    name: *const c_char,
+    dataset_type: *const c_char,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if store.is_null() || name.is_null() || dataset_type.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
+        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let name_str = unsafe { CStr::from_ptr(name) }
+            .to_str()
+            .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
+        let type_str = unsafe { CStr::from_ptr(dataset_type) }
+            .to_str()
+            .map_err(|e| TmslError::InvalidData(format!("invalid type: {}", e)))?;
+
+        store_inner.drop_dataset_by_name(name_str, type_str)?;
         Ok(0)
     })
 }

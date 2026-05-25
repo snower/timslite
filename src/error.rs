@@ -22,6 +22,8 @@ pub enum TmslError {
     InvalidData(String),
     /// Requested resource not found.
     NotFound(String),
+    /// Resource already exists (e.g., creating an existing dataset).
+    AlreadyExists(String),
 }
 
 impl fmt::Display for TmslError {
@@ -35,6 +37,7 @@ impl fmt::Display for TmslError {
             TmslError::DecompressionError(msg) => write!(f, "decompression error: {msg}"),
             TmslError::InvalidData(msg) => write!(f, "invalid data: {msg}"),
             TmslError::NotFound(msg) => write!(f, "not found: {msg}"),
+            TmslError::AlreadyExists(msg) => write!(f, "already exists: {msg}"),
         }
     }
 }
@@ -95,5 +98,13 @@ mod tests {
     fn test_not_found() {
         let err = TmslError::NotFound("/data/foo".to_string());
         assert!(err.to_string().contains("/data/foo"));
+    }
+
+    #[test]
+    fn test_already_exists() {
+        let err = TmslError::AlreadyExists("dataset sensor_001/events".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("already exists"));
+        assert!(msg.contains("sensor_001"));
     }
 }

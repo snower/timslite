@@ -6,6 +6,7 @@
 //! - Lazy segment lifecycle (on-demand open, idle-close after 30min)
 //! - Time-indexed queries with binary search
 //! - C ABI FFI interface
+//! - Explicit create/open/drop lifecycle for datasets
 //!
 //! # Quick Start
 //!
@@ -13,8 +14,17 @@
 //! use timslite::{Store, StoreConfig};
 //!
 //! let config = StoreConfig::default();
-//! let store = Store::open("/data/timslite", config).unwrap();
-//! let dataset = store.open_dataset("my_data", "events").unwrap();
+//! let mut store = Store::open("/data/timslite", config).unwrap();
+//!
+//! // Create a new dataset (specify segment sizes and compression)
+//! store.create_dataset("my_data", "events",
+//!     64 * 1024 * 1024,   // data_segment_size = 64MB
+//!     4 * 1024 * 1024,    // index_segment_size = 4MB
+//!     6,                  // compress_level
+//! ).unwrap();
+//!
+//! // Open an existing dataset (parameters read from meta file)
+//! store.open_dataset("my_data", "events").unwrap();
 //! // ... write and query
 //! ```
 

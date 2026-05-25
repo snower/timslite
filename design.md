@@ -157,17 +157,17 @@ impl DataSetMeta {
     /// 创建新的 meta (用于新数据集, 不可变, 写入后不再修改)
     pub fn new(data_segment_size: u64, index_segment_size: u64,
                compress_level: u8) -> Self;
-    
+
     /// 序列化: magic + version + meta_data_length + TLV values
     pub fn to_bytes(&self) -> Vec<u8>;
-    
+
     /// 反序列化: 校验 magic → 读 version → 读 meta_data_length → 解析 TLV
     /// 未知 type 自动跳过 (向前兼容)
     pub fn from_bytes(buf: &[u8]) -> Result<Self>;
-    
+
     /// 写入文件 (创建时调用一次, 之后不再调用)
     pub fn write_to_file(&self, path: &Path) -> io::Result<()>;
-    
+
     /// 从文件读取 (打开数据集时调用)
     pub fn read_from_file(path: &Path) -> Result<Self>;
 }
@@ -182,13 +182,13 @@ impl DataSetMeta {
 
 ### 打开时校验
 
-`DataSet::new()` 流程:
+`DataSet::open()` 流程:
 1. 检查 `{base_dir}/meta` 是否存在
-2. 存在 → `DataSetMeta::read_from_file()` → 校验不可变参数是否与当前 `StoreConfig` 一致
+2. 不存在 → **返回错误 `DatasetNotFound`**
+3. 存在 → `DataSetMeta::read_from_file()` → 校验不可变参数
    - `data_segment_size` 不一致 → **返回错误** (影响文件布局, 不可兼容)
    - `index_segment_size` 不一致 → **返回错误** (影响索引文件布局, 不可兼容)
-   - `compress_level` 不一致 → **警告日志** (只影响新 block, 可兼容)
-3. 不存在 → 创建新 `meta` 文件 (`write_to_file()`, 仅此一次)
+   - `compress_level` 不一致 → **仅读取使用** (meta 值为准, 不可修改)
 
 ---
 
@@ -1339,17 +1339,106 @@ impl IndexSegment {
 
 ## 八、DataSet: 数据集
 
+### 8.1 生命周期: create / open / close / drop
+
+> **核心原则**: 创建和打开分离。参数仅在创建时传入, 打开时从 meta 文件读取, 不可修改。
+
 ```rust
 struct DataSet {
     id: DataSetKey,
     base_dir: PathBuf,
-    config: DataSetConfig,
+    config: DataSetConfig,     // 从 meta 文件读取 (创建时写入, 之后不可变)
     segments: DataSegmentSet,
     time_index: TimeIndex,
     last_used_at: Instant,
 }
 
 impl DataSet {
+    /// 创建新数据集 (显式创建, 已存在返回错误)
+    fn create(
+        id: DataSetKey, base_dir: PathBuf,
+        data_segment_size: u64, index_segment_size: u64,
+        compress_level: u8, block_max_size: u32,
+    ) -> io::Result<Self> {
+        // 1. 检测 base_dir 是否已存在 (meta 文件判断)
+        if base_dir.join("meta").exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("dataset already exists at {:?}", base_dir),
+            ));
+        }
+        // 2. 创建 data/ 和 index/ 子目录
+        std::fs::create_dir_all(base_dir.join("data"))?;
+        std::fs::create_dir_all(base_dir.join("index"))?;
+        // 3. 写入 meta 文件 (仅一次, 之后不可修改)
+        let meta = DataSetMeta::new(data_segment_size, index_segment_size, compress_level);
+        meta.write_to_file(&base_dir.join("meta"))?;
+        // 4. 初始化内部结构 (segments 和 time_index 为空)
+        let segments = DataSegmentSet::new(
+            &base_dir.join("data"), data_segment_size, block_max_size, compress_level,
+        )?;
+        let time_index = TimeIndex::new(
+            &base_dir.join("index"), index_segment_size,
+        )?;
+        Ok(Self {
+            id, base_dir,
+            config: DataSetConfig { data_segment_size, index_segment_size, block_max_size, compress_level },
+            segments, time_index,
+            last_used_at: Instant::now(),
+        })
+    }
+
+    /// 打开已有数据集 (参数从 meta 文件读取, 不能设置)
+    fn open(
+        id: DataSetKey, base_dir: PathBuf, block_max_size: u32,
+    ) -> io::Result<Self> {
+        let meta_path = base_dir.join("meta");
+        // 1. meta 文件必须存在
+        if !meta_path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("dataset meta not found at {:?}", meta_path),
+            ));
+        }
+        // 2. 读取 meta 文件 (不可变配置)
+        let meta = DataSetMeta::read_from_file(&meta_path)?;
+        let config = DataSetConfig {
+            data_segment_size: meta.data_segment_size,
+            index_segment_size: meta.index_segment_size,
+            block_max_size,
+            compress_level: meta.compress_level,
+        };
+        // 3. 加载已有 segments (从 data/ 子目录)
+        let segments = DataSegmentSet::load_existing(
+            &base_dir.join("data"), config.data_segment_size,
+            config.block_max_size, config.compress_level,
+        )?;
+        // 4. 加载已有 time_index (从 index/ 子目录)
+        let time_index = TimeIndex::load_existing(
+            &base_dir.join("index"), config.index_segment_size,
+        )?;
+        Ok(Self {
+            id, base_dir, config, segments, time_index,
+            last_used_at: Instant::now(),
+        })
+    }
+
+    /// 关闭数据集 (flush + 关闭所有 segment)
+    fn close(&mut self) -> io::Result<()> {
+        self.segments.sync_all()?;
+        self.time_index.sync_all()?;
+        self.segments.idle_close_all()?;
+        self.time_index.idle_close_all()?;
+        self.last_used_at = Instant::now();
+        Ok(())
+    }
+
+    /// 删除整个数据集 (删除目录及所有文件)
+    fn drop_dataset(base_dir: &Path) -> io::Result<()> {
+        std::fs::remove_dir_all(base_dir)?;
+        Ok(())
+    }
+
     fn write(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()> {
         let (seg_offset, block_rel_offset, in_block_offset) =
             self.segments.append(timestamp, data)?;
@@ -1384,38 +1473,9 @@ impl DataSet {
         Ok(())
     }
 
-    fn idle_close_all(&mut self) -> io::Result<()> {
-        // 关闭所有 data segment + index segment
-        self.segments.idle_close_all()?;
-        self.time_index.idle_close_all()?;
-        self.last_used_at = Instant::now();
-        Ok(())
-    }
-
-    /// 从磁盘加载已有数据集
-    fn load(
-        id: DataSetKey, base_dir: PathBuf, config: &StoreConfig,
-    ) -> io::Result<Self> {
-        // 确保 data/ 子目录存在
-        let data_dir = base_dir.join("data");
-        std::fs::create_dir_all(&data_dir)?;
-        // 确保 index/ 子目录存在
-        let index_dir = base_dir.join("index");
-        std::fs::create_dir_all(&index_dir)?;
-
-        let segments = DataSegmentSet::load_existing(
-            &data_dir, config.data_segment_size,
-            config.block_max_size, config.compress_level,
-        )?;
-        let time_index = TimeIndex::load_existing(
-            &index_dir, config.index_segment_size,
-        )?;
-        Ok(Self {
-            id, base_dir,
-            config: DataSetConfig::from(config),
-            segments, time_index,
-            last_used_at: Instant::now(),
-        })
+    /// 获取数据集内部配置 (从 meta 读取, 不可变)
+    fn config(&self) -> &DataSetConfig {
+        &self.config
     }
 }
 ```
@@ -1501,6 +1561,13 @@ flush (配置化，默认10分钟):
 
 ## 十一、Store: 存储门面
 
+### 11.1 Store API
+
+> **核心原则**: `create_dataset` 与 `open_dataset` 分离。
+> - `create_dataset`: 显式创建新数据集, 需传入 `data_segment_size`, `index_segment_size`, `compress_level`; 已存在返回错误
+> - `open_dataset`: 仅打开已有数据集, 参数从 meta 文件读取
+> - `drop_dataset`: 删除数据集并清除所有关联文件
+
 ```rust
 /// FFI 数据集句柄 (不透明指针)
 pub struct DataSetHandle(pub u64);  // 内部为 Arc<Mutex<DataSet>> 的 ID
@@ -1508,7 +1575,7 @@ pub struct DataSetHandle(pub u64);  // 内部为 Arc<Mutex<DataSet>> 的 ID
 pub struct Store {
     data_dir: PathBuf,
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
-    config: StoreConfig,                     // 统一配置, 替代扁平字段
+    config: StoreConfig,                     // 统一配置, 包含 flush_interval, idle_timeout, block_max_size
     flush_handle: Option<JoinHandle<()>>,
     idle_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,   // 优雅关闭信号
@@ -1516,11 +1583,33 @@ pub struct Store {
 
 impl Store {
     pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self>;
+
+    /// 创建新数据集 (显式传入分区大小和压缩等级)
+    pub fn create_dataset(
+        &self, name: &str, dataset_type: &str,
+        data_segment_size: u64, index_segment_size: u64, compress_level: u8,
+    ) -> Result<DataSetHandle>;
+
+    /// 打开已有数据集 (参数从 meta 文件读取, 不可设置)
     pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
+
     pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>;
+
+    /// 删除数据集 (删除目录及所有文件)
+    pub fn drop_dataset(&self, handle: DataSetHandle) -> Result<()>;
+
     pub fn close(self) -> Result<()>;
 }
 ```
+
+### 11.2 Store 内部行为
+
+| 操作 | 文件操作 | 目录操作 |
+|------|---------|---------|
+| `Store::open` | 扫描 `{data_dir}/*/*` 加载已有数据集 | 不创建新目录, 仅读取 |
+| `Store::create_dataset` | 写入 `meta` 文件; 写入第一个空 data segment + index segment header | 创建 `{name}/{type}/data/` + `{name}/{type}/index/` |
+| `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments | 不创建新目录, 仅读取 |
+| `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树 | `remove_dir_all(base_dir)` |
 
 ---
 
@@ -1532,9 +1621,11 @@ impl Store {
 #[no_mangle] pub extern "C" fn tmsl_store_open_with_config(data_dir: *const c_char, config_ptr: *const StoreConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_store_close(store: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-// 数据集管理
+// 数据集管理 — create/open/close/drop 分离
+#[no_mangle] pub extern "C" fn tmsl_dataset_create(store: *mut c_void, name: *const c_char, dataset_type: *const c_char, data_segment_size: u64, index_segment_size: u64, compress_level: u8, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_dataset_open(store: *mut c_void, name: *const c_char, dataset_type: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_dataset_close(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_dataset_drop(store: *mut c_void, name: *const c_char, dataset_type: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_flush(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // 数据写入
@@ -1563,8 +1654,18 @@ char err_buf[512];
 // 1. 打开存储
 void* store = tmsl_store_open("/data/timslite", err_buf, sizeof(err_buf));
 
-// 2. 打开数据集 (任意 name, 任意 type)
-void* ds = tmsl_dataset_open(store, "patient_001", "waveform", err_buf, sizeof(err_buf));
+// 2. 创建数据集 (首次使用, 需指定分段大小和压缩等级)
+void* ds = tmsl_dataset_create(store, "patient_001", "waveform",
+    64ULL * 1024 * 1024,   // data_segment_size = 64MB
+    4ULL * 1024 * 1024,    // index_segment_size = 4MB
+    6,                     // compress_level
+    err_buf, sizeof(err_buf));
+
+//   如果数据集已存在, tmsl_dataset_create 返回 NULL (使用 tmsl_dataset_open 打开)
+
+// 2b. 打开已有数据集 (参数从 meta 读取, 不可设置)
+// void* ds = tmsl_dataset_open(store, "patient_001", "waveform",
+//     err_buf, sizeof(err_buf));
 
 // 3. 写入
 unsigned char d[] = {1,2,3,4};
@@ -1580,7 +1681,12 @@ while (tmsl_iter_next(iter, &ts, &buf, &len, err_buf, sizeof(err_buf)) == 0) {
 }
 tmsl_iter_close(iter);
 
+// 5. 关闭
 tmsl_dataset_close(ds, err_buf, sizeof(err_buf));
+
+// 6. 删除数据集 (可选, 删除整个目录及所有文件)
+// tmsl_dataset_drop(store, "patient_001", "waveform", err_buf, sizeof(err_buf));
+
 tmsl_store_close(store, err_buf, sizeof(err_buf));
 ```
 
@@ -1809,3 +1915,6 @@ src/
 | flush 间隔 | 可配置, 默认 10min | 平衡数据持久化与性能, mmap 本身已有 OS page cache 保护 |
 | segment 生命周期 | 懒打开/超时关闭 (30min) | 控制内存占用, 避免大量数据集同时持有 mmap |
 | idle-close pending | 密封 (不压缩) | 保证 reopen 后 block flag 一致, 延迟压缩至下次 overflow |
+| **数据集创建/打开分离** | `create` (显式, 带参数) / `open` (仅读 meta) | 防止误创建已有数据集, 参数不可变保证数据完整性 |
+| **参数不可变** | 创建后 `data_segment_size` / `index_segment_size` / `compress_level` 不可修改 | 影响文件布局, 修改会破坏已有数据 |
+| **数据集删除** | `drop_dataset` 删除整个目录树 | 完整清理不再需要的数据集 |

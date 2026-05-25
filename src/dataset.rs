@@ -1,10 +1,14 @@
 //! DataSet: aggregates DataSegmentSet + TimeIndex for a (name, type) pair.
+//!
+//! Lifecycle: `create` (explicit, with parameters) / `open` (reads from meta) / `close` / `drop_dataset`.
+//! Parameters (`data_segment_size`, `index_segment_size`, `compress_level`) are set **only at creation time**
+//! and written to the meta file. They are **immutable** — subsequent opens read from meta.
 
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::config::{DataSetConfig, StoreConfig};
-use crate::error::Result;
+use crate::config::DataSetConfig;
+use crate::error::{Result, TmslError};
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::segment::DataSegmentSet;
@@ -29,8 +33,26 @@ pub struct DataSet {
 }
 
 impl DataSet {
-    /// Create a new dataset.
-    pub fn new(id: DataSetKey, base_dir: PathBuf, config: &StoreConfig) -> Result<Self> {
+    /// Create a new dataset (explicit creation, errors if already exists).
+    ///
+    /// Parameters are written to the meta file and are **immutable** — cannot be changed
+    /// after creation.
+    pub fn create(
+        id: DataSetKey,
+        base_dir: PathBuf,
+        data_segment_size: u64,
+        index_segment_size: u64,
+        compress_level: u8,
+        block_max_size: u32,
+    ) -> Result<Self> {
+        let meta_path = base_dir.join("meta");
+        if meta_path.exists() {
+            return Err(TmslError::AlreadyExists(format!(
+                "dataset already exists at {:?}",
+                base_dir
+            )));
+        }
+
         // Ensure data/ subdirectory exists
         let data_dir = base_dir.join("data");
         std::fs::create_dir_all(&data_dir)?;
@@ -38,37 +60,51 @@ impl DataSet {
         let index_dir = base_dir.join("index");
         std::fs::create_dir_all(&index_dir)?;
 
-        // Load or create meta file (immutable config, created only once)
+        // Write meta file (immutable config, written only once)
+        let meta = DataSetMeta::new(data_segment_size, index_segment_size, compress_level);
+        meta.write_to_file(&meta_path)?;
+
+        let segments =
+            DataSegmentSet::new(&base_dir, data_segment_size, block_max_size, compress_level)?;
+        let time_index = TimeIndex::new(&index_dir, index_segment_size)?;
+
+        Ok(Self {
+            id,
+            base_dir,
+            config: DataSetConfig {
+                data_segment_size,
+                index_segment_size,
+                block_max_size,
+                compress_level,
+            },
+            segments,
+            time_index,
+            last_used_at: Instant::now(),
+        })
+    }
+
+    /// Open an existing dataset (reads config from meta file).
+    ///
+    /// Fails if the dataset does not exist (no meta file).
+    /// Segment sizes and compress_level are read from meta and cannot be overridden.
+    pub fn open(id: DataSetKey, base_dir: PathBuf, block_max_size: u32) -> Result<Self> {
         let meta_path = base_dir.join("meta");
-        if meta_path.exists() {
-            let meta = DataSetMeta::read_from_file(&meta_path)?;
-            // Validate immutable fields
-            if meta.data_segment_size != config.data_segment_size {
-                log::warn!(
-                    "[dataset] data_segment_size mismatch: meta={} config={} (new segments will use config value)",
-                    meta.data_segment_size, config.data_segment_size
-                );
-            }
-            if meta.index_segment_size != config.index_segment_size {
-                log::warn!(
-                    "[dataset] index_segment_size mismatch: meta={} config={} (new segments will use config value)",
-                    meta.index_segment_size, config.index_segment_size
-                );
-            }
-            if meta.compress_level != config.compress_level {
-                log::warn!(
-                    "[dataset] compress_level mismatch: meta={} config={} (new blocks will use config value)",
-                    meta.compress_level, config.compress_level
-                );
-            }
-        } else {
-            let meta = DataSetMeta::new(
-                config.data_segment_size,
-                config.index_segment_size,
-                config.compress_level,
-            );
-            meta.write_to_file(&meta_path)?;
+        if !meta_path.exists() {
+            return Err(TmslError::NotFound(format!(
+                "dataset meta not found at {:?}",
+                meta_path
+            )));
         }
+
+        // Read meta file (immutable config)
+        let meta = DataSetMeta::read_from_file(&meta_path)?;
+
+        let config = DataSetConfig {
+            data_segment_size: meta.data_segment_size,
+            index_segment_size: meta.index_segment_size,
+            block_max_size,
+            compress_level: meta.compress_level,
+        };
 
         let segments = DataSegmentSet::load_existing(
             &base_dir,
@@ -76,16 +112,23 @@ impl DataSet {
             config.block_max_size,
             config.compress_level,
         )?;
+        let index_dir = base_dir.join("index");
         let time_index = TimeIndex::load_existing(&index_dir, config.index_segment_size)?;
 
         Ok(Self {
             id,
             base_dir,
-            config: DataSetConfig::from_store(config),
+            config,
             segments,
             time_index,
             last_used_at: Instant::now(),
         })
+    }
+
+    /// Delete an entire dataset directory (destructive, not recoverable).
+    pub fn drop_dataset(base_dir: &std::path::Path) -> Result<()> {
+        std::fs::remove_dir_all(base_dir)?;
+        Ok(())
     }
 
     /// Write a record to this dataset.

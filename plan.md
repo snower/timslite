@@ -8,14 +8,14 @@
 ## 总体里程碑
 
 ```
-Phase 1: 项目骨架 + 基础工具     ✅ (含 meta.rs)
+Phase 1: 项目骨架 + 基础工具     ✅ (含 meta.rs, AlreadyExists 错误)
 Phase 2: 文件头 + Block 核心     ✅ (100B meta/state 分离)
 Phase 3: DataSegment 写入/读取   ✅ (u64::MAX pending, data/ 子目录)
 Phase 4: 时间索引系统            ✅ (index/ 子目录)
-Phase 5: DataSegmentSet + DataSet✅ (路径 + meta 文件)
-Phase 6: Store 门面 + 后台任务   ✅ (适配路径变更)
-Phase 7: FFI 接口                ✅
-Phase 8: 集成测试 + 性能调优     ✅ (57 单元 + 5 集成测试全部通过)
+Phase 5: DataSegmentSet + DataSet✅ (create/open/drop 分离, 替代 new)
+Phase 6: Store 门面 + 后台任务   ✅ (create_dataset/drop_dataset 分离)
+Phase 7: FFI 接口                ☐ (待添加 create/drop)
+Phase 8: 集成测试 + 性能调优     ☐ (待更新 create/open/drop 生命周期测试)
 ```
 
 **全部 8 个 Phase 完成! HEADER_SIZE = 100B, meta/state 分离, data/ + index/ 子目录, meta TLV 文件**
@@ -103,6 +103,7 @@ pub enum TmslError {
     DecompressionError(String),
     InvalidData(String),
     NotFound(String),
+    AlreadyExists(String),   // 数据集已存在 (create 时返回)
 }
 ```
 - `impl From<io::Error> for TmslError`
@@ -350,7 +351,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 ## Phase 5: DataSegmentSet + DataSet
 
-**目标**: 多文件管理、懒打开/超时关闭、数据集完整 CRUD 流程
+**目标**: 多文件管理、懒打开/超时关闭、数据集完整 CRUD 流程 (create/open/close/drop)
 
 ### ✅ 5.1 DataSegmentSet (segment/mod.rs)
 ### ✅ 5.2 DataSegmentSet 生命周期管理
@@ -358,48 +359,99 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 ### ✅ 5.4 DataSegmentSet 读取/查询
 ### ✅ 5.5 DataSegmentSet flush/load
 ### ✅ 5.6 DataSet 整合
-### ✅ 5.7 DataSet 写入
-### ✅ 5.8 DataSet 读取
-### ✅ 5.9 DataSet flush/close
-### ✅ 5.10 DataSet 加载
-- `fn load(id: DataSetKey, base_dir: PathBuf, config: &StoreConfig) -> Result<Self>`
-  - 确保 `{base_dir}/data/` 子目录存在
-  - 确保 `{base_dir}/index/` 子目录存在
-  - 读取/创建 `{base_dir}/meta` TLV 文件 (仅4个不可变字段, 创建一次永不更新)
-  - 校验 meta 中的 `data_segment_size`, `index_segment_size` 与 config 一致性
+
+### ☐ 5.7 DataSet::create — 显式创建 (替代 new)
+- `fn create(id, base_dir, data_segment_size, index_segment_size, compress_level, block_max_size) -> Result<Self>`
+  - 检测 base_dir 是否已有 meta 文件 → 存在则返回 `AlreadyExists` 错误
+  - 创建 `data/` 和 `index/` 子目录
+  - 写入 meta 文件 (仅一次, 之后不可修改)
+  - 初始化 DataSegmentSet (空, 首个 segment 未创建)
+  - 初始化 TimeIndex (空, 首个 segment 未创建)
+  - 记录 last_used_at
+- 参数验证: data_segment_size > 0, index_segment_size > 0, compress_level 1-9, block_max_size <= 64KB
+
+### ☐ 5.8 DataSet::open — 仅打开已有 (替代 new)
+- `fn open(id, base_dir, block_max_size) -> Result<Self>`
+  - 读取 meta 文件 → 不存在返回 `NotFound` 错误
+  - 从 meta 读取 data_segment_size, index_segment_size, compress_level (不可设置)
+  - 加载 DataSegmentSet (从 `data/` 子目录, 初始所有 segment closed)
+  - 加载 TimeIndex (从 `index/` 子目录)
+  - 恢复 last_used_at
+
+### ☐ 5.9 DataSet::close — 关闭数据集
+- `fn close(&mut self) -> Result<()>`
+  - flush 所有 segments + index
+  - idle_close_all segments + index
+  - 更新 last_used_at
+
+### ☐ 5.10 DataSet::drop_dataset — 删除数据集
+- `fn drop_dataset(base_dir: &Path) -> Result<()>`
+  - 删除整个 base_dir 目录 (含 data/ + index/ + meta)
+  - 使用 `std::fs::remove_dir_all`
+
+### ☐ 5.11 DataSet::write
+### ☐ 5.12 DataSet::query
+### ☐ 5.13 DataSet flush/close
+### ☐ 5.14 DataSet 加载 (open_dataset 调用)
+- `fn open(id: DataSetKey, base_dir: PathBuf, block_max_size: u32) -> Result<Self>`
+  - 读取 `{base_dir}/meta` TLV 文件 (必须存在, 否则返回错误)
+  - 从 meta 读取不可变参数, 构建 DataSetConfig
   - 加载 DataSegmentSet (从 `data/` 子目录, 初始所有 segment closed)
   - 加载 TimeIndex (从 `index/` 子目录)
   - 恢复 last_used_at
 
 ### ✅ Phase 5 验收标准
-- 集成测试: 创建 DataSet → 写入 5000 条(覆盖多个 segments/blocks) → query 全部
+- 集成测试: `DataSet::create` → 检查目录和 meta 文件创建 → 写入 5000 条 → query 全部
+- 集成测试: `DataSet::create` 对已存在数据集 → 返回 `AlreadyExists` 错误
+- 集成测试: `DataSet::open` 对不存在数据集 → 返回 `NotFound` 错误
+- 集成测试: `DataSet::open` 后写入更多数据 → close → reopen → 验证所有数据可读
 - 集成测试: 时间范围查询 (部分数据) → 验证数量和顺序
-- 集成测试: close → reopen → 写入更多 → 验证所有数据可读
 - 集成测试: 多数据集并行 (不同 name/type) → 数据完全隔离
-- 集成测试: meta 文件创建 → roundtrip → data_segment_size/index_segment_size 不一致时拒绝打开
+- 集成测试: meta 文件创建 → roundtrip → data_segment_size/index_segment_size 固定不可变
+- 集成测试: `DataSet::drop_dataset` 删除后, 目录和所有文件不可访问
 - 目录验证: 数据文件在 `data/` 下, 索引文件在 `index/` 下, meta 在 type/ 根下
-- 不可变验证: 创建 meta 后再次打开, meta 文件内容未变
+- 不可变验证: 创建 meta 后再次 open, meta 文件内容未变, 参数从 meta 读取
 
 ---
 
 ## Phase 6: Store 门面 + 后台任务
 
-**目标**: Store 生命周期管理、数据集管理、后台 flush/idle (mmap 生命周期管理)
+**目标**: Store 生命周期管理、数据集管理(create/open/drop)、后台 flush/idle (mmap 生命周期管理)
 
 ### ✅ 6.1 Store 结构
 ### ✅ 6.2 Store::open
-### ✅ 6.3 Store::open_dataset
-### ✅ 6.4 Store::close_dataset
-### ✅ 6.5 Store::close (self)
-### ✅ 6.6 bg/flush.rs - Flush 线程
-### ✅ 6.7 bg/idle.rs - Idle Check 线程
-### ✅ 6.8 bg/mod.rs - 后台管理
+### ☐ 6.3 Store::create_dataset — 显式创建
+- `fn create_dataset(&mut self, name, dataset_type, data_segment_size, index_segment_size, compress_level) -> Result<DataSetHandle>`
+  - 检测 `{data_dir}/{name}/{type}/meta` 是否存在 → 存在返回 `AlreadyExists`
+  - 调用 `DataSet::create(...)` 
+  - 注册到 datasets HashMap, 返回 handle
+
+### ☐ 6.4 Store::open_dataset — 仅打开已有
+- `fn open_dataset(&mut self, name, dataset_type) -> Result<DataSetHandle>`
+  - 检查是否已在内存中
+  - 调用 `DataSet::open(...)` 从 meta 读取参数
+  - 注册到 datasets HashMap, 返回 handle
+
+### ☐ 6.5 Store::close_dataset — 关闭
+### ☐ 6.6 Store::drop_dataset — 删除整个数据集
+- `fn drop_dataset(&mut self, handle) -> Result<()>`
+  - 先从 datasets HashMap 移除
+  - 调用 `DataSet::drop_dataset(...)` 删除目录树
+  - 清理 handle
+
+### ☐ 6.7 Store::close (self)
+### ✅ 6.8 bg/flush.rs - Flush 线程
+### ✅ 6.9 bg/idle.rs - Idle Check 线程
+### ✅ 6.10 bg/mod.rs - 后台管理
 - `pub struct BackgroundTasks { flush_handle, idle_handle, shutdown_tx }`
 - `fn start(datasets, flush_interval, idle_timeout) -> Self`
 - `fn stop(self)` - 发送信号, join, 返回
 
 ### ✅ Phase 6 验收标准
-- 集成测试: Store::open → open_dataset × 2 → write data → flush 10min 触发 sync → close → reopen → 数据仍在
+- 集成测试: `Store::create_dataset` → 创建成功, `create_dataset` 再次调用 → `AlreadyExists`
+- 集成测试: `Store::open_dataset` → 打开成功, `open_dataset` 对不存在数据集 → `NotFound`
+- 集成测试: `Store::create_dataset` × 2 → write data → flush 10min 触发 sync → close → reopen → 数据仍在
+- 集成测试: `Store::drop_dataset` → 删除后目录不可访问 → 重新 `create_dataset` 成功
 - 集成测试: Store flush 循环只执行 msync, pending block 保持 raw
 - 集成测试: Store idle check 在 30min 后关闭所有 segment, 释放 mmap
 - 集成测试: idle-close 后 → write/read 操作 → on-demand reopen → pending 已密封, 数据一致
@@ -414,17 +466,26 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 **目标**: C ABI 接口完整实现, errno-safe, panic-safe
 
 ### ✅ 7.1 ffi.rs - 核心工具
-### ✅ 7.2 FFI: Store 管理
-### ✅ 7.3 FFI: 数据集管理
+### ☐ 7.2 FFI: Store 管理
+### ☐ 7.3 FFI: 数据集管理 — create/open/close/drop
+- `tmsl_dataset_create` — 创建数据集, 传入 data_segment_size/index_segment_size/compress_level
+- `tmsl_dataset_open` — 打开已有数据集 (不传参数)
+- `tmsl_dataset_close` — 关闭数据集
+- `tmsl_dataset_drop` — 删除整个数据集目录
+- `tmsl_dataset_flush` — flush 数据集
 ### ✅ 7.4 FFI: 数据写入
 ### ✅ 7.5 FFI: 查询迭代器
 ### ✅ 7.6 头文件生成 (.h)
 - 创建 `include/timslite.h` C 头文件, 包含所有 FFI 声明
+- 新增 `tmsl_dataset_create`, `tmsl_dataset_drop` 声明
 
 ### ✅ Phase 7 验收标准
 - 编译: `cargo build --release` → 生成 `libtimslite.dll`/`.so`
 - C 程序链接测试: 编译 C 测试程序 → 链接 libtimslite → 运行
-- FFI 测试: open → write × 100 → query → verify → close (全部 FFI 调用)
+- FFI 测试: `create` → write × 100 → query → verify → `close` → `open` → query → verify (全部 FFI 调用)
+- FFI 测试: `create` 已存在 → 返回 -1, err_buf 有错误信息
+- FFI 测试: `open` 不存在 → 返回 -1, err_buf 有错误信息
+- FFI 测试: `drop` 后重新 `create` → write → query → verify
 - 边界测试: 空 data_dir, 长 name, nullptr 参数 → 返回 -1, err_buf 有错误信息
 - panic 测试: 触发 panic → FFI 返回 -1, 不崩溃
 
@@ -445,7 +506,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 ### ✅ Phase 8 验收标准
 - `cargo test` 覆盖率 ≥ 80%
-- 所有集成测试 pass
+- 所有集成测试 pass (含 create/open/drop 生命周期测试)
 - 无内存泄漏 (valgrind clean 或等效)
 - `cargo clippy -- -D warnings` clean
 - `cargo doc` 无 warning
@@ -508,6 +569,8 @@ Phase 8 (集成测试 + 性能 + idle-close 恢复测试 + 目录结构验证)
 | meta 文件与 config 不一致 | 数据损坏风险 | data_segment_size / index_segment_size 不一致时直接拒绝打开; compress_level 不一致仅警告 |
 | `.index` 迁移到 `index/` | 旧数据不可读 | 打开时检测 `.index/` 目录, 自动重命名为 `index/` (向后兼容迁移) |
 | 数据文件迁移到 `data/` | 旧数据不可读 | 打开时检测 base_dir 下的 segment 文件, 自动移动到 `data/` 子目录 (向后兼容迁移) |
+| `create` vs `open` 混淆 | 误创建已存在数据集 | `create` 检查 meta 文件已存在则返回明确错误, 文档明确区分两种操作 |
+| 误删数据集 (drop) | 数据丢失不可恢复 | `drop_dataset` 使用 `remove_dir_all` 删除整个目录, 不可恢复; FFI 层添加确认参数 |
 
 ---
 

@@ -26,6 +26,11 @@ fn t8_1_1_basic_lifecycle() {
         .build();
     let mut store = Store::open(&dir, config).unwrap();
 
+    // Create (not open) — explicit creation with parameters
+    store
+        .create_dataset("sensor_001", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .unwrap();
+
     let ds_handle = store.open_dataset("sensor_001", "events").unwrap();
 
     for i in 0..100i64 {
@@ -55,6 +60,13 @@ fn t8_1_2_multi_dataset_isolation() {
 
     let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset("dataset_a", "type_x", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .unwrap();
+    store
+        .create_dataset("dataset_b", "type_y", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .unwrap();
 
     let ds1 = store.open_dataset("dataset_a", "type_x").unwrap();
     let ds2 = store.open_dataset("dataset_b", "type_y").unwrap();
@@ -109,6 +121,10 @@ fn t8_1_3_block_aggregation() {
     let config = StoreConfig::builder().block_max_size(256).build();
     let mut store = Store::open(&dir, config).unwrap();
 
+    store
+        .create_dataset("test", "block_test", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .unwrap();
+
     let ds = store.open_dataset("test", "block_test").unwrap();
     for i in 0..200i64 {
         let data = vec![i as u8; 32];
@@ -136,6 +152,9 @@ fn t8_1_6_persistence() {
 
     {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+        store
+            .create_dataset("persist", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+            .unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
         for i in 0..50i64 {
             let data = format!("persisted_{}", i).into_bytes();
@@ -169,6 +188,10 @@ fn t8_1_7_flush_does_not_seal() {
         .build();
     let mut store = Store::open(&dir, config.clone()).unwrap();
 
+    store
+        .create_dataset("flush_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .unwrap();
+
     let ds = store.open_dataset("flush_test", "data").unwrap();
     let data = b"pending_data".to_vec();
     {
@@ -183,6 +206,107 @@ fn t8_1_7_flush_does_not_seal() {
     let entries = arc.lock().unwrap().query(999, 1001).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, data);
+
+    store.close().unwrap();
+}
+
+// ─── New lifecycle tests: create/open/drop ─────────────────────────────────
+
+#[test]
+fn t8_2_1_create_returns_error_if_exists() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset("dup_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .unwrap();
+
+    // Second create of same dataset should fail
+    let result = store.create_dataset("dup_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6);
+    assert!(result.is_err());
+    if let Err(err) = result {
+        assert!(err.to_string().contains("already exists"));
+    }
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t8_2_2_open_returns_error_if_not_exists() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    // Open non-existent dataset
+    let result = store.open_dataset("no_such", "data");
+    assert!(result.is_err());
+    if let Err(err) = result {
+        assert!(err.to_string().contains("not found"));
+    }
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t8_2_3_drop_deletes_dataset() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset("drop_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .unwrap();
+
+    let ds_handle = store.open_dataset("drop_test", "data").unwrap();
+
+    // Write some data
+    let arc = store.get_dataset(&ds_handle).unwrap();
+    arc.lock().unwrap().write(100, b"test").unwrap();
+    store.close_dataset(ds_handle).unwrap();
+
+    // Drop the dataset
+    store.drop_dataset_by_name("drop_test", "data").unwrap();
+
+    // Verify directory is gone
+    let dataset_dir = dir.join("drop_test").join("data");
+    assert!(!dataset_dir.exists());
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t8_2_4_create_after_drop() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset("recreate", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .unwrap();
+    let ds = store.open_dataset("recreate", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    arc.lock().unwrap().write(1, b"first").unwrap();
+    store.close().unwrap();
+
+    // Re-open store, drop, recreate
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store.drop_dataset_by_name("recreate", "data").unwrap();
+
+    // Now create should succeed (different params are fine since old data is gone)
+    store
+        .create_dataset("recreate", "data", 32 * 1024 * 1024, 2 * 1024 * 1024, 9)
+        .unwrap();
+    let ds = store.open_dataset("recreate", "data").unwrap();
+
+    // Data from first creation should be gone
+    let arc = store.get_dataset(&ds).unwrap();
+    let entries = arc.lock().unwrap().query(0, 10).unwrap();
+    assert_eq!(entries.len(), 0);
 
     store.close().unwrap();
 }
