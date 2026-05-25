@@ -1,0 +1,761 @@
+//! DataSegment: single data file with Block management, aggregation, and mmap lifecycle.
+//!
+//! This is the core storage module: records are aggregated into blocks (max 64KB),
+//! blocks are compressed when sealed, and files use mmap with lazy open/close.
+
+use memmap2::MmapMut;
+use std::fs::OpenOptions;
+use std::path::Path;
+use std::time::Instant;
+
+use crate::block::{
+    BlockHeader, BLOCK_FLAG_COMPRESSED, BLOCK_FLAG_SEALED, BLOCK_FLAG_SINGLE_RECORD,
+};
+use crate::compress::{deflate_compress, deflate_decompress};
+use crate::error::{Result, TmslError};
+use crate::header::{FileMetadata, FILE_FLAG_HAS_PENDING, HEADER_SIZE};
+use crate::util::{
+    read_i64_from_mmap, read_i64_le, read_u16_from_mmap, read_u16_le, read_u32_from_mmap,
+};
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+/// Lifecycle state of a data segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentLifecycle {
+    /// File is not memory-mapped.
+    Closed,
+    /// File is open, mmap is valid, read/write operations are allowed.
+    OpenReady,
+}
+
+/// A single data segment backed by a memory-mapped file.
+///
+/// Multiple records are aggregated into blocks. When a block reaches the size
+/// limit (or the segment is idle-closed), it is sealed and optionally compressed.
+pub struct DataSegment {
+    /// Path to the segment file.
+    pub path: std::path::PathBuf,
+    /// Starting byte offset of this segment in the logical address space.
+    pub file_offset: u64,
+    /// Total file size in bytes.
+    pub file_size: u64,
+    /// Current write position (relative to data_start = HEADER_SIZE).
+    pub wrote_position: u64,
+    /// Total number of records written to this segment.
+    pub record_count: u64,
+    /// Total uncompressed size of all records.
+    pub total_uncompressed_size: u64,
+    /// Creation time (unix ms).
+    pub created_at: i64,
+    /// Memory-mapped region. `None` = closed/unmapped.
+    pub mmap: Option<MmapMut>,
+    /// Whether the file header marks this segment as sealed.
+    pub sealed: bool,
+    /// Current lifecycle state.
+    pub lifecycle: SegmentLifecycle,
+    /// Most recent access time (used for idle-close detection).
+    pub last_accessed_at: Instant,
+
+    // ─── Pending block state ──────────────────────────────────────────────
+    /// Relative offset of the ongoing (unsealed) block within the data region.
+    pub pending_block_offset: Option<u64>,
+    /// Accumulated uncompressed size of the pending block payload.
+    pub pending_block_uncomp_size: u32,
+    /// Number of records currently in the pending block.
+    pub pending_block_record_count: u16,
+}
+
+// ─── Construction ────────────────────────────────────────────────────────────
+
+impl DataSegment {
+    /// Create a new segment file at `path`, memory-mapped and ready for writing.
+    pub fn create(path: &Path, file_offset: u64, file_size: u64) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)?;
+        file.set_len(file_size)?;
+        let mut mmap = unsafe { MmapMut::map_mut(&file)? };
+        let metadata = FileMetadata::create_default(1, file_offset as i64, file_size as i64);
+        metadata.write_to(&mut mmap);
+        metadata.sync(&mut mmap)?;
+
+        let now = Instant::now();
+        Ok(Self {
+            path: path.to_path_buf(),
+            file_offset,
+            file_size,
+            wrote_position: 0,
+            record_count: 0,
+            total_uncompressed_size: 0,
+            created_at: metadata.created_at,
+            mmap: Some(mmap),
+            sealed: false,
+            lifecycle: SegmentLifecycle::OpenReady,
+            last_accessed_at: now,
+            pending_block_offset: None,
+            pending_block_uncomp_size: 0,
+            pending_block_record_count: 0,
+        })
+    }
+
+    /// Open an existing segment file, memory-map it, and recover state.
+    ///
+    /// If the file has a pending block (FILE_FLAG_HAS_PENDING), it is sealed
+    /// (without compression) during recovery to ensure consistency.
+    pub fn open(path: &Path, file_offset: u64, file_size: u64) -> Result<Self> {
+        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        let metadata = FileMetadata::read_from(&mmap)?;
+
+        if metadata.magic != *b"TMSL" {
+            return Err(TmslError::InvalidMagic);
+        }
+        if metadata.version > 1 {
+            log::warn!(
+                "Opening file with version {}, expected 1. Parsing known fields.",
+                metadata.version
+            );
+        }
+
+        let now = Instant::now();
+        let mut seg = Self {
+            path: path.to_path_buf(),
+            file_offset,
+            file_size,
+            wrote_position: (metadata.wrote_position as u64).saturating_sub(HEADER_SIZE),
+            record_count: metadata.record_count as u64,
+            total_uncompressed_size: metadata.total_uncompressed_size,
+            created_at: metadata.created_at,
+            mmap: Some(mmap),
+            sealed: metadata.file_flags & crate::header::FILE_FLAG_SEALED != 0,
+            lifecycle: SegmentLifecycle::OpenReady,
+            last_accessed_at: now,
+            pending_block_offset: None,
+            pending_block_uncomp_size: 0,
+            pending_block_record_count: 0,
+        };
+
+        // Pending recovery
+        if metadata.file_flags & FILE_FLAG_HAS_PENDING != 0 {
+            seg.pending_block_offset = Some(metadata.pending_block_offset as u64);
+            seg.pending_block_uncomp_size = metadata.pending_uncomp_size;
+            seg.pending_block_record_count = metadata.pending_record_count;
+            seg.recover_pending_seal()?;
+        }
+
+        Ok(seg)
+    }
+
+    /// Seal a recovered pending block (no compression).
+    fn recover_pending_seal(&mut self) -> Result<()> {
+        let block_rel_offset = self.pending_block_offset.unwrap();
+        let hdr_pos = (HEADER_SIZE + block_rel_offset) as usize;
+        let mmap = self.mmap.as_mut().unwrap();
+
+        // Read current payload_size from the block header
+        let payload_size = read_u32_from_mmap(mmap, hdr_pos);
+        let record_count = self.pending_block_record_count;
+        let uncomp_size = self.pending_block_uncomp_size;
+
+        // Write header with SEALED flag (no COMPRESSED)
+        let header = BlockHeader::new(payload_size, BLOCK_FLAG_SEALED, record_count, uncomp_size);
+        header.write_to(mmap, hdr_pos);
+
+        // Update file header
+        if let Some(ref mut m) = self.mmap {
+            let mut meta = FileMetadata::read_from(m)?;
+            meta.clear_pending(m);
+        }
+
+        self.pending_block_offset = None;
+        self.pending_block_uncomp_size = 0;
+        self.pending_block_record_count = 0;
+        Ok(())
+    }
+}
+
+// ─── Lifecycle ───────────────────────────────────────────────────────────────
+
+impl DataSegment {
+    /// Ensure the segment is memory-mapped. If closed, re-open it.
+    ///
+    /// This is used for lazy-open after idle-close. Any pending block from a
+    /// previous idle-close is sealed during recovery.
+    pub fn ensure_open(&mut self, _compress_level: u8) -> Result<()> {
+        if self.mmap.is_some() {
+            return Ok(());
+        }
+
+        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        let mmap = unsafe { MmapMut::map_mut(&file)? };
+        let metadata = FileMetadata::read_from(&mmap)?;
+
+        self.wrote_position = (metadata.wrote_position as u64).saturating_sub(HEADER_SIZE);
+        self.record_count = metadata.record_count as u64;
+        self.total_uncompressed_size = metadata.total_uncompressed_size;
+
+        // Pending recovery (same as open)
+        if metadata.file_flags & FILE_FLAG_HAS_PENDING != 0 {
+            self.pending_block_offset = Some(metadata.pending_block_offset as u64);
+            self.pending_block_uncomp_size = metadata.pending_uncomp_size;
+            self.pending_block_record_count = metadata.pending_record_count;
+        }
+
+        self.mmap = Some(mmap);
+        self.lifecycle = SegmentLifecycle::OpenReady;
+        self.last_accessed_at = Instant::now();
+
+        // If we recovered a pending block, seal it immediately
+        if self.pending_block_offset.is_some() {
+            self.recover_pending_seal()?;
+        }
+
+        Ok(())
+    }
+
+    /// Idle-close: sync to disk, seal any pending block (NO compression), unmap.
+    pub fn idle_close(&mut self, _compress_level: u8) -> Result<()> {
+        if let Some(ref mut m) = self.mmap {
+            m.flush()?;
+        }
+
+        // Seal pending block without compression
+        if self.pending_block_offset.is_some() {
+            let block_rel_offset = self.pending_block_offset.unwrap();
+            let hdr_pos = (HEADER_SIZE + block_rel_offset) as usize;
+            let mmap = self.mmap.as_mut().unwrap();
+
+            let payload_size = read_u32_from_mmap(mmap, hdr_pos);
+            let record_count = self.pending_block_record_count;
+            let uncomp_size = self.pending_block_uncomp_size;
+
+            let header =
+                BlockHeader::new(payload_size, BLOCK_FLAG_SEALED, record_count, uncomp_size);
+            header.write_to(mmap, hdr_pos);
+
+            // Clear pending in file header
+            let mut meta = FileMetadata::read_from(mmap)?;
+            meta.clear_pending(mmap);
+            self.pending_block_offset = None;
+            self.pending_block_uncomp_size = 0;
+            self.pending_block_record_count = 0;
+        }
+
+        self.mmap = None;
+        self.lifecycle = SegmentLifecycle::Closed;
+        Ok(())
+    }
+
+    /// Sync only (flush loop). Does NOT seal or compress pending blocks.
+    pub fn sync(&mut self) -> Result<()> {
+        if let Some(ref mut m) = self.mmap {
+            m.flush()?;
+        }
+        self.last_accessed_at = Instant::now();
+        Ok(())
+    }
+}
+
+// ─── Write Operations ────────────────────────────────────────────────────────
+
+/// The size overhead of a single record in a block:
+/// `data_len` (2 bytes) + `timestamp` (8 bytes) = 10 bytes.
+const RECORD_OVERHEAD: u64 = 10;
+
+impl DataSegment {
+    /// Append a record to this segment.
+    ///
+    /// Returns `(block_relative_offset, in_block_offset)` where:
+    /// - `block_relative_offset` is the block's offset relative to HEADER_SIZE
+    /// - `in_block_offset` is the record's position within the block payload
+    pub fn append_record(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        block_max_size: u32,
+        compress_level: u8,
+    ) -> Result<(u64, u16)> {
+        let record_size = RECORD_OVERHEAD as usize + data.len();
+
+        // Case 1: Single record exceeds block_max_size → exclusive block
+        if record_size > block_max_size as usize {
+            // Seal any existing pending first
+            if self.pending_block_offset.is_some() {
+                self.seal_pending_block(compress_level)?;
+                self.clear_pending();
+            }
+            return self.create_single_record_block(timestamp, data, compress_level);
+        }
+
+        // Case 2: There is a pending block
+        if let Some(_pending_off) = self.pending_block_offset {
+            let new_total = self.pending_block_uncomp_size + record_size as u32;
+
+            if new_total > block_max_size {
+                // Pending block is full → seal + compress
+                self.seal_pending_block(compress_level)?;
+                self.clear_pending();
+                return self.create_pending_and_append(timestamp, data);
+            }
+
+            // Append to pending (raw, no compression)
+            let in_block_offset = self.pending_block_uncomp_size as u16;
+            self.write_raw_record_to_pending(timestamp, data)?;
+            self.pending_block_uncomp_size = new_total;
+            self.pending_block_record_count += 1;
+            self.last_accessed_at = Instant::now();
+            return Ok((self.pending_block_offset.unwrap(), in_block_offset));
+        }
+
+        // Case 3: No pending block → create new one
+        self.create_pending_and_append(timestamp, data)
+    }
+
+    /// Write a raw record into the current pending block.
+    fn write_raw_record_to_pending(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+        let base = (HEADER_SIZE
+            + self.pending_block_offset.unwrap()
+            + crate::block::BLOCK_HEADER_SIZE
+            + self.pending_block_uncomp_size as u64) as usize;
+
+        let mmap = self.mmap.as_mut().unwrap();
+        let data_len = data.len() as u16;
+
+        // [data_len: u16][timestamp: i64][data]
+        mmap[base..base + 2].copy_from_slice(&data_len.to_le_bytes());
+        mmap[base + 2..base + 10].copy_from_slice(&timestamp.to_le_bytes());
+        mmap[base + 10..base + 10 + data.len()].copy_from_slice(data);
+
+        // Update block header: payload_size + record_count
+        let hdr = (HEADER_SIZE + self.pending_block_offset.unwrap()) as usize;
+        let new_size =
+            self.pending_block_uncomp_size as u32 + RECORD_OVERHEAD as u32 + data.len() as u32;
+        mmap[hdr..hdr + 4].copy_from_slice(&new_size.to_le_bytes());
+        mmap[hdr + 6..hdr + 8].copy_from_slice(&self.pending_block_record_count.to_le_bytes());
+
+        self.wrote_position += RECORD_OVERHEAD + data.len() as u64;
+
+        // Update file header wrote_position
+        let meta_pos = HEADER_SIZE as usize + self.pending_block_offset.unwrap() as usize;
+        let _ = meta_pos; // we update wrote_position via the file header
+                          // wrote_position in file header:
+        self.update_file_wrote_position()?;
+
+        Ok(())
+    }
+
+    /// Create a new pending block and write the first record.
+    fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u16)> {
+        let block_pos = HEADER_SIZE + self.wrote_position;
+        let rec_size = RECORD_OVERHEAD + data.len() as u64;
+
+        // Write BlockHeader (flags=0, not sealed)
+        let hdr = BlockHeader::new(rec_size as u32, 0, 1, rec_size as u32);
+        let hdr_start = block_pos as usize;
+        let mmap = self
+            .mmap
+            .as_mut()
+            .ok_or_else(|| TmslError::MmapError("segment closed during write".into()))?;
+        hdr.write_to(mmap, hdr_start);
+
+        // Write record payload
+        let data_pos = hdr_start + crate::block::BLOCK_HEADER_SIZE as usize;
+        let data_len = data.len() as u16;
+        mmap[data_pos..data_pos + 2].copy_from_slice(&data_len.to_le_bytes());
+        mmap[data_pos + 2..data_pos + 10].copy_from_slice(&timestamp.to_le_bytes());
+        mmap[data_pos + 10..data_pos + 10 + data.len()].copy_from_slice(data);
+
+        self.pending_block_offset = Some(block_pos - HEADER_SIZE);
+        self.pending_block_uncomp_size = rec_size as u32;
+        self.pending_block_record_count = 1;
+        self.wrote_position += crate::block::BLOCK_HEADER_SIZE + rec_size;
+        self.record_count += 1;
+        self.total_uncompressed_size += rec_size;
+        self.last_accessed_at = Instant::now();
+
+        // Set FILE_FLAG_HAS_PENDING and write pending info to file header
+        self.update_file_header_for_pending(block_pos - HEADER_SIZE)?;
+
+        Ok((block_pos - HEADER_SIZE, 0))
+    }
+
+    /// Seal the pending block: compress and write back.
+    fn seal_pending_block(&mut self, compress_level: u8) -> Result<()> {
+        let block_rel_offset = self.pending_block_offset.unwrap();
+        let hdr_pos = (HEADER_SIZE + block_rel_offset) as usize;
+        let payload_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
+        let payload_len = self.pending_block_uncomp_size as usize;
+
+        let mmap = self.mmap.as_mut().unwrap();
+
+        // Read raw payload
+        let raw = mmap[payload_start..payload_start + payload_len].to_vec();
+
+        // Compress
+        let compressed = deflate_compress(&raw, compress_level)?;
+
+        if compressed.len() < payload_len {
+            // Compression effective: write header + compressed data
+            let header = BlockHeader::new(
+                compressed.len() as u32,
+                BLOCK_FLAG_SEALED | BLOCK_FLAG_COMPRESSED,
+                self.pending_block_record_count,
+                self.pending_block_uncomp_size,
+            );
+            header.write_to(mmap, hdr_pos);
+            mmap[payload_start..payload_start + compressed.len()].copy_from_slice(&compressed);
+        } else {
+            // Compression not effective: keep raw, set SEALED only
+            let header = BlockHeader::new(
+                payload_len as u32,
+                BLOCK_FLAG_SEALED,
+                self.pending_block_record_count,
+                self.pending_block_uncomp_size,
+            );
+            header.write_to(mmap, hdr_pos);
+        }
+
+        // Clear pending in file header
+        FileMetadata::clear_pending_from_mmap(mmap)?;
+
+        Ok(())
+    }
+
+    /// Create an exclusive block for a single record > 64KB.
+    fn create_single_record_block(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        compress_level: u8,
+    ) -> Result<(u64, u16)> {
+        let rec_size = RECORD_OVERHEAD as usize + data.len();
+        let block_pos = HEADER_SIZE + self.wrote_position;
+
+        // Build record payload: [data_len:2][ts:8][data]
+        let mut raw = Vec::with_capacity(rec_size);
+        raw.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        raw.extend_from_slice(&timestamp.to_le_bytes());
+        raw.extend_from_slice(data);
+
+        let compressed = deflate_compress(&raw, compress_level)?;
+        let (payload, flags) = if compressed.len() < rec_size {
+            (
+                compressed,
+                BLOCK_FLAG_SEALED | BLOCK_FLAG_COMPRESSED | BLOCK_FLAG_SINGLE_RECORD,
+            )
+        } else {
+            (raw, BLOCK_FLAG_SEALED | BLOCK_FLAG_SINGLE_RECORD)
+        };
+
+        let hdr_pos = block_pos as usize;
+        let mmap = self.mmap.as_mut().unwrap();
+        let header = BlockHeader::new(payload.len() as u32, flags, 1, rec_size as u32);
+        header.write_to(mmap, hdr_pos);
+
+        let data_pos = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
+        mmap[data_pos..data_pos + payload.len()].copy_from_slice(&payload);
+
+        self.wrote_position += crate::block::BLOCK_HEADER_SIZE + payload.len() as u64;
+        self.record_count += 1;
+        self.total_uncompressed_size += rec_size as u64;
+        self.last_accessed_at = Instant::now();
+
+        self.update_file_wrote_position()?;
+
+        Ok((block_pos - HEADER_SIZE, 0))
+    }
+
+    /// Clear the pending block state.
+    fn clear_pending(&mut self) {
+        self.pending_block_offset = None;
+        self.pending_block_uncomp_size = 0;
+        self.pending_block_record_count = 0;
+    }
+
+    // ─── File header helpers ──────────────────────────────────────────────
+
+    fn update_file_wrote_position(&mut self) -> Result<()> {
+        let mmap = self.mmap.as_mut().unwrap();
+        let abs_pos = (HEADER_SIZE + self.wrote_position) as i64;
+        // wrote_position lives at offset 42 in the file header
+        mmap[42..50].copy_from_slice(&abs_pos.to_le_bytes());
+        Ok(())
+    }
+
+    fn update_file_header_for_pending(&mut self, block_rel_offset: u64) -> Result<()> {
+        let mmap = self.mmap.as_mut().unwrap();
+        // Set FILE_FLAG_HAS_PENDING
+        let flags = read_u16_from_mmap(mmap, 6);
+        let new_flags = flags | FILE_FLAG_HAS_PENDING;
+        mmap[6..8].copy_from_slice(&new_flags.to_le_bytes());
+
+        // Write pending fields
+        mmap[64..72].copy_from_slice(&(block_rel_offset as i64).to_le_bytes());
+        mmap[72..76].copy_from_slice(&self.pending_block_uncomp_size.to_le_bytes());
+        mmap[76..78].copy_from_slice(&self.pending_block_record_count.to_le_bytes());
+
+        // Also update wrote_position
+        self.update_file_wrote_position()
+    }
+}
+
+// ─── Read Operations ─────────────────────────────────────────────────────────
+
+/// Index entry used to locate a record.
+/// Mirrors the 18-byte IndexEntry from the index module.
+#[derive(Clone, Copy)]
+pub struct ReadIndexEntry {
+    pub timestamp: i64,
+    pub block_offset: u64,    // relative to HEADER_SIZE
+    pub in_block_offset: u16, // relative to block payload start
+}
+
+impl DataSegment {
+    /// Read a record at the given index entry.
+    ///
+    /// Returns `(timestamp, data)`.
+    pub fn read_at_index(&self, entry: &ReadIndexEntry) -> Result<(i64, Vec<u8>)> {
+        let mmap = self
+            .mmap
+            .as_ref()
+            .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
+
+        let hdr_pos = (HEADER_SIZE + entry.block_offset) as usize;
+
+        // Read block header
+        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
+        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
+        let is_compressed = flags & BLOCK_FLAG_COMPRESSED != 0;
+
+        // Read payload
+        let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
+        let payload = &mmap[pay_start..pay_start + payload_size];
+
+        // Decompress if needed
+        let block_data: Vec<u8>;
+        let actual: &[u8] = if is_compressed {
+            block_data = deflate_decompress(payload)?;
+            &block_data[..]
+        } else {
+            payload
+        };
+
+        // Locate record: entry.in_block_offset points to [data_len:2]
+        let pos = entry.in_block_offset as usize;
+        if pos + 10 > actual.len() {
+            return Err(TmslError::InvalidData("record index out of bounds".into()));
+        }
+
+        let data_len = read_u16_le(
+            actual[pos..pos + 2]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+        ) as usize;
+        let timestamp = read_i64_le(
+            actual[pos + 2..pos + 10]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
+        );
+
+        if pos + 10 + data_len > actual.len() {
+            return Err(TmslError::InvalidData("record data out of bounds".into()));
+        }
+
+        let data = actual[pos + 10..pos + 10 + data_len].to_vec();
+        Ok((timestamp, data))
+    }
+}
+
+// ─── FileMetadata extension for mmap-only operations ─────────────────────────
+
+impl FileMetadata {
+    /// Clear pending state directly in an mmap slice (without a FileMetadata struct).
+    pub fn clear_pending_from_mmap(mmap: &mut [u8]) -> Result<()> {
+        // pending_block_offset = -1
+        mmap[64..72].copy_from_slice(&(-1i64).to_le_bytes());
+        // pending_uncomp_size = 0
+        mmap[72..76].copy_from_slice(&0u32.to_le_bytes());
+        // pending_record_count = 0
+        mmap[76..78].copy_from_slice(&0u16.to_le_bytes());
+        // Clear FILE_FLAG_HAS_PENDING
+        let flags = read_u16_from_mmap(mmap, 6);
+        let new_flags = flags & !crate::header::FILE_FLAG_HAS_PENDING;
+        mmap[6..8].copy_from_slice(&new_flags.to_le_bytes());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join("timslite_test_seg");
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn make_segment(name: &str) -> (DataSegment, std::path::PathBuf) {
+        let dir = temp_dir();
+        let path = dir.join(name);
+        let _ = fs::remove_file(&path);
+        let seg = DataSegment::create(&path, 0, 1024 * 1024).unwrap();
+        (seg, path)
+    }
+
+    #[test]
+    fn test_create_and_append_single_record() {
+        let (mut seg, _path) = make_segment("test_single_rec");
+        let (block_off, in_block_off) = seg.append_record(1700000000, b"hello", 65536, 6).unwrap();
+        assert_eq!(block_off, 0);
+        assert_eq!(in_block_off, 0);
+        assert_eq!(seg.pending_block_record_count, 1);
+    }
+
+    #[test]
+    fn test_append_multiple_records_same_block() {
+        let (mut seg, _path) = make_segment("test_multi_rec");
+        seg.append_record(1000, b"aaa", 65536, 6).unwrap();
+        let (off1, ib1) = seg.append_record(2000, b"bbb", 65536, 6).unwrap();
+        assert_eq!(off1, 0); // same block
+        assert!(ib1 > 0); // different position within block
+        assert_eq!(seg.pending_block_record_count, 2);
+    }
+
+    #[test]
+    fn test_block_overflow_triggers_seal() {
+        let (mut seg, _path) = make_segment("test_overflow");
+        // With block_max_size=40, first record (10+20=30) fits,
+        // second record (10+12=22) would overflow 30+22=52>40
+        let max = 40u32;
+        let data1 = vec![0xAAu8; 20]; // record_size = 10+20 = 30
+        let data2 = vec![0xBBu8; 12]; // record_size = 10+12 = 22, total would be 52>40
+        let (off0, _) = seg.append_record(1000, &data1, max, 6).unwrap();
+        let (off1, ib1) = seg.append_record(2000, &data2, max, 6).unwrap();
+        // Second record should be in a NEW block
+        assert!(off1 > off0);
+        assert_eq!(ib1, 0);
+    }
+
+    #[test]
+    fn test_large_record_exclusive_block() {
+        let (mut seg, _path) = make_segment("test_large");
+        // Use 60KB data - within u16::MAX but the record overhead (10 bytes)
+        // still makes it exceed the default 64KB block_max_size
+        let data = vec![0xABu8; 60_000];
+        // block_max_size = 65536, record_size = 10 + 60000 = 60010 < 65536
+        // This won't trigger single-record path! Let's use smaller max:
+        let (off, ib) = seg.append_record(5000, &data, 50_000, 6).unwrap();
+        assert_eq!(ib, 0);
+        // Single record, in its own block (compressed because all 0xAB)
+        let entry = ReadIndexEntry {
+            timestamp: 5000,
+            block_offset: off,
+            in_block_offset: ib,
+        };
+        let (ts, recovered) = seg.read_at_index(&entry).unwrap();
+        assert_eq!(ts, 5000);
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn test_read_write_roundtrip() {
+        let (mut seg, _path) = make_segment("test_roundtrip");
+        let test_data: Vec<u8> = (0..200).map(|i| (i * 7 + 13) as u8).collect();
+
+        let (block_off, in_block_off) = seg.append_record(9999, &test_data, 65536, 6).unwrap();
+
+        // Seal the block to make it readable
+        seg.seal_pending_block(6).unwrap();
+        seg.clear_pending();
+
+        let entry = ReadIndexEntry {
+            timestamp: 9999,
+            block_offset: block_off,
+            in_block_offset: in_block_off,
+        };
+        let (ts, data) = seg.read_at_index(&entry).unwrap();
+        assert_eq!(ts, 9999);
+        assert_eq!(data, test_data);
+    }
+
+    #[test]
+    fn test_idle_close_reopen_recovery() {
+        let (mut seg, path) = make_segment("test_idle");
+        seg.append_record(7777, b"idle_test", 65536, 6).unwrap();
+        assert!(seg.pending_block_offset.is_some());
+
+        // Idle-close: should seal pending (without compression)
+        seg.idle_close(6).unwrap();
+        assert!(seg.mmap.is_none());
+        assert_eq!(seg.lifecycle, SegmentLifecycle::Closed);
+
+        // Reopen
+        let seg2 = DataSegment::open(&path, 0, 1024 * 1024).unwrap();
+        assert!(seg2.mmap.is_some());
+        assert_eq!(seg2.lifecycle, SegmentLifecycle::OpenReady);
+        // Pending should be cleared by recovery
+        assert!(seg2.pending_block_offset.is_none());
+    }
+
+    #[test]
+    fn test_sync_does_not_seal() {
+        let (mut seg, _path) = make_segment("test_sync");
+        seg.append_record(3333, b"sync_test", 65536, 6).unwrap();
+        assert!(seg.pending_block_offset.is_some());
+
+        seg.sync().unwrap();
+        // Pending should still be there
+        assert!(seg.pending_block_offset.is_some());
+    }
+
+    #[test]
+    fn test_ensure_open_after_close() {
+        let (mut seg, _path) = make_segment("test_ensure");
+        seg.append_record(4444, b"ensure", 65536, 6).unwrap();
+        seg.idle_close(6).unwrap();
+        assert!(seg.mmap.is_none());
+
+        seg.ensure_open(6).unwrap();
+        assert!(seg.mmap.is_some());
+        assert_eq!(seg.lifecycle, SegmentLifecycle::OpenReady);
+        // Pending was sealed during ensure_open recovery
+        assert!(seg.pending_block_offset.is_none());
+    }
+
+    #[test]
+    fn test_multiple_records_read_all() {
+        let dir = temp_dir();
+        let path = dir.join("test_multi_read");
+        let _ = fs::remove_file(&path);
+        let mut seg = DataSegment::create(&path, 0, 1024 * 1024).unwrap();
+
+        let mut entries: Vec<ReadIndexEntry> = Vec::new();
+        for i in 0..100 {
+            let ts = 1_700_000_000 + i;
+            let data = format!("record_{i}", i = i).into_bytes();
+            let (block_off, in_block_off) = seg.append_record(ts, &data, 65536, 6).unwrap();
+            entries.push(ReadIndexEntry {
+                timestamp: ts,
+                block_offset: block_off,
+                in_block_offset: in_block_off,
+            });
+        }
+
+        // Seal the last pending block
+        seg.seal_pending_block(6).unwrap();
+        seg.clear_pending();
+
+        // Verify all records
+        for (i, entry) in entries.iter().enumerate() {
+            let (ts, data) = seg.read_at_index(entry).unwrap();
+            assert_eq!(ts, 1_700_000_000 + i as i64);
+            assert_eq!(data, format!("record_{i}", i = i).as_bytes());
+        }
+    }
+}

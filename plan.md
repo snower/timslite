@@ -8,15 +8,17 @@
 ## 总体里程碑
 
 ```
-Phase 1: 项目骨架 + 基础工具     ▓▓▓
-Phase 2: 文件头 + Block 核心     ▓▓▓
-Phase 3: DataSegment 写入/读取   ▓▓▓
-Phase 4: 时间索引系统            ▓▓▓
-Phase 5: DataSegmentSet + DataSet▓▓▓
-Phase 6: Store 门面 + 后台任务   ▓▓▓
-Phase 7: FFF 接口                ▓▓▓
-Phase 8: 集成测试 + 性能调优     ▓▓▓
+Phase 1: 项目骨架 + 基础工具     ✅
+Phase 2: 文件头 + Block 核心     ✅
+Phase 3: DataSegment 写入/读取   ✅
+Phase 4: 时间索引系统            ✅
+Phase 5: DataSegmentSet + DataSet✅
+Phase 6: Store 门面 + 后台任务   ✅
+Phase 7: FFF 接口                ✅
+Phase 8: 集成测试 + 性能调优     ✅
 ```
+
+**全部 8 个 Phase 完成！✅**
 
 ---
 
@@ -24,7 +26,7 @@ Phase 8: 集成测试 + 性能调优     ▓▓▓
 
 **目标**: 搭建项目结构, 编译通过, 基础工具函数就绪
 
-### 1.1 初始化 Rust 项目
+### ✅ 1.1 初始化 Rust 项目
 - 创建 `cargo init --lib timslite`
 - 配置 `Cargo.toml`:
   - `[lib] crate-type = ["cdylib", "rlib"]`
@@ -32,7 +34,7 @@ Phase 8: 集成测试 + 性能调优     ▓▓▓
   - `[dev-dependencies]`: `criterion = "0.5"`
   - `edition = "2021"`
 
-### 1.2 创建模块目录结构
+### ✅ 1.2 创建模块目录结构
 ```
 src/
 ├── lib.rs
@@ -57,7 +59,7 @@ src/
     └── idle.rs
 ```
 
-### 1.3 util.rs - 字节工具
+### ✅ 1.3 util.rs - 字节工具
 - `read_u16_le(&[u8; 2]) -> u16`
 - `write_u16_le(buf: &mut [u8], v: u16)`
 - `read_u32_le(&[u8; 4]) -> u32`
@@ -68,7 +70,7 @@ src/
 - `write_u64_le(buf: &mut [u8], v: u64)`
 - 便捷宏: `read_u16_from_mmap(&mmap, pos)`, `write_u32_to_mmap(&mut mmap, pos, v)`
 
-### 1.4 error.rs - 错误类型
+### ✅ 1.4 error.rs - 错误类型
 ```rust
 #[derive(Debug)]
 pub enum TmslError {
@@ -86,13 +88,13 @@ pub enum TmslError {
 - `impl Display for TmslError`
 - `pub type Result<T> = std::result::Result<T, TmslError>`
 
-### 1.5 lib.rs - 入口
+### ✅ 1.5 lib.rs - 入口
 - re-export: `pub use error::{TmslError, Result}`
 - `pub use store::Store`
 - 模块声明
 - 基础常量导出: `HEADER_SIZE`, `BLOCK_HEADER_SIZE`, `INDEX_ENTRY_SIZE`
 
-### 1.6 StoreConfig - 可配置参数
+### ✅ 1.6 StoreConfig - 可配置参数
 ```rust
 pub struct StoreConfig {
     pub flush_interval: Duration,    // 默认 10 分钟 (600s)
@@ -118,7 +120,7 @@ impl Default for StoreConfig { ... }
 
 **目标**: FileMetadata 序列化/反序列化完成, BlockHeader 读写正确
 
-### 2.1 header.rs - FileMetadata (128字节)
+### ✅ 2.1 header.rs - FileMetadata (128字节)
 - 常量定义:
   ```rust
   pub const HEADER_SIZE: u64 = 128;
@@ -144,7 +146,7 @@ impl Default for StoreConfig { ... }
 - `fn update_pending_state(&mut self, offset: i64, uncomp_size: u32, count: u16)`
 - `fn flush(&mut self, mmap: &mut MmapMut)` - 将内存结构写回 mmap
 
-### 2.2 block.rs - BlockHeader (16字节)
+### ✅ 2.2 block.rs - BlockHeader (16字节)
 - 常量定义:
   ```rust
   pub const BLOCK_HEADER_SIZE: u64 = 16;
@@ -159,7 +161,7 @@ impl Default for StoreConfig { ... }
 - `fn is_sealed(&self) -> bool`
 - `fn is_single_record(&self) -> bool`
 
-### 2.3 compress.rs - 压缩封装
+### ✅ 2.3 compress.rs - 压缩封装
 - `fn deflate_compress(data: &[u8], level: u8) -> Vec<u8>`
   - 使用 `miniz_oxide::deflate::compress_to_vec`
   - level 映射到 miniz_oxide 级别
@@ -182,7 +184,7 @@ impl Default for StoreConfig { ... }
 
 **目标**: DataSegment 完整的 Block 聚合写入、延迟压缩、懒加载生命周期、恢复逻辑
 
-### 3.1 DataSegment 结构定义 (segment/data.rs)
+### ✅ 3.1 DataSegment 结构定义 (segment/data.rs)
 ```rust
 pub struct DataSegment {
     path: PathBuf,
@@ -210,7 +212,7 @@ pub enum SegmentLifecycle {
 const BLOCK_HEADER_SIZE: u64 = 16;
 ```
 
-### 3.2 DataSegment 创建与打开
+### ✅ 3.2 DataSegment 创建与打开
 - `fn create(path: &Path, file_offset: u64, file_size: u64) -> Result<Self>`
   - 创建/截断文件到 file_size
   - mmap (MmapMut)
@@ -229,7 +231,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
       3. flush file header 到 mmap
       4. wrote_position 指向 sealed block 之后
 
-### 3.3 DataSegment 生命周期管理
+### ✅ 3.3 DataSegment 生命周期管理
 - `fn ensure_open(&mut self) -> Result<()>` — lazily open if closed
 - `fn idle_close(&mut self) -> Result<()>` — idle timeout 触发:
   1. `mmap.flush()` (MS_SYNC)
@@ -242,55 +244,13 @@ const BLOCK_HEADER_SIZE: u64 = 16;
   - 如果 mmap.is_some(): `mmap.flush()` (MS_SYNC)
   - **不密封 pending, 不压缩**
 
-### 3.4 核心写入逻辑
-- `pub fn append_record(&mut self, timestamp: i64, data: &[u8], block_max_size: u32, compress_level: u8) -> Result<(u64, u16)>`
-  - 计算 `record_size = 2 + 8 + data.len()`
-  - **情况 1**: `record_size > block_max_size` → 独占 block
-  - **情况 2**: 有 pending block, 检查是否溢出 → seal 或追加
-  - **情况 3**: 无 pending → 创建新 pending
-  - 返回 `(block_relative_offset, in_block_offset)`
-
-### 3.5 方法: write_raw_record_to_pending
-- 写入 `[data_len:2][timestamp:8][data:N]` 到 pending block payload
-- 更新 block header 的 `payload_size` 和 `record_count`
-- 更新 `self.wrote_position`
-- 更新 file header 的 `wrote_position`
-
-### 3.6 方法: create_pending_and_append
-- 在当前 wrote_position 创建新 BlockHeader (flags=0)
-- 写入第一条 record (raw)
-- 设置 `pending_block_offset`, `pending_block_uncomp_size`, `pending_block_record_count`
-- 更新 file header 的 `pending_block_offset`, `FILE_FLAG_HAS_PENDING`
-
-### 3.7 方法: seal_pending_block
-- 读取 pending block payload (raw data)
-- 压缩 (deflate)
-- 比较压缩后与原始大小:
-  - 压缩有效 → 写回压缩数据, flags = SEALED|COMPRESSED
-  - 压缩无效 → 保留 raw, flags = SEALED
-- 更新 block header (payload_size, flags)
-- 清除 pending 状态
-- 更新 file header (`pending_block_offset = -1`, 清除 `FILE_FLAG_HAS_PENDING`)
-
-### 3.8 方法: create_single_record_block
-- record_size > 64KB 的场景
-- 构建 record payload `[data_len:2][ts:8][data:N]`
-- 压缩
-- 比较大小决定是否使用 compressed
-- 写入 BlockHeader (flags=SEALED[|COMPRESSED]|SINGLE_RECORD)
-- 写入 payload 到 mmap
-- 更新计数器
-
-### 3.9 读取逻辑
-- `pub fn read_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)>`
-  1. 通过 `entry.block_offset` 定位 BlockHeader
-  2. 读取 BlockHeader, 检查 compressed flag
-  3. 如果需要, 解压 block payload
-  4. 通过 `entry.in_block_offset` 定位到 `[data_len:2]`
-  5. 读取 `data_len`, `timestamp`, `data`
-  6. 返回
-
-### 3.10 sync 方法 (flush loop 调用)
+### ✅ 3.4 核心写入逻辑
+### ✅ 3.5 方法: write_raw_record_to_pending
+### ✅ 3.6 方法: create_pending_and_append
+### ✅ 3.7 方法: seal_pending_block
+### ✅ 3.8 方法: create_single_record_block
+### ✅ 3.9 读取逻辑
+### ✅ 3.10 sync 方法 (flush loop 调用)
 - `fn sync(&mut self) -> Result<()>`
   - `self.mmap.flush()` (MS_SYNC)
   - **不密封 pending block, 不压缩**
@@ -313,90 +273,15 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 **目标**: TimeIndex + IndexSegment 完整实现, 支持按时间范围查询
 
-### 4.1 IndexEntry 定义 (index/mod.rs)
-- 常量: `pub const INDEX_ENTRY_SIZE: usize = 18`
-- struct `IndexEntry { timestamp: i64, block_offset: u64, in_block_offset: u16 }`
-- `fn to_bytes(&self) -> [u8; 18]`
-- `fn from_bytes(buf: [u8; 18]) -> Self`
-
-### 4.2 IndexSegment 结构 (index/segment.rs)
-```rust
-pub struct IndexSegment {
-    path: PathBuf,
-    start_timestamp: i64,
-    entries_capacity: usize,
-    wrote_count: usize,
-    mmap: Option<MmapMut>,          // None = closed
-    sealed: bool,
-    last_accessed_at: Instant,
-}
-```
-
-### 4.3 IndexSegment 创建/打开/生命周期
-- `fn create(base_dir: &Path, start_timestamp: i64, segment_size: u64) -> Result<Self>`
-  - 计算 `entries_capacity = (segment_size - HEADER_SIZE) / 18`
-  - 创建文件, mmap(128 + entries_capacity * 18 字节)
-  - 写入 FileHeader (file_type < 0, file_offset = start_timestamp)
-- `fn open(path: &Path) -> Result<Self>`
-  - 打开文件, mmap
-  - 读取 FileHeader 恢复 wrote_count
-- `fn sync(&mut self) -> Result<()>` — flush loop 调用:
-  - `mmap.flush()` (MS_SYNC)
-- `fn idle_close(&mut self) -> Result<()>` — idle timeout 触发:
-  1. `mmap.flush()` (MS_SYNC)
-  2. `munmap` + close file
-  3. mmap = None
-- `fn ensure_open(&mut self) -> Result<()>` — lazily open if closed
-
-### 4.4 IndexSegment 写入
-- `fn append_entry(&mut self, entry: &IndexEntry) -> Result<()>`
-  - 检查 `wrote_count < entries_capacity`
-  - 写入 `[timestamp:8][block_offset:8][in_block_offset:2]`
-  - 更新 header wrote_position/record_count
-- `fn is_full(&self) -> bool`
-
-### 4.5 IndexSegment 查询 (二分查找)
-- `fn lower_bound(&self, target_ts: i64) -> usize` - 查找 >= target 的第一个位置
-- `fn upper_bound(&self, target_ts: i64) -> usize` - 查找 > target 的第一个位置
-- `fn find_exact(&self, target_ts: i64) -> Option<IndexEntry>` - 精确匹配
-- `fn query_range(&self, start_ts: i64, end_ts: i64) -> Vec<IndexEntry>` - 范围查询
-
-### 4.6 TimeIndex 结构 (index/mod.rs)
-```rust
-pub struct TimeIndex {
-    base_dir: PathBuf,
-    segment_size: u64,
-    index_segments: Vec<IndexSegment>,
-    in_memory_buffer: Vec<IndexEntry>,
-    in_memory_flush_threshold: usize,   // default 1024
-}
-```
-
-### 4.7 TimeIndex 写入
-- `fn add_entry(&mut self, timestamp: i64, block_offset: u64, in_block_offset: u16) -> Result<()>`
-  - 写入内存缓冲
-  - 检查 buffer len >= threshold → flush_to_disk
-- `fn flush_to_disk(&mut self) -> Result<()>`
-  - 对 in_memory_buffer 按 timestamp 排序
-  - 获取或创建当前写入段:
-    - 检查最后一段是否已满 (`wrote_count >= entries_capacity`)
-    - 已满 → 密封 (更新 header), 创建新段 (文件名 = buffer[0].timestamp)
-    - 未满 → 使用最后一段
-  - 批量 append_entry 到当前段
-
-> **索引段路由**: 索引段按写入顺序填充, 不按 timestamp 哈希。
-> 每段文件名 = 该段第一条 entry 的 timestamp (20位零填充)。
-> 段满后创建新段, 新段文件名 = 当前第一条待写入 entry 的 timestamp。
-> 查询时: 遍历所有段, 用 lower_bound 在每个段中二分查找。
-
-### 4.8 TimeIndex 查询
-- `fn get_or_create_segment(&mut self, timestamp: i64) -> Result<&mut IndexSegment>`
-- `fn query(&self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>>`
-  - 合并内存缓冲中的 entries (过滤 [start_ts, end_ts])
-  - 合并各 index_segment 中的 entries (query_range)
-  - 去重 + 按 timestamp 排序
-
-### 4.9 TimeIndex 加载
+### ✅ 4.1 IndexEntry 定义 (index/mod.rs)
+### ✅ 4.2 IndexSegment 结构 (index/segment.rs)
+### ✅ 4.3 IndexSegment 创建/打开/生命周期
+### ✅ 4.4 IndexSegment 写入
+### ✅ 4.5 IndexSegment 查询 (二分查找)
+### ✅ 4.6 TimeIndex 结构 (index/mod.rs)
+### ✅ 4.7 TimeIndex 写入
+### ✅ 4.8 TimeIndex 查询
+### ✅ 4.9 TimeIndex 加载
 - `fn load_existing(base_dir: &Path, segment_size: u64) -> Result<Self>`
   - 扫描 `{base_dir}/.index/*` 文件
   - 按 start_timestamp 排序加载
@@ -415,92 +300,16 @@ pub struct TimeIndex {
 
 **目标**: 多文件管理、懒打开/超时关闭、数据集完整 CRUD 流程
 
-### 5.1 DataSegmentSet (segment/mod.rs)
-```rust
-pub struct DataSegmentSet {
-    base_dir: PathBuf,
-    segment_size: u64,
-    block_max_size: u32,
-    compress_level: u8,
-    segments: Vec<DataSegment>,           // 打开中的 segment
-    closed_segments: Vec<DataSegmentMeta>, // 已关闭的 segment (path, offset, size)
-    next_offset: u64,
-    last_used_at: Instant,
-}
-
-struct DataSegmentMeta {
-    path: PathBuf,
-    file_offset: u64,
-    file_size: u64,
-}
-```
-
-### 5.2 DataSegmentSet 生命周期管理
-- `fn sync_all(&mut self) -> Result<()>` — flush loop 调用:
-  - 遍历所有打开的 segment → `seg.sync()`
-  - 遍历索引 segment → `idx_seg.sync()`
-- `fn idle_close_all(&mut self) -> Result<()>` — idle timeout 调用:
-  - 遍历所有打开的 segment (data + index) → `seg.idle_close()`
-  - data segment 移入 `closed_segments`, index segment 单独管理
-- `fn lazy_open(&mut self, offset: u64) -> Result<&mut DataSegment>`
-  - 先在 `segments` 中查找
-  - 未找到 → 在 `closed_segments` 中查找 meta
-  - 找到 meta → `DataSegment::open(path, ...)` → 移入 `segments`
-
-### 5.3 DataSegmentSet 写入
-- `fn append(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u64, u16)>`
-  - `segment = lazy_open(next_offset)` (if current closed, reopen)
-  - `segment.append_record(...)`
-  - `last_used_at = Instant::now()`
-  - 如果 segment 已满/密封 → `next_offset += segment_size`, 创建新 segment
-  - 返回 `(segment_file_offset, block_relative_offset, in_block_offset)`
-- `fn get_or_create_segment(&mut self, offset: u64) -> Result<&mut DataSegment>`
-  - 查找最后一个非密封 segment
-  - 如满/密封 → 创建新文件
-
-### 5.4 DataSegmentSet 读取/查询
-- `fn find_segment(&self, block_absolute_offset: u64) -> Result<&DataSegment>`
-  - `relative = block_absolute_offset - absolute_base`
-  - 找到包含 relative 偏移的 segment
-  - 如果 segment 已关闭 → lazy_open → 返回
-- `fn read_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)>`
-  - 定位 segment → 调用 segment.read_at_index
-
-### 5.5 DataSegmentSet flush/load
-- `fn flush_all(&mut self) -> Result<()>` - flush 所有 segments
-- `fn load_existing(base_dir: &Path, segment_size: u64, block_max_size: u32, compress_level: u8) -> Result<Self>`
-  - 扫描 `{base_dir}/*`, 排除 `.index/`
-  - 按 file_offset 排序加载
-
-### 5.6 DataSet 整合
-```rust
-pub struct DataSet {
-    id: DataSetKey,
-    base_dir: PathBuf,
-    config: DataSetConfig,
-    segments: DataSegmentSet,
-    time_index: TimeIndex,
-    last_used_at: Instant,
-}
-```
-
-### 5.7 DataSet 写入
-- `fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()>`
-  - write to DataSegmentSet
-  - add to TimeIndex (block_offset = seg_file_offset + block_rel_offset)
-  - `last_used_at = Instant::now()`
-
-### 5.8 DataSet 读取
-- `fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>>`
-  - TimeIndex.query → Vec<IndexEntry>
-  - 逐 entry 读取 data
-  - 按 timestamp 排序
-
-### 5.9 DataSet flush/close
-- `fn flush(&mut self) -> Result<()>`
-- `fn close(&mut self) -> Result<()>` = flush + 释放 mmap
-
-### 5.10 DataSet 加载
+### ✅ 5.1 DataSegmentSet (segment/mod.rs)
+### ✅ 5.2 DataSegmentSet 生命周期管理
+### ✅ 5.3 DataSegmentSet 写入
+### ✅ 5.4 DataSegmentSet 读取/查询
+### ✅ 5.5 DataSegmentSet flush/load
+### ✅ 5.6 DataSet 整合
+### ✅ 5.7 DataSet 写入
+### ✅ 5.8 DataSet 读取
+### ✅ 5.9 DataSet flush/close
+### ✅ 5.10 DataSet 加载
 - `fn load(id: DataSetKey, base_dir: PathBuf, config: &StoreConfig) -> Result<Self>`
   - 加载 DataSegmentSet (初始所有 segment closed)
   - 加载 TimeIndex
@@ -518,81 +327,14 @@ pub struct DataSet {
 
 **目标**: Store 生命周期管理、数据集管理、后台 flush/idle (mmap 生命周期管理)
 
-### 6.1 Store 结构
-```rust
-pub struct Store {
-    data_dir: PathBuf,
-    datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
-    config: StoreConfig,
-    flush_handle: Option<JoinHandle<()>>,
-    idle_handle: Option<JoinHandle<()>>,
-    shutdown_tx: Option<mpsc::Sender<()>>,
-}
-```
-
-### 6.2 Store::open
-- `pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self>`
-  - 创建 data_dir
-  - 扫描已有数据集目录 → load
-  - 启动后台线程 (使用 config 中 flush_interval, idle_timeout)
-  - 返回 Store
-
-### 6.3 Store::open_dataset
-- `pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>`
-  - 读锁查找 → 存在则返回 Arc clone
-  - 写锁创建 → 创建目录 → DataSet::load/new → 插入
-  - 返回 DataSetHandle(Arc<Mutex<DataSet>>)
-
-### 6.4 Store::close_dataset
-- `pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>`
-  - flush dataset (mmap sync)
-  - idle_close_all (关闭所有打开的 segment)
-  - 从 HashMap 移除 key
-
-### 6.5 Store::close (self)
-
-```
-关闭流程:
-1. 发送 shutdown 信号 (mpsc::channel send)
-   → 后台线程在下一次 loop 检查时退出
-2. join flush_handle (等待当前 flush 循环完成, timeout 30s)
-3. join idle_handle (等待当前 idle check 完成, timeout 30s)
-4. 此时所有后台线程已退出, 安全执行 final flush:
-   for each dataset: flush() + idle_close_all()
-5. clear datasets HashMap
-6. 释放 Store (self dropped)
-```
-
-> **关键**: join 必须等待后台线程退出, 否则 final flush 可能与后台 flush 并发
-> timeout 保护: 如果线程卡住, 30s 后 force 继续 (log warning)
-
-### 6.6 bg/flush.rs - Flush 线程
-```rust
-pub fn spawn_flush_loop(
-    datasets: Weak<RwLock<HashMap<...>>>,
-    interval: Duration,   // 默认 10 分钟
-) -> JoinHandle<()>
-```
-- 每 10 分钟 (可配置):
-  - 获取数据集读锁
-  - 对每个 dataset: lock → sync_all (仅 mmap.flush())
-  - **不密封 pending block, 不压缩**
-  - 收到 shutdown 信号退出
-
-### 6.7 bg/idle.rs - Idle Check 线程
-```rust
-pub fn spawn_idle_loop(
-    datasets: Weak<RwLock<HashMap<...>>>,
-    timeout: Duration,    // 默认 30 分钟
-) -> JoinHandle<()>
-```
-- 每 60 秒:
-  - 读锁遍历 → 找 last_used_at.elapsed() >= 30min 的 dataset
-  - 写锁 → sync_all + idle_close_all (所有 segment)
-  - 更新 dataset 状态为 idle
-  - 收到 shutdown 信号退出
-
-### 6.8 bg/mod.rs - 后台管理
+### ✅ 6.1 Store 结构
+### ✅ 6.2 Store::open
+### ✅ 6.3 Store::open_dataset
+### ✅ 6.4 Store::close_dataset
+### ✅ 6.5 Store::close (self)
+### ✅ 6.6 bg/flush.rs - Flush 线程
+### ✅ 6.7 bg/idle.rs - Idle Check 线程
+### ✅ 6.8 bg/mod.rs - 后台管理
 - `pub struct BackgroundTasks { flush_handle, idle_handle, shutdown_tx }`
 - `fn start(datasets, flush_interval, idle_timeout) -> Self`
 - `fn stop(self)` - 发送信号, join, 返回
@@ -611,38 +353,12 @@ pub fn spawn_idle_loop(
 
 **目标**: C ABI 接口完整实现, errno-safe, panic-safe
 
-### 7.1 ffi.rs - 核心工具
-- `fn write_error(buf: *mut c_char, len: usize, msg: &str)`
-- `fn catch_ffi_result<F, T>(f: F, err_buf: *mut c_char, err_buf_len: usize) -> T`
-  - `catch_unwind`
-  - 错误写入 err_buf
-  - 返回 -1 或 null
-- DataSetHandle FFI wrapper (opaque pointer)
-- QueryIterator FFI wrapper
-
-### 7.2 FFI: Store 管理
-- `tmsl_store_open(data_dir: *const c_char, err_buf, err_buf_len) -> *mut c_void`
-- `tmsl_store_close(store: *mut c_void, err_buf, err_buf_len) -> c_int`
-
-### 7.3 FFI: 数据集管理
-- `tmsl_dataset_open(store, name, dataset_type, err_buf, err_buf_len) -> *mut c_void`
-- `tmsl_dataset_close(dataset, err_buf, err_buf_len) -> c_int`
-- `tmsl_dataset_flush(dataset, err_buf, err_buf_len) -> c_int`
-
-### 7.4 FFI: 数据写入
-- `tmsl_dataset_write(dataset, timestamp: c_long, data: *const c_uchar, data_len: usize, err_buf, err_buf_len) -> c_int`
-
-### 7.5 FFI: 查询迭代器
-- `tmsl_dataset_query(dataset, start_ts: c_long, end_ts: c_long, err_buf, err_buf_len) -> *mut c_void`
-- `tmsl_iter_next(iter, out_ts: *mut c_long, out_data: *mut *mut c_uchar, out_data_len: *mut usize, err_buf, err_buf_len) -> c_int`
-  - 0 = success (有数据)
-  - 1 = 无更多数据 (iterator exhausted)
-  - -1 = error
-  - **内存分配**: `out_data` 指向的内存由 Rust `libc::malloc` 分配, C 侧必须调用 `tmsl_iter_free_data` 释放
-- `tmsl_iter_free_data(data: *mut c_uchar)` - 释放 `tmsl_iter_next` 分配的内存 (对应 `libc::free`)
-- `tmsl_iter_close(iter: *mut c_void)` - 关闭迭代器, 释放迭代器本身 (对应 `Box::into_raw`/`Box::from_raw`)
-
-### 7.6 头文件生成 (.h)
+### ✅ 7.1 ffi.rs - 核心工具
+### ✅ 7.2 FFI: Store 管理
+### ✅ 7.3 FFI: 数据集管理
+### ✅ 7.4 FFI: 数据写入
+### ✅ 7.5 FFI: 查询迭代器
+### ✅ 7.6 头文件生成 (.h)
 - 创建 `include/timslite.h` C 头文件, 包含所有 FFI 声明
 
 ### ✅ Phase 7 验收标准
@@ -658,64 +374,11 @@ pub fn spawn_idle_loop(
 
 **目标**: 完整集成测试套件, 性能达标, 内存安全验证
 
-### 8.1 端到端集成测试 (tests/integration_test.rs)
-- **T8.1.1** 基本生命周期: open_store → open_dataset → write 1000 records → query all → close
-- **T8.1.2** 多数据集隔离: open 2 datasets (不同 name/type) → 分别写入 → 交叉查询 → 数据不混合
-- **T8.1.3** Block 聚合: 写入小数据 (<1KB) × 100 → 验证压缩后 block 数量合理
-- **T8.1.4** 大 record: 写入 >64KB 的 record → 验证独占 block
-- **T8.1.5** 时间范围查询: 写入 ts=[0,9999] → query [1000,2000] → 验证返回 1001 条
-- **T8.1.6** 持久化: write → close → reopen → query → 数据一致
-- **T8.1.7** 异常恢复: 写入中途 crash (模拟) → reopen → 验证 pending block 正确恢复/密封
-- **T8.1.8** 并发: 多线程 open_dataset (不同 dataset) → 并发写入 → 数据完整
-- **T8.1.9** idle-close 生命周期: write → wait 30min (simulate idle) → verify all segments closed → write → verify on-demand reopen + pending sealed → query → 数据一致
-- **T8.1.10** flush 不密封: write (pending block) → flush → verify pending NOT sealed → write more → block overflows → seal+compress → verify
-- **T8.1.11** mmap 懒加载: open dataset → write (creates segment) → idle-close → verify munmap + file closed → read → verify reopen + mmap → data correct
-
-### 8.2 单元测试补全
-- util.rs 全部 endian 函数
-- header.rs metadata roundtrip
-- block.rs flags 解析
-- compress.rs deflate roundtrip + 大小比较
-- DataSegment 各种写入场景
-- DataSegment idle_close → reopen recovery
-- IndexSegment 二分查找边界
-- TimeIndex 内存缓冲 flush
-- StoreConfig builder pattern 测试
-- StoreConfig → DataSetConfig conversion (From impl)
-- DataSegment lifecycle: create → idle_close → ensure_open → write → verify pending sealed
-- IndexSegment lifecycle: create → idle_close → ensure_open → append → verify
-- Idle-check double-check race condition: simulate write between read-lock and write-lock
-
-### 8.3 性能基准测试 (benches/)
-
-使用 [criterion](https://github.com/bheisler/criterion.rs) (stable Rust, 不是 nightly-only `#[bench]`):
-
-`Cargo.toml` 添加:
-```toml
-[dev-dependencies]
-criterion = "0.5"
-
-[[bench]]
-name = "timslite_benchmarks"
-harness = false
-```
-
-基准测试覆盖:
-- `bench_write_small_100b` — 写入 100B 小数据
-- `bench_write_large_10kb` — 写入 10KB 数据
-- `bench_write_mixed_sizes` — 混合大小写入
-- `bench_query_1000_records` — 查询 1000 条记录
-- `bench_query_time_range` — 时间范围查询
-
-运行: `cargo bench`
-
-### 8.4 内存安全验证
-- `cargo test` under `valgrind` (如果环境支持)
-- 检查 mmap 泄漏 (打开/关闭后文件句柄释放)
-- 检查 FFI 内存泄漏 (iter_free_data 后的内存)
-- 压测: 连续写入 1GB → 验证内存不增长
-
-### 8.5 文档
+### ✅ 8.1 端到端集成测试
+### ✅ 8.2 单元测试补全
+### ✅ 8.3 性能基准测试 (benches/)
+### ✅ 8.4 内存安全验证
+### ✅ 8.5 文档
 - crate 级文档 (`//!`)
 - 所有 public API 的 doc comments (`///`)
 - README.md: 快速开始, FFI 示例, 目录结构说明

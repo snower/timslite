@@ -1,0 +1,17 @@
+[package]
+name = "timslite"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "timslite"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+memmap2 = "0.9"
+miniz_oxide = "0.8"
+log = "0.4"
+libc = "0.2"
+
+[dev-dependencies]
+criterion = "0.5"
