@@ -34,37 +34,161 @@ libtimslite (CDylib)
 {data_dir}/
 ├── {dataset_name_1}/
 │   ├── {dataset_type_A}/
-│   │   ├── .index/
-│   │   │   ├── 00000000000000000000              # 起始秒级时间戳 (20位,0填充)
-│   │   │   └── 0000000000001700000000
-│   │   ├── 00000000000000000000                  # data segment, 起始offset (20位,0填充)
-│   │   ├── 00000000000067108864                  # offset = 64MB
-│   │   └── 000000000000134217728
+│   │   ├── meta                                     # 数据集元数据 (magic+version+meta_data_length+TLV)
+│   │   ├── data/
+│   │   │   ├── 00000000000000000000                  # data segment, 起始offset (20位,0填充)
+│   │   │   ├── 00000000000067108864                  # offset = 64MB
+│   │   │   └── 000000000000134217728
+│   │   └── index/
+│   │       ├── 00000000000000000000                  # 起始秒级时间戳 (20位,0填充)
+│   │       └── 0000000000001700000000
 │   │
 │   └── {dataset_type_B}/
-│       ├── .index/
-│       │   └── 0000000000001700000000
-│       └── 00000000000000000000
+│       ├── meta
+│       ├── data/
+│       │   └── 00000000000000000000
+│       └── index/
+│           └── 0000000000001700000000
 │
 └── {dataset_name_2}/
     └── {dataset_type_C}/
-        ├── .index/
-        └── 00000000000000000000
+        ├── meta
+        ├── data/
+        │   └── 00000000000000000000
+        └── index/
 ```
 
 ### 2.1 命名规则
 
 | 文件类型 | 目录 | 命名格式 | 示例 |
 |---------|------|---------|------|
-| 数据段(DataSegment) | `{name}/{type}/` | 20位十进制, 起始字节offset, 零填充 | `00000000000000000000` |
-| 索引段(IndexSegment) | `{name}/{type}/.index/` | 20位十进制, 起始秒级timestamp, 零填充 | `0000000000001700000000` |
+| 数据集元数据 | `{name}/{type}/` | 固定文件名 `meta` | `{name}/{type}/meta` |
+| 数据段(DataSegment) | `{name}/{type}/data/` | 20位十进制, 起始字节offset, 零填充 | `00000000000000000000` |
+| 索引段(IndexSegment) | `{name}/{type}/index/` | 20位十进制, 起始秒级timestamp, 零填充 | `0000000000001700000000` |
+
+### 2.1.1 数据集元数据文件 (meta)
+
+每个数据集目录 (`{name}/{type}/`) 下固定存在 `meta` 文件, 记录数据集的**不可变**配置参数。
+该文件在数据集**首次创建时写入一次**, 之后**不再更新**。
+打开数据集时读取 `meta`, 与当前配置对比, 检测关键参数不一致。
+
+**文件格式**:
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ 固定头 (8 bytes)                                         │
+├──────────────────────────────────────────────────────────┤
+│  magic: 4 bytes = b"TMSM"                                │
+│  version: u16 = 1                                        │
+│  meta_data_length: u16                                   │
+│    其后 TLV meta_values 的总字节数                        │
+├──────────────────────────────────────────────────────────┤
+│ TLV meta_values (变长, 仅4个不可变字段)                   │
+│  ┌────────┬──────────┬─────────────┐                     │
+│  │ type   │ length   │ value       │                     │
+│  │ 1 byte │ 2 bytes  │ length bytes│                     │
+│  └────────┴──────────┴─────────────┘                     │
+│  ... (可添加多个)                                         │
+└──────────────────────────────────────────────────────────┘
+```
+
+**TLV 类型定义** (仅4个不可变字段):
+
+| Type (hex) | 名称 | 长度 | 数据类型 | 说明 |
+|------------|------|------|---------|------|
+| 0x01 | data_segment_size | 8 | u64 LE | 数据段文件大小(字节) |
+| 0x02 | index_segment_size | 8 | u64 LE | 索引段文件大小(字节) |
+| 0x03 | compress_level | 1 | u8 | 压缩级别 |
+| 0x04 | create_time | 8 | i64 LE | 数据集创建时间(unix ms) |
 
 ### 2.2 隔离保证
 
-- 每个 `(dataset_name, dataset_type)` 拥有完全独立的 `.index/` 目录
+- 每个 `(dataset_name, dataset_type)` 拥有完全独立的 `data/` 和 `index/` 目录
 - 索引文件只包含对应 `(name, type)` 的时间戳→偏移量映射
 - 不同数据集名称之间文件物理隔离
 - 同一名称不同类型之间文件物理隔离
+- `meta` 文件唯一标识数据集参数, 打开时校验一致性
+
+---
+
+## 二点五、DataSetMeta: 数据集元数据文件
+
+每个数据集目录 (`{name}/{type}/meta`) 存在唯一的 `meta` 文件, 记录数据集的**不可变**配置参数。
+该文件在数据集**首次创建时写入一次**, 之后**永不更新**。
+
+### 文件格式
+
+```
+┌─────────────────────────────────────────────────────┐
+│ 固定头 (8 bytes)                                     │
+├─────────────────────────────────────────────────────┤
+│  magic: [u8; 4] = *b"TMSM"                          │
+│  version: u16 = 1                                   │
+│  meta_data_length: u16                              │
+│    后续 TLV meta_values 的总字节数                   │
+├─────────────────────────────────────────────────────┤
+│ TLV meta_values (meta_data_length bytes)             │
+│  每 一 个: {type: u8}{length: u16}{value: bytes}    │
+│  解析: 读取 type, 读取 length → 跳过未知 type        │
+└─────────────────────────────────────────────────────┘
+```
+
+### TLV (Type-Length-Value) 编码
+
+```rust
+/// TLV meta value type — 仅4个不可变字段
+const META_TYPE_DATA_SEGMENT_SIZE: u8  = 0x01;  // u64 LE
+const META_TYPE_INDEX_SEGMENT_SIZE: u8 = 0x02;  // u64 LE
+const META_TYPE_COMPRESS_LEVEL: u8     = 0x03;  // u8
+const META_TYPE_CREATE_TIME: u8        = 0x04;  // i64 LE (unix ms)
+```
+
+### Rust 类型
+
+```rust
+pub struct DataSetMeta {
+    pub data_segment_size: u64,
+    pub index_segment_size: u64,
+    pub compress_level: u8,
+    pub create_time: i64,    // unix ms
+}
+
+impl DataSetMeta {
+    /// 创建新的 meta (用于新数据集, 不可变, 写入后不再修改)
+    pub fn new(data_segment_size: u64, index_segment_size: u64,
+               compress_level: u8) -> Self;
+    
+    /// 序列化: magic + version + meta_data_length + TLV values
+    pub fn to_bytes(&self) -> Vec<u8>;
+    
+    /// 反序列化: 校验 magic → 读 version → 读 meta_data_length → 解析 TLV
+    /// 未知 type 自动跳过 (向前兼容)
+    pub fn from_bytes(buf: &[u8]) -> Result<Self>;
+    
+    /// 写入文件 (创建时调用一次, 之后不再调用)
+    pub fn write_to_file(&self, path: &Path) -> io::Result<()>;
+    
+    /// 从文件读取 (打开数据集时调用)
+    pub fn read_from_file(path: &Path) -> Result<Self>;
+}
+```
+
+### 写入时机
+
+| 时机 | 操作 |
+|------|------|
+| 首次创建数据集 | `DataSetMeta::new()` + `write_to_file()` — **仅此一次** |
+| 数据集已存在 | **不写入, 不更新** |
+
+### 打开时校验
+
+`DataSet::new()` 流程:
+1. 检查 `{base_dir}/meta` 是否存在
+2. 存在 → `DataSetMeta::read_from_file()` → 校验不可变参数是否与当前 `StoreConfig` 一致
+   - `data_segment_size` 不一致 → **返回错误** (影响文件布局, 不可兼容)
+   - `index_segment_size` 不一致 → **返回错误** (影响索引文件布局, 不可兼容)
+   - `compress_level` 不一致 → **警告日志** (只影响新 block, 可兼容)
+3. 不存在 → 创建新 `meta` 文件 (`write_to_file()`, 仅此一次)
 
 ---
 
@@ -147,71 +271,89 @@ Offset  Size  Field                    Description
 - `block_offset`: 对应 Block 在数据段中的**绝对字节偏移** (指向 BlockHeader 起始)
 - `in_block_offset`: record 在 Block Payload 中的**相对偏移** (从 payload 起始算, 指向该 record 的 data_len 字段)
 
-### 3.5 FileMetadata (文件头, 128 字节)
+### 3.5 FileMetadata (文件头, meta + state)
 
 每个数据段和索引段的头部元数据。
 
-#### 设计原则: 固定核心 + 可扩展元数据区
+#### 设计原则: 可变(state) 与 不可变(meta) 分离
 
 ```
-┌─────────────────────────────────────────────┐
-│ 固定核心 (10 bytes)                          │  ← 所有版本都能解析
-│  magic:4 + version:2 + file_flags:2          │
-├─────────────────────────────────────────────┤
-│ 元数据扩展长度 (2 bytes)                     │  ← 告知后续元数据总长度
-├─────────────────────────────────────────────┤
-│ 扩展元数据区 (当前 52 bytes)                  │  ← 可随意增删字段
-│  file_type, file_offset, file_size, ...      │
-├─────────────────────────────────────────────┤
-│ 预留区 (64 bytes)                            │  ← 未来扩展用
-└─────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ 固定前缀 (9 bytes)                                        │
+│  magic:4 + version:2 + fileType:1 + meta_length:2         │
+├──────────────────────────────────────────────────────────┤
+│ Meta 不可变 TLV 区 (variable, 当前 33 bytes)              │  ← 创建时写入一次, 永不修改
+│  {type:1}{len:2}{value}, 可多  可跳过未知 type            │
+├──────────────────────────────────────────────────────────┤
+│ state_length: u16 (2 bytes)                               │  ← 告知后续 state 总字节数
+├──────────────────────────────────────────────────────────┤
+│ State 可变区 (当前 56 bytes, 每值 8 字节)                 │  ← 写满时动态更新
+│  wrote_position, record_count, ...                       │
+└──────────────────────────────────────────────────────────┘
 ```
 
-#### 详细偏移
+#### 固定前缀
 
 ```
 Offset  Size  Field                    Description
-────────────────────────────────────────────────── 固定核心 (v1+)
 0-3     4     magic = b"TMSL"
 4-5     u16   version                  = 1
-6-7     u16   file_flags
-                bit 0: 文件已 sealed
-                bit 1: 有 pending block
-                bit 2-15: 保留
-────────────────────────────────────────────────── 元数据扩展长度
-8-9     u16   meta_data_len            其后扩展元数据字节数 (当前=52)
-                                     HEADER_SIZE = 10 + 2 + meta_data_len + reserved
-                                     读者通过此值跳过未知元数据字段
-────────────────────────────────────────────────── 扩展元数据区 (v1: 52 bytes)
-10-17   i64   file_type
-                >0 = data segment, <0 = index segment
-18-25   i64   file_offset
-                data segment: 起始字节offset
-                index segment: 起始秒级timestamp
-26-33   i64   file_size                文件总大小(字节)
-34-41   i64   created_at               创建时间(unix ms)
-42-49   i64   wrote_position           已写入位置(从数据区起始) ← moved after created_at
-50-57   i64   record_count             文件内总记录条数
-58-63   u64   total_uncompressed_size  文件内所有 record 原始数据总大小
-────────────────────────────────────────────────── 预留区 (64 bytes, 未来扩展)
-64-71   i64   pending_block_offset     当前未完成 Block 相对偏移 (-1表示无)
-72-75   u32   pending_uncomp_size      pending block 内原始数据累计大小
-76-77   u16   pending_record_count     pending block 内 record 数量
-78-127  50    reserved                 保留 (50 bytes)
-
-HEADER_SIZE = 128 bytes
+6       u8    fileType                 1 = index segment, 2 = data segment
+7-8     u16
 ```
+
+#### Meta 不可变 TLV 区 (创建时写入, 永不修改)
+
+```
+Offset  Size  Field                    Description
+(相对 meta 起始)
+  TLV {type:1}{length:2}{value:N}
+```
+
+| Meta Type (hex) | 名称 | 长度 | 数据类型 | 说明 |
+|-----------------|------|------|---------|------|
+| 0x01 | created_at | 8 | i64 LE | 创建时间(unix ms) |
+| 0x02 | file_offset | 8 | i64 LE | data segment: 起始字节offset; index segment: 起始秒级timestamp |
+| 0x03 | file_size | 4 | u32 LE | 文件总大小(字节) |
+| 0x04 | compress_level | 1 | u8 | 压缩级别 |
+
+> Meta TLV 可向前展: 未知 type 通过 length 字段跳过, 不影响解析。
+
+#### State 可变区 (每值固定 8 字节, 顺序存储)
+
+```
+Offset  (相对 state 起始)    Size  Field                    Description
+0       u64(8)  wrote_position           当前写入位置(从 HEADER_SIZE 起算)
+8       u64(8)  record_count             已写入记录总数
+16      u64(8)  total_uncompressed_size  文件内所有 record 原始数据总大小
+24      u64(8)  invalid_record_count     无效/跳过记录数
+32      u64(8)  pending_block_offset     当前未完成 block 相对偏移 (-1表示无)
+40      u64(8)  pending_wrote_position   pending block 内已写入位置(从 payload 起始)
+48      u64(8)  pending_record_count     pending block 内 record 数量
+```
+
+#### Header 大小计算
+
+```
+固定前缀:     4 + 2 + 1 + 2     = 9 bytes
+Meta TLV:     11 + 11 + 7 + 4  = 33 bytes  (4 个 TLV 条目)
+state_length: 2                 = 2 bytes
+State 值:     7 × 8            = 56 bytes
+────────────────────────────────────────────
+HEADER_SIZE = 100 bytes
+```
+
+> **数据区起始位置 = `HEADER_SIZE = 100` 字节**
 
 #### 兼容性设计
 
 | 场景 | 行为 |
 |------|------|
-| v1 reader 读 v1 文件 | 正常读取, `meta_data_len=52` |
-| v2 reader 读 v1 文件 | 读 `meta_data_len=52`, 只解析已知字段, 跳过未知 |
-| v1 reader 读 v2 文件 | 读固定核心 (10B) + `meta_data_len` 值, 跳过扩展元数据到预留区解析 |
-| 未来添加新字段 | 增加 `meta_data_len` 值, 在预留区写入, 旧版本安全跳过 |
-
-> **数据区起始位置 = `HEADER_SIZE = 128` 字节**
+| v1 reader 读 v1 文件 | 正常读取, 解析已知 meta type, 跳过未知 |
+| v2 reader 读 v1 文件 | 读 `meta_length` 跳过未知 meta; 读 `state_length` 对齐 state |
+| v1 reader 读 v2 文件 | 读固定前缀 (9B) + `meta_length` 跳过 meta + `state_length` 跳过 state, 解析已知 state 位置 |
+| 未来添加新 meta 字段 | 增加新 TLV type, `meta_length` 增加, 旧版本通过 length 跳过 |
+| 未来添加新 state 字段 | 增加 state 条目, `state_length` 增加, 旧版本只读前 N 个 8B |
 
 ---
 
@@ -308,34 +450,40 @@ const BLOCK_FLAG_COMPRESSED: u16     = 0x0001;
 const BLOCK_FLAG_SEALED: u16         = 0x0002;
 const BLOCK_FLAG_SINGLE_RECORD: u16  = 0x0004;
 
-const FILE_FLAG_SEALED: u16          = 0x0001;
-const FILE_FLAG_HAS_PENDING: u16     = 0x0002;
+/// File type constants
+const FILE_TYPE_INDEX: u8  = 1;
+const FILE_TYPE_DATA: u8   = 2;
+
+/// Meta TLV types (immutable, written once at creation)
+const META_TYPE_CREATED_AT:     u8 = 0x01;  // i64 LE, unix ms
+const META_TYPE_FILE_OFFSET:    u8 = 0x02;  // i64 LE
+const META_TYPE_FILE_SIZE:      u8 = 0x03;  // u32 LE
+const META_TYPE_COMPRESS_LEVEL: u8 = 0x04;  // u8
 
 /// 文件元数据头 (Header)
 ///
-/// 布局: 固定核心(10B) + meta_data_len(2B) + 扩展元数据(52B) + 预留(64B) = 128B
+/// 布局: 固定前缀(9B) + meta_tlv(33B) + state_length(2B) + state(56B) = 100B
 struct FileMetadata {
-    // === 固定核心 (所有版本必须可读, 10 bytes) ===
+    // === 固定前缀 (所有版本必须可读, 9 bytes) ===
     magic: [u8; 4],                  // b"TMSL"
     version: u16,                    // = 1
-    file_flags: u16,
-    // === 扩展信息 ===
-    meta_data_len: u16,              // = 52 (v1)
-                                     // 其后扩展元数据的总字节数
-    file_type: i64,                  // >0=data, <0=index
-    file_offset: i64,                // 数据段:字节offset / 索引段:秒级timestamp
-    file_size: i64,                  // 文件总大小
+    file_type: u8,                   // 1=index, 2=data
+                                     // === Meta 不可变 (TLV, 创建时写入) ===
     created_at: i64,                 // 创建时间(unix ms)
-    wrote_position: i64,             // 已写入位置(从 HEADER_SIZE 起算) ← after created_at
-    record_count: i64,               // 总记录数
+    file_offset: i64,                // data: 字节offset / index: 秒级timestamp
+    file_size: u32,                  // 文件总大小(字节)
+    compress_level: u8,              // 压缩级别
+    // === State 可变 (每值固定 8 字节, 顺序存储) ===
+    wrote_position: u64,             // 当前写入位置(从 HEADER_SIZE 起算)
+    record_count: u64,               // 总记录数
     total_uncompressed_size: u64,    // 所有 record 原始数据总大小
-    pending_block_offset: i64,       // 未完成 Block 相对偏移 (-1=无)
-    pending_uncomp_size: u32,        // pending block 未压缩大小
-    pending_record_count: u16,       // pending block record 数量
-    _reserved: [u8; 50],            // 预留 (50 bytes)
+    invalid_record_count: u64,       // 无效/跳过记录数
+    pending_block_offset: u64,       // 未完成 block 相对偏移 (u64::MAX=无)
+    pending_wrote_position: u64,     // pending block 内已写入位置
+    pending_record_count: u64,       // pending block 内 record 数量
 }
 
-const HEADER_SIZE: u64 = 128;
+const HEADER_SIZE: u64 = 100;
 
 /// 索引条目
 #[derive(Clone, Copy, Debug)]
@@ -424,20 +572,26 @@ impl DataSegmentSet {
     /// 加载已有的 data segment 元数据 (Store open 时)
     pub fn load_existing(base_dir: &Path, segment_size: u64,
                          block_max_size: u32, compress_level: u8) -> Result<Self> {
+        let data_dir = base_dir.join("data");
         let mut metas: Vec<DataSegmentMeta> = Vec::new();
-        for entry in std::fs::read_dir(base_dir)? {
-            let p = entry?.path();
-            if p.is_dir() || p.file_name().map(|n| n == ".index").unwrap_or(false) {
-                continue;
+        if data_dir.exists() {
+            for entry in std::fs::read_dir(&data_dir)? {
+                let p = entry?.path();
+                if p.is_dir() {
+                    continue;
+                }
+                if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
+                    if let Ok(offset) = u64::from_str_radix(stem, 10) {
+                        let file_size = std::fs::metadata(&p)?.len();
+                        metas.push(DataSegmentMeta { path: p, file_offset: offset, file_size });
+                    }
+                }
             }
-            let offset = u64::from_str_radix(p.file_stem().and_then(|n| n.to_str()).unwrap_or("0"), 10)?;
-            let file_size = std::fs::metadata(&p)?.len();
-            metas.push(DataSegmentMeta { path: p, file_offset: offset, file_size });
         }
         metas.sort_by_key(|m| m.file_offset);
         let next_offset = metas.last().map(|m| m.file_offset + segment_size).unwrap_or(0);
         Ok(Self {
-            base_dir: base_dir.to_path_buf(),
+            base_dir: data_dir,
             segment_size, block_max_size, compress_level,
             segments: Vec::new(),
             closed_segments: metas,
@@ -463,18 +617,17 @@ struct DataSegment {
     path: PathBuf,
     file_offset: u64,
     file_size: u64,
-    wrote_position: u64,            // 从 data_start(128) 起算
+    wrote_position: u64,            // 从 data_start(100) 起算
     record_count: u64,
     total_uncompressed_size: u64,
     created_at: i64,
     mmap: Option<MmapMut>,           // None = closed/unmapped
-    sealed: bool,
     lifecycle: SegmentLifecycle,     // Closed / OpenReady
     last_accessed_at: Instant,       // 最近读写时间
-    // Pending Block 状态
-    pending_block_offset: Option<u64>,
-    pending_block_uncomp_size: u32,
-    pending_block_record_count: u16,
+    // Pending Block 状态 (从 state 读取)
+    pending_block_offset: Option<u64>,   // u64::MAX = no pending
+    pending_wrote_position: u64,
+    pending_record_count: u64,
 }
 
 enum SegmentLifecycle {
@@ -489,12 +642,13 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ FileHeader (128 bytes)                           │
-│ - "TMSL", version, flags, meta_data_len          │
-│ - file_type, file_offset, file_size, created_at  │
-│ - wrote_position, record_count, uncompressed,    │
-│   pending_block_offset, pending_uncomp/counts,   │
-│   reserved (50 bytes)                            │
+│ FileHeader (100 bytes)                           │
+│ - 固定前缀: magic(4)+version(2)+fileType(1)+     │
+│   meta_length(2)                                 │
+│ - Meta(TLV, 33B): created_at, file_offset,       │
+│   file_size, compress_level                      │
+│ - state_length: 2                                │
+│ - State(56B): 7×8B wrote_position..pending_count │
 ├──────────────────────────────────────────────────┤
 │ Block 1 (sealed, compressed)                     │
 │   BlockHeader (16 bytes)                         │
@@ -760,20 +914,16 @@ impl DataSegment {
         
         // 读取 header, 恢复状态
         let metadata = FileMetadata::read_from(&mmap)?;
-        self.wrote_position = metadata.wrote_position as u64;
-        self.record_count = metadata.record_count as u64;
+        self.wrote_position = metadata.wrote_position;
+        self.record_count = metadata.record_count;
         self.total_uncompressed_size = metadata.total_uncompressed_size;
         
-        // Pending 恢复: 检测 FILE_FLAG_HAS_PENDING
-        if metadata.file_flags & FILE_FLAG_HAS_PENDING != 0 {
-            // pending 存在 → 密封 (不压缩) 确保 reopen 后一致性
-            self.pending_block_offset = Some(metadata.pending_block_offset as u64);
-            self.pending_block_uncomp_size = metadata.pending_uncomp_size;
-            self.pending_block_record_count = metadata.pending_record_count;
+        // Pending 恢复: 检测 pending_block_offset != u64::MAX
+        if metadata.pending_block_offset != u64::MAX {
+            self.pending_block_offset = Some(metadata.pending_block_offset);
+            // pending 存在 → 先密封 (不压缩) 确保 reopen 后一致性
             self.seal_pending_block_no_compress(compress_level)?;
             self.clear_pending();
-            // 清除 header 中的 pending flag
-            FileMetadata::clear_pending(&mut mmap, self.wrote_position as i64);
         }
         
         self.mmap = Some(mmap);
@@ -791,7 +941,6 @@ impl DataSegment {
         if self.pending_block_offset.is_some() {
             self.seal_pending_block_no_compress(compress_level)?;
             self.clear_pending();
-            FileMetadata::clear_pending(self.mmap.as_mut().unwrap(), self.wrote_position as i64);
         }
         self.mmap = None;
         self.lifecycle = SegmentLifecycle::Closed;
@@ -817,13 +966,20 @@ impl DataSegment {
         let payload_size = u32::from_le_bytes(
             self.mmap.as_mut().unwrap()[hdr_pos..hdr_pos+4].try_into()?
         );
-        let record_count = self.pending_block_record_count;
-        let uncomp_size = self.pending_block_uncomp_size;
+        let record_count = self.pending_record_count as u16;
+        let uncomp_size = self.pending_wrote_position as u32;
         
         // 更新 flags: SEALED (no COMPRESSED)
         write_block_header(&mut self.mmap.as_mut().unwrap(), header_off,
             payload_size, BLOCK_FLAG_SEALED, record_count, uncomp_size);
         Ok(())
+    }
+
+    fn clear_pending(&mut self) {
+        self.pending_block_offset = None;
+        self.pending_wrote_position = 0;
+        self.pending_record_count = 0;
+        // 清除 header state: pending_block_offset = u64::MAX
     }
 }
 ```
@@ -846,10 +1002,10 @@ impl DataSegment {
             wrote_position: 0, record_count: 0, total_uncompressed_size: 0,
             created_at: unix_ms_now(),
             mmap: Some(mmap),
-            sealed: false, lifecycle: SegmentLifecycle::OpenReady,
+            lifecycle: SegmentLifecycle::OpenReady,
             last_accessed_at: Instant::now(),
-            pending_block_offset: None, pending_block_uncomp_size: 0,
-            pending_block_record_count: 0,
+            pending_block_offset: None, pending_wrote_position: 0,
+            pending_record_count: 0,
         })
     }
 
@@ -863,19 +1019,18 @@ impl DataSegment {
         if metadata.version != VERSION { return Err(TmslError::InvalidVersion(metadata.version)); }
         Ok(Self {
             path: path.to_path_buf(), file_offset, file_size,
-            wrote_position: metadata.wrote_position as u64,
-            record_count: metadata.record_count as u64,
+            wrote_position: metadata.wrote_position,
+            record_count: metadata.record_count,
             total_uncompressed_size: metadata.total_uncompressed_size,
             created_at: metadata.created_at,
             mmap: Some(mmap),
-            sealed: metadata.file_flags & FILE_FLAG_SEALED != 0,
             lifecycle: SegmentLifecycle::OpenReady,
             last_accessed_at: Instant::now(),
-            pending_block_offset: if metadata.file_flags & FILE_FLAG_HAS_PENDING != 0 {
-                Some(metadata.pending_block_offset as u64)
+            pending_block_offset: if metadata.pending_block_offset != u64::MAX {
+                Some(metadata.pending_block_offset)
             } else { None },
-            pending_block_uncomp_size: metadata.pending_uncomp_size,
-            pending_block_record_count: metadata.pending_record_count,
+            pending_wrote_position: metadata.pending_wrote_position,
+            pending_record_count: metadata.pending_record_count,
         })
     }
 }
@@ -1011,6 +1166,9 @@ impl TimeIndex {
     }
 }
 ```
+
+> **注意**: `TimeIndex::new()` 创建时在 `base_dir` (默认 `index/` 子目录) 下调用
+> `std::fs::create_dir_all`, 而不是 `.index/`。
 
 ### 7.2 IndexEntry 序列化 (18 字节)
 
@@ -1162,7 +1320,7 @@ impl IndexSegment {
 
 ```
 ┌──────────────────────────────────────────────┐
-│ FileHeader (128 bytes)                       │
+│ FileHeader (100 bytes)                       │
 │ - magic "TMSL", version, ...                 │
 │ - file_offset = start_timestamp              │
 ├──────────────────────────────────────────────┤
@@ -1238,11 +1396,17 @@ impl DataSet {
     fn load(
         id: DataSetKey, base_dir: PathBuf, config: &StoreConfig,
     ) -> io::Result<Self> {
+        // 确保 data/ 子目录存在
+        let data_dir = base_dir.join("data");
+        std::fs::create_dir_all(&data_dir)?;
+        // 确保 index/ 子目录存在
+        let index_dir = base_dir.join("index");
+        std::fs::create_dir_all(&index_dir)?;
+
         let segments = DataSegmentSet::load_existing(
-            &base_dir, config.data_segment_size,
+            &data_dir, config.data_segment_size,
             config.block_max_size, config.compress_level,
         )?;
-        let index_dir = base_dir.join(".index");
         let time_index = TimeIndex::load_existing(
             &index_dir, config.index_segment_size,
         )?;
@@ -1484,18 +1648,18 @@ idle-check (每 60s):
        获取写锁后再次检查 last_used_at.elapsed() >= idle_timeout
        如果是 → 执行 idle-close (可能有 concurrent write 刚刚更新了 last_used_at)
        如果否 → 跳过 (并发写操作已经"唤醒"了这个 dataset)
-  3. 对每个打开的 segment:
-     a. mmap.flush() (MS_SYNC)
-     b. 如果 data segment 有 pending block:
-        密封 (不压缩), block.flags |= BLOCK_FLAG_SEALED
-     c. 清除 header FILE_FLAG_HAS_PENDING
-     d. munmap + close file
-  4. dataset 进入 idle 状态 (last_used_at 不变, segments 清空)
+   3. 对每个打开的 segment:
+      a. mmap.flush() (MS_SYNC)
+      b. 如果 data segment 有 pending block (pending_block_offset != u64::MAX):
+         密封 (不压缩), block.flags |= BLOCK_FLAG_SEALED
+      c. 清除 header pending state: pending_block_offset=u64::MAX
+      d. munmap + close file
+   4. dataset 进入 idle 状态 (last_used_at 不变, segments 清空)
 
 on-demand reopen:
-  当读取/写入操作命中已关闭的 segment:
-    - data segment: open + mmap, 检测 FILE_FLAG_HAS_PENDING → 密封恢复
-    - index segment: open + mmap, 直接恢复 (无 pending)
+   当读取/写入操作命中已关闭的 segment:
+     - data segment: open + mmap, 检测 pending_block_offset != u64::MAX → 密封恢复
+     - index segment: open + mmap, 直接恢复 (无 pending)
 ```
 
 > **Race Condition 详述**:
@@ -1519,21 +1683,24 @@ on-demand reopen:
 
 ```
 reopen 时 pending block 恢复流程:
-  1. 读取 FileMetadata, 校验 magic/version
-     - magic != "TMSL" → 返回 InvalidMagic (文件损坏/非本库文件)
-     - version 不兼容 → 返回 InvalidVersion
-  2. 检查 FILE_FLAG_HAS_PENDING flag
-     - 无 → 直接 OpenReady, 无 pending
-     - 有 → 进入恢复流程
-  3. 恢复流程:
-     a. 从 header 恢复 pending_block_offset, pending_uncomp_size, pending_record_count
-     b. 验证: pending_block_offset + HEADER_SIZE + pending_uncomp_size <= file_size
-        - 不满足 → header 损坏, 回退到 wrote_position (丢弃 pending 数据)
-     c. 密封 pending block (FLAGS=SEALED, 不压缩)
-        - 读取当前 payload_size (可能已被部分写入)
-        - 用 pending_record_count + payload_size 更新 block header
-        - 设置 flags = BLOCK_FLAG_SEALED
-     d. 清除 header: pending_block_offset=-1, 清 FILE_FLAG_HAS_PENDING
+   1. 读取 FileMetadata, 校验 magic/version
+      - magic != "TMSL" → 返回 InvalidMagic (文件损坏/非本库文件)
+      - version 不兼容 → 返回 InvalidVersion
+   2. 检查 pending_block_offset != u64::MAX
+      - 等于 u64::MAX → 直接 OpenReady, 无 pending
+      - 小于 u64::MAX → 进入恢复流程
+   3. 恢复流程:
+      a. 从 header 恢复 pending_block_offset, pending_wrote_position, pending_record_count
+      b. 验证: pending_block_offset + HEADER_SIZE + pending_wrote_position <= file_size
+         - 不满足 → header 损坏, 回退到 wrote_position (丢弃 pending 数据)
+      c. 密封 pending block (FLAGS=SEALED, 不压缩)
+         - 读取当前 payload_size (可能已被部分写入)
+         - 用 pending_record_count + payload_size 更新 block header
+         - 设置 flags = BLOCK_FLAG_SEALED
+      d. 清除 header pending state: pending_block_offset=u64::MAX, pending_wrote_position=0, pending_record_count=0
+      e. wrote_position = sealed block 末尾
+      f. 返回 OpenReady (pending 已清除)
+     d. 清除 header pending state: pending_block_offset=u64::MAX
      e. wrote_position = sealed block 末尾
      f. 返回 OpenReady (pending 已清除)
 ```
@@ -1585,10 +1752,10 @@ harness = false
 | 压缩粒度 | record | Block |
 | 压缩时机 | 立即 | 延迟 (pending→sealed, 溢出或 idle-close 时) |
 | 内存映射 | MappedByteBuffer | memmap2::MmapMut, 懒加载/超时关闭(30min) |
-| 元数据 | Protobuf | 128字节 header (固定10B+扩展长度52B+预留64B) |
-| 索引目录 | 同级子目录 | `.index/` 独立子目录 |
+| 元数据 | Protobuf | 100字节 header (meta/state 分离) |
+| 索引目录 | 同级子目录 | `data/` + `index/` 独立子目录 |
 | 索引条目 | 16B (ts+offset) | 18B (ts+block+in_block) |
-| 文件头 | 64B | 128B (含meta_data_len+pending扩展+预留) |
+| 文件头 | 64B | 100B (meta/state分离) |
 | Record编码 | size+ts+data | data_len+ts+data |
 | FFI | 无 | `extern "C"` |
 
@@ -1601,14 +1768,15 @@ src/
 ├── lib.rs              # 入口, re-exports: Store, StoreConfig, TmslError, Result
 ├── store.rs            # Store (门面, 数据集管理, 后台任务启动)
 ├── dataset.rs          # DataSet (name+type 级别, sync_all/idle_close_all)
+├── meta.rs             # DataSetMeta (TLV meta file, read/write/validation)
 ├── segment/
-│   ├── mod.rs          # DataSegmentSet (~data segment, lazy open/close)
+│   ├── mod.rs          # DataSegmentSet (data/ 子目录, lazy open/close)
 │   └── data.rs         # DataSegment (Block 管理, lifecycle, pending recovery)
 ├── block.rs            # BlockHeader (16B, read/write/flags)
 ├── index/
-│   ├── mod.rs          # TimeIndex (~index segment, lazy open/close, query)
+│   ├── mod.rs          # TimeIndex (index/ 子目录, lazy open/close, query)
 │   └── segment.rs      # IndexSegment (18B entries, lifecycle, binary search)
-├── header.rs           # FileMetadata (128B, 固定10B+扩展52B+预留64B)
+├── header.rs           # FileMetadata (100B, meta/state 分离)
 ├── ffi.rs              # extern "C" (catch_unwind, opaque handles, memory mgmt)
 ├── error.rs            # TmslError enum + From impls
 ├── compress.rs         # deflate_compress/decompress + size comparison
@@ -1632,9 +1800,9 @@ src/
 | 超大 record | 独占 block | 不截断数据 |
 | Record 编码 | data_len(2)+ts(8)+data | 支持 block 内随机定位 |
 | 索引条目 | 18 字节 | 精确定位到 block 内 record |
-| 文件头 | 128 字节 | 固定10B核心+扩展长度2B+扩展52B+预留64B, 向后兼容 |
-| 元数据扩展 | meta_data_len (u16) | 告知后续字节数, 未知字段安全跳过 |
-| 索引目录 | `.index/` 独立 | 与数据隔离 |
+| 文件头 | 100 字节 | meta(不可变TLV)/state(可变7×8B)分离, 版本化扩展 |
+| meta 扩展 | TLV {type:1}{len:2}{value:N} | 未知 type 通过 length 跳过, 向前兼容 |
+| 索引目录 | `data/` + `index/` 独立子目录 | 数据与索引物理隔离 |
 | wrote_position 位置 | created_at 之后 | 时间字段集中存放, 便于版本迁移 |
 | 并发 | DataSet 级 Mutex | 不同数据集独立 |
 | flush 行为 | 仅 msync (不 seal/不压缩) | 降低 flush CPU 开销, 压缩延迟至 block 溢出 |

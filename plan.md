@@ -8,17 +8,35 @@
 ## 总体里程碑
 
 ```
-Phase 1: 项目骨架 + 基础工具     ✅
+Phase 1: 项目骨架 + 基础工具     🔄 需更新 (目录结构变更)
 Phase 2: 文件头 + Block 核心     ✅
-Phase 3: DataSegment 写入/读取   ✅
-Phase 4: 时间索引系统            ✅
-Phase 5: DataSegmentSet + DataSet✅
-Phase 6: Store 门面 + 后台任务   ✅
-Phase 7: FFF 接口                ✅
-Phase 8: 集成测试 + 性能调优     ✅
+Phase 3: DataSegment 写入/读取   🔄 需更新 (data/ 子目录)
+Phase 4: 时间索引系统            🔄 需更新 (index/ 子目录)
+Phase 5: DataSegmentSet + DataSet🔄 需更新 (路径 + meta 文件)
+Phase 6: Store 门面 + 后台任务   ✅ (适配路径变更)
+Phase 7: FFI 接口                ✅
+Phase 8: 集成测试 + 性能调优     🔄 需更新 (路径变更)
 ```
 
-**全部 8 个 Phase 完成！✅**
+**全部 8 个 Phase 完成, 但需根据新设计调整: data/ 子目录, index/ 子目录, meta 文件。**
+
+---
+
+## 目录结构变更 (核心)
+
+```
+旧: {data_dir}/{name}/{type}/
+    ├── {segment_files}     ← 数据段直接在 type/ 下
+    ├── .index/             ← 索引目录带前导点
+    └── ...
+
+新: {data_dir}/{name}/{type}/
+    ├── meta                ← 新增: TLV 元数据文件
+    ├── data/               ← 新增: 数据段子目录
+    │   └── {segment_files}
+    └── index/              ← 重命名: 无前导点
+        └── {segment_files}
+```
 
 ---
 
@@ -40,6 +58,7 @@ src/
 ├── lib.rs
 ├── store.rs
 ├── dataset.rs
+├── meta.rs               # 新增: TLV meta file (magic+version+meta_data_length+TLV)
 ├── segment/
 │   ├── mod.rs
 │   └── data.rs
@@ -108,11 +127,32 @@ impl Default for StoreConfig { ... }
 ```
 - 提供 builder 模式: `StoreConfig::builder().flush_interval(...).build()`
 
+### 🔄 1.7 meta.rs - 数据集不可变配置 (TLV)
+- 常量定义:
+  ```rust
+  pub const META_MAGIC: [u8; 4] = *b"TMSM";
+  pub const META_VERSION: u16 = 1;
+  pub const META_TYPE_DATA_SEGMENT_SIZE:  u8 = 0x01; // u64 LE
+  pub const META_TYPE_INDEX_SEGMENT_SIZE: u8 = 0x02; // u64 LE
+  pub const META_TYPE_COMPRESS_LEVEL:     u8 = 0x03; // u8
+  pub const META_TYPE_CREATE_TIME:        u8 = 0x04; // i64 LE (unix ms)
+  ```
+- struct `DataSetMeta` (仅4个不可变字段):
+  - `data_segment_size: u64`, `index_segment_size: u64`
+  - `compress_level: u8`, `create_time: i64`
+- `fn new(data_seg_size, idx_seg_size, compress_level) -> Self` — 创建时写入, 之后永不更新
+- `fn to_bytes(&self) -> Vec<u8>` — 序列化: magic(4)+version(2)+meta_data_length(2)+TLV
+- `fn from_bytes(buf: &[u8]) -> Result<Self>` — 反序列化, 校验 magic, 解析 TLV, 未知 type 跳过
+- `fn write_to_file(&self, path: &Path) -> io::Result<()>`
+- `fn read_from_file(path: &Path) -> Result<Self>`
+- **无 `update_and_write`** — meta 创建后永不修改
+
 ### ✅ Phase 1 验收标准
 - `cargo build` 通过, 生成 .dll/.so
 - `cargo test` 至少 1 个 test pass
 - util.rs 所有 endian 函数单元测试通过
 - error.rs 所有 From impl 覆盖
+- meta.rs TLV roundtrip 测试通过
 
 ---
 
@@ -120,31 +160,38 @@ impl Default for StoreConfig { ... }
 
 **目标**: FileMetadata 序列化/反序列化完成, BlockHeader 读写正确
 
-### ✅ 2.1 header.rs - FileMetadata (128字节)
-- 常量定义:
+### ✅ 2.1 header.rs - FileMetadata (100 字节, meta/state 分离)
+- **常量定义**:
   ```rust
-  pub const HEADER_SIZE: u64 = 128;
-  pub const META_DATA_LEN: u16 = 52;
+  pub const HEADER_SIZE: u64 = 100;
   pub const MAGIC: [u8; 4] = *b"TMSL";
   pub const VERSION: u16 = 1;
+  pub const FILE_TYPE_DATA: u8 = 2;
+  pub const FILE_TYPE_INDEX: u8 = 1;
+  // Meta TLV types (immutable)
+  pub const META_TYPE_CREATED_AT:     u8 = 0x01;
+  pub const META_TYPE_FILE_OFFSET:    u8 = 0x02;
+  pub const META_TYPE_FILE_SIZE:      u8 = 0x03;
+  pub const META_TYPE_COMPRESS_LEVEL: u8 = 0x04;
   ```
-- Flags:
-  ```rust
-  pub const FILE_FLAG_SEALED: u16 = 0x0001;
-  pub const FILE_FLAG_HAS_PENDING: u16 = 0x0002;
-  ```
-- struct `FileMetadata` (128B)
-- `fn write_to(&self, mmap: &mut MmapMut)` - 写入 128 字节
-- `fn read_from(&mmap: &Mmap) -> Result<Self>` - 从 mmap 解析
-  - 校验 magic
-  - 读取 version, 兼容未来版本
-  - 读取 `meta_data_len`, 跳过未知扩展字段
-  - 读取扩展元数据 (52B)
-  - 预留区 50B 解析
-- `fn create_default(file_type: i64, file_offset: i64, file_size: i64) -> Self`
-- `fn update_wrote_position(&mut self, pos: i64)` 原地更新 mmap
-- `fn update_pending_state(&mut self, offset: i64, uncomp_size: u32, count: u16)`
-- `fn flush(&mut self, mmap: &mut MmapMut)` - 将内存结构写回 mmap
+- **文件头布局**:
+  - 固定前缀(9B): magic(4) + version(2) + fileType(1) + meta_length(2)
+  - Meta 不可变 TLV(33B): created_at + file_offset + file_size + compress_level
+  - state_length(2B): 后续 state 总字节数
+  - State 可变 7×8B(56B): wrote_position, record_count, total_uncompressed_size,
+    invalid_record_count, pending_block_offset(u64::MAX=无),
+    pending_wrote_position, pending_record_count
+- struct `FileMetadata` — meta/state 分离 Rust 结构
+- `fn write_to(&self, mmap: &mut MmapMut)` — 序列化: 前缀 + TLV + state
+- `fn read_from(&mmap: &Mmap) -> Result<Self>` — 反序列化
+  - 校验 magic/version
+  - 读取 `meta_length`, 解析已知 TLV 类型, 跳过未知
+  - 读取 `state_length`, 解析 7×8B state 值
+  - 未来版本通过 meta_length/state_length 安全跳过未知
+- `fn create_default(file_type: u8, file_offset: i64, file_size: u32)` — 创建新 header
+- `fn update_state(&mut self, mmap: &mut MmapMut, pos: u64, count: u64, uncomp: u64)` — 更新 wrote_position/record_count/total_uncompressed_size
+- `fn update_pending(&mut self, mmap: &mut MmapMut, offset: u64, wrote: u64, count: u64)` — 更新 pending state
+- `fn clear_pending(&mut self, mmap: &mut MmapMut)` — pending_block_offset=u64::MAX
 
 ### ✅ 2.2 block.rs - BlockHeader (16字节)
 - 常量定义:
@@ -171,8 +218,9 @@ impl Default for StoreConfig { ... }
   - `compressed.len() < original.len()`
 
 ### ✅ Phase 2 验收标准
-- header.rs: 创建→写入→读取, 所有字段 roundtrip 一致 (单元测试)
-- header.rs: `meta_data_len` 正确写入, 未来版本兼容逻辑测试
+- header.rs: 创建→写入→读取, 所有 meta TLV 和 state roundtrip 一致
+- header.rs: 未来版本兼容性 — 未知 TLV type 被正确跳过
+- header.rs: HEADER_SIZE = 100
 - block.rs: 写入→读取, flags 测试 (compress, sealed, single_record)
 - compress.rs: deflate roundtrip 测试, 压缩率测试
 - `cargo test --lib` all pass
@@ -195,13 +243,14 @@ pub struct DataSegment {
     total_uncompressed_size: u64,
     created_at: i64,
     pub mmap: Option<MmapMut>,      // None = closed
-    sealed: bool,
-    pending_block_offset: Option<u64>,
-    pending_block_uncomp_size: u32,
-    pending_block_record_count: u16,
+    lifecycle: SegmentLifecycle,     // Closed / OpenReady
     last_accessed_at: Instant,       // 最近读写时间
-    lifecycle: SegmentLifecycle,     // Closed / OpenReady / OpenIdle
+    // Pending Block 状态 (从 header state 读取)
+    pending_block_offset: Option<u64>,  // u64::MAX = no pending
+    pending_wrote_position: u64,
+    pending_record_count: u64,
 }
+```
 
 pub enum SegmentLifecycle {
     Closed,          // 文件未打开
@@ -216,18 +265,18 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 - `fn create(path: &Path, file_offset: u64, file_size: u64) -> Result<Self>`
   - 创建/截断文件到 file_size
   - mmap (MmapMut)
-  - 写入 FileMetadata (HEADER + data_start=128)
+  - 写入 FileMetadata (HEADER + data_start=100)
   - 初始化所有计数为 0, lifecycle = OpenReady
+  - pending_block_offset = u64::MAX (无 pending)
 - `fn open(path: &Path, file_offset: u64, file_size: u64) -> Result<Self>`
   - 打开文件 (不截断)
   - mmap
   - 读取 FileMetadata, 校验 magic/version
   - 恢复 wrote_position, record_count, total_uncompressed_size
   - 恢复 pending_block 状态
-  - **pending 恢复**: 如果 header 有 pending_block_offset → 密封 (不压缩) → clear pending
-    - 读取 header flags, 如果 `FILE_FLAG_HAS_PENDING`:
+  - **pending 恢复**: 如果 `pending_block_offset != u64::MAX`:
       1. 在 pending_block_offset 处密封 block (flags = SEALED, 不压缩)
-      2. 清除 header: `pending_block_offset = -1`, 清 `FILE_FLAG_HAS_PENDING`
+      2. 清除 header pending state: pending_block_offset=u64::MAX
       3. flush file header 到 mmap
       4. wrote_position 指向 sealed block 之后
 
@@ -265,6 +314,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 - 集成测试: sync → 验证 mmap 内容同步到磁盘, pending block 不变
 - 集成测试: crash 模拟 (不 sync) → reopen → pending block 恢复+密封, 数据部分可恢复
 - 集成测试: create → 写入部分 → close → reopen → 验证 wrote_position 恢复, pending 状态恢复
+- 目录验证: 数据文件保存在 `data/` 子目录下, 而非直接在 base_dir 下
 - `cargo test --lib` all pass
 
 ---
@@ -283,7 +333,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 ### ✅ 4.8 TimeIndex 查询
 ### ✅ 4.9 TimeIndex 加载
 - `fn load_existing(base_dir: &Path, segment_size: u64) -> Result<Self>`
-  - 扫描 `{base_dir}/.index/*` 文件
+  - 扫描 `{base_dir}/index/*` 文件 (即 {data_dir}/{name}/{type}/index/)
   - 按 start_timestamp 排序加载
 
 ### ✅ Phase 4 验收标准
@@ -311,8 +361,12 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 ### ✅ 5.9 DataSet flush/close
 ### ✅ 5.10 DataSet 加载
 - `fn load(id: DataSetKey, base_dir: PathBuf, config: &StoreConfig) -> Result<Self>`
-  - 加载 DataSegmentSet (初始所有 segment closed)
-  - 加载 TimeIndex
+  - 确保 `{base_dir}/data/` 子目录存在
+  - 确保 `{base_dir}/index/` 子目录存在
+  - 读取/创建 `{base_dir}/meta` TLV 文件 (仅4个不可变字段, 创建一次永不更新)
+  - 校验 meta 中的 `data_segment_size`, `index_segment_size` 与 config 一致性
+  - 加载 DataSegmentSet (从 `data/` 子目录, 初始所有 segment closed)
+  - 加载 TimeIndex (从 `index/` 子目录)
   - 恢复 last_used_at
 
 ### ✅ Phase 5 验收标准
@@ -320,6 +374,9 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 - 集成测试: 时间范围查询 (部分数据) → 验证数量和顺序
 - 集成测试: close → reopen → 写入更多 → 验证所有数据可读
 - 集成测试: 多数据集并行 (不同 name/type) → 数据完全隔离
+- 集成测试: meta 文件创建 → roundtrip → data_segment_size/index_segment_size 不一致时拒绝打开
+- 目录验证: 数据文件在 `data/` 下, 索引文件在 `index/` 下, meta 在 type/ 根下
+- 不可变验证: 创建 meta 后再次打开, meta 文件内容未变
 
 ---
 
@@ -345,6 +402,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 - 集成测试: Store idle check 在 30min 后关闭所有 segment, 释放 mmap
 - 集成测试: idle-close 后 → write/read 操作 → on-demand reopen → pending 已密封, 数据一致
 - 集成测试: Store::close 完整关闭所有资源, 无泄漏
+- 目录验证: 所有数据集的 `data/` 和 `index/` 子目录正确创建
 - `cargo test` all pass
 
 ---
@@ -396,7 +454,7 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 ## 依赖关系图
 
 ```
-Phase 1 (骨架+工具+StoreConfig)
+Phase 1 (骨架+工具+StoreConfig+meta.rs)
     │
     ├─────────────────────────────┐
     ▼                             ▼
@@ -404,18 +462,20 @@ Phase 2 (文件头+Block)       Phase 1 (util.rs)
     │                             │
     ▼                             ▼
 Phase 3 (DataSegment + 生命周期) ◄──── Phase 2 (BlockHeader + compress)
-    │  - open/create
-    │  - idle_close (sync + seal pending, no compress)
-    │  - sync (msync only)
-    │  - pending recovery on reopen
-    │
-    ├──────┐
-    ▼      ▼
+    │  - open/create               │
+    │  - idle_close (sync + seal pending, no compress)     │
+    │  - sync (msync only)         │
+    │  - pending recovery on reopen │
+    │  - 数据保存在 data/ 子目录      │
+    │                             │
+    ├──────┐                      │
+    ▼      ▼                      ▼
 Phase 4 (索引 + 生命周期)  Phase 3
     │  - sync, idle_close, ensure_open
+    │  - 索引保存在 index/ 子目录
     └──┬───┘
        ▼
-Phase 5 (DataSet + DataSegmentSet + lazy open/close)
+Phase 5 (DataSet + DataSegmentSet + lazy open/close + meta file)
        │
        ▼
 Phase 6 (Store + 后台任务: flush 10min / idle 30min)
@@ -424,7 +484,7 @@ Phase 6 (Store + 后台任务: flush 10min / idle 30min)
 Phase 7 (FFI 接口)
        │
        ▼
-Phase 8 (集成测试 + 性能 + idle-close 恢复测试)
+Phase 8 (集成测试 + 性能 + idle-close 恢复测试 + 目录结构验证)
 ```
 
 ---
@@ -443,6 +503,9 @@ Phase 8 (集成测试 + 性能 + idle-close 恢复测试)
 | idle-check 竞态 (write between read-lock and write-lock) | 错误关闭活跃 dataset | double-check last_used_at after write-lock acquired |
 | index segment 查询时需遍历所有段 (含 closed) | 查询延迟 | 时间范围过滤: skip 段时间范围不在查询区间内的段 |
 | 10min flush 间隔过长 | crash 损失数据 | mmap 写入已有 OS page cache 保护, 实际风险可控 |
+| meta 文件与 config 不一致 | 数据损坏风险 | data_segment_size / index_segment_size 不一致时直接拒绝打开; compress_level 不一致仅警告 |
+| `.index` 迁移到 `index/` | 旧数据不可读 | 打开时检测 `.index/` 目录, 自动重命名为 `index/` (向后兼容迁移) |
+| 数据文件迁移到 `data/` | 旧数据不可读 | 打开时检测 base_dir 下的 segment 文件, 自动移动到 `data/` 子目录 (向后兼容迁移) |
 
 ---
 
