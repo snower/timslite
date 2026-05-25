@@ -365,6 +365,7 @@ pub struct Store {
     data_dir: PathBuf,
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
     config: StoreConfig,
+    block_cache: Arc<BlockCache>,      // 全局读缓存池 (0=禁用)
     bg_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
 }
@@ -397,6 +398,8 @@ pub struct StoreConfig {
     pub index_segment_size: u64,     // 默认 4MB
     pub block_max_size: u32,         // 默认 65536 (64KB)
     pub compress_level: u8,          // 默认 6
+    pub cache_max_memory: usize,     // 读缓存池上限 (字节, 0=禁用, 默认 256MB)
+    pub cache_idle_timeout: Duration, // 缓存块空闲超时 (默认 30 分钟)
 }
 
 impl Default for StoreConfig {
@@ -408,6 +411,8 @@ impl Default for StoreConfig {
             index_segment_size: 4 * 1024 * 1024,         // 4MB
             block_max_size: 65536,                       // 64KB
             compress_level: 6,
+            cache_max_memory: 256 * 1024 * 1024,         // 256MB
+            cache_idle_timeout: Duration::from_secs(1800), // 30 分钟
         }
     }
 }
@@ -854,14 +859,19 @@ impl DataSegment {
 > 所有写入方法须先调用 `ensure_open()` 确保 mmap 有效。
 > 读取方法须先确保 segment 已打开 (e.g., DataSet::query 中 lazy_open)。
 
-### 6.4 读取: 通过索引定位 Block 内 record
+### 6.4 读取: 通过索引定位 Block 内 record (含缓存)
 
 ```rust
 impl DataSegment {
-    fn read_at_index(&self, entry: &IndexEntry) -> io::Result<(i64, Vec<u8>)> {
+    fn read_at_index(
+        &self,
+        entry: &IndexEntry,
+        cache: Option<&BlockCache>,  // None = 缓存禁用
+    ) -> io::Result<(i64, Vec<u8>)> {
         // 调用者须确保 mmap 有效 (e.g., 先 ensure_open)
         let m = self.mmap.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "segment closed"))?;
         let hdr_pos = HEADER_SIZE as usize + entry.block_offset as usize;
+        let block_offset = entry.block_offset;
 
         // 读取 block header
         let payload_size = u32::from_le_bytes(
@@ -872,18 +882,31 @@ impl DataSegment {
         );
         let is_compressed = flags & BLOCK_FLAG_COMPRESSED != 0;
 
-        // 读取 payload
-        let pay_start = hdr_pos + BLOCK_HEADER_SIZE as usize;
-        let payload = &m[pay_start..pay_start + payload_size];
+        // ── 缓存检查 ──
+        let cache_key = CacheKey::new(&self.path, block_offset);
 
-        // 解压
         let block_data: Vec<u8>;
-        let actual = if is_compressed {
-            block_data = miniz_oxide::inflate::decompress_to_vec(payload)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            &block_data[..]
+        let actual: &[u8] = if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
+            // 缓存命中: 直接使用解压后的数据
+            &cached
         } else {
-            payload
+            // 缓存未命中: 从 mmap 读取 + 解压
+            let pay_start = hdr_pos + BLOCK_HEADER_SIZE as usize;
+            let payload = &m[pay_start..pay_start + payload_size];
+
+            block_data = if is_compressed {
+                miniz_oxide::inflate::decompress_to_vec(payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            } else {
+                payload.to_vec()
+            };
+
+            // 存入缓存 (注意: block 必须已 seal, 数据不可变)
+            if let Some(c) = cache {
+                c.put(cache_key, block_data.clone());
+            }
+
+            &block_data
         };
 
         // 定位 record: entry.in_block_offset 指向 [data_len:2]
@@ -900,6 +923,9 @@ impl DataSegment {
     }
 }
 ```
+
+> **安全性保证**: 只有已 seal 的 block 才能进入缓存。pending block 数据仍在写入中, 不会被缓存。
+> `read_at_index` 只能被查询已 seal block 的 record 调用。
 
 ### 6.5 DataSegment 生命周期方法
 
@@ -1452,12 +1478,12 @@ impl DataSet {
         Ok(())
     }
 
-    fn query(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<(i64, Vec<u8>)>> {
+    fn query(&mut self, start_ts: i64, end_ts: i64, cache: Option<&BlockCache>) -> io::Result<Vec<(i64, Vec<u8>)>> {
         let entries = self.time_index.query(start_ts, end_ts)?;
         let mut records = Vec::with_capacity(entries.len());
         for entry in &entries {
             let segment = self.segments.find_segment(entry.block_offset)?;
-            let (ts, data) = segment.read_at_index(entry)?;
+            let (ts, data) = segment.read_at_index(entry, cache)?;
             records.push((ts, data));
         }
         records.sort_by_key(|(ts, _)| *ts);
@@ -1537,7 +1563,7 @@ flush (配置化，默认10分钟):
 
 ---
 
-## 十、读取流程详解
+## 十、读取流程详解 (含缓存)
 
 ```
 查询 [start_ts, end_ts]
@@ -1546,15 +1572,24 @@ flush (配置化，默认10分钟):
     │      → Vec<IndexEntry(ts, block_offset, in_block_offset)>
     │
     ├─ 2. 对每个 entry:
-    │      ├─ 通过 block_offset 定位 Block
+    │      ├─ 计算 cache_key = (segment_path, entry.block_offset)
+    │      ├─ 检查全局缓存池:
+    │      │   ├─ 命中 → 从缓存读取解压后的 block payload → 跳至定位 record
+    │      │   └─ 未命中 → 继续 ↓
+    │      │
+    │      ├─ 通过 block_offset 定位 data segment
     │      ├─ 读 BlockHeader, 检查 compressed flag
-    │      ├─ compressed → 解压 entire block payload
+    │      ├─ compressed → 解压 entire block payload → 存入缓存池
+    │      ├─ uncompressed → 读取 raw block payload → 存入缓存池
     │      ├─ in_block_offset → 定位到 [data_len:2]
     │      ├─ 读 data_len, timestamp, data
     │      └─ 返回
     │
     └─ 3. 按 timestamp 排序返回
 ```
+
+> **关键**: 缓存存储**解压后的 entire block payload**。命中时跳过文件读取+解压两步操作。
+> 同一 block 可能被多条 record 引用 (多条 record 在同一 block 内), 缓存复用效率高。
 
 ---
 
@@ -1566,6 +1601,7 @@ flush (配置化，默认10分钟):
 > - `create_dataset`: 显式创建新数据集, 需传入 `data_segment_size`, `index_segment_size`, `compress_level`; 已存在返回错误
 > - `open_dataset`: 仅打开已有数据集, 参数从 meta 文件读取
 > - `drop_dataset`: 删除数据集并清除所有关联文件
+> - Store 持有 `BlockCache` (全局共享, 所有 DataSet 查询自动使用缓存)
 
 ```rust
 /// FFI 数据集句柄 (不透明指针)
@@ -1575,6 +1611,7 @@ pub struct Store {
     data_dir: PathBuf,
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
     config: StoreConfig,                     // 统一配置, 包含 flush_interval, idle_timeout, block_max_size
+    block_cache: Arc<BlockCache>,            // 全局读缓存池 (0=禁用)
     bg_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,   // 优雅关闭信号
 }
@@ -1733,25 +1770,29 @@ DataSet: Arc<Mutex<DataSet>>        (读写互斥)
 |------|------|------|
 | Flush | 可配置, 默认 10min | 遍历所有打开的 segment, mmap.flush() (MS_SYNC) |
 | Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + 密封 pending + unmmap + close |
+| Cache Eviction | 60s | 扫描缓存池, last_access_at ≥30min → 回收 + 释放内存 → LRU 检查 |
 
 **线程模型**:
 ```
 后台单线程:
   loop:
-    1. 计算下一次 flush 和 idle check 的到期时间
-    2. wait_timeout = min(next_flush, next_idle) - now
+    1. 计算下一次 flush, idle check, cache eviction 的到期时间
+    2. wait_timeout = min(next_flush, next_idle, next_cache_eviction) - now
     3. shutdown_rx.recv_timeout(wait_timeout)
        - 收到信号 → break
        - 超时 → 继续执行到期任务
     4. 如果 now >= next_flush → 执行 flush
-    5. 如果 now >= next_idle → 执行 idle check
+    5. 如果 now >= next_idle → 执行 idle check (dataset idle-close)
+    6. 如果 now >= next_cache_eviction → 执行缓存回收:
+       block_cache.evict_idle(cache_idle_timeout)
 ```
 
 **优势**:
 - 减少线程数量 (2 → 1)
 - 无固定轮询间隔 (动态计算, 精确到毫秒)
 - 单一 shutdown channel (简化资源管理)
-- 两个任务共享 datasets 读锁 (减少锁竞争)
+- 三个任务共享 datasets 读锁 (减少锁竞争)
+- 缓存回收与 dataset idle-check 同步执行, 无需额外线程
 
 ### 17.1 Flush 行为详解
 
@@ -1797,23 +1838,29 @@ on-demand reopen:
 ### 17.3 后台线程 Rust 实现
 
 ```rust
-/// 单一线程执行 flush 和 idle check。
+/// 单一线程执行 flush、idle check 和缓存回收。
 pub fn spawn_bg_loop(
     datasets: Arc<RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
+    block_cache: Arc<BlockCache>,
     shutdown_rx: mpsc::Receiver<()>,
     flush_interval: Duration,
     idle_check_interval: Duration,  // 默认 60s
     idle_timeout: Duration,          // 默认 30min
+    cache_idle_timeout: Duration,    // 默认 30min
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let mut last_flush = Instant::now();
         let mut last_idle_check = Instant::now();
+        let mut last_cache_eviction = Instant::now();
+        let cache_eviction_interval = Duration::from_secs(60);
 
         loop {
             let now = Instant::now();
             let next_flush = last_flush + flush_interval;
             let next_idle = last_idle_check + idle_check_interval;
-            let wait_time = next_flush.min(next_idle).saturating_duration_since(now);
+            let next_cache = last_cache_eviction + cache_eviction_interval;
+            let wait_time = next_flush.min(next_idle).min(next_cache)
+                .saturating_duration_since(now);
 
             // 等待直到超时或收到 shutdown 信号
             if wait_time.is_zero() {
@@ -1881,6 +1928,15 @@ pub fn spawn_bg_loop(
                 }
                 last_idle_check = now;
             }
+
+            // Cache Eviction
+            if now >= next_cache && block_cache.max_memory() > 0 {
+                let evicted = block_cache.evict_idle(cache_idle_timeout);
+                if evicted > 0 {
+                    log::info!("[bg cache] evicted {} idle entries", evicted);
+                }
+                last_cache_eviction = now;
+            }
         }
     })
 }
@@ -1943,7 +1999,137 @@ reopen 时 pending block 恢复流程:
 
 ---
 
-## 十八、Cargo.toml
+## 十八、读缓存池 (BlockCache)
+
+> **核心原则**: 只缓存**解压后的 seal block payload**。写入不进入缓存, 只有读取时解压后的数据才加入。
+
+### 18.1 设计目标
+
+- 避免重复解压同一个 block (同一 block 可能在一次查询中被多条 record 引用)
+- 跨查询复用解压数据 (高频访问的 time range 多次查询)
+- LRU 淘汰 + idle 回收双策略控制内存上限
+- `cache_max_memory=0` 时完全禁用, 零额外开销
+
+### 18.2 数据结构
+
+```rust
+/// 全局读缓存池 (线程安全, 所有 DataSet 共享)。
+pub struct BlockCache {
+    max_memory: usize,                        // 内存上限 (含 overhead)
+    used_memory: AtomicUsize,                 // 当前已用内存
+    entries: RwLock<HashMap<CacheKey, CacheEntry>>,
+    cache_hit_count: AtomicU64,               // 缓存命中次数 (统计用)
+    cache_miss_count: AtomicU64,              // 缓存未命中次数 (统计用)
+}
+
+/// 缓存条目 key: 全局唯一标识一个 block。
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct CacheKey {
+    segment_file_offset: u64,    // 数据段起始 offset (即 segment 文件名)
+    block_offset: u64,           // block 在 segment 中的相对偏移
+}
+
+/// 缓存条目 value。
+struct CacheEntry {
+    data: Vec<u8>,                 // 解压后的 block payload
+    last_access_at: Instant,      // 最近访问时间 (用于 idle/ LRU 判断)
+    access_count: u64,            // 累计访问次数 (统计用)
+    memory_footprint: usize,      // 实际内存占用 = data.len() + Vec overhead + HashMap entry
+}
+```
+
+### 18.3 内存占用计算
+
+```
+单个 CacheEntry 内存占用:
+  data:          Vec 实际容量 = block payload 大小
+  Vec overhead:  24 bytes (ptr + len + cap)
+  HashMap entry: ~48 bytes (Key + Arc + 哈希表 overhead)
+  Instant:       16 bytes
+  access_count:  8 bytes
+  总计:          data.len() + ~96 bytes
+
+used_memory = Σ(entry.memory_footprint)
+```
+
+### 18.4 缓存接口
+
+```rust
+impl BlockCache {
+    /// 创建缓存池。max_memory=0 表示禁用。
+    pub fn new(max_memory: usize) -> Self;
+
+    /// 获取缓存条目 (返回 Arc 克隆, 同时更新 last_access_at)。
+    /// 命中 → Some(data), 未命中 → None。
+    pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>>;
+
+    /// 存入缓存条目。如果超过 max_memory, 触发 LRU 淘汰。
+    pub fn put(&self, key: CacheKey, data: Vec<u8>);
+
+    /// 回收空闲超时的条目 (后台 idle 线程调用)。
+    /// 返回释放的条目数量。
+    pub fn evict_idle(&self, idle_timeout: Duration) -> usize;
+
+    /// 强制清空所有缓存。
+    pub fn clear(&self);
+
+    /// 统计信息
+    pub fn stats(&self) -> CacheStats {
+        CacheStats {
+            entry_count, used_memory, hit_count, miss_count,
+        }
+    }
+}
+```
+
+### 18.5 LRU 淘汰策略
+
+```
+put 时淘汰流程:
+  1. 计算新增内存: new_used = used_memory + entry.memory_footprint
+  2. 如果 new_used > max_memory:
+     a. 收集所有 entry, 按 last_access_at 排序 (从旧到新)
+     b. 依次淘汰最旧的 entry, 直到 used_memory + entry_footprint <= max_memory × 0.85
+     c. 目标: 留出 15% 余量, 避免每次 put 都触发淘汰
+  3. 插入新 entry
+```
+
+> **为什么 85% 而不是 100%**: 如果淘汰到刚够容纳新条目, 下一次 put 又会触发淘汰。
+> 留 15% 余量减少淘汰频率 (类似 JVM GC 水位线)。
+
+### 18.6 Idle 回收 (后台任务集成)
+
+```
+后台 bg loop idle check 周期 (每 60s):
+  1. 执行原有的 dataset idle-close 检查
+  2. 如果 cache_max_memory > 0:
+     block_cache.evict_idle(cache_idle_timeout)
+     → 回收 last_access_at.elapsed() >= cache_idle_timeout 的条目
+```
+
+**LRU 淘汰 vs Idle 回收的区别**:
+
+| 策略 | 触发时机 | 淘汰对象 | 效果 |
+|------|----------|----------|------|
+| LRU 淘汰 | `put` 时 (used_memory > max_memory) | 最久未访问的 entry | 控制内存上限 |
+| Idle 回收 | 后台线程每 60s | 超过 idle_timeout 的 entry | 释放不再访问的内存 |
+
+两者互补: LRU 保证内存不超限, Idle 保证不浪费内存存放冷数据。
+
+### 18.7 缓存写入规则
+
+| 操作 | 是否进入缓存 | 原因 |
+|------|-------------|------|
+| `DataSet::write` | ❌ 不进入 | 写入的是 raw 数据, seal 后才可确定 final 内容 |
+| `DataSet::query` | ✅ 进入 (解压后) | 解压后的 seal block 数据不可变, 安全缓存 |
+| 未压缩 block 读取 | ✅ 进入 | raw payload 直接从 mmap 复制到缓存 |
+| 压缩 block 读取 | ✅ 进入 (解压后) | 解压操作是 CPU 密集型, 缓存价值最高 |
+
+> **安全性**: 只有 **已 seal 的 block** 才能被查询到。seal 后的 block 数据永不修改, 缓存无一致性问题。
+
+---
+
+## 十九、Cargo.toml
 
 ```toml
 [package]
@@ -1974,7 +2160,7 @@ harness = false
 
 ---
 
-## 十九、与 TimeStore 的差异
+## 二十、与 TimeStore 的差异
 
 | 对比项 | TimeStore (Java) | timslite (Rust) |
 |--------|------------------|-----------------|
@@ -1991,17 +2177,18 @@ harness = false
 
 ---
 
-## 二十、模块结构
+## 二十一、模块结构
 
 ```
 src/
 ├── lib.rs              # 入口, re-exports: Store, StoreConfig, TmslError, Result
-├── store.rs            # Store (门面, 数据集管理, 后台任务启动)
+├── store.rs            # Store (门面, 数据集管理, 后台任务启动, 缓存池初始化)
 ├── dataset.rs          # DataSet (name+type 级别, sync_all/idle_close_all)
 ├── meta.rs             # DataSetMeta (TLV meta file, read/write/validation)
+├── cache.rs            # BlockCache (全局读缓存池, LRU + idle 回收)  ← 新增
 ├── segment/
 │   ├── mod.rs          # DataSegmentSet (data/ 子目录, lazy open/close)
-│   └── data.rs         # DataSegment (Block 管理, lifecycle, pending recovery)
+│   └── data.rs         # DataSegment (Block 管理, lifecycle, pending recovery, read_at_index+缓存)
 ├── block.rs            # BlockHeader (16B, read/write/flags)
 ├── index/
 │   ├── mod.rs          # TimeIndex (index/ 子目录, lazy open/close, query)
@@ -2013,14 +2200,12 @@ src/
 ├── config.rs           # StoreConfig + StoreConfigBuilder + DataSetConfig (internal)
 ├── util.rs             # endian helpers, mmap read/write macros
 └── bg/
-    ├── mod.rs          # BackgroundTasks (start/stop)
-    ├── flush.rs        # flush loop (msync only, configurable interval)
-    └── idle.rs         # idle-check loop (30min timeout, double-check race guard)
+    └── mod.rs          # BackgroundTasks (flush + idle + 缓存回收, 单线程统一循环)
 ```
 
 ---
 
-## 二十一、关键设计决策
+## 二十二、关键设计决策
 
 | 决策 | 选择 | 理由 |
 |------|------|------|
@@ -2042,3 +2227,8 @@ src/
 | **数据集创建/打开分离** | `create` (显式, 带参数) / `open` (仅读 meta) | 防止误创建已有数据集, 参数不可变保证数据完整性 |
 | **参数不可变** | 创建后 `data_segment_size` / `index_segment_size` / `compress_level` 不可修改 | 影响文件布局, 修改会破坏已有数据 |
 | **数据集删除** | `drop_dataset` 删除整个目录树 | 完整清理不再需要的数据集 |
+| **读缓存内容** | 解压后的 seal block payload | 跳过文件读取+解压两步, 缓存价值最高 |
+| **缓存写入规则** | 只缓存读取时的解压数据, 不缓存写入 | seal 前数据不可预测, seal 后数据不可变 |
+| **缓存淘汰策略** | LRU (容量驱动) + Idle 回收 (时间驱动) | 双策略互补: LRU 保上限, Idle 清冷数据 |
+| **LRU 淘汰水位** | 降至 max_memory × 0.85 | 留 15% 余量, 减少淘汰频率 |
+| **缓存禁用** | `cache_max_memory=0` | 零额外开销 (Optional`cache` 传递) |
