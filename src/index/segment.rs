@@ -16,6 +16,11 @@ use crate::util::{read_i64_from_mmap, read_u16_from_mmap, write_u64_to_mmap};
 
 pub const INDEX_ENTRY_SIZE: usize = 18;
 
+/// Sentinel value for filler entry block_offset (no real data).
+pub const BLOCK_OFFSET_FILLER: u64 = 0xFFFFFFFFFFFFFFFF;
+/// Sentinel value for filler entry in_block_offset (no real data).
+pub const IN_BLOCK_OFFSET_FILLER: u16 = 0xFFFF;
+
 /// A single index entry: 18 bytes on disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexEntry {
@@ -50,6 +55,11 @@ impl IndexEntry {
             block_offset,
             in_block_offset,
         }
+    }
+
+    /// Check if this entry is a filler (sentinel) entry.
+    pub fn is_filler(&self) -> bool {
+        self.block_offset == BLOCK_OFFSET_FILLER && self.in_block_offset == IN_BLOCK_OFFSET_FILLER
     }
 }
 
@@ -242,6 +252,52 @@ impl IndexSegment {
         None
     }
 
+    /// Binary search: find entry index with timestamp == target_ts.
+    /// Returns Some(entry_index) if found, None otherwise.
+    pub fn find_entry_index(&self, target_ts: i64) -> Option<usize> {
+        let mmap = self.mmap.as_ref()?;
+        if self.wrote_count == 0 {
+            return None;
+        }
+        let (mut lo, mut hi) = (0usize, self.wrote_count - 1);
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let pos = HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
+            let ts = read_i64_from_mmap(mmap, pos);
+            match ts.cmp(&target_ts) {
+                std::cmp::Ordering::Equal => return Some(mid),
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => {
+                    if mid == 0 {
+                        break;
+                    }
+                    hi = mid - 1;
+                }
+            }
+        }
+        None
+    }
+
+    /// Overwrite an entry at the given index. Only valid for open segments.
+    /// Used in continuous mode when back-filling filler entries with real data.
+    pub fn overwrite_entry(&mut self, entry_index: usize, new_entry: &IndexEntry) -> Result<()> {
+        if entry_index >= self.wrote_count {
+            return Err(TmslError::InvalidData(format!(
+                "entry index {} out of range [0, {})",
+                entry_index, self.wrote_count
+            )));
+        }
+        let mmap = self
+            .mmap
+            .as_mut()
+            .ok_or_else(|| TmslError::MmapError("index segment closed".into()))?;
+        let pos = HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
+        mmap[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&new_entry.to_bytes());
+        // No header update needed — record_count stays the same
+        self.last_accessed_at = Instant::now();
+        Ok(())
+    }
+
     /// Range query: all entries with timestamp in [start_ts, end_ts].
     pub fn query_range(&self, start_ts: i64, end_ts: i64) -> Vec<IndexEntry> {
         let mmap = self.mmap.as_ref().expect("index segment must be open");
@@ -303,5 +359,67 @@ impl IndexSegmentMeta {
             start_timestamp,
             entries_capacity,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join("timslite_test_segment");
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn test_index_segment_find_entry_index() {
+        let dir = temp_dir();
+        let sub = dir.join("find_entry_index");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut seg = IndexSegment::create(&sub, 0, 4096).unwrap();
+        for i in 0..20 {
+            seg.append_entry(&IndexEntry::new(i * 10, i as u64 * 100, (i * 3) as u16))
+                .unwrap();
+        }
+        // Find exact matches
+        assert_eq!(seg.find_entry_index(50), Some(5));
+        assert_eq!(seg.find_entry_index(0), Some(0));
+        assert_eq!(seg.find_entry_index(190), Some(19));
+        // Not found
+        assert_eq!(seg.find_entry_index(55), None);
+        assert_eq!(seg.find_entry_index(-1), None);
+        assert_eq!(seg.find_entry_index(200), None);
+    }
+
+    #[test]
+    fn test_index_segment_overwrite_entry() {
+        let dir = temp_dir();
+        let sub = dir.join("overwrite_entry");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut seg = IndexSegment::create(&sub, 0, 4096).unwrap();
+        // Add a filler-like entry
+        seg.append_entry(&IndexEntry::new(100, 0xFFFFFFFFFFFFFFFF, 0xFFFF))
+            .unwrap();
+        seg.append_entry(&IndexEntry::new(200, 0xFFFFFFFFFFFFFFFF, 0xFFFF))
+            .unwrap();
+
+        // Overwrite index 1 with real data
+        let new_entry = IndexEntry::new(200, 12345, 42);
+        seg.overwrite_entry(1, &new_entry).unwrap();
+
+        // Verify via find_exact
+        let found = seg.find_exact(200).unwrap();
+        assert_eq!(found.block_offset, 12345);
+        assert_eq!(found.in_block_offset, 42);
+
+        // Verify out of range error
+        let result = seg.overwrite_entry(5, &IndexEntry::new(999, 0, 0));
+        assert!(result.is_err());
     }
 }

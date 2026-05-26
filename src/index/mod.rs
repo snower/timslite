@@ -3,7 +3,7 @@
 //! Index entries are buffered in-memory and flushed to disk segments when the
 //! buffer reaches the threshold. Segments are filled sequentially (not by hash).
 
-mod segment;
+pub mod segment;
 
 use std::path::Path;
 
@@ -35,6 +35,16 @@ impl TimeIndex {
             in_memory_buffer: Vec::new(),
             in_memory_flush_threshold: 1024,
         })
+    }
+
+    /// Add a filler entry (sentinel for continuous mode).
+    /// Filler entries are buffered but skipped during flush in pure-filler segments.
+    pub fn add_filler_entry(&mut self, timestamp: i64) {
+        self.in_memory_buffer.push(IndexEntry::new(
+            timestamp,
+            crate::index::segment::BLOCK_OFFSET_FILLER,
+            crate::index::segment::IN_BLOCK_OFFSET_FILLER,
+        ));
     }
 
     /// Add an entry to the in-memory buffer. Automatically flushes when threshold reached.
@@ -100,7 +110,57 @@ impl TimeIndex {
         }
 
         self.in_memory_buffer.clear();
+
+        // After all entries are flushed, check for pure-filler segments
+        self.remove_pure_filler_segments();
+
         Ok(())
+    }
+
+    /// Remove segments that contain only filler entries (no real data).
+    /// Used in continuous mode to avoid creating segments filled entirely
+    /// with filler entries that span no real data.
+    fn remove_pure_filler_segments(&mut self) {
+        use crate::index::segment::BLOCK_OFFSET_FILLER;
+
+        // Check closed_index_segments
+        self.closed_index_segments.retain(|meta| {
+            if let Ok(seg) = IndexSegment::open(&meta.path, meta.start_timestamp) {
+                if seg.wrote_count > 0 {
+                    // Check if all entries are filler
+                    let all_filler = seg
+                        .query_range(i64::MIN, i64::MAX)
+                        .iter()
+                        .all(|e| e.block_offset == BLOCK_OFFSET_FILLER);
+                    if all_filler {
+                        let _ = std::fs::remove_file(&meta.path);
+                        log::debug!("[index] removed pure-filler segment: {:?}", meta.path);
+                        return false; // remove from vec
+                    }
+                }
+            }
+            true // keep
+        });
+
+        // Check open index_segments
+        let mut to_remove = Vec::new();
+        for (idx, seg) in self.index_segments.iter_mut().enumerate() {
+            if seg.wrote_count > 0 {
+                let all_filler = seg
+                    .query_range(i64::MIN, i64::MAX)
+                    .iter()
+                    .all(|e| e.block_offset == BLOCK_OFFSET_FILLER);
+                if all_filler {
+                    seg.idle_close().ok();
+                    let _ = std::fs::remove_file(&seg.path);
+                    log::debug!("[index] removed pure-filler segment: {:?}", seg.path);
+                    to_remove.push(idx);
+                }
+            }
+        }
+        for idx in to_remove.into_iter().rev() {
+            self.index_segments.remove(idx);
+        }
     }
 
     /// Get or create a segment for the given timestamp.
@@ -363,5 +423,39 @@ mod tests {
         // Query all
         let entries = idx2.query(2000, 2099).unwrap();
         assert_eq!(entries.len(), 100);
+    }
+
+    #[test]
+    fn test_time_index_pure_filler_segments_removed() {
+        // This tests that when we add ONLY filler entries (no real data),
+        // the segments are removed during flush.
+        let dir = temp_dir();
+        let sub = dir.join("pure_filler");
+        let _ = fs::remove_dir_all(&sub);
+        fs::create_dir_all(&sub).unwrap();
+
+        let mut idx = TimeIndex::new(&sub, 4096).unwrap();
+        idx.in_memory_flush_threshold = 3;
+
+        // Add only filler entries (more than one segment worth)
+        for i in 0..100 {
+            idx.add_filler_entry(1000 + i);
+        }
+        // Add one real entry at the end
+        idx.add_entry(1100, 999, 0).unwrap();
+        idx.flush_to_disk().unwrap();
+
+        // Count files in directory
+        let file_count = fs::read_dir(&sub)
+            .unwrap()
+            .filter(|e| e.as_ref().unwrap().path().is_file())
+            .count();
+
+        // There should be only 1 segment file (the one with the real entry)
+        assert!(file_count >= 1);
+
+        // Verify the real entry is queryable
+        let entries = idx.query(1100, 1100).unwrap();
+        assert_eq!(entries.len(), 1);
     }
 }

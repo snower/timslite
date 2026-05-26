@@ -17,7 +17,7 @@ Phase 6: Store 门面 + 后台任务   ✅ (create_dataset/drop_dataset 分离)
 Phase 7: FFI 接口                ☐ (待添加 create/drop)
 Phase 8: 集成测试 + 性能调优     ☐ (待更新 create/open/drop 生命周期测试)
 Phase 9: 读缓存池 (BlockCache)   ✅ (LRU + idle 回收, 解压 block 缓存)
-Phase 10: 索引连续存储            ☐ (filler 条目, sentinel 值, 逆序拒绝)
+Phase 10: 索引连续存储            ☐ (filler 条目, sentinel 值, mmap 覆盖写, meta TLV 扩展)
 ```
 
 **全部 8 个 Phase 完成! HEADER_SIZE = 100B, meta/state 分离, data/ + index/ 子目录, meta TLV 文件**
@@ -547,20 +547,21 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 **目标**: 索引条目按连续序号增长, 缺失时间戳填充哨兵值条目, 逆序写入统一拒绝
 
-### ☐ 10.1 meta.rs 扩展 — 新增 TLV type 0x05
-- 常量: `META_TYPE_INDEX_CONTINUOUS: u8 = 0x05` (u8: 0=非连续, 1=连续)
+### ✅ 10.1 meta.rs 扩展 — 新增 TLV type 0x05
+- 常量: `META_INDEX_CONTINUOUS: u8 = 0x05` (u8: 0=非连续, 1=连续)
 - `DataSetMeta` 新增字段: `index_continuous: u8` (default=0)
 - `DataSetMeta::new()` 新增参数 `index_continuous`, 写入 TLV
 - `DataSetMeta::from_bytes()` 解析 type 0x05, 未知旧版本跳过
 
-### ☐ 10.2 DataSetMeta/DataSetConfig 更新
+### ✅ 10.2 DataSetMeta/DataSetConfig 更新
 - `DataSetMeta` struct: 新增 `index_continuous: u8` 字段
 - `DataSetConfig` struct: 新增 `index_continuous: u8` 字段
 - `DataSet::create()`: 新增 `index_continuous` 参数, 传入 meta + config
 - `DataSet::open()`: 从 meta 读取 `index_continuous`
 - `Store::create_dataset()`: 新增 `index_continuous` FFI/Rust API 参数
+- `DataSetConfigBuilder` 新增 `index_continuous()` builder method
 
-### ☐ 10.3 DataSet 写入逻辑更新
+### ✅ 10.3 DataSet 写入逻辑更新
 - `DataSet::write()`: 
   - 新增状态跟踪: `latest_written_timestamp: i64` (初始从 index segment 恢复)
   - 检查逆序: 
@@ -569,14 +570,14 @@ const BLOCK_HEADER_SIZE: u64 = 16;
       - `timestamp > latest_written_timestamp`: 填充缺失 + 正常写入
       - `timestamp < latest_written_timestamp`: 数据追加到最新段 + 替换匹配的 filler
       - `timestamp == latest_written_timestamp`: `Error("duplicate timestamp")`
-  - 如果 `index_continuous == true` 且 `timestamp > latest`:
-    - 填充缺失: for ts in `(latest+1)..(timestamp-1)` → add filler entry
+  - 如果 `index_continuous == 1` 且 `timestamp > latest`:
+    - 填充缺失: for ts in `(latest+1)..(timestamp-1)` → `time_index.add_filler_entry(ts)`
     - 然后写入真实 entry
   - 否则 (连续模式补数据):
     - 写入数据到 DataSegmentSet
-    - `find_filler_entry(ts)` → mmap 覆盖写 18 字节 → 替换为真实 entry
+    - `replace_filler_with_real(ts)` → mmap 覆盖写 18 字节 → 替换为真实 entry
 
-### ☐ 10.3.1 IndexSegment: find_exact + 覆盖写方法
+### ✅ 10.3.1 IndexSegment: find_entry_index + overwrite_entry
 - `IndexSegment::find_exact(timestamp)` 已存在, 返回 `IndexEntry` (副本)
 - 新增: `IndexSegment::find_entry_index(timestamp) -> Option<usize>` — 返回 entry 在 segment 中的索引位置
 - 新增: `IndexSegment::overwrite_entry(entry_index: usize, new_entry: &IndexEntry)`
@@ -584,50 +585,48 @@ const BLOCK_HEADER_SIZE: u64 = 16;
   - 计算 mmap 偏移: `HEADER_SIZE + entry_index * INDEX_ENTRY_SIZE`
   - 覆盖写 18 字节
 
-### ☐ 10.4 TimeIndex 填充逻辑
+### ✅ 10.4 TimeIndex 填充逻辑
 - `TimeIndex::add_entry()` 保持不变 (仅追加, 不感知 filler)
-- 填充循环在 `DataSet::write()` 层完成, 每次调用 `TimeIndex::add_entry()`
+- 新增: `TimeIndex::add_filler_entry(timestamp)` — 添加哨兵条目
+- 填充循环在 `DataSet::write()` 层完成, 每次调用 `add_filler_entry()`
 - 利用现有的 in_memory_buffer + flush 机制
 
-### ☐ 10.5 Index Segment 跳过规则
+### ✅ 10.5 Index Segment 跳过规则
 - `TimeIndex::flush_to_disk()`:
-  - 记录每个创建的 segment 是否包含真实 entry (非 filler)
-  - flush 完成后, 无真实 entry 的 segment: close + delete 文件 + 从 metas 移除
-- Filler 识别: `block_offset == 0xFFFFFFFFFFFFFFFF && in_block_offset == 0xFFFF`
+  - flush 完成后调用 `remove_pure_filler_segments()`
+  - 仅含 filler 的 segment: close + delete 文件 + 从 vec 移除
+- Filler 识别: `block_offset == BLOCK_OFFSET_FILLER (0xFFFFFFFFFFFFFFFF)`
 
-### ☐ 10.6 读取时 Filler 过滤
+### ✅ 10.6 读取时 Filler 过滤
 - `DataSet::query()`: 
-  - 获取 entries 后过滤: `entries.retain(|e| e.block_offset != 0xFFFFFFFFFFFFFFFF)`
-  - 或 `DataSegment::read_at_index()`: 哨兵值 → `Err(NotFound("filler"))`
+  - 查询时跳过: `if entry.block_offset == BLOCK_OFFSET_FILLER { continue; }`
 
-### ☐ 10.7 Timestamp = 0 保护
-- `DataSet::write()`: 检查 `timestamp > 0`, 否则返回错误
-- 防止与 index segment 起始偏移 = 0 的文件名冲突
+### ✅ 10.7 Timestamp = 0 保护
+- `DataSet::write()`: 检查 `timestamp > 0`, 否则返回 `Error("timestamp must be > 0")`
 
-### ☐ 10.8 重启恢复 latest_written_timestamp
+### ✅ 10.8 重启恢复 latest_written_timestamp
 - `DataSet::open()`:
-  - 扫描所有 closed index segments, 读取最后一条 entry 的 timestamp
-  - 遍历 in_memory_buffer, 取最大 timestamp
-  - 设置 `latest_written_timestamp`
+  - `recover_latest_timestamp(&time_index)`: 扫描所有 index segments + buffer, 取最大 timestamp
 
-### ☐ 10.9 FFI API 更新
-- `tmsl_dataset_create`: 新增 `index_continuous: u8` 参数
-- `include/timslite.h`: 更新函数声明
+### ✅ 10.9 FFI API 更新
+- `tmsl_dataset_create`: ✅ 新增 `index_continuous: c_uchar` 参数
+- `include/timslite.h`: ✅ 更新函数声明: 新增 `tmsl_dataset_create` (含 index_continuous), `tmsl_dataset_drop`
 - 错误处理: 逆序写入返回 -1, err_buf 写错误信息
 
-### ☐ Phase 10 验收标准
-- 单元测试: meta TLV 0x05 roundtrip (创建→写入→读取)
-- 单元测试: 连续模式正序写入 ts=100 → ts=150 → filler 49 条, index 共 51 entries
-- 单元测试: 连续模式补数据 ts=120 → filler 被替换 → 查询返回 3 条真实数据
-- 单元测试: 连续模式补数据 ts=120 → 非 filler 位置 → Error
-- 单元测试: 连续模式补数据 ts=150 (等于 latest) → Error("duplicate timestamp")
-- 单元测试: 非连续模式逆序写入 ts=100 → ts=50 → Error("out-of-order")
-- 单元测试: Filler 识别: `block_offset == 0xFFFFFFFFFFFFFFFF` → query 时正确跳过
-- 单元测试: 大量填充 (跨 segment) → 仅含真实 entry 的 segment 被创建
-- 集成测试: 连续模式创建→写入→close→reopen→补数据→写入→数据一致
-- 集成测试: 非连续模式写入 ts=100 → ts=150 → index 仅 2 entries (无 filler)
-- 集成测试: timestamp≤0 写入 → Error
-- 集成测试: 所有现有 74 tests pass (不受影响)
+### ✅ Phase 10 验收标准
+- 单元测试: meta TLV 0x05 roundtrip (创建→写入→读取) ✅
+- 单元测试: 连续模式正序写入 ts=100 → ts=150 → filler 49 条, index 共 51 entries ✅ test_continuous_mode_filler_filling
+- 单元测试: 连续模式补数据 ts=120 → filler 被替换 → 查询返回 3 条真实数据 ✅ test_continuous_mode_backfill_replaces_filler
+- 单元测试: 连续模式补数据 ts=100 (对应真实 entry) → Error("already has real data") ✅ test_continuous_backfill_non_filler_rejected
+- 单元测试: 连续模式补数据 ts=150 (等于 latest) → Error("duplicate timestamp") ✅ test_continuous_mode_duplicate_timestamp_rejected
+- 单元测试: 非连续模式逆序写入 ts=100 → ts=50 → Error("out-of-order") ✅ test_noncontinuous_mode_out_of_order_rejected
+- 单元测试: Filler 识别: `block_offset == 0xFFFFFFFFFFFFFFFF` → query 时正确跳过 ✅ (已验证于 test_continuous_mode_filler_filling 和 test_continuous_mode_backfill_replaces_filler)
+- 单元测试: 大量填充 (跨 segment) → 仅含真实 entry 的 segment 被创建 ✅ (test_time_index_pure_filler_segments_removed)
+- 单元测试: IndexSegment find_entry_index ✅, overwrite_entry ✅
+- 集成测试: 连续模式创建→写入→close→reopen→补数据→写入→数据一致 ✅ test_continuous_open_recovery_latest_timestamp
+- 集成测试: 非连续模式写入 ts=100 → ts=150 → 仅 2 entries (无 filler) ✅ (现有集成测试验证)
+- 集成测试: timestamp≤0 写入 → Error ✅ test_timestamp_zero_rejected
+- 集成测试: 所有 86 tests pass (77 unit + 9 integration) ✅
 
 ---
 
@@ -670,7 +669,7 @@ Phase 8 (集成测试 + 性能 + idle-close 恢复测试 + 目录结构验证)
 Phase 9 (读缓存池: BlockCache LRU + idle 回收 + 读取集成)
         │
         ▼
-Phase 10 (索引连续存储: filler 条目 + sentinel 值 + mmap 覆盖写 + meta TLV 扩展)
+Phase 10 (索引连续存储: filler 条目 + sentinel 值 + mmap 覆盖写 + meta TLV 扩展) ✅
 ```
 
 ---

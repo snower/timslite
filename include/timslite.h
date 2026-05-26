@@ -41,7 +41,37 @@ int tmsl_store_close(void* store, char* err_buf, size_t err_buf_len);
 /* ─── Dataset Management ────────────────────────────────────────────────── */
 
 /**
- * Open or create a dataset within a store.
+ * Create a new dataset (errors if already exists).
+ * @param store                Opaque store pointer.
+ * @param name                 Dataset name.
+ * @param dataset_type         Dataset type.
+ * @param data_segment_size    Data segment size in bytes.
+ * @param index_segment_size   Index segment size in bytes.
+ * @param compress_level       Compression level (1-9).
+ * @param index_continuous     0 = non-continuous (strict order), 1 = continuous (filler entries).
+ * @param err_buf              Buffer for error message.
+ * @param err_buf_len          Length of error buffer.
+ * @return Opaque dataset pointer, or NULL on error.
+ */
+void* tmsl_dataset_create(void* store, const char* name, const char* dataset_type,
+                          uint64_t data_segment_size, uint64_t index_segment_size,
+                          unsigned char compress_level, unsigned char index_continuous,
+                          char* err_buf, size_t err_buf_len);
+
+/**
+ * Drop (delete) an entire dataset.
+ * @param store        Opaque store pointer.
+ * @param name         Dataset name.
+ * @param dataset_type Dataset type.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_dataset_drop(void* store, const char* name, const char* dataset_type,
+                      char* err_buf, size_t err_buf_len);
+
+/**
+ * Open an existing dataset (errors if not exists).
  * @param store        Opaque store pointer.
  * @param name         Dataset name.
  * @param dataset_type Dataset type.

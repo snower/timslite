@@ -151,6 +151,7 @@ pub(crate) struct DataSetConfig {
     pub index_segment_size: u64,
     pub block_max_size: u32,
     pub compress_level: u8,
+    pub index_continuous: u8,
 }
 
 #[allow(dead_code)]
@@ -161,6 +162,68 @@ impl DataSetConfig {
             index_segment_size: config.index_segment_size,
             block_max_size: config.block_max_size,
             compress_level: config.compress_level,
+            index_continuous: 0,
+        }
+    }
+
+    /// Create a new builder.
+    pub fn builder() -> DataSetConfigBuilder {
+        DataSetConfigBuilder::default()
+    }
+}
+
+/// Builder for `DataSetConfig`.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DataSetConfigBuilder {
+    data_segment_size: Option<u64>,
+    index_segment_size: Option<u64>,
+    block_max_size: Option<u32>,
+    compress_level: Option<u8>,
+    index_continuous: Option<u8>,
+}
+
+impl DataSetConfigBuilder {
+    /// Set the data segment file size.
+    pub fn data_segment_size(mut self, size: u64) -> Self {
+        self.data_segment_size = Some(size);
+        self
+    }
+
+    /// Set the index segment file size.
+    pub fn index_segment_size(mut self, size: u64) -> Self {
+        self.index_segment_size = Some(size);
+        self
+    }
+
+    /// Set the maximum block payload size.
+    pub fn block_max_size(mut self, size: u32) -> Self {
+        self.block_max_size = Some(size);
+        self
+    }
+
+    /// Set the deflate compression level (0-9).
+    pub fn compress_level(mut self, level: u8) -> Self {
+        self.compress_level = Some(level.min(9));
+        self
+    }
+
+    /// Sets the index_continuous flag (0=non-continuous, 1=continuous storage).
+    pub fn index_continuous(mut self, value: u8) -> Self {
+        self.index_continuous = Some(value.clamp(0, 1));
+        self
+    }
+
+    /// Build the `DataSetConfig`.
+    pub fn build(self) -> DataSetConfig {
+        let defaults = DataSetConfig::from_store(&StoreConfig::default());
+        DataSetConfig {
+            data_segment_size: self.data_segment_size.unwrap_or(defaults.data_segment_size),
+            index_segment_size: self
+                .index_segment_size
+                .unwrap_or(defaults.index_segment_size),
+            block_max_size: self.block_max_size.unwrap_or(defaults.block_max_size),
+            compress_level: self.compress_level.unwrap_or(defaults.compress_level),
+            index_continuous: self.index_continuous.unwrap_or(0),
         }
     }
 }

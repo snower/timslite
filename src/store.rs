@@ -104,6 +104,7 @@ impl Store {
         data_segment_size: u64,
         index_segment_size: u64,
         compress_level: u8,
+        index_continuous: u8,
     ) -> Result<DataSetHandle> {
         let key = DataSetKey {
             name: name.to_string(),
@@ -130,6 +131,7 @@ impl Store {
             index_segment_size,
             compress_level,
             self.config.block_max_size,
+            index_continuous,
         )?;
 
         let ds = Arc::new(Mutex::new(ds));

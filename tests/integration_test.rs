@@ -28,7 +28,14 @@ fn t8_1_1_basic_lifecycle() {
 
     // Create (not open) — explicit creation with parameters
     store
-        .create_dataset("sensor_001", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .create_dataset(
+            "sensor_001",
+            "events",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+        )
         .unwrap();
 
     let ds_handle = store.open_dataset("sensor_001", "events").unwrap();
@@ -36,17 +43,17 @@ fn t8_1_1_basic_lifecycle() {
     for i in 0..100i64 {
         let data: Vec<u8> = format!("event_{}", i).into_bytes();
         let ds_arc = store.get_dataset(&ds_handle).unwrap();
-        ds_arc.lock().unwrap().write(i, &data).unwrap();
+        ds_arc.lock().unwrap().write(i + 1, &data).unwrap();
     }
 
     let ds_arc = store.get_dataset(&ds_handle).unwrap();
     let mut ds = ds_arc.lock().unwrap();
     ds.flush().unwrap();
 
-    let entries = ds.query(0, 99, None).unwrap();
+    let entries = ds.query(1, 100, None).unwrap();
     assert_eq!(entries.len(), 100);
     for (i, (ts, data)) in entries.iter().enumerate() {
-        assert_eq!(*ts, i as i64);
+        assert_eq!(*ts, (i + 1) as i64);
         assert_eq!(*data, format!("event_{}", i).as_bytes());
     }
 
@@ -62,10 +69,24 @@ fn t8_1_2_multi_dataset_isolation() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("dataset_a", "type_x", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .create_dataset(
+            "dataset_a",
+            "type_x",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+        )
         .unwrap();
     store
-        .create_dataset("dataset_b", "type_y", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .create_dataset(
+            "dataset_b",
+            "type_y",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+        )
         .unwrap();
 
     let ds1 = store.open_dataset("dataset_a", "type_x").unwrap();
@@ -78,7 +99,7 @@ fn t8_1_2_multi_dataset_isolation() {
             .unwrap()
             .lock()
             .unwrap()
-            .write(i, &data)
+            .write(i + 1, &data)
             .unwrap();
     }
     for i in 0..60i64 {
@@ -88,7 +109,7 @@ fn t8_1_2_multi_dataset_isolation() {
             .unwrap()
             .lock()
             .unwrap()
-            .write(i + 100, &data)
+            .write(i + 101, &data)
             .unwrap();
     }
 
@@ -122,7 +143,14 @@ fn t8_1_3_block_aggregation() {
     let mut store = Store::open(&dir, config).unwrap();
 
     store
-        .create_dataset("test", "block_test", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .create_dataset(
+            "test",
+            "block_test",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+        )
         .unwrap();
 
     let ds = store.open_dataset("test", "block_test").unwrap();
@@ -133,12 +161,12 @@ fn t8_1_3_block_aggregation() {
             .unwrap()
             .lock()
             .unwrap()
-            .write(i, &data)
+            .write(i + 1, &data)
             .unwrap();
     }
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(0, 199, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 200, None).unwrap();
     assert_eq!(entries.len(), 200);
 
     store.close().unwrap();
@@ -153,14 +181,14 @@ fn t8_1_6_persistence() {
     {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         store
-            .create_dataset("persist", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+            .create_dataset("persist", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
             .unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
         for i in 0..50i64 {
             let data = format!("persisted_{}", i).into_bytes();
             let arc = store.get_dataset(&ds).unwrap();
             let mut ds_inner = arc.lock().unwrap();
-            ds_inner.write(i, &data).unwrap();
+            ds_inner.write(i + 1, &data).unwrap();
         }
         store.close().unwrap();
     }
@@ -169,10 +197,10 @@ fn t8_1_6_persistence() {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
         let arc = store.get_dataset(&ds).unwrap();
-        let entries = arc.lock().unwrap().query(0, 49, None).unwrap();
+        let entries = arc.lock().unwrap().query(1, 50, None).unwrap();
         assert_eq!(entries.len(), 50);
-        assert_eq!(entries[0].0, 0);
-        assert_eq!(entries[49].0, 49);
+        assert_eq!(entries[0].0, 1);
+        assert_eq!(entries[49].0, 50);
         store.close().unwrap();
     }
 }
@@ -189,7 +217,14 @@ fn t8_1_7_flush_does_not_seal() {
     let mut store = Store::open(&dir, config.clone()).unwrap();
 
     store
-        .create_dataset("flush_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .create_dataset(
+            "flush_test",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+        )
         .unwrap();
 
     let ds = store.open_dataset("flush_test", "data").unwrap();
@@ -220,11 +255,11 @@ fn t8_2_1_create_returns_error_if_exists() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("dup_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .create_dataset("dup_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
         .unwrap();
 
     // Second create of same dataset should fail
-    let result = store.create_dataset("dup_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6);
+    let result = store.create_dataset("dup_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0);
     assert!(result.is_err());
     if let Err(err) = result {
         assert!(err.to_string().contains("already exists"));
@@ -258,7 +293,7 @@ fn t8_2_3_drop_deletes_dataset() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("drop_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .create_dataset("drop_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
         .unwrap();
 
     let ds_handle = store.open_dataset("drop_test", "data").unwrap();
@@ -286,7 +321,7 @@ fn t8_2_4_create_after_drop() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("recreate", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6)
+        .create_dataset("recreate", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
         .unwrap();
     let ds = store.open_dataset("recreate", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
@@ -299,7 +334,7 @@ fn t8_2_4_create_after_drop() {
 
     // Now create should succeed (different params are fine since old data is gone)
     store
-        .create_dataset("recreate", "data", 32 * 1024 * 1024, 2 * 1024 * 1024, 9)
+        .create_dataset("recreate", "data", 32 * 1024 * 1024, 2 * 1024 * 1024, 9, 0)
         .unwrap();
     let ds = store.open_dataset("recreate", "data").unwrap();
 
