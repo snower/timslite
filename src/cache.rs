@@ -3,6 +3,9 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
+use crate::error::{Result, TmslError};
+use crate::util::{read_i64_le, read_u16_le};
+
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CacheKey {
     pub segment_file_offset: u64,
@@ -250,5 +253,142 @@ mod tests {
         c.put(k.clone(), vec![2u8; 10]);
         assert_eq!(c.get(&k).unwrap(), vec![1u8; 10]);
         assert_eq!(c.stats().entry_count, 1);
+    }
+}
+
+// ─── HotBlockCache ──────────────────────────────────────────────────────────
+
+/// Per-query local Block cache, no lock contention.
+pub struct HotBlockCache {
+    pub(crate) current_key: Option<CacheKey>,
+    /// Decompressed block payload: [data_len:2][ts:8][data:N]...
+    pub(crate) current_data: Vec<u8>,
+}
+
+impl HotBlockCache {
+    pub fn new() -> Self {
+        Self {
+            current_key: None,
+            current_data: Vec::new(),
+        }
+    }
+
+    #[inline]
+    pub fn is_hit(&self, seg_offset: u64, block_offset: u64) -> bool {
+        self.current_key.as_ref() == Some(&CacheKey::new(seg_offset, block_offset))
+    }
+
+    pub fn fill(&mut self, key: CacheKey, data: Vec<u8>) {
+        self.current_key = Some(key);
+        self.current_data = data;
+    }
+
+    /// Extract a single record from the cached block payload.
+    pub fn extract_record(&self, in_block_offset: u16) -> Result<(i64, Vec<u8>)> {
+        let pos = in_block_offset as usize;
+        if pos + 10 > self.current_data.len() {
+            return Err(TmslError::InvalidData(
+                "hot block: record index out of bounds".into(),
+            ));
+        }
+
+        let data_len = read_u16_le(
+            self.current_data[pos..pos + 2]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("hot block: cannot read data_len".into()))?,
+        ) as usize;
+
+        let timestamp = read_i64_le(
+            self.current_data[pos + 2..pos + 10]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("hot block: cannot read timestamp".into()))?,
+        );
+
+        if pos + 10 + data_len > self.current_data.len() {
+            return Err(TmslError::InvalidData(
+                "hot block: record data out of bounds".into(),
+            ));
+        }
+
+        let data = self.current_data[pos + 10..pos + 10 + data_len].to_vec();
+        Ok((timestamp, data))
+    }
+
+    pub fn clear(&mut self) {
+        self.current_key = None;
+        self.current_data.clear();
+    }
+}
+
+impl Default for HotBlockCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod hot_block_tests {
+    use super::*;
+
+    fn make_cache() -> HotBlockCache {
+        let mut data = Vec::new();
+        // record 1 at offset 0: data_len=5, ts=100, data=[1,2,3,4,5]
+        data.extend_from_slice(&5u16.to_le_bytes());
+        data.extend_from_slice(&100i64.to_le_bytes());
+        data.extend_from_slice(&[1, 2, 3, 4, 5]);
+        // record 2 at offset 15: data_len=3, ts=200, data=[6,7,8]
+        data.extend_from_slice(&3u16.to_le_bytes());
+        data.extend_from_slice(&200i64.to_le_bytes());
+        data.extend_from_slice(&[6, 7, 8]);
+
+        let mut cache = HotBlockCache::new();
+        cache.fill(CacheKey::new(0, 0), data);
+        cache
+    }
+
+    #[test]
+    fn test_hot_block_hit_miss() {
+        let cache = make_cache();
+        assert!(cache.is_hit(0, 0));
+        assert!(!cache.is_hit(0, 100));
+        assert!(!cache.is_hit(100, 0));
+    }
+
+    #[test]
+    fn test_extract_first_record() {
+        let cache = make_cache();
+        let (ts, data) = cache.extract_record(0).unwrap();
+        assert_eq!(ts, 100);
+        assert_eq!(data, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_extract_second_record() {
+        let cache = make_cache();
+        let (ts, data) = cache.extract_record(15).unwrap();
+        assert_eq!(ts, 200);
+        assert_eq!(data, vec![6, 7, 8]);
+    }
+
+    #[test]
+    fn test_extract_out_of_bounds() {
+        let cache = make_cache();
+        assert!(cache.extract_record(100).is_err());
+    }
+
+    #[test]
+    fn test_default_is_empty() {
+        let cache = HotBlockCache::new();
+        assert!(cache.current_key.is_none());
+        assert!(!cache.is_hit(0, 0));
+    }
+
+    #[test]
+    fn test_clear() {
+        let mut cache = make_cache();
+        assert!(cache.is_hit(0, 0));
+        cache.clear();
+        assert!(!cache.is_hit(0, 0));
+        assert!(cache.current_data.is_empty());
     }
 }

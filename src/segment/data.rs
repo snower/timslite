@@ -11,7 +11,7 @@ use std::time::Instant;
 use crate::block::{
     BlockHeader, BLOCK_FLAG_COMPRESSED, BLOCK_FLAG_SEALED, BLOCK_FLAG_SINGLE_RECORD,
 };
-use crate::cache::{BlockCache, CacheKey};
+use crate::cache::{BlockCache, CacheKey, HotBlockCache};
 use crate::compress::{deflate_compress, deflate_decompress};
 use crate::error::{Result, TmslError};
 use crate::header::{FileMetadata, HEADER_SIZE, PENDING_NONE};
@@ -633,6 +633,72 @@ impl DataSegment {
         }
 
         let data = block_data[pos + 10..pos + 10 + data_len].to_vec();
+        Ok((timestamp, data))
+    }
+
+    /// Read a record at the given index entry, with HotBlockCache support.
+    pub fn read_at_index_with_hot_cache(
+        &self,
+        entry: &ReadIndexEntry,
+        cache: Option<&BlockCache>,
+        hot_block: &mut HotBlockCache,
+    ) -> Result<(i64, Vec<u8>)> {
+        let mmap = self
+            .mmap
+            .as_ref()
+            .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
+
+        let hdr_pos = (HEADER_SIZE + entry.block_offset) as usize;
+        let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
+
+        if hot_block.is_hit(self.file_offset, entry.block_offset) {
+            return hot_block.extract_record(entry.in_block_offset);
+        }
+
+        if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
+            hot_block.fill(cache_key, block_data.clone());
+            return hot_block.extract_record(entry.in_block_offset);
+        }
+
+        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
+        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
+        let is_compressed = flags & crate::block::BLOCK_FLAG_COMPRESSED != 0;
+
+        let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
+        let payload = &mmap[pay_start..pay_start + payload_size];
+
+        let block_data: Vec<u8> = if is_compressed {
+            deflate_decompress(payload)?
+        } else {
+            payload.to_vec()
+        };
+
+        hot_block.fill(cache_key.clone(), block_data.clone());
+        if let Some(c) = cache {
+            c.put(cache_key, block_data);
+        }
+
+        let pos = entry.in_block_offset as usize;
+        if pos + 10 > hot_block.current_data.len() {
+            return Err(TmslError::InvalidData("record index out of bounds".into()));
+        }
+
+        let timestamp = read_i64_le(
+            hot_block.current_data[pos + 2..pos + 10]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
+        );
+        let data_len = read_u16_le(
+            hot_block.current_data[pos..pos + 2]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+        ) as usize;
+
+        if pos + 10 + data_len > hot_block.current_data.len() {
+            return Err(TmslError::InvalidData("record data out of bounds".into()));
+        }
+
+        let data = hot_block.current_data[pos + 10..pos + 10 + data_len].to_vec();
         Ok((timestamp, data))
     }
 }

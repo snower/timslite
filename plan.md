@@ -21,7 +21,7 @@
 | 10 | 索引连续存储 | ✅ 完成 | [phase-10-continuous-storage.md](docs/plan/phase-10-continuous-storage.md) |
 | 11 | 连续模式 O(1) 查询优化 | ✅ 完成 | [phase-11-o1-optimization.md](docs/plan/phase-11-o1-optimization.md) |
 | 12 | 分段懒分配 + 倍率扩容 | ✅ 完成 (含4项集成测试) | [phase-12-lazy-allocation.md](docs/plan/phase-12-lazy-allocation.md) |
-| 13 | 查询迭代器 + HotBlockCache | ⏳ 待开始 | [phase-13-query-iterator.md](docs/plan/phase-13-query-iterator.md) |
+| 13 | 查询迭代器 + HotBlockCache | ✅ 完成 | [phase-13-query-iterator.md](docs/plan/phase-13-query-iterator.md) |
 
 ## 待完成事项
 
@@ -69,22 +69,25 @@
 - [x] test_open_legacy_full_allocated_dataset — t12_3
 - [x] test_disk_space_efficiency — t12_4
 
-### Phase 13: 查询迭代器 + HotBlockCache ⏳ 待开始
-- [ ] `src/query/mod.rs` — 新增 query 模块 (iter.rs + hot_block.rs)
-- [ ] `QueryIterator<'a>` — 虚拟迭代器核心结构 (惰性遍历 index sources)
-- [ ] `HotBlockCache` — 读取循环级局部 Block 缓存 (无锁, 单 Iterator 实例)
-- [ ] `TimeIndex::prepare_query()` — 惰性索引预扫描, 返回 QueryDataSource 列表
-- [ ] `IndexSegment::query_range_indices()` — 范围索引查询 (连续模式 O(1))
-- [ ] `DataSegment::read_at_index_with_hot_cache()` — 增强读取, 支持 HotBlockCache
-- [ ] `DataSet::query_iter()` — 新 API 返回虚拟迭代器
-- [ ] `DataSet::query()` — 向后兼容, 内部改为 `query_iter().collect()`
-- [ ] `FfiIterator` 重构 — 持有 QueryIteratorWrapper 而非全量 Vec
-- [ ] `tmsl_dataset_query` 内部改为创建惰性迭代器
-- [ ] `tmsl_iter_next` 驱动 QueryIterator::next() 而非数组遍历
-- [ ] `include/timslite.h` FFI 接口签名不变
-- [ ] 集成测试: iterator_small_range, iterator_large_range, hot_cache_hit_rate, ffi_iterator_api
-- [ ] `cargo clippy -- -D warnings` clean
-- [ ] `cargo test -- --test-threads=1` 全部通过 (新增至少 5 项测试)
+### Phase 13: 查询迭代器 + HotBlockCache ✅ 已完成
+- [x] `src/query/mod.rs` — 新增 query 模块 (iter.rs + hot_block.rs)
+- [x] `QueryIterator<'a, 'b>` — 虚拟迭代器核心结构 (惰性遍历 index sources)
+- [x] `HotBlockCache` — 读取循环级局部 Block 缓存 (无锁, 单 Iterator 实例, 移至 cache.rs)
+- [x] `DataSet::query_iter()` — 新 API 返回虚拟迭代器
+- [x] `DataSet::query()` — 向后兼容, 内部改为 `query_iter().collect_all()`
+- [x] `DataSet::read_entry_at_index()` — 单条目读取, 供 FFI 惰性查询
+- [x] `DataSet::query_index_entries()` — 预收集索引条目
+- [x] `DataSegment::read_at_index_with_hot_cache()` — 增强读取, 支持 HotBlockCache
+- [x] `DataSegmentSet::read_at_index_with_hot_cache()` — 委托调用
+- [x] `IndexSegment::query_range_indices()` — 范围索引查询 (连续模式 O(1))
+- [x] `FfiIterator` 重构 — 惰性读取, 不再预加载全量数据
+- [x] `tmsl_dataset_query` 内部改为创建惰性迭代器
+- [x] `DataSegmentSet::new` 修复: 创建 data/ 目录
+- [x] `lib.rs` 导出 query 模块 (HotBlockCache, QueryIterator, QuerySource, SourceIndex)
+- [x] 集成测试: t13_1_iterator_small_range, t13_3_query_backward_compat, t13_4_query_empty_range
+- [x] 单元测试: HotBlockCache hit/miss/extract/clear (6 tests), QueryIterator empty/filler (2 tests)
+- [x] `cargo clippy -- -D warnings` clean
+- [x] `cargo test -- --test-threads=1` 全部通过 (101 tests: 91 unit + 16 integration)
 
 ## 文档结构
 

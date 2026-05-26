@@ -119,6 +119,12 @@ DataSet: Arc<Mutex<DataSet<>>>      (读写互斥, 数据集内部操作)
 - 字符串转换: `CStr::from_ptr` + `to_str()` 必须检查有效性
 - 内存所有权: `tmsl_iter_next` 返回的数据由 `libc::malloc` 分配, C 侧必须调用 `tmsl_iter_free_data` 释放
 
+### 代码注释
+
+- 重点功能可添加适当注释，添加的注释应该简洁明了，如无必要不要添加注释
+- 不允许在代码中添加冗长的解释性注释
+- 注释统一使用英文
+
 ## 设计文档
 
 设计文档已拆解为 14 个专题, 位于 [`docs/design/`](docs/design/) 目录:

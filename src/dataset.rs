@@ -13,6 +13,7 @@ use crate::error::{Result, TmslError};
 use crate::index::segment::{IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
+use crate::query::iter::QueryIterator;
 use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
 
@@ -352,31 +353,46 @@ impl DataSet {
         )))
     }
 
+    /// Return a lazy query iterator for records in [start_ts, end_ts].
+    #[allow(clippy::needless_lifetimes)]
+    pub fn query_iter<'a, 'b>(
+        &'a mut self,
+        start_ts: i64,
+        end_ts: i64,
+        cache: Option<&'b BlockCache>,
+    ) -> Result<QueryIterator<'a, 'b>> {
+        let entries = self.time_index.query(start_ts, end_ts)?;
+        Ok(QueryIterator::new(entries, &mut self.segments, cache))
+    }
+
     /// Query records in the time range [start_ts, end_ts].
     /// Filler entries (sentinel block_offset) are skipped.
+    #[allow(clippy::needless_lifetimes)]
     pub fn query(
         &mut self,
         start_ts: i64,
         end_ts: i64,
         cache: Option<&BlockCache>,
     ) -> Result<Vec<(i64, Vec<u8>)>> {
-        let entries = self.time_index.query(start_ts, end_ts)?;
-        let mut records = Vec::with_capacity(entries.len());
-        for entry in &entries {
-            // Skip filler entries
-            if entry.block_offset == BLOCK_OFFSET_FILLER {
-                continue;
-            }
-            let re = ReadIndexEntry {
-                timestamp: entry.timestamp,
-                block_offset: entry.block_offset,
-                in_block_offset: entry.in_block_offset,
-            };
-            let (ts, data) = self.segments.read_at_index(&re, cache)?;
-            records.push((ts, data));
-        }
-        records.sort_by_key(|(ts, _)| *ts);
-        Ok(records)
+        let iter = self.query_iter(start_ts, end_ts, cache)?;
+        iter.collect_all()
+    }
+
+    pub fn query_index_entries(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
+        self.time_index.query(start_ts, end_ts)
+    }
+
+    pub fn read_entry_at_index(
+        &mut self,
+        entry: &IndexEntry,
+        cache: Option<&BlockCache>,
+    ) -> Result<(i64, Vec<u8>)> {
+        let re = ReadIndexEntry {
+            timestamp: entry.timestamp,
+            block_offset: entry.block_offset,
+            in_block_offset: entry.in_block_offset,
+        };
+        self.segments.read_at_index(&re, cache)
     }
 
     /// Flush all data.

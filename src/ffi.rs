@@ -5,6 +5,7 @@ use std::os::raw::{c_char, c_int, c_longlong, c_uchar, c_void};
 
 use crate::config::StoreConfig;
 use crate::error::TmslError;
+use crate::index::segment::IndexEntry;
 use crate::store::{DataSetHandle, Store};
 
 // ─── FFI error handling helpers ─────────────────────────────────────────────
@@ -75,7 +76,9 @@ unsafe impl Sync for FfiDataset {}
 struct FfiIterator {
     store_ptr: *mut Store,
     handle: DataSetHandle,
-    entries: Vec<(i64, Vec<u8>)>,
+    /// Index entries for the time range (18B each, small)
+    entries: Vec<IndexEntry>,
+    /// Current position in entries
     index: usize,
 }
 unsafe impl Send for FfiIterator {}
@@ -294,7 +297,8 @@ pub extern "C" fn tmsl_dataset_query(
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
         let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
         let mut ds = ds_arc.lock().unwrap();
-        let entries = ds.query(start_ts, end_ts, Some(store_inner.block_cache()))?;
+        // Collect index entries only (18B each); data is read lazily
+        let entries = ds.query_index_entries(start_ts, end_ts)?;
 
         let iter = Box::new(FfiIterator {
             store_ptr: ffi_ds.store_ptr,
@@ -323,14 +327,26 @@ pub extern "C" fn tmsl_iter_next(
         }
         let ffi_iter = unsafe { &mut *(iter as *mut FfiIterator) };
 
-        if ffi_iter.index >= ffi_iter.entries.len() {
-            return Ok(1); // exhausted
-        }
+        // Skip filler entries and find the next real entry
+        let entry = loop {
+            if ffi_iter.index >= ffi_iter.entries.len() {
+                return Ok(1); // exhausted
+            }
+            let e = ffi_iter.entries[ffi_iter.index];
+            ffi_iter.index += 1;
+            if e.block_offset == crate::index::segment::BLOCK_OFFSET_FILLER {
+                continue;
+            }
+            break e;
+        };
 
-        let (ts, data) = &ffi_iter.entries[ffi_iter.index];
-        ffi_iter.index += 1;
+        // Lazy read: get dataset, read single entry
+        let store_inner = unsafe { &mut *(ffi_iter.store_ptr) };
+        let ds_arc = store_inner.get_dataset(&ffi_iter.handle)?;
+        let mut ds = ds_arc.lock().unwrap();
+        let (ts, data) = ds.read_entry_at_index(&entry, Some(store_inner.block_cache()))?;
 
-        unsafe { *out_ts = *ts as c_longlong };
+        unsafe { *out_ts = ts as c_longlong };
 
         let ptr = unsafe { libc::malloc(data.len()) as *mut c_uchar };
         if ptr.is_null() {

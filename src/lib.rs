@@ -47,12 +47,16 @@ mod ffi;
 mod header;
 mod index;
 mod meta;
+#[allow(clippy::module_inception)]
+mod query;
 mod segment;
 mod store;
 
 // ─── Public re-exports ──────────────────────────────────────────────────────
 pub use config::{StoreConfig, StoreConfigBuilder};
 pub use error::{Result, TmslError};
+pub use query::hot_block::HotBlockCache;
+pub use query::iter::{QueryIterator, QuerySource, SourceIndex};
 pub use store::Store;
 // pub use ffi::DataSetHandle;    // enabled in Phase 7
 

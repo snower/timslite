@@ -546,3 +546,103 @@ fn t12_4_disk_space_efficiency() {
 
     store.close().unwrap();
 }
+
+// ─── Phase 13: Query Iterator + HotBlockCache integration tests ─────────────
+
+#[test]
+fn t13_1_iterator_small_range() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset("iter_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .unwrap();
+
+    let ds = store.open_dataset("iter_test", "data").unwrap();
+    for i in 0..50i64 {
+        let data = format!("iter_{}", i).into_bytes();
+        store
+            .get_dataset(&ds)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .write(i + 1, &data)
+            .unwrap();
+    }
+
+    let arc = store.get_dataset(&ds).unwrap();
+    let entries = arc.lock().unwrap().query(1, 50, None).unwrap();
+    assert_eq!(entries.len(), 50);
+    for (i, (ts, data)) in entries.iter().enumerate() {
+        assert_eq!(*ts, (i + 1) as i64);
+        assert_eq!(*data, format!("iter_{}", i).as_bytes());
+    }
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t13_3_query_backward_compat() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset(
+            "compat_test",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("compat_test", "data").unwrap();
+    for i in 0..100i64 {
+        let data = vec![i as u8; 64];
+        store
+            .get_dataset(&ds)
+            .unwrap()
+            .lock()
+            .unwrap()
+            .write(i + 1, &data)
+            .unwrap();
+    }
+
+    // query() should produce the same results as before (via query_iter)
+    let arc = store.get_dataset(&ds).unwrap();
+    let entries = arc.lock().unwrap().query(1, 100, None).unwrap();
+    assert_eq!(entries.len(), 100);
+
+    // Verify order: timestamps must be ascending
+    for i in 1..entries.len() {
+        assert!(entries[i].0 > entries[i - 1].0);
+    }
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t13_4_query_empty_range() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset("empty_q", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .unwrap();
+
+    let ds = store.open_dataset("empty_q", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+
+    // Query before any writes — should return empty
+    let entries = arc.lock().unwrap().query(1, 100, None).unwrap();
+    assert_eq!(entries.len(), 0);
+
+    store.close().unwrap();
+}

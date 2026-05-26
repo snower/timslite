@@ -13,6 +13,7 @@ pub use self::data::{DataSegment, ReadIndexEntry};
 use self::data::{DataSegment as DS, SegmentLifecycle as SL};
 
 use crate::cache::BlockCache;
+use crate::cache::HotBlockCache;
 
 /// Metadata for a closed data segment.
 pub(crate) struct DataSegmentMeta {
@@ -30,6 +31,7 @@ pub struct DataSegmentSet {
     pub block_max_size: u32,
     pub compress_level: u8,
     pub segments: Vec<DataSegment>,
+    #[allow(private_interfaces)]
     pub closed_segments: Vec<DataSegmentMeta>,
     pub next_offset: u64,
     pub last_used_at: Instant,
@@ -44,8 +46,10 @@ impl DataSegmentSet {
         block_max_size: u32,
         compress_level: u8,
     ) -> Result<Self> {
+        let data_dir = base_dir.join("data");
+        std::fs::create_dir_all(&data_dir)?;
         Ok(Self {
-            base_dir: base_dir.to_path_buf().join("data"),
+            base_dir: data_dir,
             segment_size,
             initial_segment_size,
             block_max_size,
@@ -251,6 +255,11 @@ impl DataSegmentSet {
         Ok((current_offset, block_rel_off, in_block_off))
     }
 
+    /// Get the segment size configuration.
+    pub fn segment_size(&self) -> u64 {
+        self.segment_size
+    }
+
     // ─── Read operations ─────────────────────────────────────────────────
 
     /// Find the segment containing the given block_absolute_offset and read the record.
@@ -262,6 +271,17 @@ impl DataSegmentSet {
         let seg_offset = entry.block_offset;
         let seg = self.find_or_open_segment(seg_offset)?;
         seg.read_at_index(entry, cache)
+    }
+
+    /// Find the segment and read the record with HotBlockCache support.
+    pub fn read_at_index_with_hot_cache(
+        &mut self,
+        entry: &crate::segment::data::ReadIndexEntry,
+        cache: Option<&BlockCache>,
+        hot_block: &mut HotBlockCache,
+    ) -> Result<(i64, Vec<u8>)> {
+        let seg = self.find_or_open_segment(entry.block_offset)?;
+        seg.read_at_index_with_hot_cache(entry, cache, hot_block)
     }
 
     fn find_or_open_segment(&mut self, absolute_offset: u64) -> Result<&mut DS> {
