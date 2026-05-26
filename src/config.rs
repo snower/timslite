@@ -16,6 +16,8 @@ use std::time::Duration;
 /// - `index_segment_size`: 4 MiB
 /// - `block_max_size`: 65536 bytes (64 KiB)
 /// - `compress_level`: 6
+/// - `cache_max_memory`: 256 MiB (0 = disabled)
+/// - `cache_idle_timeout`: 30 minutes (1800s)
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
     /// Interval between background flush cycles (mmap sync only).
@@ -30,6 +32,10 @@ pub struct StoreConfig {
     pub block_max_size: u32,
     /// Deflate compression level (0-9).
     pub compress_level: u8,
+    /// Maximum memory for the read block cache (bytes, 0 = disabled).
+    pub cache_max_memory: usize,
+    /// Idle timeout for cache entries (eviction by background thread).
+    pub cache_idle_timeout: Duration,
 }
 
 impl Default for StoreConfig {
@@ -41,6 +47,8 @@ impl Default for StoreConfig {
             index_segment_size: 4 * 1024 * 1024,      // 4 MiB
             block_max_size: 65536,                    // 64 KiB
             compress_level: 6,
+            cache_max_memory: 256 * 1024 * 1024, // 256 MiB
+            cache_idle_timeout: Duration::from_secs(1800), // 30 min
         }
     }
 }
@@ -61,6 +69,8 @@ pub struct StoreConfigBuilder {
     index_segment_size: Option<u64>,
     block_max_size: Option<u32>,
     compress_level: Option<u8>,
+    cache_max_memory: Option<usize>,
+    cache_idle_timeout: Option<Duration>,
 }
 
 impl StoreConfigBuilder {
@@ -100,6 +110,18 @@ impl StoreConfigBuilder {
         self
     }
 
+    /// Set the maximum memory for the read block cache (bytes, 0 = disabled).
+    pub fn cache_max_memory(mut self, size: usize) -> Self {
+        self.cache_max_memory = Some(size);
+        self
+    }
+
+    /// Set the idle timeout for cache entries.
+    pub fn cache_idle_timeout(mut self, timeout: Duration) -> Self {
+        self.cache_idle_timeout = Some(timeout);
+        self
+    }
+
     /// Build the `StoreConfig`.
     pub fn build(self) -> StoreConfig {
         let defaults = StoreConfig::default();
@@ -112,6 +134,10 @@ impl StoreConfigBuilder {
                 .unwrap_or(defaults.index_segment_size),
             block_max_size: self.block_max_size.unwrap_or(defaults.block_max_size),
             compress_level: self.compress_level.unwrap_or(defaults.compress_level),
+            cache_max_memory: self.cache_max_memory.unwrap_or(defaults.cache_max_memory),
+            cache_idle_timeout: self
+                .cache_idle_timeout
+                .unwrap_or(defaults.cache_idle_timeout),
         }
     }
 }
@@ -152,6 +178,8 @@ mod tests {
         assert_eq!(cfg.index_segment_size, 4 * 1024 * 1024);
         assert_eq!(cfg.block_max_size, 65536);
         assert_eq!(cfg.compress_level, 6);
+        assert_eq!(cfg.cache_max_memory, 256 * 1024 * 1024);
+        assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(1800));
     }
 
     #[test]
@@ -163,6 +191,8 @@ mod tests {
             .index_segment_size(8 * 1024 * 1024)
             .block_max_size(32768)
             .compress_level(9)
+            .cache_max_memory(128 * 1024 * 1024)
+            .cache_idle_timeout(Duration::from_secs(600))
             .build();
 
         assert_eq!(cfg.flush_interval, Duration::from_secs(1200));
@@ -171,6 +201,8 @@ mod tests {
         assert_eq!(cfg.index_segment_size, 8 * 1024 * 1024);
         assert_eq!(cfg.block_max_size, 32768);
         assert_eq!(cfg.compress_level, 9);
+        assert_eq!(cfg.cache_max_memory, 128 * 1024 * 1024);
+        assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(600));
     }
 
     #[test]

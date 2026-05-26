@@ -275,30 +275,12 @@ pub extern "C" fn tmsl_dataset_flush(
     })
 }
 
-// ─── Data Write ─────────────────────────────────────────────────────────────
-
-/// Write a record to a dataset.
+/// Close and free the iterator.
 #[no_mangle]
-pub extern "C" fn tmsl_dataset_write(
-    dataset: *mut c_void,
-    timestamp: c_longlong,
-    data: *const c_uchar,
-    data_len: usize,
-    err_buf: *mut c_char,
-    err_buf_len: usize,
-) -> c_int {
-    ffi_catch_int!(err_buf, err_buf_len, {
-        if dataset.is_null() || data.is_null() {
-            return Err(TmslError::InvalidData("null pointer".into()));
-        }
-        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
-        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
-        let mut ds = ds_arc.lock().unwrap();
-        let slice = unsafe { std::slice::from_raw_parts(data as *const u8, data_len) };
-        ds.write(timestamp, slice)?;
-        Ok(0)
-    })
+pub extern "C" fn tmsl_iter_close(iter: *mut c_void) {
+    if !iter.is_null() {
+        let _ = unsafe { Box::from_raw(iter as *mut FfiIterator) };
+    }
 }
 
 // ─── Query Iterator ────────────────────────────────────────────────────────
@@ -320,7 +302,7 @@ pub extern "C" fn tmsl_dataset_query(
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
         let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
         let mut ds = ds_arc.lock().unwrap();
-        let entries = ds.query(start_ts, end_ts)?;
+        let entries = ds.query(start_ts, end_ts, Some(&*store_inner.block_cache()))?;
 
         let iter = Box::new(FfiIterator {
             store_ptr: ffi_ds.store_ptr,
@@ -377,13 +359,5 @@ pub extern "C" fn tmsl_iter_next(
 pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar) {
     if !data.is_null() {
         unsafe { libc::free(data as *mut _) };
-    }
-}
-
-/// Close and free the iterator.
-#[no_mangle]
-pub extern "C" fn tmsl_iter_close(iter: *mut c_void) {
-    if !iter.is_null() {
-        let _ = unsafe { Box::from_raw(iter as *mut FfiIterator) };
     }
 }

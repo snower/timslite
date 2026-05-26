@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::cache::BlockCache;
 use crate::config::DataSetConfig;
 use crate::error::{Result, TmslError};
 use crate::index::TimeIndex;
@@ -147,7 +148,12 @@ impl DataSet {
     }
 
     /// Query records in the time range [start_ts, end_ts].
-    pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
+    pub fn query(
+        &mut self,
+        start_ts: i64,
+        end_ts: i64,
+        cache: Option<&BlockCache>,
+    ) -> Result<Vec<(i64, Vec<u8>)>> {
         let entries = self.time_index.query(start_ts, end_ts)?;
         let mut records = Vec::with_capacity(entries.len());
         for entry in &entries {
@@ -156,7 +162,7 @@ impl DataSet {
                 block_offset: entry.block_offset,
                 in_block_offset: entry.in_block_offset,
             };
-            let (ts, data) = self.segments.read_at_index(&re)?;
+            let (ts, data) = self.segments.read_at_index(&re, cache)?;
             records.push((ts, data));
         }
         records.sort_by_key(|(ts, _)| *ts);

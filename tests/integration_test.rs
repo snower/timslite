@@ -43,7 +43,7 @@ fn t8_1_1_basic_lifecycle() {
     let mut ds = ds_arc.lock().unwrap();
     ds.flush().unwrap();
 
-    let entries = ds.query(0, 99).unwrap();
+    let entries = ds.query(0, 99, None).unwrap();
     assert_eq!(entries.len(), 100);
     for (i, (ts, data)) in entries.iter().enumerate() {
         assert_eq!(*ts, i as i64);
@@ -97,7 +97,7 @@ fn t8_1_2_multi_dataset_isolation() {
         .unwrap()
         .lock()
         .unwrap()
-        .query(0, 1000)
+        .query(0, 1000, None)
         .unwrap();
     assert_eq!(entries1.len(), 50);
 
@@ -106,7 +106,7 @@ fn t8_1_2_multi_dataset_isolation() {
         .unwrap()
         .lock()
         .unwrap()
-        .query(0, 1000)
+        .query(0, 1000, None)
         .unwrap();
     assert_eq!(entries2.len(), 60);
 
@@ -138,7 +138,7 @@ fn t8_1_3_block_aggregation() {
     }
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(0, 199).unwrap();
+    let entries = arc.lock().unwrap().query(0, 199, None).unwrap();
     assert_eq!(entries.len(), 200);
 
     store.close().unwrap();
@@ -169,7 +169,7 @@ fn t8_1_6_persistence() {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
         let arc = store.get_dataset(&ds).unwrap();
-        let entries = arc.lock().unwrap().query(0, 49).unwrap();
+        let entries = arc.lock().unwrap().query(0, 49, None).unwrap();
         assert_eq!(entries.len(), 50);
         assert_eq!(entries[0].0, 0);
         assert_eq!(entries[49].0, 49);
@@ -203,7 +203,7 @@ fn t8_1_7_flush_does_not_seal() {
     std::thread::sleep(std::time::Duration::from_secs(2));
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(999, 1001).unwrap();
+    let entries = arc.lock().unwrap().query(999, 1001, None).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, data);
 
@@ -305,7 +305,7 @@ fn t8_2_4_create_after_drop() {
 
     // Data from first creation should be gone
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(0, 10).unwrap();
+    let entries = arc.lock().unwrap().query(0, 10, None).unwrap();
     assert_eq!(entries.len(), 0);
 
     store.close().unwrap();

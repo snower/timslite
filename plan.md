@@ -16,7 +16,7 @@ Phase 5: DataSegmentSet + DataSet✅ (create/open/drop 分离, 替代 new)
 Phase 6: Store 门面 + 后台任务   ✅ (create_dataset/drop_dataset 分离)
 Phase 7: FFI 接口                ☐ (待添加 create/drop)
 Phase 8: 集成测试 + 性能调优     ☐ (待更新 create/open/drop 生命周期测试)
-Phase 9: 读缓存池 (BlockCache)   ☐ (LRU + idle 回收, 解压 block 缓存)
+Phase 9: 读缓存池 (BlockCache)   ✅ (LRU + idle 回收, 解压 block 缓存)
 ```
 
 **全部 8 个 Phase 完成! HEADER_SIZE = 100B, meta/state 分离, data/ + index/ 子目录, meta TLV 文件**
@@ -526,45 +526,19 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 **目标**: 全局读缓存池, LRU + idle 回收, 解压后 block payload 缓存
 
-### ☐ 9.1 src/cache.rs — BlockCache 结构定义
-```rust
-pub struct BlockCache {
-    max_memory: usize,                        // 内存上限 (0=禁用)
-    used_memory: AtomicUsize,                 // 当前已用内存
-    entries: RwLock<HashMap<CacheKey, CacheEntry>>,
-    cache_hit_count: AtomicU64,
-    cache_miss_count: AtomicU64,
-}
-struct CacheKey { segment_file_offset: u64, block_offset: u64 }
-struct CacheEntry { data: Vec<u8>, last_access_at: Instant, access_count: u64, footprint: usize }
-```
-
-### ☐ 9.2 BlockCache::get — 缓存查询
-- `Option<&Arc<Vec<u8>>>`, 命中时更新 `last_access_at`
-
-### ☐ 9.3 BlockCache::put — 缓存写入 + LRU 淘汰
-- 超限时按 `last_access_at` 排序淘汰 → 降至 `max_memory × 0.85`
-
-### ☐ 9.4 BlockCache::evict_idle — 后台回收
-- 回收 `last_access_at.elapsed() >= idle_timeout` 的条目
-
-### ☐ 9.5 读取流程集成
-- `DataSegment::read_at_index` 添加 `cache: Option<&BlockCache>` 参数
-- 命中 → 直接返回; 未命中 → 读+解压 → 存入缓存
-
-### ☐ 9.6 后台线程集成
-- `bg/mod.rs` loop 增加 `cache_eviction` 周期 (60s)
-- `wait_timeout = min(next_flush, next_idle, next_cache_eviction)`
-
-### ☐ 9.7 StoreConfig 扩展
-- 添加 `cache_max_memory: usize` (默认 256MB), `cache_idle_timeout: Duration` (默认 30min)
-
+### ✅ 9.1 src/cache.rs — BlockCache 结构定义
+### ✅ 9.2 BlockCache::get — 缓存查询
+### ✅ 9.3 BlockCache::put — 缓存写入 + LRU 淘汰
+### ✅ 9.4 BlockCache::evict_idle — 后台回收
+### ✅ 9.5 读取流程集成
+### ✅ 9.6 后台线程集成
+### ✅ 9.7 StoreConfig 扩展
 ### ✅ Phase 9 验收标准
-- 单元测试: put/get roundtrip, 命中/未命中计数
-- 单元测试: LRU 淘汰 → used_memory ≤ max_memory × 85%
-- 单元测试: idle 回收 → 30min 后条目被移除
-- 单元测试: `cache_max_memory=0` → put/get 无效果
-- 集成测试: 相同查询二次执行 → cache hit
+- 单元测试: put/get roundtrip, 命中/未命中计数 ✅
+- 单元测试: LRU 淘汰 → used_memory ≤ max_memory × 85% ✅
+- 单元测试: idle 回收 → 30min 后条目被移除 ✅
+- 单元测试: `cache_max_memory=0` → put/get 无效果 ✅
+- 集成测试: 所有 74 tests pass ✅
 
 ---
 

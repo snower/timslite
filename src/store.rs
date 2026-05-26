@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
 use crate::bg::BackgroundTasks;
+use crate::cache::BlockCache;
 use crate::config::StoreConfig;
 use crate::dataset::{DataSet, DataSetKey};
 use crate::error::{Result, TmslError};
@@ -18,6 +19,7 @@ pub struct Store {
     data_dir: PathBuf,
     datasets: Arc<RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>>,
     config: StoreConfig,
+    block_cache: Arc<BlockCache>,
     bg_tasks: Option<BackgroundTasks>,
     next_handle_id: u64,
     handles: HashMap<u64, DataSetKey>,
@@ -70,11 +72,13 @@ impl Store {
         }
 
         let datasets = Arc::new(RwLock::new(datasets));
+        let block_cache = Arc::new(BlockCache::new(config.cache_max_memory));
 
         let mut store = Self {
             data_dir,
             datasets: Arc::clone(&datasets),
             config: config.clone(),
+            block_cache: Arc::clone(&block_cache),
             bg_tasks: None,
             next_handle_id: 0,
             handles: HashMap::new(),
@@ -83,8 +87,10 @@ impl Store {
         // Start background tasks
         store.bg_tasks = Some(BackgroundTasks::start(
             datasets,
+            block_cache,
             config.flush_interval,
             config.idle_timeout,
+            config.cache_idle_timeout,
         ));
 
         Ok(store)
@@ -243,6 +249,11 @@ impl Store {
             crate::error::TmslError::NotFound(format!("dataset {:?} not found", key))
         })?;
         Ok(Arc::clone(ds))
+    }
+
+    /// Get a reference to the global block cache.
+    pub fn block_cache(&self) -> &Arc<BlockCache> {
+        &self.block_cache
     }
 
     /// Close the store completely.

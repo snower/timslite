@@ -1,4 +1,4 @@
-//! Single background thread executing both flush and idle-check loops.
+//! Single background thread executing flush, idle-check, and cache eviction loops.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::cache::BlockCache;
 use crate::dataset::DataSet;
 use crate::dataset::DataSetKey;
 
@@ -21,22 +22,31 @@ impl BackgroundTasks {
     /// Start the single background thread.
     pub fn start(
         datasets: Arc<RwLock<DatasetMap>>,
+        block_cache: Arc<BlockCache>,
         flush_interval: Duration,
         idle_timeout: Duration,
+        cache_idle_timeout: Duration,
     ) -> Self {
         let (shutdown_tx, shutdown_rx) = mpsc::channel();
         // Idle check interval: 60 seconds
         let idle_check_interval = Duration::from_secs(60);
+        // Cache eviction interval: 60 seconds
+        let cache_eviction_interval = Duration::from_secs(60);
 
         let handle = Some(std::thread::spawn(move || {
             let mut last_flush = Instant::now();
             let mut last_idle_check = Instant::now();
+            let mut last_cache_eviction = Instant::now();
 
             loop {
                 let now = Instant::now();
                 let next_flush = last_flush + flush_interval;
                 let next_idle = last_idle_check + idle_check_interval;
-                let wait_time = next_flush.min(next_idle).saturating_duration_since(now);
+                let next_cache = last_cache_eviction + cache_eviction_interval;
+                let wait_time = next_flush
+                    .min(next_idle)
+                    .min(next_cache)
+                    .saturating_duration_since(now);
 
                 // Wait until timeout or shutdown signal
                 if !wait_time.is_zero() {
@@ -116,6 +126,15 @@ impl BackgroundTasks {
                         }
                     }
                     last_idle_check = now;
+                }
+
+                // Cache Eviction: evict idle cache entries
+                if now >= next_cache && block_cache.is_enabled() {
+                    let evicted = block_cache.evict_idle(cache_idle_timeout);
+                    if evicted > 0 {
+                        log::info!("[bg cache] evicted {} idle entries", evicted);
+                    }
+                    last_cache_eviction = now;
                 }
             }
         }));

@@ -12,6 +12,8 @@ use crate::error::Result;
 pub use self::data::{DataSegment, ReadIndexEntry, SegmentLifecycle};
 use self::data::{DataSegment as DS, SegmentLifecycle as SL};
 
+use crate::cache::BlockCache;
+
 /// Metadata for a closed data segment.
 pub(crate) struct DataSegmentMeta {
     pub path: std::path::PathBuf,
@@ -205,10 +207,11 @@ impl DataSegmentSet {
     pub fn read_at_index(
         &mut self,
         entry: &crate::segment::data::ReadIndexEntry,
+        cache: Option<&BlockCache>,
     ) -> Result<(i64, Vec<u8>)> {
         let seg_offset = entry.block_offset;
         let seg = self.find_or_open_segment(seg_offset)?;
-        seg.read_at_index(entry)
+        seg.read_at_index(entry, cache)
     }
 
     fn find_or_open_segment(&mut self, absolute_offset: u64) -> Result<&mut DS> {

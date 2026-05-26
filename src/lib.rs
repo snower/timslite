@@ -35,6 +35,7 @@ pub mod util;
 
 mod bg;
 mod block;
+mod cache;
 mod compress;
 mod dataset;
 mod ffi;

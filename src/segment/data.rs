@@ -11,6 +11,7 @@ use std::time::Instant;
 use crate::block::{
     BlockHeader, BLOCK_FLAG_COMPRESSED, BLOCK_FLAG_SEALED, BLOCK_FLAG_SINGLE_RECORD,
 };
+use crate::cache::{BlockCache, CacheKey};
 use crate::compress::{deflate_compress, deflate_decompress};
 use crate::error::{Result, TmslError};
 use crate::header::{FileMetadata, HEADER_SIZE, PENDING_NONE};
@@ -494,7 +495,11 @@ impl DataSegment {
     /// Read a record at the given index entry.
     ///
     /// Returns `(timestamp, data)`.
-    pub fn read_at_index(&self, entry: &ReadIndexEntry) -> Result<(i64, Vec<u8>)> {
+    pub fn read_at_index(
+        &self,
+        entry: &ReadIndexEntry,
+        cache: Option<&BlockCache>,
+    ) -> Result<(i64, Vec<u8>)> {
         let mmap = self
             .mmap
             .as_ref()
@@ -507,41 +512,70 @@ impl DataSegment {
         let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
         let is_compressed = flags & BLOCK_FLAG_COMPRESSED != 0;
 
-        // Read payload
+        // ── Cache check ──
+        let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
+
+        // Try cache hit first: extract record directly from cached data
+        if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
+            let pos = entry.in_block_offset as usize;
+            if pos + 10 > cached.len() {
+                return Err(TmslError::InvalidData("record index out of bounds".into()));
+            }
+            let data_len = read_u16_le(
+                cached[pos..pos + 2]
+                    .try_into()
+                    .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+            ) as usize;
+            let timestamp = read_i64_le(
+                cached[pos + 2..pos + 10]
+                    .try_into()
+                    .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
+            );
+            if pos + 10 + data_len > cached.len() {
+                return Err(TmslError::InvalidData("record data out of bounds".into()));
+            }
+            let data = cached[pos + 10..pos + 10 + data_len].to_vec();
+            return Ok((timestamp, data));
+        }
+
+        // Cache miss: read from mmap + decompress
         let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
         let payload = &mmap[pay_start..pay_start + payload_size];
 
-        // Decompress if needed
         let block_data: Vec<u8>;
-        let actual: &[u8] = if is_compressed {
+        if is_compressed {
             block_data = deflate_decompress(payload)?;
-            &block_data[..]
         } else {
-            payload
-        };
+            block_data = payload.to_vec();
+        }
+
+        // Cache the decompressed block for future reads
+        if let Some(c) = cache {
+            c.put(cache_key, block_data.clone());
+        }
 
         // Locate record: entry.in_block_offset points to [data_len:2]
         let pos = entry.in_block_offset as usize;
-        if pos + 10 > actual.len() {
+        if pos + 10 > block_data.len() {
             return Err(TmslError::InvalidData("record index out of bounds".into()));
         }
 
         let data_len = read_u16_le(
-            actual[pos..pos + 2]
+            block_data[pos..pos + 2]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
         ) as usize;
         let timestamp = read_i64_le(
-            actual[pos + 2..pos + 10]
+            block_data[pos + 2..pos + 10]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
         );
 
-        if pos + 10 + data_len > actual.len() {
+        if pos + 10 + data_len > block_data.len() {
             return Err(TmslError::InvalidData("record data out of bounds".into()));
         }
 
-        let data = actual[pos + 10..pos + 10 + data_len].to_vec();
+        let data = block_data[pos + 10..pos + 10 + data_len].to_vec();
         Ok((timestamp, data))
     }
 }
@@ -630,7 +664,7 @@ mod tests {
             block_offset: off,
             in_block_offset: ib,
         };
-        let (ts, recovered) = seg.read_at_index(&entry).unwrap();
+        let (ts, recovered) = seg.read_at_index(&entry, None).unwrap();
         assert_eq!(ts, 5000);
         assert_eq!(recovered, data);
     }
@@ -651,7 +685,7 @@ mod tests {
             block_offset: block_off,
             in_block_offset: in_block_off,
         };
-        let (ts, data) = seg.read_at_index(&entry).unwrap();
+        let (ts, data) = seg.read_at_index(&entry, None).unwrap();
         assert_eq!(ts, 9999);
         assert_eq!(data, test_data);
     }
@@ -725,7 +759,7 @@ mod tests {
 
         // Verify all records
         for (i, entry) in entries.iter().enumerate() {
-            let (ts, data) = seg.read_at_index(entry).unwrap();
+            let (ts, data) = seg.read_at_index(entry, None).unwrap();
             assert_eq!(ts, 1_700_000_000 + i as i64);
             assert_eq!(data, format!("record_{i}", i = i).as_bytes());
         }
