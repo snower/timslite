@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-67%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen.svg)](#)
 
 ---
 
@@ -20,7 +20,34 @@
 - **后台任务**: 单线程统一循环执行定期 flush (mmap sync) 和 idle 检查
 - **纯 Rust 依赖**: 无 C 库依赖, 跨平台编译简单
 
-## 目录结构
+## 项目结构
+
+```
+timslite/
+├── src/                    # 核心 Rust 源码
+│   ├── lib.rs              # 入口, 公共 API 导出
+│   ├── config.rs           # StoreConfig 配置构建器
+│   ├── error.rs            # TmslError 错误类型
+│   ├── store.rs            # Store 门面 (数据集注册表 + 后台任务)
+│   ├── dataset.rs          # DataSet 操作 (create/open/write/query/close/drop)
+│   ├── ffi.rs              # extern "C" FFI 接口
+│   ├── segment/            # DataSegmentSet + DataSegment (mmap 生命周期)
+│   ├── index/              # TimeIndex + IndexSegment (二分查找)
+│   ├── bg/                 # BackgroundTasks (flush + idle check)
+│   └── ...                 # block/cache/compress/header/meta/util
+├── include/
+│   └── timslite.h          # C 头文件 (FFI 函数声明)
+├── tests/                  # 集成测试
+├── benches/                # 性能基准测试 (待创建)
+├── docs/
+│   ├── design/             # 详细设计文档 (14 个专题)
+│   └── plan/               # 开发计划文档 (overview + 12 phases)
+├── plan.md                 # 计划状态总览 + 待完成清单
+├── design.md               # 设计文档索引
+└── Cargo.toml
+```
+
+## 数据集目录格式
 
 ```
 {data_dir}/
@@ -300,7 +327,7 @@ cargo build --release
 
 ```bash
 cargo test -- --test-threads=1
-# 67 tests passing (58 unit + 9 integration)
+# 90 tests passing (81 unit + 9 integration)
 ```
 
 ### Clippy
@@ -308,6 +335,17 @@ cargo test -- --test-threads=1
 ```bash
 cargo clippy -- -D warnings
 ```
+
+### 格式化
+
+```bash
+cargo fmt -- --check
+```
+
+## 文档
+
+- **[设计文档索引](design.md)** — 14 个专题设计文档 (`docs/design/`)，覆盖架构、数据模型、FFI、并发、压缩等
+- **[开发计划](plan.md)** — 计划状态总览 + 待完成清单，详细 phase 文档在 `docs/plan/`
 
 ## 并发控制
 
