@@ -17,6 +17,7 @@ Phase 6: Store 门面 + 后台任务   ✅ (create_dataset/drop_dataset 分离)
 Phase 7: FFI 接口                ☐ (待添加 create/drop)
 Phase 8: 集成测试 + 性能调优     ☐ (待更新 create/open/drop 生命周期测试)
 Phase 9: 读缓存池 (BlockCache)   ✅ (LRU + idle 回收, 解压 block 缓存)
+Phase 10: 索引连续存储            ☐ (filler 条目, sentinel 值, 逆序拒绝)
 ```
 
 **全部 8 个 Phase 完成! HEADER_SIZE = 100B, meta/state 分离, data/ + index/ 子目录, meta TLV 文件**
@@ -542,6 +543,94 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 ---
 
+## Phase 10: 索引连续存储 (Index Continuous Storage)
+
+**目标**: 索引条目按连续序号增长, 缺失时间戳填充哨兵值条目, 逆序写入统一拒绝
+
+### ☐ 10.1 meta.rs 扩展 — 新增 TLV type 0x05
+- 常量: `META_TYPE_INDEX_CONTINUOUS: u8 = 0x05` (u8: 0=非连续, 1=连续)
+- `DataSetMeta` 新增字段: `index_continuous: u8` (default=0)
+- `DataSetMeta::new()` 新增参数 `index_continuous`, 写入 TLV
+- `DataSetMeta::from_bytes()` 解析 type 0x05, 未知旧版本跳过
+
+### ☐ 10.2 DataSetMeta/DataSetConfig 更新
+- `DataSetMeta` struct: 新增 `index_continuous: u8` 字段
+- `DataSetConfig` struct: 新增 `index_continuous: u8` 字段
+- `DataSet::create()`: 新增 `index_continuous` 参数, 传入 meta + config
+- `DataSet::open()`: 从 meta 读取 `index_continuous`
+- `Store::create_dataset()`: 新增 `index_continuous` FFI/Rust API 参数
+
+### ☐ 10.3 DataSet 写入逻辑更新
+- `DataSet::write()`: 
+  - 新增状态跟踪: `latest_written_timestamp: i64` (初始从 index segment 恢复)
+  - 检查逆序: 
+    - 非连续模式: `timestamp <= latest_written_timestamp` → `Error("out-of-order")`
+    - 连续模式: 
+      - `timestamp > latest_written_timestamp`: 填充缺失 + 正常写入
+      - `timestamp < latest_written_timestamp`: 数据追加到最新段 + 替换匹配的 filler
+      - `timestamp == latest_written_timestamp`: `Error("duplicate timestamp")`
+  - 如果 `index_continuous == true` 且 `timestamp > latest`:
+    - 填充缺失: for ts in `(latest+1)..(timestamp-1)` → add filler entry
+    - 然后写入真实 entry
+  - 否则 (连续模式补数据):
+    - 写入数据到 DataSegmentSet
+    - `find_filler_entry(ts)` → mmap 覆盖写 18 字节 → 替换为真实 entry
+
+### ☐ 10.3.1 IndexSegment: find_exact + 覆盖写方法
+- `IndexSegment::find_exact(timestamp)` 已存在, 返回 `IndexEntry` (副本)
+- 新增: `IndexSegment::find_entry_index(timestamp) -> Option<usize>` — 返回 entry 在 segment 中的索引位置
+- 新增: `IndexSegment::overwrite_entry(entry_index: usize, new_entry: &IndexEntry)`
+  - 确保 mmap 有效
+  - 计算 mmap 偏移: `HEADER_SIZE + entry_index * INDEX_ENTRY_SIZE`
+  - 覆盖写 18 字节
+
+### ☐ 10.4 TimeIndex 填充逻辑
+- `TimeIndex::add_entry()` 保持不变 (仅追加, 不感知 filler)
+- 填充循环在 `DataSet::write()` 层完成, 每次调用 `TimeIndex::add_entry()`
+- 利用现有的 in_memory_buffer + flush 机制
+
+### ☐ 10.5 Index Segment 跳过规则
+- `TimeIndex::flush_to_disk()`:
+  - 记录每个创建的 segment 是否包含真实 entry (非 filler)
+  - flush 完成后, 无真实 entry 的 segment: close + delete 文件 + 从 metas 移除
+- Filler 识别: `block_offset == 0xFFFFFFFFFFFFFFFF && in_block_offset == 0xFFFF`
+
+### ☐ 10.6 读取时 Filler 过滤
+- `DataSet::query()`: 
+  - 获取 entries 后过滤: `entries.retain(|e| e.block_offset != 0xFFFFFFFFFFFFFFFF)`
+  - 或 `DataSegment::read_at_index()`: 哨兵值 → `Err(NotFound("filler"))`
+
+### ☐ 10.7 Timestamp = 0 保护
+- `DataSet::write()`: 检查 `timestamp > 0`, 否则返回错误
+- 防止与 index segment 起始偏移 = 0 的文件名冲突
+
+### ☐ 10.8 重启恢复 latest_written_timestamp
+- `DataSet::open()`:
+  - 扫描所有 closed index segments, 读取最后一条 entry 的 timestamp
+  - 遍历 in_memory_buffer, 取最大 timestamp
+  - 设置 `latest_written_timestamp`
+
+### ☐ 10.9 FFI API 更新
+- `tmsl_dataset_create`: 新增 `index_continuous: u8` 参数
+- `include/timslite.h`: 更新函数声明
+- 错误处理: 逆序写入返回 -1, err_buf 写错误信息
+
+### ☐ Phase 10 验收标准
+- 单元测试: meta TLV 0x05 roundtrip (创建→写入→读取)
+- 单元测试: 连续模式正序写入 ts=100 → ts=150 → filler 49 条, index 共 51 entries
+- 单元测试: 连续模式补数据 ts=120 → filler 被替换 → 查询返回 3 条真实数据
+- 单元测试: 连续模式补数据 ts=120 → 非 filler 位置 → Error
+- 单元测试: 连续模式补数据 ts=150 (等于 latest) → Error("duplicate timestamp")
+- 单元测试: 非连续模式逆序写入 ts=100 → ts=50 → Error("out-of-order")
+- 单元测试: Filler 识别: `block_offset == 0xFFFFFFFFFFFFFFFF` → query 时正确跳过
+- 单元测试: 大量填充 (跨 segment) → 仅含真实 entry 的 segment 被创建
+- 集成测试: 连续模式创建→写入→close→reopen→补数据→写入→数据一致
+- 集成测试: 非连续模式写入 ts=100 → ts=150 → index 仅 2 entries (无 filler)
+- 集成测试: timestamp≤0 写入 → Error
+- 集成测试: 所有现有 74 tests pass (不受影响)
+
+---
+
 ## 依赖关系图
 
 ```
@@ -579,6 +668,9 @@ Phase 8 (集成测试 + 性能 + idle-close 恢复测试 + 目录结构验证)
        │
        ▼
 Phase 9 (读缓存池: BlockCache LRU + idle 回收 + 读取集成)
+        │
+        ▼
+Phase 10 (索引连续存储: filler 条目 + sentinel 值 + mmap 覆盖写 + meta TLV 扩展)
 ```
 
 ---
@@ -606,6 +698,11 @@ Phase 9 (读缓存池: BlockCache LRU + idle 回收 + 读取集成)
 | 缓存内存超限 | OOM | LRU 淘汰降至 85%, 留有安全余量; idle 回收每 60s 清理冷数据 |
 | 缓存数据一致性 | 返回过期数据 | 只缓存已 seal 的 block, seal 后数据永不修改, 无一致性风险 |
 | 缓存内存碎片 | 内存利用率低 | `Vec<u8>` 直接存储解压数据, 无额外包装; 回收时 `drop` 释放完整 Vec |
+| Filler 条目爆炸 | Index 体积暴增 | 连续模式下大时间间隔产生大量 filler; 用户需控制写入时间间隔 |
+| Index segment 仅含 filler | 无效磁盘写入 | flush 时检测并删除仅含 filler 的 segment 文件 |
+| 连续模式逆序写入 | Filler 替换 | 数据段追加 + mmap 覆盖写 18 字节替换 filler |
+| 连续/非连续切换 | 已有数据不兼容 | `index_continuous` 创建后不可变, meta 文件锁定配置 |
+| timestamp=0 冲突 | index segment 命名歧义 | timestamp=0 保留为空位标记, 写入时拒绝 |
 
 ---
 

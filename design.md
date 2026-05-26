@@ -2232,3 +2232,252 @@ src/
 | **缓存淘汰策略** | LRU (容量驱动) + Idle 回收 (时间驱动) | 双策略互补: LRU 保上限, Idle 清冷数据 |
 | **LRU 淘汰水位** | 降至 max_memory × 0.85 | 留 15% 余量, 减少淘汰频率 |
 | **缓存禁用** | `cache_max_memory=0` | 零额外开销 (Optional`cache` 传递) |
+| **索引连续存储** | `index_continuous=true` 时开启 | 填充缺失时间戳, 补数据时替换 filler |
+| **连续模式逆序写入** | 数据段追加 + 索引 filler 替换 | timestamp < latest → 追加到最新段, 覆盖匹配的 filler mmap entry |
+| **非连续逆序写入** | 统一拒绝 | timestamp < latest → 立即返回错误 |
+| **Filler 哨兵** | `block_offset=0xFFFFFFFFFFFFFFFF` | 远超任何合法全局偏移 (GB/TB 级 vs ~EB 级), 读取/查找时零成本识别 |
+
+---
+
+## 二十三、索引连续存储 (Index Continuous Storage)
+
+> **核心原则**: 索引条目按连续序号增长, 缺失时间戳位置填充哨兵值条目 (filler)。
+> - **非连续模式**: 逆序写入 (timestamp < 最新已写入 timestamp) → 拒绝
+> - **连续模式**: 逆序写入 → 数据追加到最新数据段, 索引替换匹配的 filler 条目 (mmap 覆盖)
+
+### 23.1 设计动机
+
+当 `index_continuous=true` 时, 索引系统保证:
+- 索引序号严格连续增长 (#1, #2, #3, ...)
+- 缺失的时间戳位置填充**哨兵条目 (filler entry)**, 标记无真实数据
+- 查询时可通过二分查找精确定位, filler 条目与真实条目同等对待
+- 如果后续写入恰好填充了之前的 filler 位置 (匹配 timestamp), filler 被替换为真实数据
+
+当 `index_continuous=false` 时:
+- 索引按实际写入时间戳顺序 append, 无填充
+- 逆序写入 (timestamp < 最新已写入时间戳) → **拒绝**
+- 索引是有序增长的 (严格按写入时间戳递增)
+
+### 23.2 写入行为
+
+```
+DataSet::write(timestamp, data):
+  │
+  ├─ if timestamp == 0:
+  │     return Error("timestamp must be > 0")
+  │
+  ├─ 写入数据到 DataSegmentSet → (seg_offset, block_rel_offset, in_block_offset)
+  │     (数据始终追加到最新 pending block 末尾)
+  │
+  └─ 索引更新:
+       │
+       ├─ 情况A: timestamp > latest_written_timestamp (正序写入)
+       │    │
+       │    ├─ if index_continuous == true:
+       │    │    └─ 填充缺失: for ts in (latest+1)..(timestamp-1):
+       │    │         filler_entry = IndexEntry {
+       │    │             timestamp: ts,
+       │    │             block_offset: 0xFFFFFFFFFFFFFFFF,  // sentinel
+       │    │             in_block_offset: 0xFFFF,            // sentinel
+       │    │         }
+       │    │         TimeIndex::add_entry(ts, 0xFFFFFFFFFFFFFFFF, 0xFFFF)
+       │    │         // buffer 中的 filler 在 flush 时会被过滤, 不创建空 segment
+       │    │
+       │    └─ 写入真实条目:
+       │         TimeIndex::add_entry(timestamp, absolute_block_offset, in_block_offset)
+       │         latest_written_timestamp = timestamp
+       │
+       ├─ 情况B: timestamp < latest_written_timestamp 且 index_continuous == true (补数据)
+       │    │
+       │    ├─ 查找: 在已写入的 index segment 中找到 timestamp 对应的 filler entry
+       │    │     (二分查找, 因为 index segment 按 timestamp 递增排序)
+       │    │
+       │    ├─ 找到 filler (block_offset == 0xFFFFFFFFFFFFFFFF):
+       │    │     └─ mmap 覆盖写: 将 filler 替换为真实 entry
+       │    │         entry.block_offset = absolute_block_offset
+       │    │         entry.in_block_offset = in_block_offset
+       │    │         (timestamp 不变, 二分查找顺序不受影响)
+       │    │         latest_written_timestamp 不变 (最后一条仍是原来的)
+       │    │
+       │    └─ 未找到 filler (可能是真实 entry 已存在, 或超出范围):
+       │         └─ return Error("no filler entry at timestamp {ts}")
+       │
+       └─ 情况C: timestamp < latest_written_timestamp 且 index_continuous == false (非连续)
+            └─ return Error("out-of-order: timestamp {ts} < latest {latest}")
+```
+
+### 23.2.1 连续模式补数据示意
+
+```
+已写入:
+  ts=100 → entry #1 (offset=0, 真实数据)
+  ts=150 → entry #51 (offset=512, 真实数据)
+  filler:  #2~#50 (ts=101..149, sentinel)
+
+补数据: write(ts=120, data)
+  1. 数据追加到当前 pending block (offset=600, in_block=0)
+     → absolute_block_offset = 600, in_block_offset = 0
+  2. 二分查找 ts=120 的 filler entry
+     → 找到 entry #21 (ts=120, block_offset=0xFFFFFFFFFFFFFFFF, in_block_offset=0xFFFF)
+  3. mmap 覆盖写 18 字节:
+     旧: [120 as i64][0xFFFFFFFFFFFFFFFF][0xFFFF]
+     新: [120 as i64][600 as u64          ][0      ]
+  4. latest_written_timestamp = 150 (不变)
+
+结果: 查询 [100, 150] → 返回 3 条真实数据 (ts=100, 120, 150), 48 个 filler 被过滤
+```
+
+### 23.2.2 连续模式逆序写入边界条件
+
+| 场景 | 行为 |
+|------|------|
+| ts < 0 | Error |
+| ts = 0 | Error (保留给 index segment 命名) |
+| ts = latest_written_timestamp | Error (重复写入, filler 已不存在) |
+| ts 对应真实 entry (非 filler) | Error (不覆盖真实数据) |
+| ts 对应 filler | 替换 filler → 真实 entry |
+| ts > latest_written_timestamp | 填充 + 正常写入 |
+
+### 23.3 配置持久化
+
+新增 `meta` TLV 类型:
+
+| Type (hex) | 名称 | 长度 | 数据类型 | 说明 |
+|------------|------|------|---------|------|
+| 0x05 | index_continuous | 1 | u8 | 0=非连续, 1=连续存储 |
+
+**创建时写入, 之后不可变**。打开时校验一致性。
+
+### 23.4 哨兵值设计与 Filler 识别
+
+| 字段 | 哨兵值 | 含义 | 合法性保证 |
+|------|--------|------|-----------|
+| `block_offset: u64` | `0xFFFFFFFFFFFFFFFF` | 此位置无真实数据 (filler) | 合法全局偏移 = seg_start_offset + block_rel_off, 最大值远低于 u64::MAX (~GB 级 vs ~EB 级) |
+| `in_block_offset: u16` | `0xFFFF` | 此位置无真实数据 (filler) | 合法偏移 ≤ block_max_size = 64KB |
+
+**读取时识别 filler**:
+```rust
+// 在 DataSet::query() 层过滤:
+for entry in &entries {
+    if entry.block_offset == 0xFFFFFFFFFFFFFFFF {
+        continue;  // 跳过 filler, 无真实数据
+    }
+    // ... 正常从 data segment 读取 ...
+}
+```
+
+**补数据时查找 filler**:
+```rust
+fn find_filler_entry_for_ts(&self, ts: i64) -> Option<(IndexSegmentRef, usize)> {
+    // 二分查找所有 index segments, 找到 block_offset == sentinel 的 entry
+    // 返回: (segment 引用, entry 在 mmap 中的位置偏移)
+}
+```
+
+### 23.5 Index Segment 跳过规则
+
+当填充的缺失时间跨度很大 (filler 条目数量 > 一个 index segment 容量) 时:
+
+```
+规则: 如果一个 index segment 将全部只包含 filler 条目, 则跳过该 segment 的创建。
+
+示例:
+  index_segment 容量 = 50000 条目
+  上次写入 timestamp = 50, 新写入 timestamp = 500150
+  需填充 499999 个 filler (ts 51..500149)
+
+  填充 ts=51..100000 → 跨 2 个 segment → 全部 filler → **跳过创建**
+  填充 ts=100001..200000 → 跨 2 个 segment → 全部 filler → **跳过创建**
+  ...
+  填充 ts=500001..500149 → 包含真实 entry (ts=500150) → **创建**
+
+实现逻辑:
+  - buffer 中的 filler 和真实 entry 混合写入 TimeIndex
+  - flush_to_disk() 时, 记录每个 segment 是否包含真实 entry
+  - 无真实 entry 的 segment: close + delete 文件 + 从 closed_segments 移除
+  - 只有包含真实 entry 的 segment 才会持久化到磁盘
+```
+
+### 23.6 Mmap 覆盖写 filler 条目
+
+**安全保证**: 只有已 flush 到磁盘的 index segment 中的 filler 才能被覆盖。
+
+```
+流程: write(ts=120, data) 其中 120 < latest_written_timestamp
+  │
+  ├─ 1. 数据写入 DataSegmentSet → (seg_offset, block_rel_offset, in_block_offset)
+  │
+  ├─ 2. find_filler(ts=120):
+  │     遍历所有 index segments (open + closed)
+  │     对每个 segment: seg.find_exact(120)
+  │       → 找到 entry, 检查 block_offset == 0xFFFFFFFFFFFFFFFF
+  │
+  ├─ 3. 如果是 filler:
+  │     a. 确保 segment mmap 有效 (closed → lazy_open)
+  │     b. 计算 entry 在 mmap 中的绝对偏移:
+  │         pos = HEADER_SIZE + entry_index * INDEX_ENTRY_SIZE
+  │     c. 写入新 entry (18 字节):
+  │         mmap[pos..pos+18].copy_from_slice(&new_entry.to_bytes())
+  │     d. 更新 segment header: flush_to_disk() (可选, mmap 已有 OS page cache)
+  │
+  └─ 4. latest_written_timestamp 不变
+```
+
+> **关键**: Mmap 覆盖写仅修改 18 字节, timestamp 字段保持不变, 二分查找顺序不受影响。
+
+### 23.7 状态跟踪
+
+| 状态 | 存储位置 | 作用 |
+|------|----------|------|
+| `latest_written_timestamp: i64` | DataSet 内存字段 | 判断正序/补数据, 正序时填充 filler, 补数据时定位 filler |
+| 重启恢复 | 从 index segment 最后一条 entry 读取 | 无需额外磁盘状态字段 |
+
+**重启恢复逻辑**:
+```
+DataSet::open():
+  ...
+  latest = 0
+  for seg in all_index_segments:
+      if seg.wrote_count > 0:
+          last_ts = seg.read_last_entry().timestamp  // 从 mmap 读最后一条
+          if last_ts > latest:
+              latest = last_ts
+  for entry in in_memory_buffer:
+      if entry.timestamp > latest:
+          latest = entry.timestamp
+  latest_written_timestamp = latest
+```
+
+### 23.8 Filler 填充时 in_memory_buffer 优化
+
+连续模式填充时, 大量 filler 如果全部加入 `in_memory_buffer`, 会：
+1. 占用大量内存 (可能百万级条目)
+2. flush 时遍历创建/跳过大量 segment
+
+**优化策略**:
+```
+- Filler 条目仍然加入 in_memory_buffer (保持填充逻辑简单)
+- flush_to_disk() 时:
+  - 如果 buffer 中全部是 filler (无真实 entry) → 直接丢弃, 不创建任何 segment
+  - 如果 buffer 中混合 filler + 真实 entry → 正常写入, segment 跳过规则生效
+```
+
+### 23.9 Timestamp = 0 特殊处理
+
+timestamp = 0 被保留为**空位标记** (index segment 起始偏移 = 0 的文件名 = `00000000000000000000`)。
+写入 timestamp ≤ 0 将返回错误。
+
+### 23.10 Query 行为 (含 Filler 过滤)
+
+```
+DataSet::query(start_ts, end_ts):
+  1. TimeIndex::query(start_ts, end_ts) → 获取所有 entries (含 filler + 补写后的真实 entry)
+  2. 过滤: entries.retain(|e| e.block_offset != 0xFFFFFFFFFFFFFFFF)
+  3. 对每个有效 entry: 从 data segment 读取数据
+  4. 按 timestamp 排序返回
+```
+
+> **关键**: Filler 条目在 index 中占位, query 时过滤。补写后 filler 被替换为真实 entry, 
+> 下次 query 不再过滤。二分查找顺序不受影响 (timestamp 字段在覆盖写中不变)。
+
+---
