@@ -53,7 +53,7 @@ mod segment;
 mod store;
 
 // ─── Public re-exports ──────────────────────────────────────────────────────
-pub use config::{StoreConfig, StoreConfigBuilder};
+pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
 pub use error::{Result, TmslError};
 pub use query::hot_block::HotBlockCache;
 pub use query::iter::{QueryIterator, QuerySource, SourceIndex};

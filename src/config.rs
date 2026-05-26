@@ -171,10 +171,8 @@ impl StoreConfigBuilder {
 }
 
 /// Dataset-level configuration (derived from `StoreConfig`).
-///
-/// This is an internal type, not exposed to users.
 #[derive(Clone, Debug)]
-pub(crate) struct DataSetConfig {
+pub struct DataSetConfig {
     pub data_segment_size: u64,
     pub index_segment_size: u64,
     pub block_max_size: u32,
@@ -205,8 +203,27 @@ impl DataSetConfig {
 }
 
 /// Builder for `DataSetConfig`.
+///
+/// Use `DataSetConfigBuilder::from_store(store_config)` to pre-fill with store-level defaults,
+/// then override specific fields. Unset fields inherit store defaults; `index_continuous` defaults to 0.
+///
+/// # Example
+/// ```ignore
+/// let config = StoreConfig::default();
+/// let mut store = Store::open("/data/timslite", config)?;
+///
+/// // Use store defaults for everything
+/// store.create_dataset_with_config("sensor", "temp", None)?;
+///
+/// // Override specific fields
+/// store.create_dataset_with_config("sensor", "temp", Some(
+///     DataSetConfigBuilder::from_store(&config)
+///         .compress_level(9)
+///         .index_continuous(1)
+/// ))?;
+/// ```
 #[derive(Clone, Debug, Default)]
-pub(crate) struct DataSetConfigBuilder {
+pub struct DataSetConfigBuilder {
     data_segment_size: Option<u64>,
     index_segment_size: Option<u64>,
     block_max_size: Option<u32>,
@@ -217,6 +234,20 @@ pub(crate) struct DataSetConfigBuilder {
 }
 
 impl DataSetConfigBuilder {
+    /// Create a builder pre-filled with store-level defaults.
+    /// Unset fields will fall back to the store config; `index_continuous` defaults to 0.
+    pub fn from_store(store: &StoreConfig) -> Self {
+        Self {
+            data_segment_size: Some(store.data_segment_size),
+            index_segment_size: Some(store.index_segment_size),
+            block_max_size: Some(store.block_max_size),
+            compress_level: Some(store.compress_level),
+            index_continuous: Some(0),
+            initial_data_segment_size: Some(store.initial_data_segment_size),
+            initial_index_segment_size: Some(store.initial_index_segment_size),
+        }
+    }
+
     /// Set the data segment file size.
     pub fn data_segment_size(mut self, size: u64) -> Self {
         self.data_segment_size = Some(size);
@@ -354,5 +385,43 @@ mod tests {
         assert_eq!(dataset.data_segment_size, 32 * 1024 * 1024);
         assert_eq!(dataset.compress_level, 3);
         assert_eq!(dataset.block_max_size, 65536); // default
+    }
+
+    #[test]
+    fn test_dataset_config_builder_from_store() {
+        let store = StoreConfig::builder()
+            .data_segment_size(32 * 1024 * 1024)
+            .index_segment_size(8 * 1024 * 1024)
+            .compress_level(3)
+            .initial_data_segment_size(512 * 1024)
+            .initial_index_segment_size(8 * 1024)
+            .build();
+
+        let config = DataSetConfigBuilder::from_store(&store).build();
+        assert_eq!(config.data_segment_size, 32 * 1024 * 1024);
+        assert_eq!(config.index_segment_size, 8 * 1024 * 1024);
+        assert_eq!(config.compress_level, 3);
+        assert_eq!(config.index_continuous, 0);
+        assert_eq!(config.initial_data_segment_size, 512 * 1024);
+        assert_eq!(config.initial_index_segment_size, 8 * 1024);
+    }
+
+    #[test]
+    fn test_dataset_config_builder_from_store_with_overrides() {
+        let store = StoreConfig::builder()
+            .data_segment_size(64 * 1024 * 1024)
+            .compress_level(6)
+            .build();
+
+        let config = DataSetConfigBuilder::from_store(&store)
+            .compress_level(9)
+            .index_continuous(1)
+            .build();
+
+        // Override takes effect
+        assert_eq!(config.compress_level, 9);
+        assert_eq!(config.index_continuous, 1);
+        // Store default is inherited
+        assert_eq!(config.data_segment_size, 64 * 1024 * 1024);
     }
 }

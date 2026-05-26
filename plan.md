@@ -22,6 +22,7 @@
 | 11 | 连续模式 O(1) 查询优化 | ✅ 完成 | [phase-11-o1-optimization.md](docs/plan/phase-11-o1-optimization.md) |
 | 12 | 分段懒分配 + 倍率扩容 | ✅ 完成 (含4项集成测试) | [phase-12-lazy-allocation.md](docs/plan/phase-12-lazy-allocation.md) |
 | 13 | 查询迭代器 + HotBlockCache | ✅ 完成 | [phase-13-query-iterator.md](docs/plan/phase-13-query-iterator.md) |
+| 14 | create_dataset Builder 优化 | ✅ 完成 | [phase-14-dataset-config-builder.md](docs/plan/phase-14-dataset-config-builder.md) |
 
 ## 待完成事项
 
@@ -89,6 +90,21 @@
 - [x] `cargo clippy -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (101 tests: 91 unit + 16 integration)
 
+### Phase 14: create_dataset Builder 优化 ✅ 已完成
+- [x] `DataSetConfigBuilder::from_store(store_config)` — 预填 store 默认值
+- [x] `Store::create_dataset_with_config(name, dataset_type, Option<DataSetConfigBuilder>)` — 新 API
+  - `None` → 全部使用 store 默认值, `index_continuous` 默认 0
+  - `Some(builder)` → 仅覆盖 builder 中显式设置的字段
+- [x] `Store::create_dataset(...)` — 向后兼容, 内部委托给新方法
+- [x] `DataSetConfigBuilder` 从 `pub(crate)` 提升为 `pub`, 带完整文档注释
+- [x] `DataSetConfig` 从 `pub(crate)` 提升为 `pub` (接口可见性一致)
+- [x] `lib.rs` 导出 `DataSetConfigBuilder`, `DataSetConfig`
+- [x] 单元测试: `test_dataset_config_builder_from_store`, `test_dataset_config_builder_from_store_with_overrides`
+- [x] 集成测试: t14_1 (None 默认值), t14_2 (builder 覆盖), t14_3 (旧 API 兼容)
+- [x] FFI `tmsl_dataset_create` 保持不变 (C 不支持 builder 模式)
+- [x] `cargo clippy -- -D warnings` clean
+- [x] `cargo test -- --test-threads=1` 全部通过 (110 tests: 93 unit + 19 integration)
+
 ## 文档结构
 
 详细计划内容已拆分到 `docs/plan/` 目录, 每个 Phase 独立文档:
@@ -110,6 +126,7 @@ docs/plan/
 ├── phase-11-o1-optimization.md      ← Phase 11: O(1) 查询优化
 ├── phase-12-lazy-allocation.md      ← Phase 12: 懒分配 + 扩容
 └── phase-13-query-iterator.md       ← Phase 13: 查询迭代器 + HotBlockCache
+└── phase-14-dataset-config-builder.md ← Phase 14: Builder 优化
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

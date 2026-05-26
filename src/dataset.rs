@@ -471,7 +471,6 @@ impl DataSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::segment::IndexEntry;
 
     fn temp_dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join("timslite_dataset_test");

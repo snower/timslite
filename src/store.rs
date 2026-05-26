@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::bg::BackgroundTasks;
 use crate::cache::BlockCache;
-use crate::config::StoreConfig;
+use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::dataset::{DataSet, DataSetKey};
 use crate::error::{Result, TmslError};
 
@@ -96,15 +96,15 @@ impl Store {
         Ok(store)
     }
 
-    /// Create a new dataset (explicit, errors if already exists).
-    pub fn create_dataset(
+    /// Create a new dataset using a builder with store-level defaults.
+    ///
+    /// When `config_builder` is `None`, all parameters inherit store defaults
+    /// and `index_continuous` defaults to 0.
+    pub fn create_dataset_with_config(
         &mut self,
         name: &str,
         dataset_type: &str,
-        data_segment_size: u64,
-        index_segment_size: u64,
-        compress_level: u8,
-        index_continuous: u8,
+        config_builder: Option<DataSetConfigBuilder>,
     ) -> Result<DataSetHandle> {
         let key = DataSetKey {
             name: name.to_string(),
@@ -122,18 +122,22 @@ impl Store {
             }
         }
 
+        let config = config_builder
+            .unwrap_or_else(|| DataSetConfigBuilder::from_store(&self.config))
+            .build();
+
         // Create new dataset
         let dir = self.data_dir.join(name).join(dataset_type);
         let ds = DataSet::create(
             key.clone(),
             dir,
-            data_segment_size,
-            index_segment_size,
-            compress_level,
+            config.data_segment_size,
+            config.index_segment_size,
+            config.compress_level,
             self.config.block_max_size,
-            index_continuous,
-            self.config.initial_data_segment_size,
-            self.config.initial_index_segment_size,
+            config.index_continuous,
+            config.initial_data_segment_size,
+            config.initial_index_segment_size,
         )?;
 
         let ds = Arc::new(Mutex::new(ds));
@@ -146,6 +150,31 @@ impl Store {
         self.next_handle_id += 1;
         self.handles.insert(id, key);
         Ok(DataSetHandle(id))
+    }
+
+    /// Create a new dataset (explicit, errors if already exists).
+    ///
+    /// Backward-compatible wrapper around `create_dataset_with_config`.
+    pub fn create_dataset(
+        &mut self,
+        name: &str,
+        dataset_type: &str,
+        data_segment_size: u64,
+        index_segment_size: u64,
+        compress_level: u8,
+        index_continuous: u8,
+    ) -> Result<DataSetHandle> {
+        self.create_dataset_with_config(
+            name,
+            dataset_type,
+            Some(
+                DataSetConfigBuilder::from_store(&self.config)
+                    .data_segment_size(data_segment_size)
+                    .index_segment_size(index_segment_size)
+                    .compress_level(compress_level)
+                    .index_continuous(index_continuous),
+            ),
+        )
     }
 
     /// Open an existing dataset (errors if not found).
