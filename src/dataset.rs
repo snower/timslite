@@ -77,7 +77,7 @@ impl DataSet {
 
         let segments =
             DataSegmentSet::new(&base_dir, data_segment_size, block_max_size, compress_level)?;
-        let time_index = TimeIndex::new(&index_dir, index_segment_size)?;
+        let time_index = TimeIndex::new(&index_dir, index_segment_size, index_continuous != 0)?;
 
         Ok(Self {
             id,
@@ -127,7 +127,11 @@ impl DataSet {
             config.compress_level,
         )?;
         let index_dir = base_dir.join("index");
-        let time_index = TimeIndex::load_existing(&index_dir, config.index_segment_size)?;
+        let time_index = TimeIndex::load_existing(
+            &index_dir,
+            config.index_segment_size,
+            config.index_continuous != 0,
+        )?;
 
         // Recover latest_written_timestamp from index segments
         let latest_written_timestamp = Self::recover_latest_timestamp(&time_index);
@@ -218,12 +222,15 @@ impl DataSet {
 
     /// Replace a filler entry at the given timestamp with real data.
     /// Only valid in continuous mode when timestamp < latest_written_timestamp.
+    /// In continuous mode, uses O(1) direct calculation to find the entry position.
     fn replace_filler_with_real(
         &mut self,
         timestamp: i64,
         block_offset: u64,
         in_block_offset: u16,
     ) -> Result<()> {
+        let ic = self.time_index.index_continuous;
+
         // Try in-memory buffer first (unflushed filler entries)
         if let Some(pos) = self
             .time_index
@@ -250,8 +257,8 @@ impl DataSet {
 
         // Try open segments first
         for seg in &mut self.time_index.index_segments {
-            if let Some(idx) = seg.find_entry_index(timestamp) {
-                let entry = seg.find_exact(timestamp).unwrap();
+            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
+                let entry = seg.find_exact_cs(timestamp, ic).unwrap();
                 if entry.block_offset == BLOCK_OFFSET_FILLER {
                     seg.ensure_open()?;
                     let new_entry = IndexEntry {
@@ -270,11 +277,34 @@ impl DataSet {
             }
         }
 
-        // Try closed segments
+        // Try closed segments (use wrote_count from meta for O(1) range check)
         for meta in &self.time_index.closed_index_segments {
+            // Fast range check using meta.wrote_count (no file open needed in continuous mode)
+            let entry_index = ic.then(|| {
+                if meta.wrote_count == 0 {
+                    return None;
+                }
+                let end_ts = meta.start_timestamp + meta.wrote_count as i64;
+                if timestamp >= meta.start_timestamp && timestamp < end_ts {
+                    Some((timestamp - meta.start_timestamp) as usize)
+                } else {
+                    None
+                }
+            });
+
+            if ic && entry_index.is_none() {
+                continue; // Not in this segment's range (continuous mode)
+            }
+
             let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp)?;
-            if let Some(idx) = seg.find_entry_index(timestamp) {
-                let entry = seg.find_exact(timestamp).unwrap();
+            let idx = if ic {
+                entry_index.flatten()
+            } else {
+                seg.find_entry_index(timestamp)
+            };
+
+            if let Some(idx) = idx {
+                let entry = seg.find_exact_cs(timestamp, ic).unwrap();
                 if entry.block_offset == BLOCK_OFFSET_FILLER {
                     let new_entry = IndexEntry {
                         timestamp,

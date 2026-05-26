@@ -7,10 +7,12 @@ pub mod segment;
 
 use std::path::Path;
 
+pub use self::segment::INDEX_ENTRY_SIZE;
 use self::segment::{IndexEntry, IndexSegment, IndexSegmentMeta};
 use crate::error::Result;
-
-pub use self::segment::INDEX_ENTRY_SIZE;
+use crate::header::HEADER_SIZE;
+use crate::util::read_u64_from_mmap;
+use memmap2::MmapMut;
 
 // ─── TimeIndex ─────────────────────────────────────────────────────────────
 
@@ -21,11 +23,12 @@ pub struct TimeIndex {
     pub closed_index_segments: Vec<IndexSegmentMeta>,
     pub in_memory_buffer: Vec<IndexEntry>,
     pub in_memory_flush_threshold: usize,
+    pub index_continuous: bool, // true = continuous mode (O(1) lookup enabled)
 }
 
 impl TimeIndex {
     /// Create a new TimeIndex.
-    pub fn new(base_dir: &Path, segment_size: u64) -> Result<Self> {
+    pub fn new(base_dir: &Path, segment_size: u64, index_continuous: bool) -> Result<Self> {
         std::fs::create_dir_all(base_dir)?;
         Ok(Self {
             base_dir: base_dir.to_path_buf(),
@@ -34,6 +37,7 @@ impl TimeIndex {
             closed_index_segments: Vec::new(),
             in_memory_buffer: Vec::new(),
             in_memory_flush_threshold: 1024,
+            index_continuous,
         })
     }
 
@@ -192,8 +196,10 @@ impl TimeIndex {
     }
 
     /// Query entries in the time range [start_ts, end_ts].
+    /// In continuous mode, uses O(1) direct calculation for segment lookups.
     pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
         let mut results = Vec::new();
+        let ic = self.index_continuous;
 
         // In-memory buffer
         for entry in &self.in_memory_buffer {
@@ -202,17 +208,18 @@ impl TimeIndex {
             }
         }
 
-        // Open segments
+        // Open segments (use continuous-safe query)
         for seg in &mut self.index_segments {
             seg.ensure_open()?;
-            let range_entries = seg.query_range(start_ts, end_ts);
+            let range_entries = seg.query_range_cs(start_ts, end_ts, ic);
             results.extend(range_entries);
         }
 
         // Closed segments (open briefly for query)
         for meta in &self.closed_index_segments {
-            let seg = IndexSegment::open(&meta.path, meta.start_timestamp)?;
-            results.extend(seg.query_range(start_ts, end_ts));
+            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp)?;
+            let range_entries = seg.query_range_cs(start_ts, end_ts, ic);
+            results.extend(range_entries);
             // Don't keep open - query only
         }
 
@@ -238,6 +245,7 @@ impl TimeIndex {
                 seg.path.clone(),
                 seg.start_timestamp,
                 seg.entries_capacity,
+                seg.wrote_count,
             ));
             seg.idle_close()?;
         }
@@ -247,7 +255,11 @@ impl TimeIndex {
 
     /// Load existing index segments from disk.
     /// Index files are in the `index/` subdirectory.
-    pub fn load_existing(base_dir: &Path, segment_size: u64) -> Result<Self> {
+    pub fn load_existing(
+        base_dir: &Path,
+        segment_size: u64,
+        index_continuous: bool,
+    ) -> Result<Self> {
         let mut metas: Vec<IndexSegmentMeta> = Vec::new();
         if base_dir.exists() {
             for entry in std::fs::read_dir(base_dir)? {
@@ -258,10 +270,16 @@ impl TimeIndex {
                 if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
                     if let Ok(start_ts) = i64::from_str_radix(stem, 10) {
                         let file_size = std::fs::metadata(&p)?.len();
-                        let entries_capacity = ((file_size - crate::header::HEADER_SIZE as u64)
-                            / INDEX_ENTRY_SIZE as u64)
-                            as usize;
-                        metas.push(IndexSegmentMeta::new(p, start_ts, entries_capacity));
+                        let entries_capacity =
+                            ((file_size - HEADER_SIZE as u64) / INDEX_ENTRY_SIZE as u64) as usize;
+                        // Read record_count from header (offset 44 + 8 = 52)
+                        let wrote_count = Self::read_record_count_from_file(&p);
+                        metas.push(IndexSegmentMeta::new(
+                            p,
+                            start_ts,
+                            entries_capacity,
+                            wrote_count,
+                        ));
                     }
                 }
             }
@@ -275,7 +293,19 @@ impl TimeIndex {
             closed_index_segments: metas,
             in_memory_buffer: Vec::new(),
             in_memory_flush_threshold: 1024,
+            index_continuous,
         })
+    }
+
+    /// Read record_count from the file header without fully opening the segment.
+    fn read_record_count_from_file(path: &Path) -> usize {
+        if let Ok(file) = std::fs::OpenOptions::new().read(true).open(path) {
+            if let Ok(mmap) = unsafe { MmapMut::map_mut(&file) } {
+                // record_count is at state offset 8 from state start (offset 44)
+                return read_u64_from_mmap(&mmap, 52) as usize;
+            }
+        }
+        0
     }
 }
 
@@ -319,7 +349,7 @@ mod tests {
             seg.append_entry(&entry).unwrap();
         }
 
-        let entries = seg.query_range(1010, 1020);
+        let entries = seg.query_range_cs(1010, 1020, false);
         assert_eq!(entries.len(), 11);
         assert_eq!(entries[0].timestamp, 1010);
         assert_eq!(entries.last().unwrap().timestamp, 1020);
@@ -338,50 +368,155 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(seg.lower_bound(25), 3);
-        assert_eq!(seg.lower_bound(20), 2);
-        assert_eq!(seg.lower_bound(-5), 0);
-        assert_eq!(seg.lower_bound(100), 10);
+        assert_eq!(seg.lower_bound_cs(25, false), 3);
+        assert_eq!(seg.lower_bound_cs(20, false), 2);
+        assert_eq!(seg.lower_bound_cs(-5, false), 0);
+        assert_eq!(seg.lower_bound_cs(100, false), 10);
+
+        // Continuous mode (entries are contiguous from 0): O(1)
+        // Continuous: range [0..9], target 25 → out of range → wrote_count
+        assert_eq!(seg.lower_bound_cs(9, true), 9);
+        assert_eq!(seg.lower_bound_cs(10, true), 10); // out of range → wrote_count
+        assert_eq!(seg.lower_bound_cs(-5, true), 0);
+        assert_eq!(seg.lower_bound_cs(25, true), 10); // out of range → wrote_count
     }
 
     #[test]
-    fn test_index_segment_find_exact() {
+    fn test_index_segment_direct_lookup() {
         let dir = temp_dir();
-        let sub = dir.join("find_exact");
+        let sub = dir.join("direct_lookup");
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 0, 4096).unwrap();
-        seg.append_entry(&IndexEntry::new(100, 500, 10)).unwrap();
-        seg.append_entry(&IndexEntry::new(200, 600, 20)).unwrap();
+        // Create segment starting at ts=100, continuous entries
+        let mut seg = IndexSegment::create(&sub, 100, 4096).unwrap();
+        for i in 0..20 {
+            seg.append_entry(&IndexEntry::new(100 + i, i as u64, (i * 3) as u16))
+                .unwrap();
+        }
 
-        let found = seg.find_exact(200).unwrap();
-        assert_eq!(found.timestamp, 200);
-        assert_eq!(found.block_offset, 600);
-        assert_eq!(found.in_block_offset, 20);
+        // Direct lookup within range
+        let entry = seg.direct_lookup(105).unwrap();
+        assert_eq!(entry.timestamp, 105);
+        assert_eq!(entry.block_offset, 5);
 
-        assert!(seg.find_exact(150).is_none());
+        let entry = seg.direct_lookup(100).unwrap();
+        assert_eq!(entry.timestamp, 100);
+        assert_eq!(entry.block_offset, 0);
+
+        let entry = seg.direct_lookup(119).unwrap();
+        assert_eq!(entry.timestamp, 119);
+        assert_eq!(entry.block_offset, 19);
+
+        // Out of range
+        assert!(seg.direct_lookup(99).is_none());
+        assert!(seg.direct_lookup(120).is_none());
+        assert!(seg.direct_lookup(0).is_none());
     }
 
     #[test]
-    fn test_index_segment_lifecycle() {
+    fn test_index_segment_find_entry_index_cs() {
         let dir = temp_dir();
-        let sub = dir.join("lifecycle");
+        let sub = dir.join("find_entry_index_cs");
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 500, 4096).unwrap();
-        seg.append_entry(&IndexEntry::new(500, 100, 0)).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096).unwrap();
+        for i in 0..10 {
+            seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
+                .unwrap();
+        }
 
-        seg.idle_close().unwrap();
-        assert!(seg.mmap.is_none());
+        // Non-continuous mode (binary search)
+        assert_eq!(seg.find_entry_index_cs(15, false, None), Some(5));
+        assert_eq!(seg.find_entry_index_cs(99, false, None), None);
 
-        seg.ensure_open().unwrap();
-        assert!(seg.mmap.is_some());
+        // Continuous mode (O(1) direct calculation)
+        assert_eq!(seg.find_entry_index_cs(10, true, None), Some(0));
+        assert_eq!(seg.find_entry_index_cs(15, true, None), Some(5));
+        assert_eq!(seg.find_entry_index_cs(19, true, None), Some(9));
+        assert_eq!(seg.find_entry_index_cs(9, true, None), None);
+        assert_eq!(seg.find_entry_index_cs(20, true, None), None);
+    }
 
-        // Entry should still be there
-        let found = seg.find_exact(500).unwrap();
-        assert_eq!(found.timestamp, 500);
+    #[test]
+    fn test_index_segment_find_exact_cs() {
+        let dir = temp_dir();
+        let sub = dir.join("find_exact_cs");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut seg = IndexSegment::create(&sub, 10, 4096).unwrap();
+        for i in 0..10 {
+            seg.append_entry(&IndexEntry::new(10 + i, i as u64 * 100, 0))
+                .unwrap();
+        }
+
+        // Non-continuous
+        let e = seg.find_exact_cs(13, false).unwrap();
+        assert_eq!(e.block_offset, 300);
+
+        // Continuous
+        let e = seg.find_exact_cs(17, true).unwrap();
+        assert_eq!(e.block_offset, 700);
+        assert!(seg.find_exact_cs(99, true).is_none());
+    }
+
+    #[test]
+    fn test_index_segment_query_range_cs() {
+        let dir = temp_dir();
+        let sub = dir.join("query_range_cs");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut seg = IndexSegment::create(&sub, 10, 4096).unwrap();
+        for i in 0..20 {
+            seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
+                .unwrap();
+        }
+
+        // Non-continuous
+        let r = seg.query_range_cs(15, 19, false);
+        assert_eq!(r.len(), 5);
+
+        // Continuous
+        let r = seg.query_range_cs(15, 19, true);
+        assert_eq!(r.len(), 5);
+        assert_eq!(r[0].timestamp, 15);
+        assert_eq!(r[4].timestamp, 19);
+
+        // Edge: start before segment
+        let r = seg.query_range_cs(0, 13, true);
+        assert_eq!(r.len(), 4); // 10, 11, 12, 13
+
+        // Edge: end after segment (range 25..50, segment has 10..29)
+        let r = seg.query_range_cs(25, 50, true);
+        assert_eq!(r.len(), 5); // timestamps 25, 26, 27, 28, 29
+    }
+
+    #[test]
+    fn test_index_segment_upper_bound_cs() {
+        let dir = temp_dir();
+        let sub = dir.join("upper_bound_cs");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut seg = IndexSegment::create(&sub, 10, 4096).unwrap();
+        for i in 0..10 {
+            seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
+                .unwrap();
+        }
+
+        // Non-continuous
+        assert_eq!(seg.upper_bound_cs(15, false), 6);
+        assert_eq!(seg.upper_bound_cs(9, false), 0);
+        assert_eq!(seg.upper_bound_cs(20, false), 10);
+
+        // Continuous
+        assert_eq!(seg.upper_bound_cs(15, true), 6); // 10+1-10+6
+        assert_eq!(seg.upper_bound_cs(9, true), 0); // before range
+        assert_eq!(seg.upper_bound_cs(19, true), 10); // at last entry -> return wrote_count
+        assert_eq!(seg.upper_bound_cs(20, true), 10); // after range
     }
 
     #[test]
@@ -390,7 +525,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let mut idx = TimeIndex::new(&dir, 4096).unwrap();
+        let mut idx = TimeIndex::new(&dir, 4096, false).unwrap();
         idx.in_memory_flush_threshold = 5;
 
         for i in 0..20 {
@@ -409,7 +544,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let mut idx = TimeIndex::new(&dir, 4096).unwrap();
+        let mut idx = TimeIndex::new(&dir, 4096, false).unwrap();
         idx.in_memory_flush_threshold = 5;
 
         for i in 0..100 {
@@ -419,7 +554,7 @@ mod tests {
         idx.flush_to_disk().unwrap();
 
         // Load fresh
-        let mut idx2 = TimeIndex::load_existing(&dir, 4096).unwrap();
+        let mut idx2 = TimeIndex::load_existing(&dir, 4096, false).unwrap();
         // Query all
         let entries = idx2.query(2000, 2099).unwrap();
         assert_eq!(entries.len(), 100);
@@ -434,7 +569,7 @@ mod tests {
         let _ = fs::remove_dir_all(&sub);
         fs::create_dir_all(&sub).unwrap();
 
-        let mut idx = TimeIndex::new(&sub, 4096).unwrap();
+        let mut idx = TimeIndex::new(&sub, 4096, true).unwrap();
         idx.in_memory_flush_threshold = 3;
 
         // Add only filler entries (more than one segment worth)

@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use crate::error::{Result, TmslError};
 use crate::header::{FileMetadata, HEADER_SIZE};
-use crate::util::{read_i64_from_mmap, read_u16_from_mmap, write_u64_to_mmap};
+use crate::util::read_i64_from_mmap;
 
 // ─── IndexEntry ──────────────────────────────────────────────────────────────
 
@@ -190,6 +190,26 @@ impl IndexSegment {
 
     // ─── Query operations ────────────────────────────────────────────────
 
+    /// Direct lookup: O(1) for continuous mode.
+    /// Checks if target_ts is within [start_timestamp, start_timestamp + wrote_count - 1],
+    /// directly calculates the entry position, reads and validates the timestamp.
+    pub fn direct_lookup(&self, target_ts: i64) -> Option<IndexEntry> {
+        let mmap = self.mmap.as_ref()?;
+        let end_ts = self.start_timestamp + self.wrote_count as i64;
+        if target_ts < self.start_timestamp || target_ts >= end_ts {
+            return None;
+        }
+        let entry_index = (target_ts - self.start_timestamp) as usize;
+        let pos = HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
+        // Read timestamp (first 8 bytes) to validate
+        let ts = read_i64_from_mmap(mmap, pos);
+        if ts != target_ts {
+            return None; // Defensive: should never happen in continuous mode
+        }
+        let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
+        Some(IndexEntry::from_bytes(&buf))
+    }
+
     /// Binary search: find the first entry with timestamp >= target_ts.
     pub fn lower_bound(&self, target_ts: i64) -> usize {
         let mmap = self.mmap.as_ref().expect("index segment must be open");
@@ -207,6 +227,25 @@ impl IndexSegment {
         lo
     }
 
+    /// Continuous-safe lower_bound: O(1) direct calculation in continuous mode,
+    /// falls back to binary search for non-continuous mode.
+    pub fn lower_bound_cs(&self, target_ts: i64, index_continuous: bool) -> usize {
+        if !index_continuous {
+            return self.lower_bound(target_ts);
+        }
+        if self.wrote_count == 0 {
+            return 0;
+        }
+        if target_ts < self.start_timestamp {
+            return 0;
+        }
+        let end_ts = self.start_timestamp + self.wrote_count as i64;
+        if target_ts >= end_ts {
+            return self.wrote_count;
+        }
+        (target_ts - self.start_timestamp) as usize
+    }
+
     /// Binary search: find the first entry with timestamp > target_ts.
     pub fn upper_bound(&self, target_ts: i64) -> usize {
         let mmap = self.mmap.as_ref().expect("index segment must be open");
@@ -222,6 +261,25 @@ impl IndexSegment {
             }
         }
         lo
+    }
+
+    /// Continuous-safe upper_bound: O(1) direct calculation in continuous mode,
+    /// falls back to binary search for non-continuous mode.
+    pub fn upper_bound_cs(&self, target_ts: i64, index_continuous: bool) -> usize {
+        if !index_continuous {
+            return self.upper_bound(target_ts);
+        }
+        if self.wrote_count == 0 {
+            return 0;
+        }
+        if target_ts < self.start_timestamp {
+            return 0;
+        }
+        let end_ts = self.start_timestamp + self.wrote_count as i64;
+        if target_ts >= end_ts {
+            return self.wrote_count;
+        }
+        ((target_ts + 1 - self.start_timestamp) as usize).min(self.wrote_count)
     }
 
     /// Exact match: find entry with timestamp == target_ts.
@@ -278,6 +336,47 @@ impl IndexSegment {
         None
     }
 
+    /// Continuous-safe exact match: O(1) direct_lookup in continuous mode,
+    /// falls back to binary search for non-continuous mode.
+    pub fn find_exact_cs(&self, target_ts: i64, index_continuous: bool) -> Option<IndexEntry> {
+        if index_continuous {
+            self.direct_lookup(target_ts)
+        } else {
+            self.find_exact(target_ts)
+        }
+    }
+
+    /// Continuous-safe find entry index: O(1) direct calculation in continuous mode,
+    /// falls back to binary search for non-continuous mode.
+    pub fn find_entry_index_cs(
+        &self,
+        target_ts: i64,
+        index_continuous: bool,
+        wrote_count: Option<usize>,
+    ) -> Option<usize> {
+        if index_continuous {
+            let wc = wrote_count.unwrap_or(self.wrote_count);
+            if wc == 0 {
+                return None;
+            }
+            let end_ts = self.start_timestamp + wc as i64;
+            if target_ts >= self.start_timestamp && target_ts < end_ts {
+                let entry_index = (target_ts - self.start_timestamp) as usize;
+                // Validate that the entry exists (in case mmap has different data)
+                if let Some(mmap) = self.mmap.as_ref() {
+                    let pos = HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
+                    let ts = read_i64_from_mmap(mmap, pos);
+                    if ts == target_ts {
+                        return Some(entry_index);
+                    }
+                }
+            }
+            None
+        } else {
+            self.find_entry_index(target_ts)
+        }
+    }
+
     /// Overwrite an entry at the given index. Only valid for open segments.
     /// Used in continuous mode when back-filling filler entries with real data.
     pub fn overwrite_entry(&mut self, entry_index: usize, new_entry: &IndexEntry) -> Result<()> {
@@ -303,6 +402,28 @@ impl IndexSegment {
         let mmap = self.mmap.as_ref().expect("index segment must be open");
         let mut results = Vec::new();
         let start_idx = self.lower_bound(start_ts);
+        for i in start_idx..self.wrote_count {
+            let pos = HEADER_SIZE as usize + i * INDEX_ENTRY_SIZE;
+            let ts = read_i64_from_mmap(mmap, pos);
+            if ts > end_ts {
+                break;
+            }
+            let buf: [u8; 18] = mmap[pos..pos + 18].try_into().unwrap();
+            results.push(IndexEntry::from_bytes(&buf));
+        }
+        results
+    }
+
+    /// Continuous-safe range query: O(1) starting index in continuous mode.
+    pub fn query_range_cs(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+        index_continuous: bool,
+    ) -> Vec<IndexEntry> {
+        let mmap = self.mmap.as_ref().expect("index segment must be open");
+        let mut results = Vec::new();
+        let start_idx = self.lower_bound_cs(start_ts, index_continuous);
         for i in start_idx..self.wrote_count {
             let pos = HEADER_SIZE as usize + i * INDEX_ENTRY_SIZE;
             let ts = read_i64_from_mmap(mmap, pos);
@@ -350,14 +471,21 @@ pub(crate) struct IndexSegmentMeta {
     pub path: std::path::PathBuf,
     pub start_timestamp: i64,
     pub entries_capacity: usize,
+    pub wrote_count: usize, // record_count from header, enables O(1) range check without opening file
 }
 
 impl IndexSegmentMeta {
-    pub fn new(path: std::path::PathBuf, start_timestamp: i64, entries_capacity: usize) -> Self {
+    pub fn new(
+        path: std::path::PathBuf,
+        start_timestamp: i64,
+        entries_capacity: usize,
+        wrote_count: usize,
+    ) -> Self {
         Self {
             path,
             start_timestamp,
             entries_capacity,
+            wrote_count,
         }
     }
 }
