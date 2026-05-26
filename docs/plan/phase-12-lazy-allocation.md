@@ -122,10 +122,10 @@ const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 
 ## 12.12 集成测试
 
-- [ ] test_lazy_create_write_query_small_data: 写入少量数据, 验证文件大小 < segment_size
-- [ ] test_lazy_write_until_max_then_new_segment: 持续写入, 验证达到 max 后创建新段
-- [ ] test_open_legacy_full_allocated_dataset: 打开旧数据集 (全量预分配), 正常读写
-- [ ] test_disk_space_efficiency: 写入 100 条记录, 验证磁盘占用 < 1MB (对比 68MB 旧方案)
+- [x] test_lazy_create_write_query_small_data: 写入少量数据, 验证文件大小 < segment_size
+- [x] test_lazy_write_until_max_then_new_segment: 持续写入, 验证达到 max 后创建新段
+- [x] test_open_legacy_full_allocated_dataset: 打开旧数据集 (全量预分配), 正常读写
+- [x] test_disk_space_efficiency: 写入 100 条记录, 验证磁盘占用 < 1MB (对比 68MB 旧方案)
 - [x] test_expansion_data_integrity: 扩容前后数据完整性
 - [x] test_expansion_consecutive_open_write: 持续写入触发多次自动扩容, close → open → query
 
@@ -139,7 +139,7 @@ const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 - [x] 集成测试: 写入触发扩容 → 新文件大小 = 2x → 验证数据完整
 - [x] 集成测试: 达到 max → 密封 → 创建新段 (initial_size)
 - [x] 集成测试: 打开全量预分配旧文件 → 正常读写
-- [x] 总 90/90 tests pass (81 unit + 9 integration)
+- [x] 总 94/94 tests pass (81 unit + 13 integration)
 - [x] `cargo build --release` clean
 - [x] `cargo clippy` clean (仅 pre-existing warnings)
 

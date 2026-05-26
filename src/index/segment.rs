@@ -179,7 +179,7 @@ impl IndexSegment {
         self.wrote_count += 1;
 
         // Update file header (state fields at offset 44)
-        let abs_pos = (HEADER_SIZE + self.wrote_count as u64 * INDEX_ENTRY_SIZE as u64);
+        let abs_pos = HEADER_SIZE + self.wrote_count as u64 * INDEX_ENTRY_SIZE as u64;
         // wrote_position at offset 44
         mmap[44..52].copy_from_slice(&abs_pos.to_le_bytes());
         // record_count at offset 52

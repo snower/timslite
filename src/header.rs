@@ -149,7 +149,7 @@ impl FileMetadata {
         write_u16_to_mmap(mmap, off, 1);
         off += 2;
         mmap[off] = self.compress_level;
-        off += 1;
+        // off not used further — write_to is done with Meta section
 
         // state_length
         write_u16_to_mmap(mmap, OFF_STATE_LENGTH, self.state_length);
@@ -256,7 +256,7 @@ impl FileMetadata {
         let end = start + total_len;
         while off + 3 <= end {
             let t = mmap[off];
-            off += 1;
+            off += 1; // (value written above, kept for readability)
             let len = read_u16_from_mmap(mmap, off) as usize;
             off += 2;
             if off + len > end {

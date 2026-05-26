@@ -73,12 +73,12 @@
 
 - [x] 集成测试: `DataSet::create` → 检查目录和 meta 文件创建 → 写入 5000 条 → query 全部
 - [x] 集成测试: `DataSet::create` 对已存在数据集 → 返回 `AlreadyExists` 错误
-- [ ] 集成测试: `DataSet::open` 对不存在数据集 → 返回 `NotFound` 错误
-- [ ] 集成测试: `DataSet::open` 后写入更多数据 → close → reopen → 验证所有数据可读
-- [ ] 集成测试: 时间范围查询 (部分数据) → 验证数量和顺序
-- [x] 集成测试: 多数据集并行 (不同 name/type) → 数据完全隔离
+- [x] 集成测试: `DataSet::open` 对不存在数据集 → 返回 `NotFound` 错误
+- [x] 集成测试: `DataSet::open` 后写入更多数据 → close → reopen → 验证所有数据可读
+- [x] 集成测试: 时间范围查询 (部分数据) → 验证数量和顺序
+- [x] 集成测试: 多数据集并行 (不同 name/type) → 数据完全隔离 (t8_1_2_multi_dataset_isolation)
 - [x] 整合测试: meta 文件创建 → roundtrip → data_segment_size/index_segment_size 固定不可变
-- [ ] 整合测试: `DataSet::drop_dataset` 删除后, 目录和所有文件不可访问
+- [x] 整合测试: `DataSet::drop_dataset` 删除后, 目录和所有文件不可访问
 - [x] 目录验证: 数据文件在 `data/` 下, 索引文件在 `index/` 下, meta 在 type/ 根下
 - [x] 不可变验证: 创建 meta 后再次 open, meta 文件内容未变, 参数从 meta 读取
 

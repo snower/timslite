@@ -40,12 +40,13 @@
 
 ## 验收标准
 
-- [x] `cargo test` 覆盖率 ≥ 80%
+- [x] `cargo test` 覆盖率 ≥ 80% (94 tests: 81 unit + 13 integration)
 - [x] 所有集成测试 pass (含 create/open/drop 生命周期测试)
 - [x] 无内存泄漏 (valgrind clean 或等效)
 - [x] `cargo clippy -- -D warnings` clean
 - [x] `cargo doc` 无 warning
 - [x] README.md 完整
+- [ ] benches/ 性能基准测试 (待创建)
 
 ---
 

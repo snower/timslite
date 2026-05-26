@@ -7,6 +7,11 @@
 //! - Time-indexed queries with binary search
 //! - C ABI FFI interface
 //! - Explicit create/open/drop lifecycle for datasets
+
+// Intentionally unused pub helpers / FFI-facing API — suppress dead_code warnings
+#![allow(dead_code)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::wrong_self_convention)]
 //!
 //! # Quick Start
 //!

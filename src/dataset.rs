@@ -10,9 +10,7 @@ use std::time::Instant;
 use crate::cache::BlockCache;
 use crate::config::DataSetConfig;
 use crate::error::{Result, TmslError};
-use crate::index::segment::{
-    IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER, IN_BLOCK_OFFSET_FILLER,
-};
+use crate::index::segment::{IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::segment::DataSegmentSet;

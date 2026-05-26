@@ -49,11 +49,9 @@ impl BackgroundTasks {
                     .saturating_duration_since(now);
 
                 // Wait until timeout or shutdown signal
-                if !wait_time.is_zero() {
-                    if shutdown_rx.recv_timeout(wait_time).is_ok() {
-                        log::info!("[bg] received shutdown signal");
-                        break;
-                    }
+                if !wait_time.is_zero() && shutdown_rx.recv_timeout(wait_time).is_ok() {
+                    log::info!("[bg] received shutdown signal");
+                    break;
                 }
 
                 let now = Instant::now();

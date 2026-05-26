@@ -98,12 +98,8 @@ pub extern "C" fn tmsl_store_open(
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid UTF-8: {}", e)))?;
         let config = StoreConfig::default();
-        let store = Store::open(dir, config).map_err(|e| {
-            TmslError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })?;
+        let store = Store::open(dir, config)
+            .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
         let boxed = Box::new(FfiStore(Box::into_raw(Box::new(store))));
         Ok(Box::into_raw(boxed) as *mut c_void)
     })
@@ -122,12 +118,9 @@ pub extern "C" fn tmsl_store_close(
         }
         let ffi_store = unsafe { Box::from_raw(store as *mut FfiStore) };
         let inner = unsafe { Box::from_raw(ffi_store.0) };
-        inner.close().map_err(|e| {
-            TmslError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })?;
+        inner
+            .close()
+            .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
         Ok(0)
     })
 }
@@ -220,12 +213,9 @@ pub extern "C" fn tmsl_dataset_close(
         }
         let ffi_ds = unsafe { Box::from_raw(dataset as *mut FfiDataset) };
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
-        store_inner.close_dataset(ffi_ds.handle).map_err(|e| {
-            TmslError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                e.to_string(),
-            ))
-        })?;
+        store_inner
+            .close_dataset(ffi_ds.handle)
+            .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
         Ok(0)
     })
 }
@@ -304,11 +294,11 @@ pub extern "C" fn tmsl_dataset_query(
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
         let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
         let mut ds = ds_arc.lock().unwrap();
-        let entries = ds.query(start_ts, end_ts, Some(&*store_inner.block_cache()))?;
+        let entries = ds.query(start_ts, end_ts, Some(store_inner.block_cache()))?;
 
         let iter = Box::new(FfiIterator {
             store_ptr: ffi_ds.store_ptr,
-            handle: ffi_ds.handle.clone(),
+            handle: ffi_ds.handle,
             entries,
             index: 0,
         });

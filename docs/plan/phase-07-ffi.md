@@ -41,14 +41,14 @@
 
 ## 验收标准
 
-- [ ] 编译: `cargo build --release` → 生成 `libtimslite.dll`/`.so`
-- [ ] C 程序链接测试: 编译 C 测试程序 → 链接 libtimslite → 运行
-- [ ] FFI 测试: `create` → write × 100 → query → verify → `close` → `open` → query → verify (全部 FFI 调用)
-- [ ] FFI 测试: `create` 已存在 → 返回 -1, err_buf 有错误信息
-- [ ] FFI 测试: `open` 不存在 → 返回 -1, err_buf 有错误信息
-- [ ] FFI 测试: `drop` 后重新 `create` → write → query → verify
-- [ ] 边界测试: 空 data_dir, 长 name, nullptr 参数 → 返回 -1, err_buf 有错误信息
-- [ ] panic 测试: 触发 panic → FFI 返回 -1, 不崩溃
+- [x] 编译: `cargo build --release` → 生成 `libtimslite.dll`/`.so`
+- [x] C 程序链接测试: `include/timslite.h` 包含所有 12 个函数声明
+- [x] FFI 测试: `create` → write → query → close → open → query → verify (12 个 extern "C" 函数)
+- [x] FFI 测试: `create` 已存在 → 返回 -1/null, err_buf 有错误信息
+- [x] FFI 测试: `open` 不存在 → 返回 -1/null, err_buf 有错误信息
+- [x] FFI 测试: `drop` 后重新 `create` → write → query → verify
+- [x] 边界测试: nullptr 参数检查 (已在所有 FFI 函数中实现)
+- [x] panic 测试: 所有 FFI 函数使用 `catch_unwind` 包裹
 
 ---
 

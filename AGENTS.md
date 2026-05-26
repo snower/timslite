@@ -65,6 +65,8 @@ cargo fmt -- --check
 
 ## 代码规范
 
+**重要**: 进行代码编写前未必先深度思考后调整设计design.md和docs/design详细设计，完成后制定开发计划并同步调整plan.md和docs/plan详细计划信息，然后再进行代码编写，任务完成后需要同步更新plan.md完成标记
+
 ### Rust Edition & 依赖
 
 - Rust 2021 edition

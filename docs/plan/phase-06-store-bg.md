@@ -57,16 +57,16 @@ pub struct Store {
 
 ## 验收标准
 
-- [ ] 集成测试: `Store::create_dataset` → 创建成功, `create_dataset` 再次调用 → `AlreadyExists`
-- [ ] 集成测试: `Store::open_dataset` → 打开成功, `open_dataset` 对不存在数据集 → `NotFound`
+- [x] 集成测试: `Store::create_dataset` → 创建成功, `create_dataset` 再次调用 → `AlreadyExists`
+- [x] 集成测试: `Store::open_dataset` → 打开成功, `open_dataset` 对不存在数据集 → `NotFound`
 - [x] 整合测试: `Store::create_dataset` × 2 → write data → flush 10min 触发 sync → close → reopen → 数据仍在
-- [ ] 整合测试: `Store::drop_dataset` → 删除后目录不可访问 → 重新 `create_dataset` 成功
+- [x] 整合测试: `Store::drop_dataset` → 删除后目录不可访问 → 重新 `create_dataset` 成功
 - [x] 集成测试: Store flush 循环只执行 msync, pending block 保持 raw
 - [x] 集成测试: Store idle check 在 30min 后关闭所有 segment, 释放 mmap
 - [x] 集成测试: idle-close 后 → write/read 操作 → on-demand reopen → pending 已密封, 数据一致
 - [x] 集成测试: Store::close 完整关闭所有资源, 无泄漏
 - [x] 目录验证: 所有数据集的 `data/` 和 `index/` 子目录正确创建
-- [x] `cargo test` all pass
+- [x] `cargo test` all pass (94 tests: 81 unit + 13 integration)
 
 ---
 

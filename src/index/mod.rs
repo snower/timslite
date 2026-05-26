@@ -238,7 +238,7 @@ impl TimeIndex {
 
         // Closed segments (open briefly for query)
         for meta in &self.closed_index_segments {
-            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
             let range_entries = seg.query_range_cs(start_ts, end_ts, ic);
             results.extend(range_entries);
             // Don't keep open - query only
@@ -290,10 +290,10 @@ impl TimeIndex {
                     continue;
                 }
                 if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
-                    if let Ok(start_ts) = i64::from_str_radix(stem, 10) {
+                    if let Ok(start_ts) = stem.parse::<i64>() {
                         let file_size = std::fs::metadata(&p)?.len();
                         let entries_capacity =
-                            ((file_size - HEADER_SIZE as u64) / INDEX_ENTRY_SIZE as u64) as usize;
+                            ((file_size - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
                         // Read record_count from header (offset 44 + 8 = 52)
                         let wrote_count = Self::read_record_count_from_file(&p);
                         metas.push(IndexSegmentMeta::new(

@@ -191,8 +191,7 @@ impl DataSetMeta {
 
     /// Read from file (called when opening existing dataset).
     pub fn read_from_file(path: &Path) -> Result<Self> {
-        let buf = std::fs::read(path)
-            .map_err(|e| TmslError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        let buf = std::fs::read(path).map_err(|e| TmslError::Io(std::io::Error::other(e)))?;
         Self::from_bytes(&buf)
     }
 }

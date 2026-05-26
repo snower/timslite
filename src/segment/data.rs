@@ -313,7 +313,7 @@ impl DataSegment {
         compress_level: u8,
     ) -> Result<(u64, u16)> {
         let record_size = RECORD_OVERHEAD as usize + data.len();
-        let total_needed = crate::block::BLOCK_HEADER_SIZE as u64 + record_size as u64;
+        let total_needed = crate::block::BLOCK_HEADER_SIZE + record_size as u64;
 
         // Space check: can the current file accommodate at least one more block + record?
         // The current wrote_position already accounts for existing data.
@@ -518,7 +518,7 @@ impl DataSegment {
 
     fn update_file_wrote_position(&mut self) -> Result<()> {
         let mmap = self.mmap.as_mut().unwrap();
-        let abs_pos = (HEADER_SIZE + self.wrote_position) as u64;
+        let abs_pos = HEADER_SIZE + self.wrote_position;
         // wrote_position lives at STATE_START + S_WROTE_POSITION = 44
         mmap[44..52].copy_from_slice(&abs_pos.to_le_bytes());
         mmap[52..60].copy_from_slice(&self.record_count.to_le_bytes());
@@ -600,12 +600,11 @@ impl DataSegment {
         let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
         let payload = &mmap[pay_start..pay_start + payload_size];
 
-        let block_data: Vec<u8>;
-        if is_compressed {
-            block_data = deflate_decompress(payload)?;
+        let block_data: Vec<u8> = if is_compressed {
+            deflate_decompress(payload)?
         } else {
-            block_data = payload.to_vec();
-        }
+            payload.to_vec()
+        };
 
         // Cache the decompressed block for future reads
         if let Some(c) = cache {

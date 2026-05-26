@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use crate::error::Result;
 
-pub use self::data::{DataSegment, ReadIndexEntry, SegmentLifecycle};
+pub use self::data::{DataSegment, ReadIndexEntry};
 use self::data::{DataSegment as DS, SegmentLifecycle as SL};
 
 use crate::cache::BlockCache;
@@ -123,7 +123,7 @@ impl DataSegmentSet {
                     continue;
                 }
                 if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
-                    if let Ok(offset) = u64::from_str_radix(stem, 10) {
+                    if let Ok(offset) = stem.parse::<u64>() {
                         let file_size = std::fs::metadata(&p)?.len();
                         metas.push(DataSegmentMeta {
                             path: p,
