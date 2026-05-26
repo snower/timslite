@@ -38,6 +38,7 @@ impl DataSet {
 
     fn write(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
     fn query(&mut self, start_ts: i64, end_ts: i64, cache: Option<&BlockCache>) -> io::Result<Vec<(i64, Vec<u8>)>>;
+    fn query_iter(&mut self, start_ts: i64, end_ts: i64, cache: Option<&BlockCache>) -> io::Result<QueryIterator<'_>>;
     fn flush(&mut self) -> io::Result<()>;
     fn config(&self) -> &DataSetConfig;
 }
@@ -99,6 +100,8 @@ flush (配置化，默认10分钟):
 
 ## 十、读取流程详解 (含缓存)
 
+### 10.1 旧版流程 (全量加载, 已弃用)
+
 ```
 查询 [start_ts, end_ts]
     │
@@ -122,9 +125,48 @@ flush (配置化，默认10分钟):
     └─ 3. 按 timestamp 排序返回
 ```
 
-> **关键**: 缓存存储**解压后的 entire block payload**。命中时跳过文件读取+解压两步操作。
-> 同一 block 可能被多条 record 引用, 缓存复用效率高。
+### 10.2 新版流程 (QueryIterator 惰性查询 + HotBlockCache)
+
+```
+查询 [start_ts, end_ts] → QueryIterator (惰性)
+    │
+    ├─ 1. TimeIndex.prepare_query()
+    │      → 返回按时间顺序排列的 QueryDataSource 列表
+    │      (不加载实际数据, 只建立 source 映射)
+    │
+    └─ 调用 next() 时:
+           ├─ 2. 从当前 source 获取下一个 IndexEntry
+           │      ├─ 当前 source 耗尽 → 切换到下一个 source
+           │      └─ 跳过 filler entries (block_offset == 0xFFFFFFFFFFFFFFFF)
+           │
+           ├─ 3. 检查 HotBlockCache (无锁, 查询级局部缓存)
+           │      ├─ Hit (同 segment + 同 block_offset)
+           │      │   └─ 直接从 hot_block.extract_record() → return
+           │      └─ Miss → 继续 ↓
+           │
+           ├─ 4. 检查全局 BlockCache (RwLock<HashMap>)
+           │      ├─ Hit → 放入 HotBlockCache → extract_record → return
+           │      └─ Miss → 继续 ↓
+           │
+           ├─ 5. mmap 读取 Block + 解压 (如需)
+           │      ├─ 读 BlockHeader, 检查 compressed flag
+           │      ├─ compressed → deflate_decompress()
+           │      └─ uncompressed → payload.to_vec()
+           │
+           ├─ 6. 更新 HotBlockCache
+           │      └─ hot_block = HotBlockCache::new(key, decoded_payload)
+           │
+           └─ 7. 定位 record 并返回 (timestamp, data)
+```
+
+> **关键改进**:
+> - **惰性化**: 索引条目按需从 source 取出, 不再全量收集到 Vec
+> - **HotBlockCache**: 读取循环中保持最后解压的 Block, 同 Block 内连续读取跳过 mmap+解压
+> - **无锁热点**: HotBlockCache 属于单个 QueryIterator 实例, 不涉及全局锁竞争
+> - **内存节省**: 查询 100 万条记录仅需 ~64KB (1 Block) 内存, 而非 ~100MB
+>
+> **旧 API 兼容**: `DataSet::query()` 方法保留, 内部改为 `query_iter().collect()`
 
 ---
 
-**相关**: [架构概览](architecture.md) | [数据模型](data-model.md) | [Store 与 FFI](store-and-ffi.md)
+**相关**: [架构概览](architecture.md) | [数据模型](data-model.md) | [查询迭代器](query-iterator.md) | [Store 与 FFI](store-and-ffi.md)

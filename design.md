@@ -25,6 +25,7 @@
 | 12 | [索引连续存储](docs/design/index-continuous.md) | filler 哨兵机制、补数据覆盖写、O(1) 直接计算优化 | 连续模式需求 |
 | 13 | [懒分配与扩容](docs/design/lazy-allocation.md) | 初始分配、2 倍扩容、header 不变设计、磁盘节省分析 | 空间优化需求 |
 | 14 | [构建配置](docs/design/cargo-and-config.md) | Cargo.toml 依赖、构建/测试/基准命令 | 项目构建 |
+| 15 | [查询迭代器](docs/design/query-iterator.md) | Virtual Iterator 惰性查询、HotBlockCache 读取循环级缓存、FFI 迭代器重构 | 查询性能优化 |
 
 ---
 
@@ -32,7 +33,7 @@
 
 ### 按功能查找
 - **写入数据**: [数据段管理](docs/design/data-segment.md) → [数据集操作·写入流程](docs/design/dataset-operations.md#九写入流程详解) → [压缩策略](docs/design/compression.md)
-- **读取数据**: [时间索引](docs/design/time-index.md) → [数据集操作·读取流程](docs/design/dataset-operations.md#十读取流程详解) → [后台任务与缓存](docs/design/background-and-cache.md)
+- **读取数据**: [时间索引](docs/design/time-index.md) → [数据集操作·读取流程](docs/design/dataset-operations.md#十读取流程详解) → [查询迭代器](docs/design/query-iterator.md) → [后台任务与缓存](docs/design/background-and-cache.md)
 - **FFI 集成**: [Store 与 FFI](docs/design/store-and-ffi.md)
 - **崩溃安全**: [内存与并发](docs/design/memory-and-concurrency.md#崩溃安全)
 - **磁盘优化**: [懒分配与扩容](docs/design/lazy-allocation.md)
@@ -47,6 +48,7 @@
 | `DataSegmentSet` + `DataSegment` | [数据段管理](docs/design/data-segment.md) |
 | `TimeIndex` + `IndexSegment` | [时间索引](docs/design/time-index.md) |
 | `FileMetadata` + `BlockHeader` | [数据模型](docs/design/data-model.md) |
+| `QueryIterator` + `HotBlockCache` | [查询迭代器](docs/design/query-iterator.md) |
 | `BlockCache` | [后台任务与缓存](docs/design/background-and-cache.md) |
 | `BackgroundTasks` | [后台任务与缓存](docs/design/background-and-cache.md#十七后台任务) |
 
