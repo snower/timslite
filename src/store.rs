@@ -132,6 +132,8 @@ impl Store {
             compress_level,
             self.config.block_max_size,
             index_continuous,
+            self.config.initial_data_segment_size,
+            self.config.initial_index_segment_size,
         )?;
 
         let ds = Arc::new(Mutex::new(ds));

@@ -35,7 +35,10 @@ pub enum SegmentLifecycle {
 pub struct DataSegment {
     pub path: std::path::PathBuf,
     pub file_offset: u64,
+    /// Runtime actual size (grows with expansion). Header file_size always = max_file_size.
     pub file_size: u64,
+    /// Expansion upper limit (segment_size, immutable).
+    pub max_file_size: u64,
     pub wrote_position: u64,
     pub record_count: u64,
     pub total_uncompressed_size: u64,
@@ -54,19 +57,27 @@ pub struct DataSegment {
 
 impl DataSegment {
     /// Create a new segment file at `path`, memory-mapped and ready for writing.
-    pub fn create(path: &Path, file_offset: u64, file_size: u64) -> Result<Self> {
+    ///
+    /// The actual file on disk is truncated to `initial_size` to save disk space.
+    /// The header always records `max_file_size` as the standard segment size.
+    pub fn create(
+        path: &Path,
+        file_offset: u64,
+        initial_size: u64,
+        max_file_size: u64,
+    ) -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(true)
             .open(path)?;
-        file.set_len(file_size)?;
+        file.set_len(initial_size)?;
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
         let metadata = FileMetadata::create_default(
             crate::header::FILE_TYPE_DATA,
             file_offset as i64,
-            file_size as u32,
+            max_file_size as u32, // header always records max (standard segment size)
         );
         metadata.write_to(&mut mmap);
         metadata.sync(&mut mmap)?;
@@ -75,7 +86,8 @@ impl DataSegment {
         Ok(Self {
             path: path.to_path_buf(),
             file_offset,
-            file_size,
+            file_size: initial_size,
+            max_file_size,
             wrote_position: 0,
             record_count: 0,
             total_uncompressed_size: 0,
@@ -91,10 +103,14 @@ impl DataSegment {
 
     /// Open an existing segment file, memory-map it, and recover state.
     ///
+    /// `max_file_size` is passed in because it is a configuration parameter (segment_size)
+    /// not stored in the file. The actual file size is read from disk metadata.
+    ///
     /// If the file has a pending block (pending_block_offset != u64::MAX), it is sealed
     /// (without compression) during recovery to ensure consistency.
-    pub fn open(path: &Path, file_offset: u64, file_size: u64) -> Result<Self> {
+    pub fn open(path: &Path, file_offset: u64, max_file_size: u64) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let actual_file_size = file.metadata()?.len();
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         let metadata = FileMetadata::read_from(&mmap)?;
 
@@ -112,7 +128,8 @@ impl DataSegment {
         let mut seg = Self {
             path: path.to_path_buf(),
             file_offset,
-            file_size,
+            file_size: actual_file_size,
+            max_file_size,
             wrote_position: metadata.wrote_position.saturating_sub(HEADER_SIZE),
             record_count: metadata.record_count,
             total_uncompressed_size: metadata.total_uncompressed_size,
@@ -241,6 +258,36 @@ impl DataSegment {
         self.last_accessed_at = Instant::now();
         Ok(())
     }
+
+    /// Expand the segment file by 2x (up to max_file_size).
+    ///
+    /// Unmaps the file, resizes, remaps, and updates `self.file_size`.
+    /// The header file_size is NOT updated (always records max_file_size).
+    ///
+    /// Returns `Ok(())` on success, or `Err` when already at max_file_size.
+    pub fn expand(&mut self) -> Result<()> {
+        let target = (self.file_size.saturating_mul(2)).min(self.max_file_size);
+        if target == self.file_size {
+            return Err(TmslError::InvalidData(format!(
+                "segment already at max_file_size ({})",
+                self.max_file_size
+            )));
+        }
+
+        // Unmap
+        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        self.mmap = None;
+
+        // Resize
+        file.set_len(target)?;
+
+        // Remap
+        let new_mmap = unsafe { MmapMut::map_mut(&file)? };
+        self.mmap = Some(new_mmap);
+        self.file_size = target;
+
+        Ok(())
+    }
 }
 
 // ─── Write Operations ────────────────────────────────────────────────────────
@@ -255,6 +302,9 @@ impl DataSegment {
     /// Returns `(block_relative_offset, in_block_offset)` where:
     /// - `block_relative_offset` is the block's offset relative to HEADER_SIZE
     /// - `in_block_offset` is the record's position within the block payload
+    ///
+    /// If the segment file does not have enough space, returns `Err(TmslError::SegmentFull)`.
+    /// The caller (DataSegmentSet) should call `expand()` and retry, or seal+create new segment.
     pub fn append_record(
         &mut self,
         timestamp: i64,
@@ -263,6 +313,14 @@ impl DataSegment {
         compress_level: u8,
     ) -> Result<(u64, u16)> {
         let record_size = RECORD_OVERHEAD as usize + data.len();
+        let total_needed = crate::block::BLOCK_HEADER_SIZE as u64 + record_size as u64;
+
+        // Space check: can the current file accommodate at least one more block + record?
+        // The current wrote_position already accounts for existing data.
+        // If we need to create a new block OR the record needs an exclusive block:
+        if self.file_size.saturating_sub(HEADER_SIZE) < self.wrote_position + total_needed {
+            return Err(TmslError::SegmentFull);
+        }
 
         // Case 1: Single record exceeds block_max_size → exclusive block
         if record_size > block_max_size as usize {
@@ -610,7 +668,7 @@ mod tests {
         let dir = temp_dir();
         let path = dir.join(name);
         let _ = fs::remove_file(&path);
-        let seg = DataSegment::create(&path, 0, 1024 * 1024).unwrap();
+        let seg = DataSegment::create(&path, 0, 1024 * 1024, 1024 * 1024).unwrap();
         (seg, path)
     }
 
@@ -739,7 +797,7 @@ mod tests {
         let dir = temp_dir();
         let path = dir.join("test_multi_read");
         let _ = fs::remove_file(&path);
-        let mut seg = DataSegment::create(&path, 0, 1024 * 1024).unwrap();
+        let mut seg = DataSegment::create(&path, 0, 1024 * 1024, 1024 * 1024).unwrap();
 
         let mut entries: Vec<ReadIndexEntry> = Vec::new();
         for i in 0..100 {

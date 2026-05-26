@@ -19,6 +19,7 @@ use memmap2::MmapMut;
 pub struct TimeIndex {
     pub base_dir: std::path::PathBuf,
     pub segment_size: u64,
+    pub initial_segment_size: u64,
     pub index_segments: Vec<IndexSegment>,
     pub closed_index_segments: Vec<IndexSegmentMeta>,
     pub in_memory_buffer: Vec<IndexEntry>,
@@ -28,11 +29,17 @@ pub struct TimeIndex {
 
 impl TimeIndex {
     /// Create a new TimeIndex.
-    pub fn new(base_dir: &Path, segment_size: u64, index_continuous: bool) -> Result<Self> {
+    pub fn new(
+        base_dir: &Path,
+        segment_size: u64,
+        initial_segment_size: u64,
+        index_continuous: bool,
+    ) -> Result<Self> {
         std::fs::create_dir_all(base_dir)?;
         Ok(Self {
             base_dir: base_dir.to_path_buf(),
             segment_size,
+            initial_segment_size,
             index_segments: Vec::new(),
             closed_index_segments: Vec::new(),
             in_memory_buffer: Vec::new(),
@@ -101,11 +108,19 @@ impl TimeIndex {
             let mut written = 0;
             for entry in &remaining[..to_write] {
                 if let Err(e) = seg.append_entry(entry) {
-                    if matches!(e, crate::error::TmslError::InvalidData(_)) {
-                        seg.seal()?;
-                        break;
+                    if matches!(e, crate::error::TmslError::SegmentFull) {
+                        // Try to expand the segment
+                        if let Err(expand_err) = seg.expand() {
+                            // Expansion failed (already at max), seal and move on
+                            log::debug!("[index] segment expansion failed: {}", expand_err);
+                            seg.seal()?;
+                            break;
+                        }
+                        // Expansion succeeded, retry this entry
+                        seg.append_entry(entry)?;
+                    } else {
+                        return Err(e);
                     }
-                    return Err(e);
                 }
                 written += 1;
             }
@@ -129,7 +144,8 @@ impl TimeIndex {
 
         // Check closed_index_segments
         self.closed_index_segments.retain(|meta| {
-            if let Ok(seg) = IndexSegment::open(&meta.path, meta.start_timestamp) {
+            if let Ok(seg) = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)
+            {
                 if seg.wrote_count > 0 {
                     // Check if all entries are filler
                     let all_filler = seg
@@ -184,10 +200,15 @@ impl TimeIndex {
             .position(|m| m.start_timestamp == start_ts)
         {
             let meta = self.closed_index_segments.remove(pos);
-            let seg = IndexSegment::open(&meta.path, meta.start_timestamp)?;
+            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
             self.index_segments.push(seg);
         } else {
-            let seg = IndexSegment::create(&self.base_dir, start_ts, self.segment_size)?;
+            let seg = IndexSegment::create(
+                &self.base_dir,
+                start_ts,
+                self.initial_segment_size,
+                self.segment_size,
+            )?;
             self.index_segments.push(seg);
         }
 
@@ -217,7 +238,7 @@ impl TimeIndex {
 
         // Closed segments (open briefly for query)
         for meta in &self.closed_index_segments {
-            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp)?;
+            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
             let range_entries = seg.query_range_cs(start_ts, end_ts, ic);
             results.extend(range_entries);
             // Don't keep open - query only
@@ -258,6 +279,7 @@ impl TimeIndex {
     pub fn load_existing(
         base_dir: &Path,
         segment_size: u64,
+        initial_segment_size: u64,
         index_continuous: bool,
     ) -> Result<Self> {
         let mut metas: Vec<IndexSegmentMeta> = Vec::new();
@@ -289,6 +311,7 @@ impl TimeIndex {
         Ok(Self {
             base_dir: base_dir.to_path_buf(),
             segment_size,
+            initial_segment_size,
             index_segments: Vec::new(),
             closed_index_segments: metas,
             in_memory_buffer: Vec::new(),
@@ -342,7 +365,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 1000, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 1000, 4096, 4096).unwrap();
 
         for i in 0..50 {
             let entry = IndexEntry::new(1000 + i, 128 + i as u64 * 100, (i * 5) as u16);
@@ -362,7 +385,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 0, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 0, 4096, 4096).unwrap();
         for i in 0..10 {
             seg.append_entry(&IndexEntry::new(i * 10, i as u64, 0))
                 .unwrap();
@@ -389,7 +412,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
 
         // Create segment starting at ts=100, continuous entries
-        let mut seg = IndexSegment::create(&sub, 100, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 100, 4096, 4096).unwrap();
         for i in 0..20 {
             seg.append_entry(&IndexEntry::new(100 + i, i as u64, (i * 3) as u16))
                 .unwrap();
@@ -421,7 +444,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 10, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096).unwrap();
         for i in 0..10 {
             seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
                 .unwrap();
@@ -446,7 +469,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 10, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096).unwrap();
         for i in 0..10 {
             seg.append_entry(&IndexEntry::new(10 + i, i as u64 * 100, 0))
                 .unwrap();
@@ -469,7 +492,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 10, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096).unwrap();
         for i in 0..20 {
             seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
                 .unwrap();
@@ -501,7 +524,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 10, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096).unwrap();
         for i in 0..10 {
             seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
                 .unwrap();
@@ -525,7 +548,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let mut idx = TimeIndex::new(&dir, 4096, false).unwrap();
+        let mut idx = TimeIndex::new(&dir, 4096, 4096, false).unwrap();
         idx.in_memory_flush_threshold = 5;
 
         for i in 0..20 {
@@ -544,7 +567,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let mut idx = TimeIndex::new(&dir, 4096, false).unwrap();
+        let mut idx = TimeIndex::new(&dir, 4096, 4096, false).unwrap();
         idx.in_memory_flush_threshold = 5;
 
         for i in 0..100 {
@@ -554,7 +577,7 @@ mod tests {
         idx.flush_to_disk().unwrap();
 
         // Load fresh
-        let mut idx2 = TimeIndex::load_existing(&dir, 4096, false).unwrap();
+        let mut idx2 = TimeIndex::load_existing(&dir, 4096, 4096, false).unwrap();
         // Query all
         let entries = idx2.query(2000, 2099).unwrap();
         assert_eq!(entries.len(), 100);
@@ -569,7 +592,7 @@ mod tests {
         let _ = fs::remove_dir_all(&sub);
         fs::create_dir_all(&sub).unwrap();
 
-        let mut idx = TimeIndex::new(&sub, 4096, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, true).unwrap();
         idx.in_memory_flush_threshold = 3;
 
         // Add only filler entries (more than one segment worth)

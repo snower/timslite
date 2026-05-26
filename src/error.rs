@@ -24,6 +24,8 @@ pub enum TmslError {
     NotFound(String),
     /// Resource already exists (e.g., creating an existing dataset).
     AlreadyExists(String),
+    /// Segment file is full (no more space for data, expansion needed or seal+new).
+    SegmentFull,
 }
 
 impl fmt::Display for TmslError {
@@ -38,6 +40,7 @@ impl fmt::Display for TmslError {
             TmslError::InvalidData(msg) => write!(f, "invalid data: {msg}"),
             TmslError::NotFound(msg) => write!(f, "not found: {msg}"),
             TmslError::AlreadyExists(msg) => write!(f, "already exists: {msg}"),
+            TmslError::SegmentFull => write!(f, "segment full (expansion needed)"),
         }
     }
 }

@@ -84,14 +84,22 @@ pub struct IndexSegment {
     pub sealed: bool,
     /// Most recent access time.
     pub last_accessed_at: Instant,
+    /// Current actual file size (grows with expansion).
+    pub current_file_size: u64,
+    /// Expansion upper limit (= segment_size, immutable).
+    pub max_file_size: u64,
 }
 
 impl IndexSegment {
     /// Create a new index segment file at `base_dir/{start_timestamp}`.
-    pub fn create(base_dir: &Path, start_timestamp: i64, segment_size: u64) -> Result<Self> {
+    pub fn create(
+        base_dir: &Path,
+        start_timestamp: i64,
+        initial_size: u64,
+        max_file_size: u64,
+    ) -> Result<Self> {
         std::fs::create_dir_all(base_dir)?;
-        // entries_capacity = (segment_size - HEADER_SIZE) / 18
-        let entries_capacity = ((segment_size - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+        let entries_capacity = ((initial_size - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
         let file_size = HEADER_SIZE + entries_capacity as u64 * INDEX_ENTRY_SIZE as u64;
 
         let file_name = format!("{:020}", start_timestamp);
@@ -109,7 +117,7 @@ impl IndexSegment {
         let metadata = FileMetadata::create_default(
             crate::header::FILE_TYPE_INDEX,
             start_timestamp,
-            file_size as u32,
+            max_file_size as u32,
         );
         metadata.write_to(&mut mmap);
         metadata.sync(&mut mmap)?;
@@ -122,12 +130,15 @@ impl IndexSegment {
             mmap: Some(mmap),
             sealed: false,
             last_accessed_at: Instant::now(),
+            current_file_size: file_size,
+            max_file_size,
         })
     }
 
     /// Open an existing index segment by path.
-    pub fn open(path: &Path, start_timestamp: i64) -> Result<Self> {
+    pub fn open(path: &Path, start_timestamp: i64, max_file_size: u64) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
+        let actual_file_size = file.metadata()?.len();
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         let metadata = FileMetadata::read_from(&mmap)?;
 
@@ -136,7 +147,7 @@ impl IndexSegment {
         }
 
         let entries_capacity =
-            ((metadata.file_size as u64 - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+            ((actual_file_size - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
         let wrote_count = metadata.record_count as usize;
 
         Ok(Self {
@@ -147,6 +158,8 @@ impl IndexSegment {
             mmap: Some(mmap),
             sealed: false,
             last_accessed_at: Instant::now(),
+            current_file_size: actual_file_size,
+            max_file_size,
         })
     }
 
@@ -154,7 +167,7 @@ impl IndexSegment {
     pub fn append_entry(&mut self, entry: &IndexEntry) -> Result<()> {
         if self.wrote_count >= self.entries_capacity {
             self.sealed = true;
-            return Err(TmslError::InvalidData("index segment full".into()));
+            return Err(TmslError::SegmentFull);
         }
         let mmap = self
             .mmap
@@ -178,7 +191,36 @@ impl IndexSegment {
 
     /// Whether the segment is full.
     pub fn is_full(&self) -> bool {
-        self.wrote_count >= self.entries_capacity
+        self.wrote_count >= self.entries_capacity && self.current_file_size >= self.max_file_size
+    }
+
+    /// Expand the segment file by doubling (up to max_file_size).
+    /// Unmaps → set_len → remaps → recalculates entries_capacity.
+    pub fn expand(&mut self) -> Result<()> {
+        let target = (self.current_file_size.saturating_mul(2)).min(self.max_file_size);
+        if target == self.current_file_size {
+            return Err(TmslError::InvalidData(format!(
+                "index segment already at max_file_size ({})",
+                self.max_file_size
+            )));
+        }
+
+        // Unmap
+        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        self.mmap = None;
+
+        // Resize
+        file.set_len(target)?;
+
+        // Remap
+        let new_mmap = unsafe { MmapMut::map_mut(&file)? };
+        self.mmap = Some(new_mmap);
+
+        // Recalculate entries_capacity
+        self.current_file_size = target;
+        self.entries_capacity = ((target - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+
+        Ok(())
     }
 
     /// Seal the segment.
@@ -508,7 +550,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 0, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 0, 4096, 4096).unwrap();
         for i in 0..20 {
             seg.append_entry(&IndexEntry::new(i * 10, i as u64 * 100, (i * 3) as u16))
                 .unwrap();
@@ -530,7 +572,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 0, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 0, 4096, 4096).unwrap();
         // Add a filler-like entry
         seg.append_entry(&IndexEntry::new(100, 0xFFFFFFFFFFFFFFFF, 0xFFFF))
             .unwrap();

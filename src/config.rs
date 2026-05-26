@@ -14,6 +14,8 @@ use std::time::Duration;
 /// - `idle_timeout`: 30 minutes (1800s)
 /// - `data_segment_size`: 64 MiB
 /// - `index_segment_size`: 4 MiB
+/// - `initial_data_segment_size`: 256 KiB
+/// - `initial_index_segment_size`: 4 KiB
 /// - `block_max_size`: 65536 bytes (64 KiB)
 /// - `compress_level`: 6
 /// - `cache_max_memory`: 256 MiB (0 = disabled)
@@ -24,10 +26,14 @@ pub struct StoreConfig {
     pub flush_interval: Duration,
     /// Time of inactivity before segments are idle-closed.
     pub idle_timeout: Duration,
-    /// Size of each data segment file.
+    /// Size of each data segment file (max/expansion limit).
     pub data_segment_size: u64,
-    /// Size of each index segment file.
+    /// Size of each index segment file (max/expansion limit).
     pub index_segment_size: u64,
+    /// Initial size of a data segment file when created (expanded up to data_segment_size).
+    pub initial_data_segment_size: u64,
+    /// Initial size of an index segment file when created (expanded up to index_segment_size).
+    pub initial_index_segment_size: u64,
     /// Maximum block payload size (excluding block header).
     pub block_max_size: u32,
     /// Deflate compression level (0-9).
@@ -45,6 +51,8 @@ impl Default for StoreConfig {
             idle_timeout: Duration::from_secs(1800),  // 30 min
             data_segment_size: 64 * 1024 * 1024,      // 64 MiB
             index_segment_size: 4 * 1024 * 1024,      // 4 MiB
+            initial_data_segment_size: 256 * 1024,    // 256 KiB
+            initial_index_segment_size: 4 * 1024,     // 4 KiB
             block_max_size: 65536,                    // 64 KiB
             compress_level: 6,
             cache_max_memory: 256 * 1024 * 1024, // 256 MiB
@@ -67,6 +75,8 @@ pub struct StoreConfigBuilder {
     idle_timeout: Option<Duration>,
     data_segment_size: Option<u64>,
     index_segment_size: Option<u64>,
+    initial_data_segment_size: Option<u64>,
+    initial_index_segment_size: Option<u64>,
     block_max_size: Option<u32>,
     compress_level: Option<u8>,
     cache_max_memory: Option<usize>,
@@ -92,9 +102,21 @@ impl StoreConfigBuilder {
         self
     }
 
-    /// Set the index segment file size.
+    /// Set the index segment file size (max/expansion limit).
     pub fn index_segment_size(mut self, size: u64) -> Self {
         self.index_segment_size = Some(size);
+        self
+    }
+
+    /// Set the initial data segment file size (expanded up to data_segment_size).
+    pub fn initial_data_segment_size(mut self, size: u64) -> Self {
+        self.initial_data_segment_size = Some(size);
+        self
+    }
+
+    /// Set the initial index segment file size (expanded up to index_segment_size).
+    pub fn initial_index_segment_size(mut self, size: u64) -> Self {
+        self.initial_index_segment_size = Some(size);
         self
     }
 
@@ -132,6 +154,12 @@ impl StoreConfigBuilder {
             index_segment_size: self
                 .index_segment_size
                 .unwrap_or(defaults.index_segment_size),
+            initial_data_segment_size: self
+                .initial_data_segment_size
+                .unwrap_or(defaults.initial_data_segment_size),
+            initial_index_segment_size: self
+                .initial_index_segment_size
+                .unwrap_or(defaults.initial_index_segment_size),
             block_max_size: self.block_max_size.unwrap_or(defaults.block_max_size),
             compress_level: self.compress_level.unwrap_or(defaults.compress_level),
             cache_max_memory: self.cache_max_memory.unwrap_or(defaults.cache_max_memory),
@@ -152,6 +180,8 @@ pub(crate) struct DataSetConfig {
     pub block_max_size: u32,
     pub compress_level: u8,
     pub index_continuous: u8,
+    pub initial_data_segment_size: u64,
+    pub initial_index_segment_size: u64,
 }
 
 #[allow(dead_code)]
@@ -163,6 +193,8 @@ impl DataSetConfig {
             block_max_size: config.block_max_size,
             compress_level: config.compress_level,
             index_continuous: 0,
+            initial_data_segment_size: config.initial_data_segment_size,
+            initial_index_segment_size: config.initial_index_segment_size,
         }
     }
 
@@ -180,6 +212,8 @@ pub(crate) struct DataSetConfigBuilder {
     block_max_size: Option<u32>,
     compress_level: Option<u8>,
     index_continuous: Option<u8>,
+    initial_data_segment_size: Option<u64>,
+    initial_index_segment_size: Option<u64>,
 }
 
 impl DataSetConfigBuilder {
@@ -213,6 +247,18 @@ impl DataSetConfigBuilder {
         self
     }
 
+    /// Set the initial data segment file size.
+    pub fn initial_data_segment_size(mut self, size: u64) -> Self {
+        self.initial_data_segment_size = Some(size);
+        self
+    }
+
+    /// Set the initial index segment file size.
+    pub fn initial_index_segment_size(mut self, size: u64) -> Self {
+        self.initial_index_segment_size = Some(size);
+        self
+    }
+
     /// Build the `DataSetConfig`.
     pub fn build(self) -> DataSetConfig {
         let defaults = DataSetConfig::from_store(&StoreConfig::default());
@@ -224,6 +270,12 @@ impl DataSetConfigBuilder {
             block_max_size: self.block_max_size.unwrap_or(defaults.block_max_size),
             compress_level: self.compress_level.unwrap_or(defaults.compress_level),
             index_continuous: self.index_continuous.unwrap_or(0),
+            initial_data_segment_size: self
+                .initial_data_segment_size
+                .unwrap_or(defaults.initial_data_segment_size),
+            initial_index_segment_size: self
+                .initial_index_segment_size
+                .unwrap_or(defaults.initial_index_segment_size),
         }
     }
 }
@@ -239,6 +291,8 @@ mod tests {
         assert_eq!(cfg.idle_timeout, Duration::from_secs(1800));
         assert_eq!(cfg.data_segment_size, 64 * 1024 * 1024);
         assert_eq!(cfg.index_segment_size, 4 * 1024 * 1024);
+        assert_eq!(cfg.initial_data_segment_size, 256 * 1024);
+        assert_eq!(cfg.initial_index_segment_size, 4 * 1024);
         assert_eq!(cfg.block_max_size, 65536);
         assert_eq!(cfg.compress_level, 6);
         assert_eq!(cfg.cache_max_memory, 256 * 1024 * 1024);
@@ -252,6 +306,8 @@ mod tests {
             .idle_timeout(Duration::from_secs(3600))
             .data_segment_size(128 * 1024 * 1024)
             .index_segment_size(8 * 1024 * 1024)
+            .initial_data_segment_size(512 * 1024)
+            .initial_index_segment_size(8 * 1024)
             .block_max_size(32768)
             .compress_level(9)
             .cache_max_memory(128 * 1024 * 1024)
@@ -262,6 +318,8 @@ mod tests {
         assert_eq!(cfg.idle_timeout, Duration::from_secs(3600));
         assert_eq!(cfg.data_segment_size, 128 * 1024 * 1024);
         assert_eq!(cfg.index_segment_size, 8 * 1024 * 1024);
+        assert_eq!(cfg.initial_data_segment_size, 512 * 1024);
+        assert_eq!(cfg.initial_index_segment_size, 8 * 1024);
         assert_eq!(cfg.block_max_size, 32768);
         assert_eq!(cfg.compress_level, 9);
         assert_eq!(cfg.cache_max_memory, 128 * 1024 * 1024);

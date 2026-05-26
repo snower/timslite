@@ -50,6 +50,8 @@ impl DataSet {
         compress_level: u8,
         block_max_size: u32,
         index_continuous: u8,
+        initial_data_segment_size: u64,
+        initial_index_segment_size: u64,
     ) -> Result<Self> {
         let meta_path = base_dir.join("meta");
         if meta_path.exists() {
@@ -72,12 +74,24 @@ impl DataSet {
             index_segment_size,
             compress_level,
             index_continuous,
+            initial_data_segment_size,
+            initial_index_segment_size,
         );
         meta.write_to_file(&meta_path)?;
 
-        let segments =
-            DataSegmentSet::new(&base_dir, data_segment_size, block_max_size, compress_level)?;
-        let time_index = TimeIndex::new(&index_dir, index_segment_size, index_continuous != 0)?;
+        let segments = DataSegmentSet::new(
+            &base_dir,
+            data_segment_size,
+            initial_data_segment_size,
+            block_max_size,
+            compress_level,
+        )?;
+        let time_index = TimeIndex::new(
+            &index_dir,
+            index_segment_size,
+            initial_index_segment_size,
+            index_continuous != 0,
+        )?;
 
         Ok(Self {
             id,
@@ -88,6 +102,8 @@ impl DataSet {
                 block_max_size,
                 compress_level,
                 index_continuous,
+                initial_data_segment_size,
+                initial_index_segment_size,
             },
             segments,
             time_index,
@@ -118,11 +134,14 @@ impl DataSet {
             block_max_size,
             compress_level: meta.compress_level,
             index_continuous: meta.index_continuous,
+            initial_data_segment_size: meta.initial_data_segment_size,
+            initial_index_segment_size: meta.initial_index_segment_size,
         };
 
         let segments = DataSegmentSet::load_existing(
             &base_dir,
             config.data_segment_size,
+            meta.initial_data_segment_size,
             config.block_max_size,
             config.compress_level,
         )?;
@@ -130,11 +149,13 @@ impl DataSet {
         let time_index = TimeIndex::load_existing(
             &index_dir,
             config.index_segment_size,
+            meta.initial_index_segment_size,
             config.index_continuous != 0,
         )?;
 
         // Recover latest_written_timestamp from index segments
-        let latest_written_timestamp = Self::recover_latest_timestamp(&time_index);
+        let latest_written_timestamp =
+            Self::recover_latest_timestamp(&time_index, config.index_segment_size);
 
         Ok(Self {
             id,
@@ -296,7 +317,11 @@ impl DataSet {
                 continue; // Not in this segment's range (continuous mode)
             }
 
-            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp)?;
+            let mut seg = IndexSegment::open(
+                &meta.path,
+                meta.start_timestamp,
+                self.config.index_segment_size,
+            )?;
             let idx = if ic {
                 entry_index.flatten()
             } else {
@@ -380,10 +405,10 @@ impl DataSet {
     }
 
     /// Recover the latest written timestamp from index segments (on open).
-    fn recover_latest_timestamp(time_index: &TimeIndex) -> i64 {
+    fn recover_latest_timestamp(time_index: &TimeIndex, max_file_size: u64) -> i64 {
         let mut latest = 0i64;
         for meta in &time_index.closed_index_segments {
-            if let Ok(seg) = IndexSegment::open(&meta.path, meta.start_timestamp) {
+            if let Ok(seg) = IndexSegment::open(&meta.path, meta.start_timestamp, max_file_size) {
                 if seg.wrote_count > 0 {
                     // Read the last entry's timestamp
                     let mmap = seg.mmap.as_ref().unwrap();
@@ -456,7 +481,9 @@ mod tests {
             4 * 1024 * 1024,
             6,
             65536,
-            1, // continuous
+            1,          // continuous
+            256 * 1024, // initial_data_segment_size
+            4 * 1024,   // initial_index_segment_size
         )
         .unwrap();
 
@@ -492,7 +519,9 @@ mod tests {
             4 * 1024 * 1024,
             6,
             65536,
-            1, // continuous
+            1,          // continuous
+            256 * 1024, // initial_data_segment_size
+            4 * 1024,   // initial_index_segment_size
         )
         .unwrap();
 
@@ -527,6 +556,8 @@ mod tests {
             6,
             65536,
             1,
+            256 * 1024, // initial_data_segment_size
+            4 * 1024,   // initial_index_segment_size
         )
         .unwrap();
 
@@ -556,7 +587,9 @@ mod tests {
             4 * 1024 * 1024,
             6,
             65536,
-            0, // non-continuous (default)
+            0,          // non-continuous (default)
+            256 * 1024, // initial_data_segment_size
+            4 * 1024,   // initial_index_segment_size
         )
         .unwrap();
 
@@ -584,6 +617,8 @@ mod tests {
             6,
             65536,
             1,
+            256 * 1024, // initial_data_segment_size
+            4 * 1024,   // initial_index_segment_size
         )
         .unwrap();
 
@@ -614,6 +649,8 @@ mod tests {
             6,
             65536,
             1,
+            256 * 1024, // initial_data_segment_size
+            4 * 1024,   // initial_index_segment_size
         )
         .unwrap();
 
@@ -644,6 +681,8 @@ mod tests {
             6,
             65536,
             1,
+            256 * 1024, // initial_data_segment_size
+            4 * 1024,   // initial_index_segment_size
         )
         .unwrap();
 
@@ -679,6 +718,8 @@ mod tests {
                 6,
                 65536,
                 1,
+                256 * 1024, // initial_data_segment_size
+                4 * 1024,   // initial_index_segment_size
             )
             .unwrap();
             ds.write(100, b"first").unwrap();
