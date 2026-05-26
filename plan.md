@@ -17,7 +17,8 @@ Phase 6: Store 门面 + 后台任务   ✅ (create_dataset/drop_dataset 分离)
 Phase 7: FFI 接口                ☐ (待添加 create/drop)
 Phase 8: 集成测试 + 性能调优     ☐ (待更新 create/open/drop 生命周期测试)
 Phase 9: 读缓存池 (BlockCache)   ✅ (LRU + idle 回收, 解压 block 缓存)
-Phase 10: 索引连续存储            ☐ (filler 条目, sentinel 值, mmap 覆盖写, meta TLV 扩展)
+Phase 10: 索引连续存储           ✅ (filler 条目, sentinel 值, mmap 覆盖写, meta TLV 扩展)
+Phase 11: 连续模式 O(1) 查询优化 ☐ (直接计算索引位置, 消除二分查找)
 ```
 
 **全部 8 个 Phase 完成! HEADER_SIZE = 100B, meta/state 分离, data/ + index/ 子目录, meta TLV 文件**
@@ -630,6 +631,88 @@ const BLOCK_HEADER_SIZE: u64 = 16;
 
 ---
 
+## Phase 11: 连续模式 O(1) 查询优化
+
+**目标**: 连续模式下索引位置直接计算 (entry_index = target_ts - start_timestamp), 消除二分查找
+
+### ☐ 11.1 IndexSegment: direct_lookup 方法
+- 新增 `IndexSegment::direct_lookup(target_ts: i64) -> Option<IndexEntry>`
+  - 检查范围: `target_ts < start_timestamp || target_ts >= start_timestamp + wrote_count` → None
+  - 计算: `entry_index = (target_ts - start_timestamp) as usize`
+  - 从 mmap 读取 8 字节 timestamp → 校验是否等于 `target_ts`
+  - 匹配 → 读取完整 18 字节 entry → return Some(entry)
+
+### ☐ 11.2 IndexSegment: 添加 *_cs 连续模式变体方法
+
+**不修改现有二分查找方法** — 添加新 `*_cs` 方法, 内部根据 `index_continuous` 参数分支:
+
+- `lower_bound_cs(target_ts, index_continuous: bool) -> usize`
+  - `index_continuous == false` → 原有二分查找
+  - `index_continuous == true`:
+    - `wrote_count == 0` → return 0
+    - `target_ts < start_timestamp` → return 0
+    - `target_ts >= start_timestamp + wrote_count` → return wrote_count
+    - 范围内 → return `(target_ts - start_timestamp) as usize` (O(1))
+
+- `upper_bound_cs(target_ts, index_continuous: bool) -> usize`
+  - 同 lower_bound_cs, 但 upper bound 语义
+  - `target_ts >= start_timestamp + wrote_count - 1` → return wrote_count
+  - 范围内 → return `(target_ts + 1 - start_timestamp).min(wrote_count) as usize`
+
+- `find_exact_cs(target_ts, index_continuous: bool) -> Option<IndexEntry>`
+  - `index_continuous == true` → `direct_lookup(target_ts)` → O(1)
+  - `index_continuous == false` → 原有二分查找
+
+- `find_entry_index_cs(target_ts, index_continuous: bool) -> Option<usize>`
+  - `index_continuous == true`:
+    - 范围内 → return Some `(target_ts - start_timestamp) as usize`
+    - 范围外 → return None
+  - `index_continuous == false` → 原有二分查找
+
+### ☐ 11.3 `IndexSegmentMeta` 新增 `wrote_count` 字段
+- `IndexSegmentMeta` 新增 `wrote_count: usize` 字段
+- `TimeIndex::load_existing` 中从文件 header 读取 `record_count`
+- 支持 `find_entry_index_cs` 对 closed segments 的范围检查 (无需重新打开文件)
+
+### ☐ 11.4 `TimeIndex` 新增 `index_continuous: bool` 字段
+- `TimeIndex::new()` 新增 `index_continuous` 参数 (默认 false, 非连续模式)
+- `TimeIndex::load_existing()` 新增 `index_continuous` 参数
+- `TimeIndex` 构造时存储该标志, 传递给查询方法
+
+### ☐ 11.5 `TimeIndex::query` 更新为使用 `query_range_cs`
+- `TimeIndex::query` 调用 `seg.query_range_cs(start_ts, end_ts, index_continuous)`
+- `IndexSegment::query_range_cs` 内部调用 `lower_bound_cs` 获得起始索引
+
+### ☐ 11.6 `DataSet::query` 传递 `index_continuous` 标志
+- `DataSet::query()` → `time_index.query(start_ts, end_ts, index_continuous)` → 链式传递
+
+### ☐ 11.7 `replace_filler_with_real` 连续模式优化
+- 对 open segments:
+  - 范围检查: `timestamp >= seg.start_timestamp && timestamp < seg.start_timestamp + seg.wrote_count`
+  - 直接计算: `entry_index = (timestamp - seg.start_timestamp) as usize`
+  - 读取 entry 校验 filler → `overwrite_entry`
+- 对 closed segments:
+  - 范围检查使用 `meta.wrote_count` (无需打开文件)
+  - 如果匹配, 打开文件 → 直接计算 entry_index → overwrite → close
+
+### ☐ 11.8 `DataSet::open` 传递 `index_continuous` 到 `TimeIndex`
+- `DataSet::open()` 从 meta 读取 `index_continuous`
+- 传给 `TimeIndex::load_existing(index_dir, index_segment_size, index_continuous)`
+- 确保查询时自动使用 O(1) 优化
+
+### ☐ Phase 11 验收标准
+- 单元测试: `direct_lookup` — 范围内 O(1) 命中 ✅
+- 单元测试: `direct_lookup` — 范围外正确返回 None ✅
+- 单元测试: `lower_bound_cs` 连续模式 vs 非连续模式结果一致性 ✅
+- 单元测试: `find_entry_index_cs` 与 `find_entry_index` 结果相同 ✅
+- 单元测试: non-continuous 模式使用 `*_cs` = 原有二分查找行为 ✅
+- 单元测试: closed segment `find_entry_index_cs` 使用 `wrote_count` 范围检查 ✅
+- 集成测试: 连续模式 query 正确性不变 (所有已有集成测试继续通过) ✅
+- 集成测试: 总 86 tests pass (77 unit + 9 integration) ✅
+- 性能验证: benchmark 对比连续模式 lower_bound_cs vs lower_bound (log n → O(1))
+
+---
+
 ## 依赖关系图
 
 ```
@@ -670,6 +753,9 @@ Phase 9 (读缓存池: BlockCache LRU + idle 回收 + 读取集成)
         │
         ▼
 Phase 10 (索引连续存储: filler 条目 + sentinel 值 + mmap 覆盖写 + meta TLV 扩展) ✅
+        │
+        ▼
+Phase 11 (连续模式 O(1) 查询优化: 直接计算索引位置 + 消除二分查找)
 ```
 
 ---

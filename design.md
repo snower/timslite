@@ -2477,7 +2477,150 @@ DataSet::query(start_ts, end_ts):
   4. 按 timestamp 排序返回
 ```
 
-> **关键**: Filler 条目在 index 中占位, query 时过滤。补写后 filler 被替换为真实 entry, 
+> **关键**: Filler 条目在 index 中占位, query 时过滤。补写后 filler 被替换为真实 entry,
 > 下次 query 不再过滤。二分查找顺序不受影响 (timestamp 字段在覆盖写中不变)。
+
+### 23.11 连续模式查询位置直接计算 (O(1) 优化)
+
+> **核心思想**: 连续模式下, 索引条目位置可直接从时间戳计算得到, 无需二分查找。
+
+#### 23.11.1 原理
+
+在连续模式 (`index_continuous=true`) 下:
+- 每个索引段的第一个条目 timestamp = `segment.start_timestamp`
+- 已写入条目数 = `segment.wrote_count`
+- 由于连续模式下**每个时间戳位置都有条目** (filler 或真实, 纯 filler 段会被删除),
+  条目在段内连续排列, **段内覆盖时间范围 = `[start_timestamp, start_timestamp + wrote_count - 1]`**
+- 对于任意 `target_ts` 在段覆盖范围内:
+  - **entry_index = target_ts - start_timestamp** (O(1) 直接计算)
+  - **mmap 偏移 = HEADER_SIZE + entry_index × INDEX_ENTRY_SIZE**
+
+#### 23.11.2 优化后的查找流程
+
+```
+IndexSegment::direct_lookup(target_ts) -> Option<IndexEntry>:
+  │
+  ├─ 1. 检查范围: target_ts < start_timestamp || target_ts >= start_timestamp + wrote_count
+  │     └─ 超出范围 → return None
+  │
+  ├─ 2. 直接计算: entry_index = target_ts - start_timestamp
+  │               pos = HEADER_SIZE + entry_index * INDEX_ENTRY_SIZE
+  │
+  ├─ 3. 从 mmap 读取 entry.timestamp (前 8 字节)
+  │
+  ├─ 4. 校验: entry.timestamp == target_ts
+  │     ├─ 相等 → 读取完整 entry (18 字节), return Some(entry)
+  │     └─ 不等 → return None (理论上不可能发生, 防御性处理)
+```
+
+#### 23.11.3 lower_bound 优化 (非连续模式不变)
+
+```
+IndexSegment::lower_bound_cs(target_ts, index_continuous: bool) -> usize:
+  │
+  ├─ 如果 index_continuous == false: 使用原有二分查找逻辑
+  │
+  └─ 否则 (连续模式):
+       if wrote_count == 0:                  return 0
+       if target_ts < start_timestamp:       return 0
+       if target_ts >= start_timestamp + wrote_count: return wrote_count
+       // 范围内, 直接计算
+       return (target_ts - start_timestamp) as usize  // O(1)
+```
+
+同理 `upper_bound_cs(target_ts, index_continuous)`:
+```
+  if wrote_count == 0:                  return 0
+  if target_ts >= start_timestamp + wrote_count: return wrote_count
+  if target_ts < start_timestamp:       return 0
+  return ((target_ts + 1) - start_timestamp).min(wrote_count) as usize
+```
+
+#### 23.11.4 find_exact / find_entry_index 优化
+
+```
+IndexSegment::find_exact_cs(target_ts, index_continuous: bool) -> Option<IndexEntry>:
+  │
+  └─ 如果 index_continuous:
+       └─ direct_lookup(target_ts) → O(1), 无需 fallback
+  └─ 否则: 原有二分查找逻辑
+
+IndexSegment::find_entry_index_cs(target_ts, index_continuous: bool) -> Option<usize>:
+  │
+  └─ 如果 index_continuous:
+       ├─ 如果目标在范围内 → 返回 entry_index = target_ts - start_timestamp (O(1))
+       └─ 否则 → return None
+  └─ 否则: 原有二分查找逻辑
+```
+
+#### 23.11.5 query_range 集成
+
+`query_range` 内部通过 `lower_bound` 获取起始索引:
+- 非连续模式: `lower_bound` = 二分查找 = O(log n)
+- 连续模式: `lower_bound_cs` = 直接计算 = **O(1)**
+- 之后的线性扫描相同: `for i in start_idx..wrote_count { ... if ts > end_ts { break; } }`
+
+#### 23.11.6 补数据路径优化 (`replace_filler_with_real`)
+
+当前: 遍历所有段 → 每段 `find_entry_index` (二分查找 O(log n))
+优化: 连续模式下直接计算 → 找到目标段后 O(1) 定位
+
+```
+replace_filler_with_real(timestamp, ...) in continuous mode:
+  │
+  ├─ 遍历 segments:
+  │     ├─ 如果 timestamp in [seg.start_timestamp, seg.start_timestamp + seg.wrote_count - 1]:
+  │     │     └─ entry_index = timestamp - seg.start_timestamp (O(1))
+  │     │        → 读取 entry 校验 block_offset == BLOCK_OFFSET_FILLER
+  │     │        → overwrite_entry(entry_index, ...)
+  │     │        → return Ok(())
+  │     └─ 否则 continue
+  │
+  └─ 未找到 → 查 in_memory_buffer (线性扫描, 条目少, 保持现有)
+```
+
+#### 23.11.7 边界情况
+
+| 边界场景 | 处理 |
+|---------|------|
+| `wrote_count == 0` | 空段 → 直接返回, 不计算 |
+| `target_ts < start_timestamp` | 段左侧 → `lower_bound → 0`, `find_exact → None` |
+| `target_ts >= start_timestamp + wrote_count` | 段右侧 → `lower_bound → wrote_count`, `find_exact → None` |
+| 部分段 (首/尾段可能未写满) | 范围检查用 `wrote_count` 而非 `entries_capacity`, 正确处理 |
+| filler 条目 | filler = 有效占位, direct_lookup 正常读取, block_offset = sentinel |
+| 非连续模式 | 不启用直接计算, 行为与现有完全一致 (通过 `*_cs` 方法分支) |
+
+#### 23.11.8 实现方案
+
+**方案**: 在现有二分查找方法基础上, 添加 `*_cs` (continuous-suffix) 变体:
+- `lower_bound_cs(target_ts, index_continuous: bool) -> usize`
+- `upper_bound_cs(target_ts, index_continuous: bool) -> usize`
+- `find_exact_cs(target_ts, index_continuous: bool) -> Option<IndexEntry>`
+- `find_entry_index_cs(target_ts, index_continuous: bool) -> Option<usize>`
+
+每个方法内部根据 `index_continuous` 参数决定走直接计算还是原二分查找。
+
+**调用链**:
+1. `TimeIndex` 构造时传入 `index_continuous: bool`
+2. `TimeIndex::query()` 调用 `seg.query_range_cs(start_ts, end_ts, index_continuous)`
+3. `IndexSegment::query_range_cs()` 内部调用 `lower_bound_cs(..., index_continuous)`
+4. `DataSet::replace_filler_with_real()` 对 open/closed segments 调用 `find_entry_index_cs()`
+5. `IndexSegmentMeta` 新增 `wrote_count: usize` 字段 (从 mmap header 读取) → 支持 `find_entry_index_cs` 中对 closed segments 的范围检查
+
+#### 23.11.9 性能收益
+
+| 操作 | 现有 | 优化后 (连续模式) | 收益 |
+|------|------|------------------|------|
+| `lower_bound` | O(log n) | O(1) | 消除二分查找 |
+| `find_exact` | O(log n) | O(1) | 消除二分查找 |
+| `find_entry_index` | O(log n) | O(1) | 消除二分查找 |
+| `query_range` | O(log n + k) | O(1 + k) | 起始查找降为 O(1) |
+
+其中 `k` = 查询范围内条目数, `n` = 段内总条目数。
+
+单个 4MB index segment 可容纳 ~229,376 条目 (log₂(229376) ≈ 18 次比较)。
+优化后: **0 次比较**, 直接计算 + 1 次 mmap 读取 (8 字节 timestamp 校验)。
+
+**非连续模式性能不变** — 仍使用原有二分查找, 无额外开销。
 
 ---
