@@ -54,11 +54,12 @@ mod store;
 
 // ─── Public re-exports ──────────────────────────────────────────────────────
 pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
+pub use dataset::{DataSet, DataSetKey};
 pub use error::{Result, TmslError};
+pub use index::segment::{IndexEntry, BLOCK_OFFSET_FILLER};
 pub use query::hot_block::HotBlockCache;
 pub use query::iter::{QueryIterator, QuerySource, SourceIndex};
-pub use store::Store;
-// pub use ffi::DataSetHandle;    // enabled in Phase 7
+pub use store::{DataSetHandle, Store};
 
 // ─── Core constants (exported for FFI consumers) ────────────────────────────
 

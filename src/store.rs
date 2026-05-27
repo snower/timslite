@@ -289,11 +289,16 @@ impl Store {
         &self.block_cache
     }
 
+    /// Get a reference to the store config.
+    pub fn config(&self) -> &StoreConfig {
+        &self.config
+    }
+
     /// Close the store completely.
     pub fn close(mut self) -> Result<()> {
         // 1. Stop background tasks
-        if let Some(bg) = self.bg_tasks.take() {
-            drop(bg);
+        if let Some(mut bg) = self.bg_tasks.take() {
+            bg.stop();
         }
 
         // 2. Flush and close all datasets

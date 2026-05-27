@@ -1,0 +1,6 @@
+/target
+.venv
+.pytest_cache
+*.pyc
+*.pyd
+*.pdb

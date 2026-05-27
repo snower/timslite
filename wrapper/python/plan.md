@@ -9,14 +9,32 @@
 
 | Phase | 描述 | 状态 | 详情 |
 |-------|------|------|------|
-| PY-1 | 项目骨架 + 构建系统 | 🔲 待开始 | |
-| PY-2 | 异常层次 + 错误映射 | 🔲 待开始 | |
-| PY-3 | StoreConfig + Store (核心) | 🔲 待开始 | |
-| PY-4 | Dataset 封装 | 🔲 待开始 | |
-| PY-5 | 查询迭代器 (Arc\<Mutex\> 模式) | 🔲 待开始 | |
-| PY-6 | Python 模块导出 + `__init__.py` | 🔲 待开始 | |
-| PY-7 | 集成测试 (8 个测试文件) | 🔲 待开始 | |
-| PY-8 | CI/CD + 多平台 Wheel 构建 | 🔲 待开始 | |
+| PY-0 | Rust 层前置修复 (`Store::close()` 线程泄漏) | ✅ 完成 | [src/store.rs](../../src/store.rs) `bg.stop()` 替代 `drop(bg)` |
+| PY-1 | 项目骨架 + 构建系统 | ✅ 完成 | `Cargo.toml`, `pyproject.toml`, `src/lib.rs` |
+| PY-2 | 异常层次 + 错误映射 | ✅ 完成 | `src/exceptions.rs` — 9 个异常类 + `map_error()` + `wrap()` |
+| PY-3 | StoreConfig + Store (核心) | ✅ 完成 | `src/config.rs`, `src/store.rs` |
+| PY-4 | Dataset 封装 | ✅ 完成 | `src/dataset.rs` — `Arc<Mutex<DataSet>>` 共享模式 |
+| PY-5 | 查询迭代器 (Arc\<Mutex\> 模式) | ✅ 完成 | `src/query.rs` — 预收集 IndexEntry + 懒加载数据 |
+| PY-6 | Python 模块导出 + `__init__.py` | ✅ 完成 | `src/lib.rs`, `python/timslite/__init__.py` |
+| PY-7 | 集成测试 (8 个测试文件, 39 用例) | ✅ 完成 | `tests/` — 全部通过 |
+| PY-8 | CI/CD + 多平台 Wheel 构建 | 🔲 待开始 | GitHub Actions workflow |
+
+**验证结果**:
+- ✅ `cargo clippy -- -D warnings` — wrapper crate 无警告
+- ✅ `cargo clippy -- -D warnings` — 主 crate 无警告
+- ✅ `pytest tests/ -v` — **39 tests passed**, 0 failed
+- ✅ `cargo test -- --test-threads=1` — 主 crate 19 tests passed
+- ✅ `maturin develop --release` — 编译并安装成功 (CPython 3.13)
+
+---
+
+## 已知限制
+
+| 限制 | 说明 |
+|------|------|
+| 连续模式大间隙写入 | `index_continuous=True` + 大间隙 (≥100) 会触发大量 filler 条目创建, 可能导致性能下降 |
+| Windows 后台线程清理 | 后台线程被 detach 后仍持有 mmap 文件句柄, 测试完成后可能需要短暂延迟才能删除临时文件 |
+| 多 Python 版本 | 当前仅在 CPython 3.13 上验证, 需扩展至 3.9-3.13 |
 
 ---
 
