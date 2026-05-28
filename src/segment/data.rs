@@ -14,7 +14,10 @@ use crate::block::{
 use crate::cache::{BlockCache, CacheKey, HotBlockCache};
 use crate::compress::{deflate_compress, deflate_decompress};
 use crate::error::{Result, TmslError};
-use crate::header::{FileMetadata, HEADER_SIZE, PENDING_NONE};
+use crate::header::{
+    clear_pending_from_mmap, DataFileMetadata, DATA_HEADER_SIZE, PENDING_NONE,
+    TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL,
+};
 use crate::util::{read_i64_le, read_u16_from_mmap, read_u16_le, read_u32_from_mmap};
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -30,7 +33,7 @@ pub enum SegmentLifecycle {
 
 /// A single data segment backed by a memory-mapped file.
 ///
-/// Multiple records are aggregated into blocks. When a block reaches the size
+/// Multiple records are aggregated into blocks. When a block reach the size
 /// limit (or the segment is idle-closed), it is sealed and optionally compressed.
 pub struct DataSegment {
     pub path: std::path::PathBuf,
@@ -42,6 +45,8 @@ pub struct DataSegment {
     pub wrote_position: u64,
     pub record_count: u64,
     pub total_uncompressed_size: u64,
+    pub min_timestamp: i64,
+    pub max_timestamp: i64,
     pub created_at: i64,
     pub mmap: Option<MmapMut>,
     pub lifecycle: SegmentLifecycle,
@@ -74,11 +79,7 @@ impl DataSegment {
             .open(path)?;
         file.set_len(initial_size)?;
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
-        let metadata = FileMetadata::create_default(
-            crate::header::FILE_TYPE_DATA,
-            file_offset as i64,
-            max_file_size as u32, // header always records max (standard segment size)
-        );
+        let metadata = DataFileMetadata::create_default(file_offset as i64, max_file_size as u32);
         metadata.write_to(&mut mmap);
         metadata.sync(&mut mmap)?;
 
@@ -91,6 +92,8 @@ impl DataSegment {
             wrote_position: 0,
             record_count: 0,
             total_uncompressed_size: 0,
+            min_timestamp: TIMESTAMP_MIN_SENTINEL,
+            max_timestamp: TIMESTAMP_MAX_SENTINEL,
             created_at: metadata.created_at,
             mmap: Some(mmap),
             lifecycle: SegmentLifecycle::OpenReady,
@@ -112,7 +115,7 @@ impl DataSegment {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let actual_file_size = file.metadata()?.len();
         let mmap = unsafe { MmapMut::map_mut(&file)? };
-        let metadata = FileMetadata::read_from(&mmap)?;
+        let metadata = DataFileMetadata::read_from(&mmap)?;
 
         if metadata.magic != *b"TMSL" {
             return Err(TmslError::InvalidMagic);
@@ -130,9 +133,11 @@ impl DataSegment {
             file_offset,
             file_size: actual_file_size,
             max_file_size,
-            wrote_position: metadata.wrote_position.saturating_sub(HEADER_SIZE),
+            wrote_position: metadata.wrote_position.saturating_sub(DATA_HEADER_SIZE),
             record_count: metadata.record_count,
             total_uncompressed_size: metadata.total_uncompressed_size,
+            min_timestamp: metadata.min_timestamp,
+            max_timestamp: metadata.max_timestamp,
             created_at: metadata.created_at,
             mmap: Some(mmap),
             lifecycle: SegmentLifecycle::OpenReady,
@@ -156,7 +161,7 @@ impl DataSegment {
     /// Seal a recovered pending block (no compression).
     fn recover_pending_seal(&mut self) -> Result<()> {
         let block_rel_offset = self.pending_block_offset.unwrap();
-        let hdr_pos = (HEADER_SIZE + block_rel_offset) as usize;
+        let hdr_pos = (DATA_HEADER_SIZE + block_rel_offset) as usize;
         let mmap = self.mmap.as_mut().unwrap();
 
         let payload_size = read_u32_from_mmap(mmap, hdr_pos);
@@ -167,9 +172,7 @@ impl DataSegment {
         header.write_to(mmap, hdr_pos);
 
         // Update file header
-        let m = self.mmap.as_mut().unwrap();
-        let mut meta = FileMetadata::read_from(m)?;
-        meta.clear_pending(m);
+        clear_pending_from_mmap(self.mmap.as_mut().unwrap());
 
         self.pending_block_offset = None;
         self.pending_wrote_position = 0;
@@ -192,11 +195,13 @@ impl DataSegment {
 
         let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
         let mmap = unsafe { MmapMut::map_mut(&file)? };
-        let metadata = FileMetadata::read_from(&mmap)?;
+        let metadata = DataFileMetadata::read_from(&mmap)?;
 
-        self.wrote_position = metadata.wrote_position.saturating_sub(HEADER_SIZE);
+        self.wrote_position = metadata.wrote_position.saturating_sub(DATA_HEADER_SIZE);
         self.record_count = metadata.record_count;
         self.total_uncompressed_size = metadata.total_uncompressed_size;
+        self.min_timestamp = metadata.min_timestamp;
+        self.max_timestamp = metadata.max_timestamp;
 
         // Pending recovery (same as open)
         if metadata.pending_block_offset != PENDING_NONE {
@@ -226,7 +231,7 @@ impl DataSegment {
         // Seal pending block without compression
         if self.pending_block_offset.is_some() {
             let block_rel_offset = self.pending_block_offset.unwrap();
-            let hdr_pos = (HEADER_SIZE + block_rel_offset) as usize;
+            let hdr_pos = (DATA_HEADER_SIZE + block_rel_offset) as usize;
             let mmap = self.mmap.as_mut().unwrap();
 
             let payload_size = read_u32_from_mmap(mmap, hdr_pos);
@@ -238,8 +243,7 @@ impl DataSegment {
             header.write_to(mmap, hdr_pos);
 
             // Clear pending in file header
-            let mut meta = FileMetadata::read_from(mmap)?;
-            meta.clear_pending(mmap);
+            clear_pending_from_mmap(mmap);
             self.pending_block_offset = None;
             self.pending_wrote_position = 0;
             self.pending_record_count = 0;
@@ -300,7 +304,7 @@ impl DataSegment {
     /// Append a record to this segment.
     ///
     /// Returns `(block_relative_offset, in_block_offset)` where:
-    /// - `block_relative_offset` is the block's offset relative to HEADER_SIZE
+    /// - `block_relative_offset` is the block's offset relative to DATA_HEADER_SIZE
     /// - `in_block_offset` is the record's position within the block payload
     ///
     /// If the segment file does not have enough space, returns `Err(TmslError::SegmentFull)`.
@@ -318,7 +322,7 @@ impl DataSegment {
         // Space check: can the current file accommodate at least one more block + record?
         // The current wrote_position already accounts for existing data.
         // If we need to create a new block OR the record needs an exclusive block:
-        if self.file_size.saturating_sub(HEADER_SIZE) < self.wrote_position + total_needed {
+        if self.file_size.saturating_sub(DATA_HEADER_SIZE) < self.wrote_position + total_needed {
             return Err(TmslError::SegmentFull);
         }
 
@@ -358,7 +362,7 @@ impl DataSegment {
 
     /// Write a raw record into the current pending block.
     fn write_raw_record_to_pending(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
-        let base = (HEADER_SIZE
+        let base = (DATA_HEADER_SIZE
             + self.pending_block_offset.unwrap()
             + crate::block::BLOCK_HEADER_SIZE
             + self.pending_wrote_position) as usize;
@@ -372,13 +376,21 @@ impl DataSegment {
         mmap[base + 10..base + 10 + data.len()].copy_from_slice(data);
 
         // Update block header: payload_size + record_count
-        let hdr = (HEADER_SIZE + self.pending_block_offset.unwrap()) as usize;
+        let hdr = (DATA_HEADER_SIZE + self.pending_block_offset.unwrap()) as usize;
         let new_size =
             self.pending_wrote_position as u32 + RECORD_OVERHEAD as u32 + data.len() as u32;
         mmap[hdr..hdr + 4].copy_from_slice(&new_size.to_le_bytes());
         mmap[hdr + 6..hdr + 8].copy_from_slice(&(self.pending_record_count as u16).to_le_bytes());
 
         self.wrote_position += RECORD_OVERHEAD + data.len() as u64;
+
+        // Update timestamp range
+        if timestamp < self.min_timestamp {
+            self.min_timestamp = timestamp;
+        }
+        if timestamp > self.max_timestamp {
+            self.max_timestamp = timestamp;
+        }
 
         // Update file header wrote_position
         self.update_file_wrote_position()?;
@@ -388,7 +400,7 @@ impl DataSegment {
 
     /// Create a new pending block and write the first record.
     fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u16)> {
-        let block_pos = HEADER_SIZE + self.wrote_position;
+        let block_pos = DATA_HEADER_SIZE + self.wrote_position;
         let rec_size = RECORD_OVERHEAD + data.len() as u64;
 
         // Write BlockHeader (flags=0, not sealed)
@@ -407,7 +419,7 @@ impl DataSegment {
         mmap[data_pos + 2..data_pos + 10].copy_from_slice(&timestamp.to_le_bytes());
         mmap[data_pos + 10..data_pos + 10 + data.len()].copy_from_slice(data);
 
-        self.pending_block_offset = Some(block_pos - HEADER_SIZE);
+        self.pending_block_offset = Some(block_pos - DATA_HEADER_SIZE);
         self.pending_wrote_position = rec_size;
         self.pending_record_count = 1;
         self.wrote_position += crate::block::BLOCK_HEADER_SIZE + rec_size;
@@ -415,16 +427,24 @@ impl DataSegment {
         self.total_uncompressed_size += rec_size;
         self.last_accessed_at = Instant::now();
 
-        // Write pending info to file header
-        self.update_file_header_for_pending(block_pos - HEADER_SIZE)?;
+        // Update timestamp range
+        if timestamp < self.min_timestamp {
+            self.min_timestamp = timestamp;
+        }
+        if timestamp > self.max_timestamp {
+            self.max_timestamp = timestamp;
+        }
 
-        Ok((block_pos - HEADER_SIZE, 0))
+        // Write pending info to file header
+        self.update_file_header_for_pending(block_pos - DATA_HEADER_SIZE)?;
+
+        Ok((block_pos - DATA_HEADER_SIZE, 0))
     }
 
     /// Seal the pending block: compress and write back.
     fn seal_pending_block(&mut self, compress_level: u8) -> Result<()> {
         let block_rel_offset = self.pending_block_offset.unwrap();
-        let hdr_pos = (HEADER_SIZE + block_rel_offset) as usize;
+        let hdr_pos = (DATA_HEADER_SIZE + block_rel_offset) as usize;
         let payload_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
         let payload_len = self.pending_wrote_position as usize;
 
@@ -458,7 +478,7 @@ impl DataSegment {
         }
 
         // Clear pending in file header
-        FileMetadata::clear_pending_from_mmap(mmap)?;
+        clear_pending_from_mmap(mmap);
 
         Ok(())
     }
@@ -471,7 +491,7 @@ impl DataSegment {
         compress_level: u8,
     ) -> Result<(u64, u16)> {
         let rec_size = RECORD_OVERHEAD as usize + data.len();
-        let block_pos = HEADER_SIZE + self.wrote_position;
+        let block_pos = DATA_HEADER_SIZE + self.wrote_position;
 
         // Build record payload: [data_len:2][ts:8][data]
         let mut raw = Vec::with_capacity(rec_size);
@@ -502,9 +522,17 @@ impl DataSegment {
         self.total_uncompressed_size += rec_size as u64;
         self.last_accessed_at = Instant::now();
 
+        // Update timestamp range
+        if timestamp < self.min_timestamp {
+            self.min_timestamp = timestamp;
+        }
+        if timestamp > self.max_timestamp {
+            self.max_timestamp = timestamp;
+        }
+
         self.update_file_wrote_position()?;
 
-        Ok((block_pos - HEADER_SIZE, 0))
+        Ok((block_pos - DATA_HEADER_SIZE, 0))
     }
 
     /// Clear the pending block state.
@@ -518,20 +546,20 @@ impl DataSegment {
 
     fn update_file_wrote_position(&mut self) -> Result<()> {
         let mmap = self.mmap.as_mut().unwrap();
-        let abs_pos = HEADER_SIZE + self.wrote_position;
-        // wrote_position lives at STATE_START + S_WROTE_POSITION = 44
-        mmap[44..52].copy_from_slice(&abs_pos.to_le_bytes());
-        mmap[52..60].copy_from_slice(&self.record_count.to_le_bytes());
-        mmap[60..68].copy_from_slice(&self.total_uncompressed_size.to_le_bytes());
+        let abs_pos = DATA_HEADER_SIZE + self.wrote_position;
+        mmap[44..52].copy_from_slice(&self.min_timestamp.to_le_bytes());
+        mmap[52..60].copy_from_slice(&self.max_timestamp.to_le_bytes());
+        mmap[60..68].copy_from_slice(&abs_pos.to_le_bytes());
+        mmap[68..76].copy_from_slice(&self.record_count.to_le_bytes());
+        mmap[76..84].copy_from_slice(&self.total_uncompressed_size.to_le_bytes());
         Ok(())
     }
 
     fn update_file_header_for_pending(&mut self, block_rel_offset: u64) -> Result<()> {
         let mmap = self.mmap.as_mut().unwrap();
-        // Write pending fields (at STATE_START + 32, 40, 48 = 76, 84, 92)
-        mmap[76..84].copy_from_slice(&block_rel_offset.to_le_bytes());
-        mmap[84..92].copy_from_slice(&self.pending_wrote_position.to_le_bytes());
-        mmap[92..100].copy_from_slice(&self.pending_record_count.to_le_bytes());
+        mmap[84..92].copy_from_slice(&block_rel_offset.to_le_bytes());
+        mmap[92..100].copy_from_slice(&self.pending_wrote_position.to_le_bytes());
+        mmap[100..108].copy_from_slice(&self.pending_record_count.to_le_bytes());
 
         // Also update wrote_position
         self.update_file_wrote_position()
@@ -545,7 +573,7 @@ impl DataSegment {
 #[derive(Clone, Copy)]
 pub struct ReadIndexEntry {
     pub timestamp: i64,
-    pub block_offset: u64,    // relative to HEADER_SIZE
+    pub block_offset: u64,    // relative to DATA_HEADER_SIZE
     pub in_block_offset: u16, // relative to block payload start
 }
 
@@ -563,7 +591,7 @@ impl DataSegment {
             .as_ref()
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
 
-        let hdr_pos = (HEADER_SIZE + entry.block_offset) as usize;
+        let hdr_pos = (DATA_HEADER_SIZE + entry.block_offset) as usize;
 
         // Read block header
         let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
@@ -648,7 +676,7 @@ impl DataSegment {
             .as_ref()
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
 
-        let hdr_pos = (HEADER_SIZE + entry.block_offset) as usize;
+        let hdr_pos = (DATA_HEADER_SIZE + entry.block_offset) as usize;
         let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
 
         if hot_block.is_hit(self.file_offset, entry.block_offset) {
@@ -700,21 +728,6 @@ impl DataSegment {
 
         let data = hot_block.current_data[pos + 10..pos + 10 + data_len].to_vec();
         Ok((timestamp, data))
-    }
-}
-
-// ─── FileMetadata extension for mmap-only operations ─────────────────────────
-
-impl FileMetadata {
-    /// Clear pending state directly in an mmap slice (without a FileMetadata struct).
-    pub fn clear_pending_from_mmap(mmap: &mut [u8]) -> Result<()> {
-        // pending_block_offset = u64::MAX (at STATE_START + 32 = 76)
-        mmap[76..84].copy_from_slice(&u64::MAX.to_le_bytes());
-        // pending_wrote_position = 0 (at STATE_START + 40 = 84)
-        mmap[84..92].copy_from_slice(&0u64.to_le_bytes());
-        // pending_record_count = 0 (at STATE_START + 48 = 92)
-        mmap[92..100].copy_from_slice(&0u64.to_le_bytes());
-        Ok(())
     }
 }
 

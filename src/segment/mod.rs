@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::error::Result;
+use crate::header::{DataFileMetadata, TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
 
 pub use self::data::{DataSegment, ReadIndexEntry};
 use self::data::{DataSegment as DS, SegmentLifecycle as SL};
@@ -20,6 +21,21 @@ pub(crate) struct DataSegmentMeta {
     pub path: std::path::PathBuf,
     pub file_offset: u64,
     pub file_size: u64,
+    pub min_timestamp: i64,
+    pub max_timestamp: i64,
+}
+
+impl DataSegmentMeta {
+    /// Returns true if this segment's time range overlaps with [start_ts, end_ts].
+    pub fn overlaps_time_range(&self, start_ts: i64, end_ts: i64) -> bool {
+        // Sentinel values (empty segment) never overlap
+        if self.min_timestamp == TIMESTAMP_MIN_SENTINEL
+            || self.max_timestamp == TIMESTAMP_MAX_SENTINEL
+        {
+            return false;
+        }
+        self.max_timestamp >= start_ts && self.min_timestamp <= end_ts
+    }
 }
 
 // ─── DataSegmentSet ─────────────────────────────────────────────────────────
@@ -77,6 +93,8 @@ impl DataSegmentSet {
                 path: seg.path.clone(),
                 file_offset: seg.file_offset,
                 file_size: seg.file_size,
+                min_timestamp: seg.min_timestamp,
+                max_timestamp: seg.max_timestamp,
             });
             seg.idle_close(6)?;
         }
@@ -129,10 +147,14 @@ impl DataSegmentSet {
                 if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
                     if let Ok(offset) = stem.parse::<u64>() {
                         let file_size = std::fs::metadata(&p)?.len();
+                        // Read min/max timestamps from file header
+                        let (min_ts, max_ts) = read_segment_timestamps(&p);
                         metas.push(DataSegmentMeta {
                             path: p,
                             file_offset: offset,
                             file_size,
+                            min_timestamp: min_ts,
+                            max_timestamp: max_ts,
                         });
                     }
                 }
@@ -246,7 +268,7 @@ impl DataSegmentSet {
             };
 
         let seg_wrote_pos = self.segments.last().unwrap().wrote_position;
-        let seg_size = seg_wrote_pos + crate::header::HEADER_SIZE;
+        let seg_size = seg_wrote_pos + crate::header::DATA_HEADER_SIZE;
         if seg_size >= self.segment_size {
             self.next_offset += self.segment_size;
         }
@@ -324,4 +346,30 @@ impl DataSegmentSet {
     pub fn flush_all(&mut self) -> Result<()> {
         self.sync_all()
     }
+}
+
+// ─── Helper ──────────────────────────────────────────────────────────────────
+
+use crate::header::DATA_HEADER_SIZE;
+
+/// Read min_timestamp and max_timestamp from a data segment file header.
+/// Opens the file, maps it briefly, reads the header, and unmaps.
+/// Returns sentinel values on any error.
+fn read_segment_timestamps(path: &Path) -> (i64, i64) {
+    read_segment_timestamps_inner(path).unwrap_or((TIMESTAMP_MIN_SENTINEL, TIMESTAMP_MAX_SENTINEL))
+}
+
+fn read_segment_timestamps_inner(path: &Path) -> Result<(i64, i64)> {
+    use std::fs::OpenOptions;
+    let file = OpenOptions::new().read(true).open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len < DATA_HEADER_SIZE {
+        return Ok((TIMESTAMP_MIN_SENTINEL, TIMESTAMP_MAX_SENTINEL));
+    }
+    // Use read-only mmap to avoid write-lock on Windows
+    let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+    let meta = DataFileMetadata::read_from(&mmap)?;
+    drop(mmap);
+    drop(file);
+    Ok((meta.min_timestamp, meta.max_timestamp))
 }

@@ -10,7 +10,7 @@ use std::path::Path;
 pub use self::segment::INDEX_ENTRY_SIZE;
 use self::segment::{IndexEntry, IndexSegment, IndexSegmentMeta};
 use crate::error::Result;
-use crate::header::HEADER_SIZE;
+use crate::header::INDEX_HEADER_SIZE;
 use crate::util::read_u64_from_mmap;
 use memmap2::MmapMut;
 
@@ -293,7 +293,7 @@ impl TimeIndex {
                     if let Ok(start_ts) = stem.parse::<i64>() {
                         let file_size = std::fs::metadata(&p)?.len();
                         let entries_capacity =
-                            ((file_size - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+                            ((file_size - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
                         // Read record_count from header (offset 44 + 8 = 52)
                         let wrote_count = Self::read_record_count_from_file(&p);
                         metas.push(IndexSegmentMeta::new(
@@ -320,12 +320,14 @@ impl TimeIndex {
         })
     }
 
-    /// Read record_count from the file header without fully opening the segment.
+    /// Read wrote_count from the file header without fully opening the segment.
     fn read_record_count_from_file(path: &Path) -> usize {
         if let Ok(file) = std::fs::OpenOptions::new().read(true).open(path) {
             if let Ok(mmap) = unsafe { MmapMut::map_mut(&file) } {
-                // record_count is at state offset 8 from state start (offset 44)
-                return read_u64_from_mmap(&mmap, 52) as usize;
+                // wrote_position is at offset 44, derive count from it
+                let wrote_pos = read_u64_from_mmap(&mmap, 44);
+                return ((wrote_pos.saturating_sub(INDEX_HEADER_SIZE)) / INDEX_ENTRY_SIZE as u64)
+                    as usize;
             }
         }
         0

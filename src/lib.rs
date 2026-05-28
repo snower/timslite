@@ -63,8 +63,11 @@ pub use store::{DataSetHandle, Store};
 
 // ─── Core constants (exported for FFI consumers) ────────────────────────────
 
-/// Size of the file header in bytes.
-pub const HEADER_SIZE: u64 = header::HEADER_SIZE;
+/// Size of a data segment file header in bytes (116B).
+pub const DATA_HEADER_SIZE: u64 = header::DATA_HEADER_SIZE;
+
+/// Size of an index segment file header in bytes (52B).
+pub const INDEX_HEADER_SIZE: u64 = header::INDEX_HEADER_SIZE;
 
 /// Size of a block header in bytes.
 pub const BLOCK_HEADER_SIZE: u64 = block::BLOCK_HEADER_SIZE;
@@ -89,7 +92,8 @@ pub const FILE_TYPE_INDEX: u8 = header::FILE_TYPE_INDEX;
 mod tests {
     #[test]
     fn test_constants_nonzero() {
-        assert_eq!(crate::HEADER_SIZE, 100);
+        assert_eq!(crate::DATA_HEADER_SIZE, 116);
+        assert_eq!(crate::INDEX_HEADER_SIZE, 52);
         assert_eq!(crate::BLOCK_HEADER_SIZE, 16);
         assert_eq!(crate::INDEX_ENTRY_SIZE, 18);
         assert_eq!(&crate::MAGIC, b"TMSL");

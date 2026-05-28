@@ -9,7 +9,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::error::{Result, TmslError};
-use crate::header::{FileMetadata, HEADER_SIZE};
+use crate::header::{IndexFileMetadata, INDEX_HEADER_SIZE};
 use crate::util::read_i64_from_mmap;
 
 // ─── IndexEntry ──────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ pub const IN_BLOCK_OFFSET_FILLER: u16 = 0xFFFF;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexEntry {
     pub timestamp: i64,
-    pub block_offset: u64,    // relative to HEADER_SIZE in the data segment
+    pub block_offset: u64, // relative to DATA_HEADER_SIZE in the data segment
     pub in_block_offset: u16, // relative to block payload start
 }
 
@@ -99,8 +99,9 @@ impl IndexSegment {
         max_file_size: u64,
     ) -> Result<Self> {
         std::fs::create_dir_all(base_dir)?;
-        let entries_capacity = ((initial_size - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
-        let file_size = HEADER_SIZE + entries_capacity as u64 * INDEX_ENTRY_SIZE as u64;
+        let entries_capacity =
+            ((initial_size - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+        let file_size = INDEX_HEADER_SIZE + entries_capacity as u64 * INDEX_ENTRY_SIZE as u64;
 
         let file_name = format!("{:020}", start_timestamp);
         let path = base_dir.join(&file_name);
@@ -114,11 +115,7 @@ impl IndexSegment {
         file.set_len(file_size)?;
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
 
-        let metadata = FileMetadata::create_default(
-            crate::header::FILE_TYPE_INDEX,
-            start_timestamp,
-            max_file_size as u32,
-        );
+        let metadata = IndexFileMetadata::create_default(start_timestamp, max_file_size as u32);
         metadata.write_to(&mut mmap);
         metadata.sync(&mut mmap)?;
 
@@ -140,15 +137,16 @@ impl IndexSegment {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let actual_file_size = file.metadata()?.len();
         let mmap = unsafe { MmapMut::map_mut(&file)? };
-        let metadata = FileMetadata::read_from(&mmap)?;
+        let metadata = IndexFileMetadata::read_from(&mmap)?;
 
         if metadata.magic != *b"TMSL" {
             return Err(TmslError::InvalidMagic);
         }
 
         let entries_capacity =
-            ((actual_file_size - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
-        let wrote_count = metadata.record_count as usize;
+            ((actual_file_size - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+        let wrote_count = ((metadata.wrote_position.saturating_sub(INDEX_HEADER_SIZE))
+            / INDEX_ENTRY_SIZE as u64) as usize;
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -174,16 +172,13 @@ impl IndexSegment {
             .as_mut()
             .ok_or_else(|| TmslError::MmapError("index segment closed".into()))?;
 
-        let pos = HEADER_SIZE as usize + self.wrote_count * INDEX_ENTRY_SIZE;
+        let pos = INDEX_HEADER_SIZE as usize + self.wrote_count * INDEX_ENTRY_SIZE;
         mmap[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&entry.to_bytes());
         self.wrote_count += 1;
 
-        // Update file header (state fields at offset 44)
-        let abs_pos = HEADER_SIZE + self.wrote_count as u64 * INDEX_ENTRY_SIZE as u64;
-        // wrote_position at offset 44
+        // Update file header (wrote_position at STATE_START = 44)
+        let abs_pos = INDEX_HEADER_SIZE + self.wrote_count as u64 * INDEX_ENTRY_SIZE as u64;
         mmap[44..52].copy_from_slice(&abs_pos.to_le_bytes());
-        // record_count at offset 52
-        mmap[52..60].copy_from_slice(&(self.wrote_count as u64).to_le_bytes());
 
         self.last_accessed_at = Instant::now();
         Ok(())
@@ -218,7 +213,7 @@ impl IndexSegment {
 
         // Recalculate entries_capacity
         self.current_file_size = target;
-        self.entries_capacity = ((target - HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+        self.entries_capacity = ((target - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
 
         Ok(())
     }
@@ -242,7 +237,7 @@ impl IndexSegment {
             return None;
         }
         let entry_index = (target_ts - self.start_timestamp) as usize;
-        let pos = HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
+        let pos = INDEX_HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
         // Read timestamp (first 8 bytes) to validate
         let ts = read_i64_from_mmap(mmap, pos);
         if ts != target_ts {
@@ -258,7 +253,7 @@ impl IndexSegment {
         let (mut lo, mut hi) = (0usize, self.wrote_count);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let pos = HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
+            let pos = INDEX_HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
             let ts = read_i64_from_mmap(mmap, pos);
             if ts < target_ts {
                 lo = mid + 1;
@@ -294,7 +289,7 @@ impl IndexSegment {
         let (mut lo, mut hi) = (0usize, self.wrote_count);
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
-            let pos = HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
+            let pos = INDEX_HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
             let ts = read_i64_from_mmap(mmap, pos);
             if ts <= target_ts {
                 lo = mid + 1;
@@ -333,7 +328,7 @@ impl IndexSegment {
         let (mut lo, mut hi) = (0usize, self.wrote_count - 1);
         while lo <= hi {
             let mid = lo + (hi - lo) / 2;
-            let pos = HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
+            let pos = INDEX_HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
             let ts = read_i64_from_mmap(mmap, pos);
             match ts.cmp(&target_ts) {
                 std::cmp::Ordering::Equal => {
@@ -362,7 +357,7 @@ impl IndexSegment {
         let (mut lo, mut hi) = (0usize, self.wrote_count - 1);
         while lo <= hi {
             let mid = lo + (hi - lo) / 2;
-            let pos = HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
+            let pos = INDEX_HEADER_SIZE as usize + mid * INDEX_ENTRY_SIZE;
             let ts = read_i64_from_mmap(mmap, pos);
             match ts.cmp(&target_ts) {
                 std::cmp::Ordering::Equal => return Some(mid),
@@ -406,7 +401,7 @@ impl IndexSegment {
                 let entry_index = (target_ts - self.start_timestamp) as usize;
                 // Validate that the entry exists (in case mmap has different data)
                 if let Some(mmap) = self.mmap.as_ref() {
-                    let pos = HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
+                    let pos = INDEX_HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
                     let ts = read_i64_from_mmap(mmap, pos);
                     if ts == target_ts {
                         return Some(entry_index);
@@ -432,7 +427,7 @@ impl IndexSegment {
             .mmap
             .as_mut()
             .ok_or_else(|| TmslError::MmapError("index segment closed".into()))?;
-        let pos = HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
+        let pos = INDEX_HEADER_SIZE as usize + entry_index * INDEX_ENTRY_SIZE;
         mmap[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&new_entry.to_bytes());
         // No header update needed — record_count stays the same
         self.last_accessed_at = Instant::now();
@@ -465,7 +460,7 @@ impl IndexSegment {
         let mut results = Vec::new();
         let start_idx = self.lower_bound(start_ts);
         for i in start_idx..self.wrote_count {
-            let pos = HEADER_SIZE as usize + i * INDEX_ENTRY_SIZE;
+            let pos = INDEX_HEADER_SIZE as usize + i * INDEX_ENTRY_SIZE;
             let ts = read_i64_from_mmap(mmap, pos);
             if ts > end_ts {
                 break;
@@ -487,7 +482,7 @@ impl IndexSegment {
         let mut results = Vec::new();
         let start_idx = self.lower_bound_cs(start_ts, index_continuous);
         for i in start_idx..self.wrote_count {
-            let pos = HEADER_SIZE as usize + i * INDEX_ENTRY_SIZE;
+            let pos = INDEX_HEADER_SIZE as usize + i * INDEX_ENTRY_SIZE;
             let ts = read_i64_from_mmap(mmap, pos);
             if ts > end_ts {
                 break;

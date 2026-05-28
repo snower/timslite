@@ -23,7 +23,7 @@
 | 12 | 分段懒分配 + 倍率扩容 | ✅ 完成 (含4项集成测试) | [phase-12-lazy-allocation.md](docs/plan/phase-12-lazy-allocation.md) |
 | 13 | 查询迭代器 + HotBlockCache | ✅ 完成 | [phase-13-query-iterator.md](docs/plan/phase-13-query-iterator.md) |
 | 14 | create_dataset Builder 优化 | ✅ 完成 | [phase-14-dataset-config-builder.md](docs/plan/phase-14-dataset-config-builder.md) |
-| 15 | Header State 分化 | ⏳ 待实现 | [phase-15-header-state-split.md](docs/plan/phase-15-header-state-split.md) |
+| 15 | Header State 分化 | ✅ 完成 | [phase-15-header-state-split.md](docs/plan/phase-15-header-state-split.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -107,16 +107,15 @@
 - [x] `cargo clippy -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (110 tests: 93 unit + 19 integration)
 
-### Phase 15: Header State 分化 ⏳ 待实现
-- [ ] `header.rs`: `FileMetadata` → `DataFileMetadata` (9 state, 116B) + `IndexFileMetadata` (1 state, 52B)
-- [ ] `DATA_HEADER_SIZE = 116`, `INDEX_HEADER_SIZE = 52` 替代 `HEADER_SIZE = 100`
-- [ ] `DataSegment`: 新增 `min_timestamp`/`max_timestamp`, 每次写入更新 + state 持久化
-- [ ] `IndexSegment`: state 仅写入 `wrote_position`, 删除冗余字段
-- [ ] `DataSegmentSet`: closed segment meta 存储 min/max_timestamp 用于查询过滤
-- [ ] 所有源文件 `HEADER_SIZE` 替换为 `DATA_HEADER_SIZE`/`INDEX_HEADER_SIZE`
-- [ ] 旧文件 (100B) 兼容: 通过 state_length 自描述解析
-- [ ] `cargo clippy -- -D warnings` clean
-- [ ] `cargo test -- --test-threads=1` 全部通过
+### Phase 15: Header State 分化 ✅ 已完成
+- [x] `header.rs`: `FileMetadata` → `DataFileMetadata` (9 state, 116B) + `IndexFileMetadata` (1 state, 52B)
+- [x] `DATA_HEADER_SIZE = 116`, `INDEX_HEADER_SIZE = 52` 替代 `HEADER_SIZE = 100`
+- [x] `DataSegment`: 新增 `min_timestamp`/`max_timestamp`, 每次写入更新 + state 持久化
+- [x] `IndexSegment`: state 仅写入 `wrote_position`, 删除冗余字段
+- [x] `DataSegmentSet`: header 引用更新, closed segment meta 存储 min/max_timestamp 用于查询过滤
+- [x] 所有源文件 `HEADER_SIZE` 替换为 `DATA_HEADER_SIZE`/`INDEX_HEADER_SIZE`
+- [x] `cargo clippy -- -D warnings` clean
+- [x] `cargo test -- --test-threads=1` — 92 unit + 19 integration = 111 tests passing
 
 ## 文档结构
 
