@@ -535,6 +535,113 @@ impl DataSegment {
         Ok((block_pos - DATA_HEADER_SIZE, 0))
     }
 
+    /// Overwrite the data bytes of the last record in the last (uncompressed) block.
+    ///
+    /// Used for correction writes: modifies the existing record in place without
+    /// creating a new record or index entry. Supports changing data length.
+    ///
+    /// Returns `Err` if:
+    /// - the target block is not the last block in this segment
+    /// - the target block is compressed (COMPRESSED flag set)
+    /// - the target record is not the last record in the block
+    pub fn overwrite_in_last_block(
+        &mut self,
+        block_rel_offset: u64,
+        in_block_offset: u16,
+        new_data: &[u8],
+    ) -> Result<()> {
+        let mmap = self
+            .mmap
+            .as_mut()
+            .ok_or_else(|| TmslError::MmapError("segment mmap not open".into()))?;
+
+        let block_abs_start = (DATA_HEADER_SIZE + block_rel_offset) as usize;
+
+        // Read block header (16 bytes starting at block_abs_start)
+        let hdr = BlockHeader::read_from(mmap, block_abs_start);
+
+        // 1. Verify the target block is the last in this segment
+        let block_abs_end =
+            block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + hdr.payload_size as usize;
+        let seg_wrote_end = (DATA_HEADER_SIZE + self.wrote_position) as usize;
+        if block_abs_end != seg_wrote_end {
+            return Err(TmslError::InvalidData(
+                "correction write: target block is not the last in segment".into(),
+            ));
+        }
+
+        // 2. Reject compressed blocks
+        if hdr.is_compressed() {
+            return Err(TmslError::InvalidData(
+                "correction write: target block is compressed, not supported".into(),
+            ));
+        }
+
+        // 3. Read old record and verify it is the last record in the block
+        let record_pos =
+            block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + in_block_offset as usize;
+        let old_data_len = u16::from_le_bytes(
+            mmap[record_pos..record_pos + 2]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+        ) as usize;
+
+        let old_record_bytes = RECORD_OVERHEAD as usize + old_data_len;
+        let record_end_in_payload = in_block_offset as usize + old_record_bytes;
+        if record_end_in_payload != hdr.payload_size as usize {
+            return Err(TmslError::InvalidData(
+                "correction write: target record is not the last in block".into(),
+            ));
+        }
+
+        // 4. Compute delta
+        let new_record_bytes = RECORD_OVERHEAD as usize + new_data.len();
+        let delta = new_record_bytes as i64 - old_record_bytes as i64;
+
+        // 5. Write new data_len (u16) and data bytes at the record position
+        mmap[record_pos..record_pos + 2].copy_from_slice(&(new_data.len() as u16).to_le_bytes());
+        // timestamp at record_pos+2..record_pos+10 is preserved
+        mmap[record_pos + 10..record_pos + 10 + new_data.len()].copy_from_slice(new_data);
+
+        // 6. Update block header: payload_size + uncompressed_size
+        let new_payload_size = (hdr.payload_size as i64 + delta) as u32;
+        let new_uncomp_size = (hdr.uncompressed_size as i64 + delta) as u32;
+        let new_hdr = BlockHeader::new(
+            new_payload_size,
+            hdr.flags,
+            hdr.record_count,
+            new_uncomp_size,
+        );
+        new_hdr.write_to(mmap, block_abs_start);
+
+        // 7. Update segment-level counters
+        if delta >= 0 {
+            let d = delta as u64;
+            self.wrote_position += d;
+            self.total_uncompressed_size += d;
+        } else {
+            let d = (-delta) as u64;
+            self.wrote_position = self.wrote_position.saturating_sub(d);
+            self.total_uncompressed_size = self.total_uncompressed_size.saturating_sub(d);
+        }
+
+        // 8. Update pending_wrote_position if this block is the pending block
+        let is_pending = self.pending_block_offset == Some(block_rel_offset);
+        if is_pending {
+            if delta >= 0 {
+                self.pending_wrote_position += delta as u64;
+            } else {
+                self.pending_wrote_position =
+                    self.pending_wrote_position.saturating_sub((-delta) as u64);
+            }
+            self.update_file_header_for_pending(block_rel_offset)?;
+        } else {
+            self.update_file_wrote_position()?;
+        }
+
+        Ok(())
+    }
+
     /// Clear the pending block state.
     fn clear_pending(&mut self) {
         self.pending_block_offset = None;

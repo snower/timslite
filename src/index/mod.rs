@@ -73,6 +73,42 @@ impl TimeIndex {
         Ok(())
     }
 
+    /// Find the IndexEntry at the given timestamp (for correction write).
+    ///
+    /// Searches `in_memory_buffer` → open `index_segments` → `closed_index_segments`
+    /// (temporarily opened). Returns `Ok(None)` if not found.
+    pub fn find_entry(&mut self, timestamp: i64) -> Result<Option<IndexEntry>> {
+        let ic = self.index_continuous;
+
+        // 1. in-memory buffer
+        if let Some(entry) = self
+            .in_memory_buffer
+            .iter()
+            .rfind(|e| e.timestamp == timestamp)
+        {
+            return Ok(Some(*entry));
+        }
+
+        // 2. open segments
+        for seg in &self.index_segments {
+            if let Some(entry) = seg.find_exact_cs(timestamp, ic) {
+                return Ok(Some(entry));
+            }
+        }
+
+        // 3. closed segments (temporarily open → lookup → idle_close)
+        for meta in &self.closed_index_segments {
+            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            if let Some(entry) = seg.find_exact_cs(timestamp, ic) {
+                seg.idle_close().ok();
+                return Ok(Some(entry));
+            }
+            seg.idle_close().ok();
+        }
+
+        Ok(None)
+    }
+
     /// Flush the in-memory buffer to disk segments.
     pub fn flush_to_disk(&mut self) -> Result<()> {
         if self.in_memory_buffer.is_empty() {
@@ -294,10 +330,7 @@ impl TimeIndex {
                 Ok(None) => {
                     // Empty segment — only filler? Reclaim to recycle disk.
                     let _ = std::fs::remove_file(&meta.path);
-                    log::info!(
-                        "[retention] deleted empty index segment: {:?}",
-                        meta.path
-                    );
+                    log::info!("[retention] deleted empty index segment: {:?}", meta.path);
                     false
                 }
                 Ok(_) => true,

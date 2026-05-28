@@ -183,25 +183,35 @@ impl DataSet {
 
     /// Write a record to this dataset.
     ///
+    /// # Correction Write (both modes)
+    /// - `timestamp == latest_written_timestamp` (and latest > 0): overwrites the data bytes
+    ///   of the existing record in place within the last uncompressed block of the latest
+    ///   segment. The index entry is unchanged. Supports variable data length.
+    ///
     /// # Continuous Mode (`index_continuous == 1`)
     /// - `timestamp > latest_written_timestamp`: fills missing timestamps with filler entries,
     ///   then appends the real entry.
     /// - `timestamp < latest_written_timestamp`: data is appended to the latest data segment,
     ///   but the corresponding filler entry in the index is replaced with the real entry (mmap overwrite).
-    /// - `timestamp == latest_written_timestamp`: error (duplicate timestamp).
     ///
     /// # Non-Continuous Mode (`index_continuous == 0`)
-    /// - `timestamp <= latest_written_timestamp`: error (out-of-order).
+    /// - `timestamp < latest_written_timestamp`: error (out-of-order).
     pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
         }
 
+        // Correction write: same timestamp as latest → in-place overwrite in
+        // the last uncompressed block of the latest data segment. Index unchanged.
+        if self.latest_written_timestamp > 0 && timestamp == self.latest_written_timestamp {
+            return self.correct_write(timestamp, data);
+        }
+
         if self.config.index_continuous == 0 {
             // Non-continuous mode: reject out-of-order
-            if timestamp <= self.latest_written_timestamp {
+            if timestamp < self.latest_written_timestamp {
                 return Err(TmslError::InvalidData(format!(
-                    "out-of-order: timestamp {} <= latest {}",
+                    "out-of-order: timestamp {} < latest {}",
                     timestamp, self.latest_written_timestamp
                 )));
             }
@@ -223,11 +233,6 @@ impl DataSet {
                     in_block_offset,
                 )?;
                 // Do NOT update latest_written_timestamp
-            } else if timestamp == self.latest_written_timestamp {
-                return Err(TmslError::InvalidData(format!(
-                    "duplicate timestamp: {}",
-                    timestamp
-                )));
             } else {
                 // Normal in-order write: fill gaps then append
                 for ts in (self.latest_written_timestamp + 1)..timestamp {
@@ -244,6 +249,31 @@ impl DataSet {
             }
         }
 
+        self.last_used_at = Instant::now();
+        Ok(())
+    }
+
+    /// Correction write: overwrite the data of an existing record in place.
+    ///
+    /// The record is located via the existing index entry, then its data bytes
+    /// in the last uncompressed block of the latest data segment are replaced.
+    /// Supports variable data length — updates block + segment counters accordingly.
+    fn correct_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+        let entry = self.time_index.find_entry(timestamp)?.ok_or_else(|| {
+            TmslError::NotFound(format!(
+                "no index entry for correction timestamp {}",
+                timestamp
+            ))
+        })?;
+
+        self.segments.overwrite_in_last_block(
+            entry.block_offset,
+            entry.in_block_offset,
+            timestamp,
+            data,
+        )?;
+
+        // latest_written_timestamp unchanged; index unchanged.
         self.last_used_at = Instant::now();
         Ok(())
     }
@@ -624,8 +654,8 @@ mod tests {
     }
 
     #[test]
-    fn test_continuous_mode_duplicate_timestamp_rejected() {
-        let dir = temp_dir("continuous_dup");
+    fn test_correction_write_continuous_mode() {
+        let dir = temp_dir("correction_continuous");
         let id = DataSetKey {
             name: "test".into(),
             dataset_type: "data".into(),
@@ -637,23 +667,221 @@ mod tests {
             4 * 1024 * 1024,
             6,
             65536,
-            1,
-            256 * 1024, // initial_data_segment_size
-            4 * 1024,   // initial_index_segment_size
-            0,          // retention_ms
+            1, // continuous mode
+            256 * 1024,
+            4 * 1024,
+            0,
         )
         .unwrap();
 
         ds.write(100, b"first").unwrap();
         ds.write(150, b"second").unwrap();
 
-        // Duplicate ts=150 should fail
-        let result = ds.write(150, b"dup");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate timestamp"));
+        // Same ts=150 → correction write (in-place overwrite)
+        ds.write(150, b"corrected").unwrap();
+
+        let entries = ds.query(100, 150, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].0, 150);
+        assert_eq!(entries[1].1, b"corrected");
+        // latest_written_timestamp should be unchanged
+        assert_eq!(ds.latest_written_timestamp, 150);
+    }
+
+    #[test]
+    fn test_correction_write_non_continuous_mode() {
+        let dir = temp_dir("correction_noncontinuous");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0, // non-continuous mode
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"first").unwrap();
+        ds.write(150, b"second").unwrap();
+
+        // Same ts=150 → correction write
+        ds.write(150, b"corrected").unwrap();
+
+        let entries = ds.query(100, 150, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[1].0, 150);
+        assert_eq!(entries[1].1, b"corrected");
+        assert_eq!(ds.latest_written_timestamp, 150);
+    }
+
+    #[test]
+    fn test_correction_write_resize_larger() {
+        let dir = temp_dir("correction_resize_larger");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"short").unwrap();
+
+        // Resize to larger
+        let big_data = vec![0xABu8; 200];
+        ds.write(100, &big_data).unwrap();
+
+        let entries = ds.query(100, 100, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1.len(), 200);
+        assert_eq!(entries[0].1, big_data);
+    }
+
+    #[test]
+    fn test_correction_write_resize_smaller() {
+        let dir = temp_dir("correction_resize_smaller");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        let big_data = vec![0xCDu8; 200];
+        ds.write(100, &big_data).unwrap();
+
+        // Resize to smaller
+        ds.write(100, b"tiny").unwrap();
+
+        let entries = ds.query(100, 100, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, b"tiny");
+    }
+
+    #[test]
+    fn test_correction_write_multiple_times() {
+        let dir = temp_dir("correction_multi");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"v1").unwrap();
+        ds.write(100, b"v2_").unwrap();
+        ds.write(100, b"v3__").unwrap();
+
+        let entries = ds.query(100, 100, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, b"v3__");
+    }
+
+    #[test]
+    fn test_correction_write_then_new_write() {
+        let dir = temp_dir("correction_then_new");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"first").unwrap();
+        ds.write(100, b"corrected_first").unwrap();
+        ds.write(200, b"second").unwrap();
+
+        let entries = ds.query(100, 200, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, 100);
+        assert_eq!(entries[0].1, b"corrected_first");
+        assert_eq!(entries[1].0, 200);
+        assert_eq!(entries[1].1, b"second");
+    }
+
+    #[test]
+    fn test_correction_write_reopen_persistence() {
+        let dir = temp_dir("correction_reopen");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                65536,
+                0,
+                256 * 1024,
+                4 * 1024,
+                0,
+            )
+            .unwrap();
+
+            ds.write(100, b"original").unwrap();
+            ds.write(100, b"corrected").unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+        // Reopen and verify
+        let mut ds = DataSet::open(id, dir.clone(), 65536).unwrap();
+        let entries = ds.query(100, 100, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, b"corrected");
     }
 
     #[test]

@@ -278,16 +278,16 @@ fn correct_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
 
 ## 4. 验收标准
 
-- [ ] `segment/data.rs`: `overwrite_in_last_block()` — 最新 block 原地覆盖, 支持变 size, 更新 5 个字段, 不变索引
-- [ ] `segment/data.rs`: `overwrite_in_last_block()` — 拒绝 COMPRESSED block
-- [ ] `segment/data.rs`: `overwrite_in_last_block()` — 拒绝非最末 record
-- [ ] `segment/mod.rs`: `overwrite_in_last_block()` — 路由到最新数据段, 验证 block_offset 范围
-- [ ] `index/mod.rs`: `find_entry()` — 按 timestamp 查找 IndexEntry (buffer → open → closed)
-- [ ] `dataset.rs`: 纠正写入分支 (在 mode 分支之前), `correct_write()` 方法
-- [ ] 单元测试全部通过 (8 项) + 集成测试全部通过 (2 项)
-- [ ] `cargo clippy -- -D warnings` clean
-- [ ] `cargo test -- --test-threads=1` 全部通过
-- [ ] 设计文档已更新: dataset-operations.md §9.1 + data-model.md §3.2 + index-continuous.md §23.2 + data-segment.md §6.3
+- [x] `segment/data.rs`: `overwrite_in_last_block()` — 最新 block 原地覆盖, 支持变 size, 更新 5 个字段, 不变索引
+- [x] `segment/data.rs`: `overwrite_in_last_block()` — 拒绝 COMPRESSED block
+- [x] `segment/data.rs`: `overwrite_in_last_block()` — 拒绝非最末 record
+- [x] `segment/mod.rs`: `overwrite_in_last_block()` — 路由到最新数据段, 验证 block_offset 范围
+- [x] `index/mod.rs`: `find_entry()` — 按 timestamp 查找 IndexEntry (buffer → open → closed)
+- [x] `dataset.rs`: 纠正写入分支 (在 mode 分支之前), `correct_write()` 方法
+- [x] 单元测试全部通过 (7 项新增) + 集成测试全部通过 (2 项新增)
+- [x] `cargo clippy -- -D warnings` clean
+- [x] `cargo test -- --test-threads=1` 全部通过 (128 tests: 107 unit + 21 integration)
+- [x] 设计文档已更新: dataset-operations.md §9.1 + data-model.md §3.2 + index-continuous.md §23.2 + data-segment.md §6.3
 
 ## 5. 风险与应对
 

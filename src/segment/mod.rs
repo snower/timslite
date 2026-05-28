@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use crate::error::Result;
+use crate::error::TmslError;
 use crate::header::{DataFileMetadata, TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
 
 pub use self::data::{DataSegment, ReadIndexEntry};
@@ -280,6 +281,38 @@ impl DataSegmentSet {
     /// Get the segment size configuration.
     pub fn segment_size(&self) -> u64 {
         self.segment_size
+    }
+
+    /// Correction write: route to the latest data segment and overwrite the
+    /// data bytes of the target record in its last uncompressed block.
+    ///
+    /// The record must be the last record in the last block of the latest segment.
+    /// Returns `Err` if the block_offset does not lie within the open last segment
+    /// or if the segment-level overwrite checks fail.
+    pub fn overwrite_in_last_block(
+        &mut self,
+        block_offset: u64, // absolute offset (relative to DATA_HEADER_SIZE across segments)
+        in_block_offset: u16,
+        _timestamp: i64,
+        new_data: &[u8],
+    ) -> Result<()> {
+        let seg = self.segments.last_mut().ok_or_else(|| {
+            TmslError::InvalidData("no segment available for correction write".into())
+        })?;
+
+        // The block_offset is relative to DATA_HEADER_SIZE within the whole data segment series.
+        // Each segment starts at seg.file_offset (also relative to DATA_HEADER_SIZE).
+        let seg_start = seg.file_offset;
+        let seg_end_data = seg_start + seg.wrote_position;
+        if block_offset < seg_start || block_offset >= seg_end_data {
+            return Err(TmslError::InvalidData(format!(
+                "correction write: block_offset {} is not in the latest segment [{}, {})",
+                block_offset, seg_start, seg_end_data
+            )));
+        }
+
+        let block_rel_offset = block_offset - seg_start;
+        seg.overwrite_in_last_block(block_rel_offset, in_block_offset, new_data)
     }
 
     // ─── Read operations ─────────────────────────────────────────────────
