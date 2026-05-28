@@ -33,6 +33,7 @@ const META_TYPE_CREATE_TIME: u8        = 0x04;  // i64 LE (unix ms)
 const META_TYPE_INDEX_CONTINUOUS: u8   = 0x05;  // u8 (0=非连续, 1=连续)
 const META_TYPE_INITIAL_DATA_SEGMENT_SIZE: u8 = 0x06;  // u64 LE
 const META_TYPE_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
+const META_TYPE_RETENTION_MS: u8       = 0x08;  // u64 LE (data validity period)
 ```
 
 ### TLV 类型定义
@@ -46,6 +47,7 @@ const META_TYPE_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 | 0x05 | index_continuous | 1 | u8 | 0=非连续, 1=连续存储 |
 | 0x06 | initial_data_segment_size | 8 | u64 LE | 数据分段初始大小 |
 | 0x07 | initial_index_segment_size | 8 | u64 LE | 索引分段初始大小 |
+| 0x08 | retention_ms | 8 | u64 LE | 数据有效期 (毫秒, 0=不限) |
 
 ### Rust 类型
 
@@ -55,15 +57,18 @@ pub struct DataSetMeta {
     pub index_segment_size: u64,
     pub compress_level: u8,
     pub create_time: i64,        // unix ms
-    pub index_continuous: bool,
+    pub index_continuous: u8,
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
+    pub retention_ms: u64,       // 数据有效期 (与 timestamp 同单位, 0=不限)
 }
 
 impl DataSetMeta {
     /// 创建新的 meta (用于新数据集, 不可变, 写入后不再修改)
     pub fn new(data_segment_size: u64, index_segment_size: u64,
-               compress_level: u8) -> Self;
+               compress_level: u8, index_continuous: u8,
+               initial_data_segment_size: u64, initial_index_segment_size: u64,
+               retention_ms: u64) -> Self;
 
     /// 序列化: magic + version + meta_data_length + TLV values
     pub fn to_bytes(&self) -> Vec<u8>;
@@ -98,6 +103,7 @@ impl DataSetMeta {
    - `compress_level` 不一致 → **仅读取使用** (meta 值为准, 不可修改)
    - `index_continuous` 不一致 → **仅日志警告** (不影响已有数据)
    - `initial_*` 不一致 → **仅日志警告** (仅影响新分段创建, 不破坏已有数据)
+   - `retention_ms` 不一致 → **仅日志警告** (仅影响回收策略, 不破坏已有数据)
 
 ### 向前兼容
 

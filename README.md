@@ -16,8 +16,9 @@
 - **懒加载生命周期**: segment 按需打开, 空闲 30 分钟后自动 unmap + close, 降低文件句柄占用
 - **时间索引**: 每数据集专属时间索引, 二分查找定位, 18 字节/条目
 - **显式生命周期**: `create` / `open` / `close` / `drop` 分离, 参数创建后不可变
+- **数据保留策略**: 按数据集配置 `retention_ms` 有效期, 每日定时回收过期分段, 查询自动排除过期数据
 - **C ABI FFI**: 提供完整的 `extern "C"` 接口, 可被 C/C++/Go/Python 等语言调用
-- **后台任务**: 单线程统一循环执行定期 flush (mmap sync) 和 idle 检查
+- **后台任务**: 单线程统一循环执行定期 flush (mmap sync)、idle 检查和数据保留回收
 - **纯 Rust 依赖**: 无 C 库依赖, 跨平台编译简单
 
 ## 项目结构
@@ -88,7 +89,7 @@ timslite = { path = "path/to/timslite" }
 ```
 
 ```rust
-use timslite::{Store, StoreConfig};
+use timslite::{Store, StoreConfig, DataSetConfigBuilder};
 use std::time::Duration;
 
 // 1. 打开存储
@@ -98,16 +99,18 @@ let config = StoreConfig::builder()
     .data_segment_size(64 * 1024 * 1024)           // 64MB
     .index_segment_size(4 * 1024 * 1024)           // 4MB
     .compress_level(6)
+    .retention_check_hour(2)                       // 每日凌晨 2 点执行回收
     .build();
 
 let mut store = Store::open("/data/timslite", config)?;
 
 // 2. 创建新数据集 (参数写入 meta 文件, 之后不可修改)
-let handle = store.create_dataset(
+let handle = store.create_dataset_with_config(
     "patient_001", "waveform",
-    64 * 1024 * 1024,   // data_segment_size
-    4 * 1024 * 1024,    // index_segment_size
-    6,                  // compress_level (1-9)
+    Some(
+        DataSetConfigBuilder::from_store(&config)
+            .retention_ms(30 * 86400 * 1000) // 30 天有效期 (ms timestamps)
+    ),
 )?;
 
 // 3. 写入数据
@@ -150,6 +153,8 @@ int main() {
         64ULL * 1024 * 1024,   // data_segment_size = 64MB
         4ULL * 1024 * 1024,    // index_segment_size = 4MB
         6,                     // compress_level
+        0,                     // index_continuous (non-continuous)
+        0,                     // retention_ms (0=no limit)
         err, sizeof(err));
     if (!ds) { printf("Error: %s\n", err); return 1; }
 
@@ -214,14 +219,43 @@ drop → 删除整个目录 (不可恢复)
 
 ## 后台任务
 
-单一线程统一执行两个周期性任务:
+单一线程统一执行四个周期性任务:
 
 | 任务 | 默认间隔 | 行为 |
 |------|----------|------|
 | **Flush** | 10 分钟 | 遍历所有打开的 segment, 执行 `mmap.flush()` (MS_SYNC); 不密封/不压缩 |
 | **Idle Check** | 60 秒 | 扫描 `last_used_at`, ≥30 分钟 → sync + 密封 pending + unmap + close |
+| **Cache Eviction** | 60 秒 | 扫描缓存池, 超 idle 阈值的 entry → 回收 + 释放内存 → LRU 检查 |
+| **Retention Reclaim** | 每日 0 点 | 扫描 retention_ms > 0 的 dataset, 删除过期分段文件 |
 
-**设计优势**: 动态计算下一次唤醒时间 (`min(next_flush, next_idle) - now`), 无固定轮询浪费, 单一 shutdown channel 简化资源管理。
+**设计优势**: 动态计算下一次唤醒时间 (`min(next_flush, next_idle, next_cache, next_retention) - now`), 无固定轮询浪费, 单一 shutdown channel 简化资源管理。
+
+## 数据保留策略
+
+### retention_ms (数据集级)
+
+每个数据集可在创建时指定 `retention_ms` (数据有效期, 单位与 timestamp 一致, 0=不限):
+
+```
+过期阈值 = latest_written_timestamp.saturating_sub(retention_ms)
+```
+
+**回收规则**:
+- **数据分段**: `closed_segments[].max_timestamp < 过期阈值` → 删除文件
+- **索引分段**: `last_entry_timestamp() < 过期阈值` → 删除文件
+- **查询约束**: `query` 自动钳制 start_ts 到有效期范围
+
+### retention_check_hour (Store 级)
+
+Store 配置 `retention_check_hour` (0-23, 默认 0=午夜), 每日在该时间点执行回收任务:
+
+```rust
+let config = StoreConfig::builder()
+    .retention_check_hour(2)   // 每日凌晨 2 点执行回收
+    .build();
+```
+
+**约束**: 回收期间打开的文件 (读索引最后一个 ts) 检查完成后立即释放, 不依赖 idle-close。
 
 ## Block 设计
 
@@ -317,6 +351,10 @@ drop → 删除整个目录 (不可恢复)
 │   0x02: index_segment_size (u64 LE, 8 bytes)       │
 │   0x03: compress_level (u8, 1 byte)                │
 │   0x04: create_time (i64 LE, unix ms, 8 bytes)     │
+│   0x05: index_continuous (u8, 1 byte)              │
+│   0x06: initial_data_segment_size (u64 LE, 8B)     │
+│   0x07: initial_index_segment_size (u64 LE, 8B)    │
+│   0x08: retention_ms (u64 LE, 8 bytes, 0=不限)     │
 └────────────────────────────────────────────────────┘
 ```
 

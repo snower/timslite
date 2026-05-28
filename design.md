@@ -34,6 +34,7 @@
 ### 按功能查找
 - **写入数据**: [数据段管理](docs/design/data-segment.md) → [数据集操作·写入流程](docs/design/dataset-operations.md#九写入流程详解) → [压缩策略](docs/design/compression.md)
 - **读取数据**: [时间索引](docs/design/time-index.md) → [数据集操作·读取流程](docs/design/dataset-operations.md#十读取流程详解) → [查询迭代器](docs/design/query-iterator.md) → [后台任务与缓存](docs/design/background-and-cache.md)
+- **数据保留回收**: [元数据格式·retention_ms](docs/design/meta-format.md) → [数据集操作·§11](docs/design/dataset-operations.md#十一数据保留-retention-与回收) → [后台任务·§17.8](docs/design/background-and-cache.md#178-retention-reclaim-数据保留回收)
 - **FFI 集成**: [Store 与 FFI](docs/design/store-and-ffi.md)
 - **崩溃安全**: [内存与并发](docs/design/memory-and-concurrency.md#崩溃安全)
 - **磁盘优化**: [懒分配与扩容](docs/design/lazy-allocation.md)

@@ -24,6 +24,7 @@
 | 13 | 查询迭代器 + HotBlockCache | ✅ 完成 | [phase-13-query-iterator.md](docs/plan/phase-13-query-iterator.md) |
 | 14 | create_dataset Builder 优化 | ✅ 完成 | [phase-14-dataset-config-builder.md](docs/plan/phase-14-dataset-config-builder.md) |
 | 15 | Header State 分化 | ✅ 完成 | [phase-15-header-state-split.md](docs/plan/phase-15-header-state-split.md) |
+| 16 | 数据保留 (Retention) | 📋 计划中 | [phase-16-data-retention.md](docs/plan/phase-16-data-retention.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -117,6 +118,22 @@
 - [x] `cargo clippy -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` — 92 unit + 19 integration = 111 tests passing
 
+### Phase 16: 数据保留 (Retention) 📋 计划中
+- [ ] `meta.rs`: 新增 TLV `0x08 retention_ms` (u64 LE) + DataSetMeta.retention_ms 字段 + 序列化/反序列化
+- [ ] `config.rs`: StoreConfig 新增 `retention_check_hour` (u8, 0-23) + DataSetConfig 新增 `retention_ms`
+  DataSetConfigBuilder 新增 `retention_ms()` 方法
+- [ ] `dataset.rs`: 新增 `retention_ms` 字段 + create/open 读写 +
+  `query_iter()` 自动钳制 start_ts 到有效期 + `reclaim_expired_segments()` 方法
+- [ ] `segment/mod.rs`: DataSegmentSet 新增 `reclaim_expired_segments(threshold)`, 基于 closed_segments[].max_timestamp 判断 + 删除文件
+- [ ] `index/segment.rs`: 新增自由函数 `last_entry_timestamp(path, max_file_size)`, read-only mmap + 立即释放
+- [ ] `index/mod.rs`: TimeIndex 新增 `reclaim_expired_segments(threshold, max_file_size)`, 调用 last_entry_timestamp 判断
+- [ ] `bg/mod.rs`: BackgroundTasks::start 新增 `retention_check_hour` 参数 + next_retention 计算 + 回收任务执行逻辑
+- [ ] `store.rs`: 传递 retention_check_hour 到 BackgroundTasks + retention_ms 到 DataSet
+- [ ] `ffi.rs` + `timslite.h`: tmsl_dataset_create 新增 `retention_ms` 参数
+- [ ] 集成测试: 6 个新测试 (t16_1 ~ t16_6)
+- [ ] `cargo clippy -- -D warnings` clean
+- [ ] `cargo test -- --test-threads=1` 全部通过
+
 ## 文档结构
 
 详细计划内容已拆分到 `docs/plan/` 目录, 每个 Phase 独立文档:
@@ -139,7 +156,8 @@ docs/plan/
 ├── phase-12-lazy-allocation.md      ← Phase 12: 懒分配 + 扩容
 ├── phase-13-query-iterator.md       ← Phase 13: 查询迭代器 + HotBlockCache
 ├── phase-14-dataset-config-builder.md ← Phase 14: Builder 优化
-└── phase-15-header-state-split.md   ← Phase 15: Header State 分化 (待实现)
+├── phase-15-header-state-split.md   ← Phase 15: Header State 分化
+└── phase-16-data-retention.md       ← Phase 16: 数据保留 (Retention) (待实现)
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

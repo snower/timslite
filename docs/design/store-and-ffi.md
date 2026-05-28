@@ -27,6 +27,7 @@ impl Store {
     pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self>;
     pub fn create_dataset(&self, name: &str, dataset_type: &str,
         data_segment_size: u64, index_segment_size: u64, compress_level: u8,
+        retention_ms: u64,
     ) -> Result<DataSetHandle>;
     pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
     pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>;
@@ -44,6 +45,30 @@ impl Store {
 | `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments | 不创建新目录, 仅读取 |
 | `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树 | `remove_dir_all(base_dir)` |
 
+### 11.3 StoreConfig: retention_check_hour
+
+```rust
+pub struct StoreConfig {
+    // ... existing fields ...
+    /// 每日保留回收执行时间点 (24h, 0=午夜, 默认 0)
+    pub retention_check_hour: u8,
+}
+
+impl StoreConfigBuilder {
+    /// 设置每日保留回收执行时间 (0-23 小时, 默认 0=午夜)
+    pub fn retention_check_hour(mut self, hour: u8) -> Self {
+        self.retention_check_hour = Some(hour.clamp(0, 23));
+        self
+    }
+}
+```
+
+**调度逻辑**: 后台线程根据 `retention_check_hour` 计算下一次执行时间 (距午夜整点的秒数), 每日触发一次。触发时:
+1. 读取每个 dataset 的 `retention_ms` 和 `latest_written_timestamp`
+2. 若 `retention_ms > 0`, 调用 `DataSet::reclaim_expired_segments()`
+
+详见 [后台任务 §17.8](background-and-cache.md#十七后台任务)。
+
 ## 十二、FFI API
 
 ```rust
@@ -53,10 +78,18 @@ impl Store {
 #[no_mangle] pub extern "C" fn tmsl_store_close(store: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // 数据集管理 — create/open/close/drop 分离
-#[no_mangle] pub extern "C" fn tmsl_dataset_create(store: *mut c_void, name: *const c_char, dataset_type: *const c_char, data_segment_size: u64, index_segment_size: u64, compress_level: u8, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
-#[no_mangle] pub extern "C" fn tmsl_dataset_open(store: *mut c_void, name: *const c_char, dataset_type: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_dataset_create(store: *mut c_void,
+    name: *const c_char, dataset_type: *const c_char,
+    data_segment_size: u64, index_segment_size: u64,
+    compress_level: u8, index_continuous: u8, retention_ms: u64,
+    err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_dataset_open(store: *mut c_void,
+    name: *const c_char, dataset_type: *const c_char,
+    err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_dataset_close(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
-#[no_mangle] pub extern "C" fn tmsl_dataset_drop(store: *mut c_void, name: *const c_char, dataset_type: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_dataset_drop(store: *mut c_void,
+    name: *const c_char, dataset_type: *const c_char,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_flush(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // 数据写入
@@ -82,11 +115,13 @@ char err_buf[512];
 // 1. 打开存储
 void* store = tmsl_store_open("/data/timslite", err_buf, sizeof(err_buf));
 
-// 2. 创建数据集 (首次使用, 需指定分段大小和压缩等级)
+// 2. 创建数据集 (首次使用, 需指定分段大小、压缩等级、数据有效期)
 void* ds = tmsl_dataset_create(store, "patient_001", "waveform",
     64ULL * 1024 * 1024,   // data_segment_size = 64MB
     4ULL * 1024 * 1024,    // index_segment_size = 4MB
     6,                     // compress_level
+    0,                     // index_continuous (non-continuous)
+    30ULL * 86400 * 1000,  // retention_ms = 30 days (ms timestamps)
     err_buf, sizeof(err_buf));
 
 // 2b. 打开已有数据集 (参数从 meta 读取, 不可设置)

@@ -11,19 +11,21 @@
 | Flush | 可配置, 默认 10min | 遍历所有打开的 segment, mmap.flush() (MS_SYNC) |
 | Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + 密封 pending + unmmap + close |
 | Cache Eviction | 60s | 扫描缓存池, last_access_at ≥30min → 回收 + 释放内存 → LRU 检查 |
+| Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_ms > 0 的 dataset, 回收过期分段 |
 
 **线程模型**:
 ```
 后台单线程:
   loop:
-    1. 计算下一次 flush, idle check, cache eviction 的到期时间
-    2. wait_timeout = min(next_flush, next_idle, next_cache_eviction) - now
+    1. 计算下一次 flush, idle check, cache eviction, retention reclaim 的到期时间
+    2. wait_timeout = min(next_flush, next_idle, next_cache_eviction, next_retention) - now
     3. shutdown_rx.recv_timeout(wait_timeout)
        - 收到信号 → break
        - 超时 → 继续执行到期任务
     4. 如果 now >= next_flush → 执行 flush
     5. 如果 now >= next_idle → 执行 idle check (dataset idle-close)
     6. 如果 now >= next_cache_eviction → 执行缓存回收
+    7. 如果 now >= next_retention → 执行 retention reclaim
 ```
 
 **优势**:
@@ -31,6 +33,7 @@
 - 无固定轮询间隔 (动态计算, 精确到毫秒)
 - 单一 shutdown channel (简化资源管理)
 - 三个任务共享 datasets 读锁 (减少锁竞争)
+- retention reclaim 使用 system clock 计算下次触发时间 (非 monotonic, 依赖 wall clock)
 
 ### 17.1 Flush 行为
 
@@ -95,6 +98,68 @@ reopen 时 pending block 恢复流程:
       e. wrote_position = sealed block 末尾
       f. 返回 OpenReady
 ```
+
+### 17.8 Retention Reclaim (数据保留回收)
+
+**触发调度**:
+- 基于 `StoreConfig.retention_check_hour` (u8, 0-23, 默认 0=午夜)
+- 使用 `SystemTime` 计算到下一个目标时间点的等待时长
+- 每日触发一次, 触发后 `next_retention` 推进 24 小时
+
+**时间计算**:
+```rust
+fn next_retention_time(check_hour: u8) -> Instant {
+    let now = SystemTime::now();
+    let today = now.duration_since(UNIX_EPOCH).unwrap();
+    let today_secs = today.as_secs();
+    // 今天目标时间 = 今天 0 点 + check_hour * 3600
+    let day_start = today_secs - (today_secs % 86400);
+    let target = day_start + check_hour as u64 * 3600;
+    let wait_secs = if target > today_secs {
+        target - today_secs
+    } else {
+        // 今天目标已过, 等到明天
+        target + 86400 - today_secs
+    };
+    Instant::now() + Duration::from_secs(wait_secs)
+}
+```
+
+**执行流程**:
+```
+retention-reclaim (每日 retention_check_hour):
+  1. 读锁遍历 datasets, 收集 retention_ms > 0 的 dataset keys + retention_ms
+  2. 对每个 retention 启用的 dataset:
+     a. Read lock → 获取 dataset Arc 引用
+     b. Lock individual dataset mutex
+     c. 调用 DataSet::reclaim_expired_segments()
+        - 先 close() (flush + idle_close_all)
+        - 计算 threshold = latest_written_timestamp - retention_ms
+        - 删除 data 分段 (max_timestamp < threshold)
+        - 删除 index 分段 (last_entry_timestamp < threshold)
+     d. 释放 dataset mutex
+  3. 释放 datasets map read lock
+  4. log::info!("[bg retention] reclaimed N segments across M datasets")
+```
+
+**关键约束**:
+- 回收过程中**不保留打开的 mmap**: close() 后分段均为 closed 状态, 检查文件后立即释放
+- **不在 idle-close 中回收**: 回收是独立的、显式的操作, 不依赖 idle 超时
+- 若 foreground 线程正在使用某个 dataset, retention reclaim 会阻塞等待 (mutex)
+- 回收期间打开的索引文件必须**检查后立即释放** (read-only mmap → drop → fs::remove_file)
+- 回收期间不更新 `last_used_at` (回收不应重置 idle 计时)
+
+**数据集级过期判断**:
+```
+expiration_threshold = ds.latest_written_timestamp - ds.retention_ms
+```
+
+**分段级过期判断**:
+
+| 分段类型 | 判断依据 | 条件 |
+|---------|---------|------|
+| 数据分段 (DataSegment) | `closed_segments[].max_timestamp` (header 中维护) | `max_timestamp < expiration_threshold` |
+| 索引分段 (IndexSegment) | `last_entry_timestamp()` (读取文件最后一个 index entry 的 ts) | `last_ts < expiration_threshold` |
 
 ## 十八、读缓存池 (BlockCache)
 

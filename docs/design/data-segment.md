@@ -28,6 +28,8 @@ struct DataSegmentMeta {
     path: PathBuf,
     file_offset: u64,
     file_size: u64,
+    min_timestamp: i64,    // 段内最小时间戳 (从 header 读取, i64::MAX=空段)
+    max_timestamp: i64,    // 段内最大时间戳 (从 header 读取, i64::MIN=空段)
 }
 ```
 
@@ -247,6 +249,29 @@ impl DataSegment {
 - 每次 `append_record` 后立即写入 mmap state 区域
 - `idle_close()` 前 sync 确保落盘
 - 崩溃恢复时从 file header 读取, 保证一致性
+
+### 6.8 数据保留回收
+
+**职责**: 删除超过数据有效期的数据段文件, 回收磁盘空间。
+
+**回收规则 (DataSegmentSet)**:
+```
+reclaim_expired_segments(expiration_threshold: i64):
+  前置条件: DataSet 已 close (), 所有 segment 均处于 closed 状态
+  for seg in closed_segments:
+    if seg.max_timestamp < expiration_threshold:
+      fs::remove_file(seg.path)
+      closed_segments.remove(seg)
+```
+
+**判断依据**:
+- 使用段文件 header 中的 `max_timestamp` (已在 `DataSegmentMeta` 中缓存)
+- 无需打开文件, closed_segments 在 idle_close_all (DataSet::close) 时已读取 header 中的 min/max_timestamp
+- 过期判断: `max_timestamp < expiration_threshold` (整个段的最大时间戳早于过期阈值)
+
+**触发时机**:
+- 由 `DataSet::reclaim_expired_segments()` 调用 (见 [数据集操作 §6.8](dataset-operations.md))
+- 后台线程按 `retention_check_hour` 每日执行一次
 
 ---
 

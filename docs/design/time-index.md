@@ -96,6 +96,9 @@ impl IndexSegment {
     fn find_entry_index_cs(&self, target_ts: i64, index_continuous: bool) -> Option<usize>;
     fn direct_lookup(&self, target_ts: i64) -> Option<IndexEntry>;
 
+    /// 读取段内最后一条索引条目的 timestamp (用于回收判断, 无需完全 open)
+    fn last_entry_timestamp(path: &Path, max_file_size: u64) -> Result<i64>;
+
     /// 生命周期
     pub fn ensure_open(&mut self) -> Result<()>;
     pub fn idle_close(&mut self) -> Result<()>;
@@ -143,6 +146,32 @@ impl IndexSegment {
 | `query_range` | O(log n + k) | O(1 + k) |
 
 其中 `k` = 查询范围内条目数, `n` = 段内总条目数。
+
+### 7.7 索引保留回收
+
+**职责**: 删除超过数据有效期的索引段文件, 与数据段回收配对进行。
+
+**回收规则 (TimeIndex)**:
+```
+reclaim_expired_segments(expiration_threshold: i64, max_file_size: u64):
+  前置条件: DataSet 已 close(), 所有 index segment 处于 closed 状态
+  for meta in closed_index_segments:
+    last_ts = IndexSegment::last_entry_timestamp(meta.path, max_file_size)
+    if last_ts < expiration_threshold:
+      fs::remove_file(meta.path)
+      closed_index_segments.remove(meta)
+```
+
+**`last_entry_timestamp` 实现**:
+- 仅打开文件一次 (read-only mmap, 不使用 `MmapMut::map_mut` 避免 Windows 锁定)
+- 从 `meta.wrote_count` 推算最后条目位置: `INDEX_HEADER_SIZE + (wrote_count - 1) * 18`
+- 立即 drop(mmap) + drop(file), 检查完成后不保持打开状态
+- 返回 `Ok(last_ts)` 或 `Err` (空段/wrote_count==0 返回 start_timestamp)
+
+**关键约束**:
+- 回收期间打开的索引段文件必须**检查完成后立即释放** (不用 idle-close)
+- 数据段与索引段**必须成对回收**: 回收同一时间窗口内的索引和数据段
+- 回收顺序: TimeIndex 回收 → DataSegmentSet 回收 (先清索引, 后清数据)
 
 ---
 
