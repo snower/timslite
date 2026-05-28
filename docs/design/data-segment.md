@@ -23,14 +23,6 @@ struct DataSegmentSet {
     next_offset: u64,
     last_used_at: Instant,
 }
-
-struct DataSegmentMeta {
-    path: PathBuf,
-    file_offset: u64,
-    file_size: u64,
-    min_timestamp: i64,    // 段内最小时间戳 (从 header 读取, i64::MAX=空段)
-    max_timestamp: i64,    // 段内最大时间戳 (从 header 读取, i64::MIN=空段)
-}
 ```
 
 ### 5.3 生命周期管理
@@ -165,8 +157,70 @@ impl DataSegment {
     fn write_raw_record_to_pending(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
     fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> io::Result<(u64, u16)>;
     fn create_single_record_block(&mut self, timestamp: i64, data: &[u8], compress_level: u8) -> io::Result<(u64, u16)>;
+
+    /// 纠正写入: 在该段最后一个 block 的最末 record 位置原地覆盖 data 字节, 支持变 size
+    /// 若最后一个 block 含 COMPRESSED flag → 返回错误 (压缩数据无法原地修改)
+    /// 若该 record 不是 block 最末 record → 返回错误
+    /// 修改后需更新: block.payload_size/uncompressed_size + 段 wrote_position/total_uncompressed_size/pending_wrote_position(仅 pending)
+    fn overwrite_in_last_block(
+        &mut self,
+        block_rel_offset: u64,
+        in_block_offset: u16,
+        new_data: &[u8],
+    ) -> io::Result<()>;
 }
 ```
+
+#### overwrite_in_last_block: 纠正写入 (In-Place Overwrite, 支持变 size)
+
+纠正写入场景下 (`timestamp == latest_written_timestamp`), 最新记录位于 **本数据段最后一个未压缩 block** (可以是 pending block 或 SEALED 无 COMPRESSED 的 block) 的 **最末位置**, 可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化:
+
+```rust
+fn overwrite_in_last_block(
+    &mut self,
+    block_rel_offset: u64,
+    in_block_offset: u16,
+    new_data: &[u8],
+) -> io::Result<()> {
+    // 1. 验证这是段内最后一个 block:
+    //    block_abs_end = block_rel_offset + BLOCK_HEADER_SIZE + block.payload_size
+    //    若 block_abs_end < self.wrote_position → 不是最后 block, 返回错误
+    //
+    // 2. 读取 block header (16B at DATA_HEADER_SIZE + block_rel_offset)
+    //    - 检查 flags: 若含 COMPRESSED → 返回错误
+    //    - payload_size / uncompressed_size
+    //
+    // 3. 验证 record 是块内最末 record:
+    //    - 读取 record.data_len (2 bytes at record_pos)
+    //    - 若 in_block_offset + 10 + old_data_len != payload_size → 错误
+    //
+    // 4. 计算 delta = (new_data.len() + 10) - (old_data_len + 10) = new_data.len() - old_data_len
+    //
+    // 5. 修改 mmap 中 record 的 data_len (u16) 和 data 字节 (覆盖/扩展)
+    //    record_pos = DATA_HEADER_SIZE + block_rel_offset + BLOCK_HEADER_SIZE + in_block_offset
+    //
+    // 6. 更新 block header:
+    //    - payload_size       += delta  (block 内 payload 长度变化)
+    //    - uncompressed_size  += delta  (block 内原始数据长度变化)
+    //
+    // 7. 更新段内计数字段:
+    //    - self.wrote_position              += delta
+    //    - self.total_uncompressed_size     += delta
+    //    - if block is pending (pending_block_offset.matches):
+    //        self.pending_wrote_position += delta
+    //        更新 file header pending_wrote_position
+    //    - 更新 file header wrote_position (update_file_wrote_position)
+}
+```
+
+> **前置条件**:
+> - 调用方已通过 `time_index.find_entry(timestamp)` 获取 `(block_offset, in_block_offset)`
+> - 调用方已验证该 record 位于最新数据段
+> - block.flags 无 COMPRESSED flag
+> - record 是 block 内最末 record
+>
+> **不支持缩小的情况**: 若新 data 长度更小, 后续 block 需前移 (本段内只此 block 时无影响, 但通用场景复杂)。实现中允许缩小, 只需移动本 block 后的字节 (如果有) 并调整 wrote_position。
+
 
 ### 6.4 读取: 通过索引定位 Block 内 record (含缓存)
 

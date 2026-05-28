@@ -94,7 +94,91 @@ impl DataSet {
        返回
 ```
 
-### 9.1 Flush 行为 (mmap sync only)
+### 9.1 时间戳验证与写入分支
+
+```
+DataSet::write(timestamp, data):
+    │
+    ├─ if timestamp <= 0 → Error("timestamp must be > 0")
+    │
+    ├─ if timestamp == latest_written_timestamp 且 latest > 0 (纠正写入, 两种模式通用):
+    │    │
+    │    ├─ 1. time_index.find_entry(timestamp)
+    │    │      → 获取 (block_offset, in_block_offset)
+    │    │
+    │    ├─ 2. 验证该 record 是"最新数据段的最后一个未压缩 block 的最后一条 record"
+    │    │      ├─ 必须是最后一段 + block 为该段最后一个 block
+    │    │      ├─ block.flags 不能含 COMPRESSED flag (否则错误: "correction not supported on compressed block")
+    │    │      └─ record 必须是 block 内最后一条 (in_block_offset + RECORD_HEADER_SIZE + old_data_len == payload_size)
+    │    │
+    │    ├─ 3. segments.overwrite_in_last_block(block_offset, in_block_offset, timestamp, new_data)
+    │    │      ├─ 支持改变 data 长度 (可增长或缩小)
+    │    │      └─ 更新 5 个字段 (见下文)
+    │    │
+    │    └─ 成功 → return Ok(())
+    │       (索引条目不变, latest_written_timestamp 不变)
+    │
+    ├─ 非连续模式 (index_continuous == 0):
+    │    │
+    │    └─ timestamp < latest → Error("out-of-order")
+    │       timestamp > latest → 正常写入
+    │
+    └─ 连续模式 (index_continuous != 0):
+         │
+         ├─ timestamp < latest (补数据): append + replace_filler_with_real
+         └─ timestamp > latest: 填充 filler + 正常写入
+```
+
+**纠正写入**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
+
+**原地覆盖策略 (In-Place Overwrite, 支持变长)**:
+
+1. **前提**: 最新写入的记录必然位于 **最新数据段** 的 **最后一个未压缩 block** 的最后一条位置。可能形态:
+   - **Pending block** (flags = 0): 尚未密封, 未压缩
+   - **Sealed block** (flags = SEALED): 已密封但未压缩 (压缩未受益, seal 时保留原始格式)
+2. **不支持**: 如果最后一个 block 的 flags 含 `COMPRESSED`, 数据已被压缩, 无法原地修改 → 返回错误
+3. **支持变 size**: 新 data 可以比原 data 大或小, 只需移动后续字节并更新相关计数字段
+4. **索引不变**: block_offset + in_block_offset 仍指向同一 record 起始位置, data_len (u16) 更新为新长度
+5. **索引条目不变**: 索引中的 block_offset/in_block_offset 字段无需修改
+6. **latest_written_timestamp**: 不变
+
+**需要更新的 5 个字段**:
+
+| 字段 | 层级 | 变化量 |
+|------|------|--------|
+| BlockHeader.payload_size (u32) | block header | `+ delta` (block 内 payload 长度变化) |
+| BlockHeader.uncompressed_size (u32) | block header | `+ delta` (block 内原始数据长度变化) |
+| DataSegment.pending_wrote_position (u64) | 段状态 | `+ delta` (仅 pending block 场景, sealed 不更新) |
+| DataSegment.total_uncompressed_size (u64) | 段状态 | `+ delta` |
+| DataSegment.wrote_position (u64) | 段状态 | `+ delta` |
+
+其中 `delta = new_record_bytes - old_record_bytes = new_data.len() - old_data_len` (record_overhead 固定为 10)
+
+**overwrite_in_last_block 实现逻辑**:
+```rust
+// DataSegmentSet::overwrite_in_last_block(block_offset, in_block_offset, new_data):
+//   1. 定位到最新数据段 (seg = self.segments.last_mut())
+//      验证 block_offset 落在该段且为段内最后一个 block
+//      block.start = DATA_HEADER_SIZE + (block_offset - seg.file_offset)
+//   2. 读取 block header (16B at block.start)
+//      - 检查 flags & COMPRESSED == 0 (若含 COMPRESSED → 返回错误)
+//      - 计算 record 在 payload 中的位置
+//      - 验证 record 是 block 内最后一条:
+//        in_block_offset + 10 + old_data_len == payload_size
+//      - 若否, 返回错误 (只支持最新 block 的最末 record)
+//   3. 计算 delta = new_data.len() - old_data_len (i32)
+//   4. 更新 mmap 中 record 的 data_len (u16) 和 data 字节
+//   5. 更新 block header: payload_size += delta, uncompressed_size += delta
+//   6. 更新段内计数字段:
+//      - wrote_position += delta
+//      - total_uncompressed_size += delta
+//      - if block is pending (pending_block_offset matches):
+//          pending_wrote_position += delta; 更新 file header 中 pending_wrote_position
+//      - else (sealed+uncompressed): 仅更新 file header 中 wrote_position
+//   7. 更新 file header 中 wrote_position (update_file_wrote_position)
+```
+
+### 9.2 Flush 行为 (mmap sync only)
 
 ```
 flush (配置化，默认10分钟):

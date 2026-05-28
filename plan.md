@@ -25,6 +25,7 @@
 | 14 | create_dataset Builder 优化 | ✅ 完成 | [phase-14-dataset-config-builder.md](docs/plan/phase-14-dataset-config-builder.md) |
 | 15 | Header State 分化 | ✅ 完成 | [phase-15-header-state-split.md](docs/plan/phase-15-header-state-split.md) |
 | 16 | 数据保留 (Retention) | ✅ 完成 | [phase-16-data-retention.md](docs/plan/phase-16-data-retention.md) |
+| 17 | 纠正写入 (Correction Write) | 📋 待实现 | [phase-17-correction-write.md](docs/plan/phase-17-correction-write.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -134,6 +135,17 @@
 - [x] `cargo clippy -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (101 unit + 19 integration = 120 tests)
 
+### Phase 17: 纠正写入 (Correction Write) 📋 待实现
+- [ ] `segment/data.rs`: 新增 `DataSegment::overwrite_in_last_block(block_rel_offset, in_block_offset, new_data)` — 在段最后一个未压缩 block 的最末 record 原地覆盖, 支持 resize; 更新 5 个字段 (block payload_size/uncompressed_size + 段 pending_wrote_position/total_uncompressed_size/wrote_position); 拒绝 COMPRESSED block 和非末位 record
+- [ ] `segment/mod.rs`: 新增 `DataSegmentSet::overwrite_in_last_block(block_offset, in_block_offset, timestamp, new_data)` — 路由到最新数据段并委托覆盖
+- [ ] `index/mod.rs`: 新增 `TimeIndex::find_entry(timestamp) -> Option<IndexEntry>` — 在 in_memory_buffer + open segments + closed segments 中查找条目
+- [ ] `dataset.rs`: `write()` 新增纠正写入分支: `timestamp == latest_written_timestamp && latest > 0` → 通过 `time_index.find_entry()` 获取 `(block_offset, in_block_offset)` → `segments.overwrite_in_last_block()` 原地修改 (支持变 size, 索引不变)
+- [ ] `dataset.rs`: 非连续模式: 将 `timestamp == latest` 从 "out-of-order" 错误改为纠正成功; 连续模式: 删除原 "duplicate timestamp" 错误路径 (纠正写入已在 mode 分支前统一处理)
+- [ ] 新增单元测试: same-size 非连续/连续模式覆盖、resize 变大、resize 变小、latest_written_timestamp 不变、COMPRESSED block 拒绝、多次纠正、纠正后正常写入
+- [ ] `tests/integration_test.rs`: 新增纠正写入集成测试 (同 size + 变 size 两个场景)
+- [ ] `cargo clippy -- -D warnings` clean
+- [ ] `cargo test -- --test-threads=1` 全部通过
+
 ## 文档结构
 
 详细计划内容已拆分到 `docs/plan/` 目录, 每个 Phase 独立文档:
@@ -157,7 +169,8 @@ docs/plan/
 ├── phase-13-query-iterator.md       ← Phase 13: 查询迭代器 + HotBlockCache
 ├── phase-14-dataset-config-builder.md ← Phase 14: Builder 优化
 ├── phase-15-header-state-split.md   ← Phase 15: Header State 分化
-└── phase-16-data-retention.md       ← Phase 16: 数据保留 (Retention) (待实现)
+├── phase-16-data-retention.md       ← Phase 16: 数据保留 (Retention)
+└── phase-17-correction-write.md     ← Phase 17: 纠正写入 (Correction Write) (待实现)
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

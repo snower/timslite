@@ -13,6 +13,7 @@
 当 `index_continuous=false` 时:
 - 索引按实际写入时间戳顺序 append, 无填充
 - 逆序写入 (timestamp < 最新已写入时间戳) → **拒绝**
+- 相同时间戳 (timestamp == 最新已写入时间戳) → **纠正写入** (最新数据段最后一个未压缩 block 的最后一条 record, 就地覆盖 data 字节, 支持变 size, 索引不变)
 
 ## 23.2 写入行为
 
@@ -41,8 +42,17 @@ DataSet::write(timestamp, data):
        │    ├─ 找到 filler → mmap 覆盖写 18 字节 → 替换为真实 entry
        │    └─ 未找到 filler → Error
        │
-       └─ 情况C: timestamp < latest 且 index_continuous == false
-            └─ Error("out-of-order")
+       ├─ 情况C: timestamp < latest 且 index_continuous == false
+       │    └─ Error("out-of-order")
+       │
+        └─ 情况D: timestamp == latest (纠正写入, 两种模式均适用)
+             ├─ 查找索引条目获取 (block_offset, in_block_offset)
+             ├─ 验证该 record 位于: 最新数据段 + 最后一个 block (未压缩) + block 的最末 record
+             ├─ 若最后一个 block 含 COMPRESSED flag → 不支持 (返回错误)
+             ├─ 数据段: 原地覆盖 data 字节, 支持改变 data 长度 (delta = new_len - old_len)
+             ├─ 更新 5 个字段: block payload_size/uncompressed_size + 段 wrote_position/total_uncompressed_size/pending_wrote_position (仅 pending)
+             ├─ 索引: 不变 (block_offset/in_block_offset 保持原值)
+             └─ latest_written_timestamp 不变
 ```
 
 ### 23.2.1 边界条件
@@ -51,10 +61,12 @@ DataSet::write(timestamp, data):
 |------|------|
 | ts < 0 | Error |
 | ts = 0 | Error (保留给 index segment 命名) |
-| ts = latest_written_timestamp | Error (重复写入) |
-| ts 对应真实 entry | Error (不覆盖真实数据) |
+| ts = latest_written_timestamp | **纠正写入**: 最新数据段最后一个未压缩 block 的最末 record 原地覆盖, 支持变 size, 需更新 5 个字段 (block payload_size/uncompressed_size + 段 wrote_position/total_uncompressed_size/pending_wrote_position); 若最后 block 含 COMPRESSED → 不支持 |
+| ts 对应真实 entry (补数据场景) | Error (不覆盖真实数据, 仅限 filler → 真实) |
 | ts 对应 filler | 替换 filler → 真实 entry |
 | ts > latest_written_timestamp | 填充 + 正常写入 |
+
+> **纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖最近一次写入的数据。该 record 必然位于 **最新数据段的最后一个未压缩 block** (可以是 pending block 或 SEALED 无 COMPRESSED flag 的 block) 的 **最末位置**。通过已有索引条目的 `(block_offset, in_block_offset)` 定位 record 后, 直接 mmap 覆写 data 字节, 支持 `data.len()` 与原 `data_len` 不同 (增长或缩小), 需同步更新 5 个字段 (block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position/total_uncompressed_size/wrote_position)。索引条目完全不变, 不产生孤儿记录。若最后一个 block 含 COMPRESSED flag, 因压缩后大小不可预测, 不支持纠正写入。详见 [数据集操作 §9.1](dataset-operations.md#91-时间戳验证与写入分支)。
 
 ## 23.3 配置持久化
 
