@@ -13,7 +13,7 @@
 |---|------|---------|---------|
 | 1 | [架构概览](docs/design/architecture.md) | 整体架构、目录结构、命名规则、隔离保证、模块结构 | **入口文档**, 了解全局 |
 | 2 | [元数据格式](docs/design/meta-format.md) | DataSetMeta TLV 格式、字段定义、序列化/反序列化、向前兼容 | 新增 meta 字段时 |
-| 3 | [数据模型](docs/design/data-model.md) | Record/Block/IndexEntry 结构、FileMetadata header 100B 布局、类型定义 | 理解存储格式 |
+| 3 | [数据模型](docs/design/data-model.md) | Record/Block/IndexEntry 结构、DataFileMetadata(116B)/IndexFileMetadata(52B) 布局、类型定义 | 理解存储格式 |
 | 4 | [数据段管理](docs/design/data-segment.md) | DataSegmentSet 路由、DataSegment Block 生命周期、Pending 恢复 | 数据写入/读取相关 |
 | 5 | [时间索引](docs/design/time-index.md) | TimeIndex 生命周期、IndexSegment 二分查找、18 字节序列化 | 索引查询优化 |
 | 6 | [数据集操作](docs/design/dataset-operations.md) | DataSet create/open/close 生命周期、写入/读取/流程详解 | 数据集 API 行为 |

@@ -258,12 +258,12 @@ drop → 删除整个目录 (不可恢复)
 └────────────────────┴────────────────────┴──────────────┘
 ```
 
-- `block_offset`: Block 在数据段中的绝对偏移 (相对 HEADER_SIZE)
+- `block_offset`: Block 在数据段中的绝对偏移 (相对 DATA_HEADER_SIZE)
 - `in_block_offset`: record 在 Block Payload 中的相对偏移
 
 ## 文件格式
 
-### 文件头 (100 字节)
+### 数据段文件头 (116 字节)
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -275,14 +275,32 @@ drop → 删除整个目录 (不可恢复)
 ├──────────────────────────────────────────────────────────┤
 │ state_length: u16 (2 bytes)                              │
 ├──────────────────────────────────────────────────────────┤
-│ State 可变区 (56 bytes): 7×8 bytes                       │
-│   wrote_position, record_count, total_uncompressed_size, │
-│   invalid_record_count, pending_block_offset,            │
-│   pending_wrote_position, pending_record_count           │
+│ State 可变区 (72 bytes): 9×8 bytes                       │
+│   min_timestamp, max_timestamp, wrote_position,          │
+│   record_count, total_uncompressed_size,                 │
+│   pending_block_offset, pending_wrote_position,          │
+│   pending_record_count, reserved                         │
 └──────────────────────────────────────────────────────────┘
 ```
 
-> **HEADER_SIZE = 100 bytes**. Meta/State 分离, 支持向前兼容 (未知 TLV type 通过 length 跳过)。
+### 索引段文件头 (52 字节)
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ 固定前缀 (9 bytes): magic(4) + version(2) + type(1) +    │
+│                     meta_length(2)                        │
+├──────────────────────────────────────────────────────────┤
+│ Meta 不可变 TLV 区 (33 bytes): created_at, file_offset,   │
+│   file_size, compress_level                              │
+├──────────────────────────────────────────────────────────┤
+│ state_length: u16 (2 bytes)                              │
+├──────────────────────────────────────────────────────────┤
+│ State 可变区 (8 bytes): 1×8 bytes                        │
+│   wrote_position                                         │
+└──────────────────────────────────────────────────────────┘
+```
+
+> **DATA_HEADER_SIZE = 116 bytes, INDEX_HEADER_SIZE = 52 bytes**. Meta/State 分离, 支持向前兼容 (未知 TLV type 通过 length 跳过)。数据段额外维护 min/max_timestamp 用于段级范围过滤。
 
 ### 数据集元数据 (meta 文件)
 

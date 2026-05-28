@@ -43,7 +43,7 @@ reopen 时 pending block 恢复流程:
    2. 检查 pending_block_offset != u64::MAX
    3. 恢复流程:
       a. 从 header 恢复 pending 状态
-      b. 验证: pending_block_offset + HEADER_SIZE + pending_wrote_position <= file_size
+      b. 验证: pending_block_offset + DATA_HEADER_SIZE + pending_wrote_position <= file_size
       c. 密封 pending block (FLAGS=SEALED, 不压缩)
       d. 清除 header pending state
       e. wrote_position = sealed block 末尾

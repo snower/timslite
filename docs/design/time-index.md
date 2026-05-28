@@ -20,7 +20,7 @@ struct IndexSegmentMeta {
     path: PathBuf,
     start_timestamp: i64,
     entries_capacity: usize,
-    wrote_count: usize,     // 用于连续模式 O(1) 查找
+    wrote_count: usize,     // 从 (wrote_position - INDEX_HEADER_SIZE) / 18 计算
 }
 ```
 
@@ -76,7 +76,7 @@ struct IndexSegment {
     path: PathBuf,
     start_timestamp: i64,
     entries_capacity: usize,
-    wrote_count: usize,
+    wrote_count: usize,          // 从 (wrote_position - INDEX_HEADER_SIZE) / 18 计算
     mmap: Option<MmapMut>,       // None = closed/unmapped
     sealed: bool,
     last_accessed_at: Instant,
@@ -112,9 +112,13 @@ impl IndexSegment {
 
 ```
 ┌──────────────────────────────────────────────┐
-│ FileHeader (100 bytes)                       │
-│ - magic "TMSL", version, ...                 │
-│ - file_offset = start_timestamp              │
+│ IndexFileHeader (52 bytes)                   │
+│ - 固定前缀(9B): magic(4)+version(2)+         │
+│   fileType(1)+meta_length(2)                 │
+│ - Meta TLV(33B): created_at, file_offset,    │
+│   file_size, compress_level                  │
+│ - state_length(2B): 8                        │
+│ - State(8B): wrote_position (1×8B)          │
 ├──────────────────────────────────────────────┤
 │ Index Area                                   │
 │ ┌──────────┬──────────┬──────┐               │
@@ -126,6 +130,8 @@ impl IndexSegment {
 │ ...                                           │
 └──────────────────────────────────────────────┘
 ```
+
+> **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - INDEX_HEADER_SIZE) / 18`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。
 
 ### 7.6 查找算法
 

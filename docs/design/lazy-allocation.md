@@ -22,7 +22,8 @@
 | `initial_index_segment_size` | u64 | 4 * 1024 (4KB) | 索引分段文件初始大小 |
 
 **约束**:
-- `initial_*` 必须 ≥ HEADER_SIZE (100 bytes) + 最小可用空间
+- `initial_data_segment_size` 必须 ≥ DATA_HEADER_SIZE (116 bytes) + 最小可用空间
+- `initial_index_segment_size` 必须 ≥ INDEX_HEADER_SIZE (52 bytes) + 最小可用空间
 - `initial_*` 必须 ≤ 对应的 `segment_size` (max)
 - 若 `initial_* == segment_size` → 退化为全量预分配
 
@@ -44,7 +45,7 @@
 // DataSegment::create - 仅分配初始大小
 pub fn create(path: &Path, file_offset: u64, initial_size: u64, max_size: u64) -> Result<Self> {
     file.set_len(initial_size)?;  // ← 仅分配初始大小
-    let metadata = FileMetadata::create_default(FILE_TYPE_DATA, file_offset as i64, max_size as u32);
+    let metadata = DataFileMetadata::create_default(FILE_TYPE_DATA, file_offset as i64, max_size as u32);
     // header file_size = max, NOT initial_size
 }
 
@@ -69,7 +70,7 @@ expand(current_file_size, max_size, mmap, path):
 
 ### 触发时机
 
-**DataSegment**: `file_size - HEADER_SIZE < wrote_position + 需要的空间` → 扩容
+**DataSegment**: `file_size - DATA_HEADER_SIZE < wrote_position + 需要的空间` → 扩容
 **IndexSegment**: `wrote_count >= entries_capacity` → 扩容 → 重新计算 `entries_capacity`
 
 ### 扩容上限处理

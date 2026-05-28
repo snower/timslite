@@ -85,7 +85,7 @@ src/
 ├── index/
 │   ├── mod.rs          # TimeIndex (index/ 子目录, lazy open/close, query)
 │   └── segment.rs      # IndexSegment (18B entries, lifecycle, binary search)
-├── header.rs           # FileMetadata (100B, meta/state 分离)
+├── header.rs           # DataFileMetadata (116B) + IndexFileMetadata (52B), meta/state 分离
 ├── ffi.rs              # extern "C" (catch_unwind, opaque handles, memory mgmt)
 ├── error.rs            # TmslError enum + From impls
 ├── compress.rs         # deflate_compress/decompress + size comparison

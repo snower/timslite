@@ -63,7 +63,9 @@ struct DataSegment {
     file_offset: u64,
     file_size: u64,              // 运行时当前文件大小 (随扩容增长)
     max_file_size: u64,          // 扩容上限 (segment_size, 不可变)
-    wrote_position: u64,         // 从 data_start(100) 起算
+    min_timestamp: i64,          // 段内最小时间戳 (i64::MAX=空段)
+    max_timestamp: i64,          // 段内最大时间戳 (i64::MIN=空段)
+    wrote_position: u64,         // 从 DATA_HEADER_SIZE(116) 起算
     record_count: u64,
     total_uncompressed_size: u64,
     created_at: i64,
@@ -82,19 +84,24 @@ enum SegmentLifecycle {
 }
 
 const BLOCK_HEADER_SIZE: u64 = 16;
+const DATA_HEADER_SIZE: u64 = 116;  // 数据段文件头大小
 ```
 
 ### 6.2 文件布局
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ FileHeader (100 bytes)                           │
+│ DataFileHeader (116 bytes)                       │
 │ - 固定前缀: magic(4)+version(2)+fileType(1)+     │
 │   meta_length(2)                                 │
 │ - Meta(TLV, 33B): created_at, file_offset,       │
 │   file_size, compress_level                      │
 │ - state_length: 2                                │
-│ - State(56B): 7×8B wrote_position..pending_count │
+│ - State(72B): 9×8B                               │
+│   min_timestamp, max_timestamp, wrote_position,  │
+│   record_count, total_uncompressed_size,         │
+│   pending_block_offset, pending_wrote_position,  │
+│   pending_record_count, reserved                 │
 ├──────────────────────────────────────────────────┤
 │ Block 1 (sealed, compressed)                     │
 │   BlockHeader (16 bytes)                         │
@@ -169,7 +176,7 @@ impl DataSegment {
         cache: Option<&BlockCache>,
     ) -> io::Result<(i64, Vec<u8>)> {
         let m = self.mmap.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "segment closed"))?;
-        let hdr_pos = HEADER_SIZE as usize + entry.block_offset as usize;
+        let hdr_pos = DATA_HEADER_SIZE as usize + entry.block_offset as usize;
         let block_offset = entry.block_offset;
 
         // 读取 block header, 检查 compressed flag
@@ -217,6 +224,29 @@ impl DataSegment {
 - 打开时: `fs::metadata(path)?.len()` — 以磁盘实际大小为准
 - 扩容时: `current_size * 2` → 上限 `max_file_size`
 - 扩容步骤: unmap → `file.set_len(target)` → remap → 更新内存字段
+
+### 6.7 时间戳范围跟踪
+
+**目的**: 数据段维护 `min_timestamp` 和 `max_timestamp`, 用于 DataSegmentSet 的段级过滤优化。
+
+**更新时机**:
+- `create()`: 初始化为 `min_timestamp = i64::MAX`, `max_timestamp = i64::MIN`
+- `append_record()`: 每次写入时更新
+  ```rust
+  if timestamp < self.min_timestamp { self.min_timestamp = timestamp; }
+  if timestamp > self.max_timestamp { self.max_timestamp = timestamp; }
+  ```
+- `open()`: 从 DataFileMetadata 读取已有值
+- `ensure_open()`: 从 DataFileMetadata 恢复
+
+**使用场景**:
+- DataSegmentSet 路由查询时, 可跳过不在 [start_ts, end_ts] 范围内的段
+- 避免不必要的段打开和遍历
+
+**状态一致性**:
+- 每次 `append_record` 后立即写入 mmap state 区域
+- `idle_close()` 前 sync 确保落盘
+- 崩溃恢复时从 file header 读取, 保证一致性
 
 ---
 

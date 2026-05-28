@@ -105,7 +105,8 @@ DataSet: Arc<Mutex<DataSet<>>>      (读写互斥, 数据集内部操作)
 
 | 常量 | 值 | 说明 |
 |------|-----|------|
-| `HEADER_SIZE` | 100 | 文件头大小 (magic + version + meta TLV + state) |
+| `DATA_HEADER_SIZE` | 116 | 数据段文件头大小 (magic + version + meta TLV + state, 9 个 state 字段) |
+| `INDEX_HEADER_SIZE` | 52 | 索引段文件头大小 (magic + version + meta TLV + state, 1 个 state 字段) |
 | `BLOCK_HEADER_SIZE` | 16 | Block 头部大小 |
 | `INDEX_ENTRY_SIZE` | 18 | 索引条目大小 (timestamp:8 + block_offset:8 + in_block:2) |
 | `MAGIC` | `b"TMSL"` | 文件魔数 |

@@ -113,7 +113,7 @@ DataSet::open():
 
 **原理**: 连续模式下, 条目位置可直接从时间戳计算:
 - `entry_index = target_ts - start_timestamp`
-- `mmap 偏移 = HEADER_SIZE + entry_index × INDEX_ENTRY_SIZE`
+- `mmap 偏移 = INDEX_HEADER_SIZE + entry_index × INDEX_ENTRY_SIZE`
 
 | 操作 | 非连续模式 | 连续模式 | 收益 |
 |------|-----------|---------|------|

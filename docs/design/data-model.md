@@ -81,7 +81,7 @@ Offset  Size  Field                    Description
 
 ### 3.5 FileMetadata (文件头, meta + state)
 
-每个数据段和索引段的头部元数据。
+每个数据段和索引段的头部元数据。**数据段和索引段的 state 字段已分化**, 各自维护不同的可变状态。
 
 #### 设计原则: 可变(state) 与 不可变(meta) 分离
 
@@ -95,12 +95,13 @@ Offset  Size  Field                    Description
 ├──────────────────────────────────────────────────────────┤
 │ state_length: u16 (2 bytes)                               │  ← 告知后续 state 总字节数
 ├──────────────────────────────────────────────────────────┤
-│ State 可变区 (当前 56 bytes, 每值 8 字节)                 │  ← 写满时动态更新
-│  wrote_position, record_count, ...                       │
+│ State 可变区 (按文件类型分化)                              │  ← 每次写入时动态更新
+│  数据段: 72 bytes (9×8B)                                 │
+│  索引段: 8 bytes (1×8B)                                  │
 └──────────────────────────────────────────────────────────┘
 ```
 
-#### 固定前缀
+#### 固定前缀 (数据段和索引段共享, 9 bytes)
 
 ```
 Offset  Size  Field                    Description
@@ -110,7 +111,7 @@ Offset  Size  Field                    Description
 7-8     u16   meta_length              Meta TLV 区总字节数
 ```
 
-#### Meta 不可变 TLV 区 (创建时写入, 永不修改)
+#### Meta 不可变 TLV 区 (创建时写入, 永不修改, 数据段和索引段共享)
 
 | Meta Type (hex) | 名称 | 长度 | 数据类型 | 说明 |
 |-----------------|------|------|---------|------|
@@ -121,31 +122,63 @@ Offset  Size  Field                    Description
 
 > Meta TLV 可向前扩展: 未知 type 通过 length 字段跳过, 不影响解析。
 
-#### State 可变区 (每值固定 8 字节, 顺序存储)
+#### Data Segment State 可变区 (每值固定 8 字节, 顺序存储)
+
+```
+Offset  (相对 state 起始)    Size  Field                       Description
+0       i64(8)  min_timestamp             段内所有 record 的最小时间戳 (i64::MAX=空段)
+8       i64(8)  max_timestamp             段内所有 record 的最大时间戳 (i64::MIN=空段)
+16      u64(8)  wrote_position            当前写入位置(绝对偏移, 含 DATA_HEADER_SIZE)
+24      u64(8)  record_count              已写入记录总数
+32      u64(8)  total_uncompressed_size   文件内所有 record 原始数据总大小
+40      u64(8)  pending_block_offset      当前未完成 block 相对偏移 (u64::MAX=无)
+48      u64(8)  pending_wrote_position    pending block 内已写入位置(从 payload 起始)
+56      u64(8)  pending_record_count      pending block 内 record 数量
+64      u64(8)  reserved                  保留字段 (初始化为 0)
+```
+
+> `min_timestamp` / `max_timestamp`: 每次 `append_record` 更新, 用于 DataSegmentSet 的时间范围段级过滤优化。空段时 `min_timestamp = i64::MAX`, `max_timestamp = i64::MIN`。
+
+#### Index Segment State 可变区 (仅 1 个字段)
 
 ```
 Offset  (相对 state 起始)    Size  Field                    Description
-0       u64(8)  wrote_position           当前写入位置(从 HEADER_SIZE 起算)
-8       u64(8)  record_count             已写入记录总数
-16      u64(8)  total_uncompressed_size  文件内所有 record 原始数据总大小
-24      u64(8)  invalid_record_count     无效/跳过记录数
-32      u64(8)  pending_block_offset     当前未完成 block 相对偏移 (u64::MAX=无)
-40      u64(8)  pending_wrote_position   pending block 内已写入位置(从 payload 起始)
-48      u64(8)  pending_record_count     pending block 内 record 数量
+0       u64(8)  wrote_position           当前写入位置(绝对偏移, 含 INDEX_HEADER_SIZE)
 ```
+
+> `wrote_count` 可从 `wrote_position` 计算: `wrote_count = (wrote_position - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE`。不再单独持久化 `record_count`、`total_uncompressed_size` 等数据段相关字段。
 
 #### Header 大小计算
 
+**数据段 (DataSegment):**
 ```
 固定前缀:     4 + 2 + 1 + 2     = 9 bytes
 Meta TLV:     11 + 11 + 7 + 4  = 33 bytes  (4 个 TLV 条目)
 state_length: 2                 = 2 bytes
-State 值:     7 × 8            = 56 bytes
+State 值:     9 × 8            = 72 bytes   (9 个字段)
 ────────────────────────────────────────────
-HEADER_SIZE = 100 bytes
+DATA_HEADER_SIZE = 116 bytes
 ```
 
-> **数据区起始位置 = `HEADER_SIZE = 100` 字节**
+**索引段 (IndexSegment):**
+```
+固定前缀:     4 + 2 + 1 + 2     = 9 bytes
+Meta TLV:     11 + 11 + 7 + 4  = 33 bytes  (4 个 TLV 条目)
+state_length: 2                 = 2 bytes
+State 值:     1 × 8            = 8 bytes    (1 个字段)
+────────────────────────────────────────────
+INDEX_HEADER_SIZE = 52 bytes
+```
+
+#### 常量定义
+
+```rust
+pub const DATA_HEADER_SIZE: u64 = 116;
+pub const INDEX_HEADER_SIZE: u64 = 52;
+```
+
+> **数据段数据区起始位置 = `DATA_HEADER_SIZE = 116` 字节**
+> **索引段数据区起始位置 = `INDEX_HEADER_SIZE = 52` 字节**
 
 #### 兼容性设计
 
@@ -156,6 +189,7 @@ HEADER_SIZE = 100 bytes
 | v1 reader 读 v2 文件 | 读固定前缀 (9B) + `meta_length` 跳过 meta + `state_length` 跳过 state, 解析已知 state 位置 |
 | 未来添加新 meta 字段 | 增加新 TLV type, `meta_length` 增加, 旧版本通过 length 跳过 |
 | 未来添加新 state 字段 | 增加 state 条目, `state_length` 增加, 旧版本只读前 N 个 8B |
+| 数据段 vs 索引段区分 | 通过 `fileType` 字段 (byte 6) 确定使用哪个 HEADER_SIZE 常量 |
 
 ## 四、核心类型定义
 
@@ -254,28 +288,46 @@ const META_TYPE_FILE_OFFSET:    u8 = 0x02;  // i64 LE
 const META_TYPE_FILE_SIZE:      u8 = 0x03;  // u32 LE
 const META_TYPE_COMPRESS_LEVEL: u8 = 0x04;  // u8
 
-/// 文件元数据头 (Header)
-struct FileMetadata {
+/// 数据段文件元数据头 (DataFileHeader, 116 bytes)
+struct DataFileMetadata {
     // === 固定前缀 (所有版本必须可读, 9 bytes) ===
     magic: [u8; 4],
     version: u16,
-    file_type: u8,
+    file_type: u8,  // FILE_TYPE_DATA = 2
     // === Meta 不可变 (TLV, 创建时写入) ===
     created_at: i64,
     file_offset: i64,
     file_size: u32,
     compress_level: u8,
-    // === State 可变 (每值固定 8 字节, 顺序存储) ===
+    // === State 可变 (每值固定 8 字节, 顺序存储, 9 个字段) ===
+    min_timestamp: i64,         // 段内最小时间戳 (i64::MAX 表示空段)
+    max_timestamp: i64,         // 段内最大时间戳 (i64::MIN 表示空段)
     wrote_position: u64,
     record_count: u64,
     total_uncompressed_size: u64,
-    invalid_record_count: u64,
     pending_block_offset: u64,
     pending_wrote_position: u64,
     pending_record_count: u64,
+    reserved: u64,              // 保留字段
 }
 
-const HEADER_SIZE: u64 = 100;
+/// 索引段文件元数据头 (IndexFileHeader, 52 bytes)
+struct IndexFileMetadata {
+    // === 固定前缀 (所有版本必须可读, 9 bytes) ===
+    magic: [u8; 4],
+    version: u16,
+    file_type: u8,  // FILE_TYPE_INDEX = 1
+    // === Meta 不可变 (TLV, 创建时写入) ===
+    created_at: i64,
+    file_offset: i64,
+    file_size: u32,
+    compress_level: u8,
+    // === State 可变 (仅 1 个字段) ===
+    wrote_position: u64,
+}
+
+const DATA_HEADER_SIZE: u64 = 116;   // 数据段文件头大小
+const INDEX_HEADER_SIZE: u64 = 52;   // 索引段文件头大小
 
 /// 索引条目
 #[derive(Clone, Copy, Debug)]
