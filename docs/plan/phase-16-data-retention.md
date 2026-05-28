@@ -361,16 +361,15 @@ void* tmsl_dataset_create(
 | 回收文件时 Windows 文件锁定 | 删除失败 | read-only mmap + 立即 drop 后 remove |
 
 ## 6. 验收标准
-
-- [ ] `meta.rs`: retention_ms TLV 完整序列化/反序列化, 缺失时默认 0
-- [ ] `config.rs`: StoreConfig.retention_check_hour + DataSetConfigBuilder.retention_ms
-- [ ] `dataset.rs`: retention_ms 持久化 + query 钳制 + reclaim_expired_segments
-- [ ] `segment/mod.rs`: DataSegmentSet.reclaim_expired_segments (max_timestamp 判断)
-- [ ] `index/mod.rs`: TimeIndex.reclaim_expired_segments (last_entry_timestamp 判断)
-- [ ] `index/segment.rs`: last_entry_timestamp() 读取后立即释放 mmap+file
-- [ ] `bg/mod.rs`: retention_reclaim 任务每日执行 + next_retention 计算
-- [ ] `store.rs`: retention_check_hour 传递到 BackgroundTasks
-- [ ] `ffi.rs + timslite.h`: tmsl_dataset_create 新增 retention_ms 参数
-- [ ] 集成测试: 6 个新测试全部通过
-- [ ] `cargo clippy -- -D warnings` clean
-- [ ] `cargo test -- --test-threads=1` 全部通过
+- [x] `meta.rs`: retention_ms TLV 完整序列化/反序列化, 缺失时默认 0
+- [x] `config.rs`: StoreConfig.retention_check_hour + DataSetConfigBuilder.retention_ms
+- [x] `dataset.rs`: retention_ms 持久化 + query 钳制 + reclaim_expired_segments
+- [x] `segment/mod.rs`: DataSegmentSet.reclaim_expired_segments (max_timestamp 判断)
+- [x] `index/mod.rs`: TimeIndex.reclaim_expired_segments (last_entry_timestamp 判断)
+- [x] `index/segment.rs`: last_entry_timestamp() 读取后立即释放 mmap+file
+- [x] `bg/mod.rs`: retention_reclaim 任务每日执行 + next_retention 计算
+- [x] `store.rs`: retention_check_hour 传递到 BackgroundTasks
+- [x] `ffi.rs + timslite.h`: tmsl_dataset_create 新增 retention_ms 参数
+- [x] 集成测试: 6 个新测试全部通过
+- [x] `cargo clippy -- -D warnings` clean
+- [x] `cargo test -- --test-threads=1` 全部通过

@@ -91,6 +91,7 @@ impl Store {
             config.flush_interval,
             config.idle_timeout,
             config.cache_idle_timeout,
+            config.retention_check_hour,
         ));
 
         Ok(store)
@@ -138,6 +139,7 @@ impl Store {
             config.index_continuous,
             config.initial_data_segment_size,
             config.initial_index_segment_size,
+            config.retention_ms,
         )?;
 
         let ds = Arc::new(Mutex::new(ds));
@@ -163,6 +165,7 @@ impl Store {
         index_segment_size: u64,
         compress_level: u8,
         index_continuous: u8,
+        retention_ms: u64,
     ) -> Result<DataSetHandle> {
         self.create_dataset_with_config(
             name,
@@ -172,7 +175,8 @@ impl Store {
                     .data_segment_size(data_segment_size)
                     .index_segment_size(index_segment_size)
                     .compress_level(compress_level)
-                    .index_continuous(index_continuous),
+                    .index_continuous(index_continuous)
+                    .retention_ms(retention_ms),
             ),
         )
     }

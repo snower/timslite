@@ -35,6 +35,7 @@ fn t8_1_1_basic_lifecycle() {
             4 * 1024 * 1024,
             6,
             0,
+            0,
         )
         .unwrap();
 
@@ -76,6 +77,7 @@ fn t8_1_2_multi_dataset_isolation() {
             4 * 1024 * 1024,
             6,
             0,
+            0,
         )
         .unwrap();
     store
@@ -85,6 +87,7 @@ fn t8_1_2_multi_dataset_isolation() {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
+            0,
             0,
         )
         .unwrap();
@@ -150,6 +153,7 @@ fn t8_1_3_block_aggregation() {
             4 * 1024 * 1024,
             6,
             0,
+            0,
         )
         .unwrap();
 
@@ -181,7 +185,15 @@ fn t8_1_6_persistence() {
     {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         store
-            .create_dataset("persist", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+            .create_dataset(
+                "persist",
+                "data",
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
             .unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
         for i in 0..50i64 {
@@ -224,6 +236,7 @@ fn t8_1_7_flush_does_not_seal() {
             4 * 1024 * 1024,
             6,
             0,
+            0,
         )
         .unwrap();
 
@@ -255,11 +268,27 @@ fn t8_2_1_create_returns_error_if_exists() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("dup_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .create_dataset(
+            "dup_test",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
 
     // Second create of same dataset should fail
-    let result = store.create_dataset("dup_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0);
+    let result = store.create_dataset(
+        "dup_test",
+        "data",
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+    );
     assert!(result.is_err());
     if let Err(err) = result {
         assert!(err.to_string().contains("already exists"));
@@ -293,7 +322,15 @@ fn t8_2_3_drop_deletes_dataset() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("drop_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .create_dataset(
+            "drop_test",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
 
     let ds_handle = store.open_dataset("drop_test", "data").unwrap();
@@ -321,7 +358,15 @@ fn t8_2_4_create_after_drop() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("recreate", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .create_dataset(
+            "recreate",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
     let ds = store.open_dataset("recreate", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
@@ -334,7 +379,15 @@ fn t8_2_4_create_after_drop() {
 
     // Now create should succeed (different params are fine since old data is gone)
     store
-        .create_dataset("recreate", "data", 32 * 1024 * 1024, 2 * 1024 * 1024, 9, 0)
+        .create_dataset(
+            "recreate",
+            "data",
+            32 * 1024 * 1024,
+            2 * 1024 * 1024,
+            9,
+            0,
+            0,
+        )
         .unwrap();
     let ds = store.open_dataset("recreate", "data").unwrap();
 
@@ -366,6 +419,7 @@ fn t12_1_lazy_create_write_query_small_data() {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
+            0,
             0,
         )
         .unwrap();
@@ -403,7 +457,15 @@ fn t12_2_lazy_write_until_max_then_new_segment() {
     let mut store = Store::open(&dir, config).unwrap();
 
     store
-        .create_dataset("lazy_max", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .create_dataset(
+            "lazy_max",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
 
     let ds = store.open_dataset("lazy_max", "data").unwrap();
@@ -424,7 +486,7 @@ fn t12_2_lazy_write_until_max_then_new_segment() {
 
     let arc = store.get_dataset(&ds).unwrap();
     let entries = arc.lock().unwrap().query(1, 200, None).unwrap();
-    assert!(entries.len() > 0, "should have some data");
+    assert!(!entries.is_empty(), "should have some data");
 
     store.close().unwrap();
 }
@@ -442,7 +504,7 @@ fn t12_3_open_legacy_full_allocated_dataset() {
     {
         let mut store = Store::open(&dir, config.clone()).unwrap();
         store
-            .create_dataset("legacy", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+            .create_dataset("legacy", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
             .unwrap();
 
         let ds = store.open_dataset("legacy", "data").unwrap();
@@ -507,7 +569,15 @@ fn t12_4_disk_space_efficiency() {
     let mut store = Store::open(&dir, config).unwrap();
 
     store
-        .create_dataset("eff_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .create_dataset(
+            "eff_test",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
 
     let ds = store.open_dataset("eff_test", "data").unwrap();
@@ -627,6 +697,7 @@ fn t14_3_backward_compat_existing_api() {
             4 * 1024 * 1024,
             6,
             1,
+            0,
         )
         .unwrap();
 
@@ -650,7 +721,15 @@ fn t13_1_iterator_small_range() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("iter_test", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .create_dataset(
+            "iter_test",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
 
     let ds = store.open_dataset("iter_test", "data").unwrap();
@@ -691,6 +770,7 @@ fn t13_3_query_backward_compat() {
             4 * 1024 * 1024,
             6,
             0,
+            0,
         )
         .unwrap();
 
@@ -727,7 +807,15 @@ fn t13_4_query_empty_range() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset("empty_q", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0)
+        .create_dataset(
+            "empty_q",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
 
     let ds = store.open_dataset("empty_q", "data").unwrap();

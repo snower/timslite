@@ -274,6 +274,46 @@ impl TimeIndex {
         Ok(())
     }
 
+    /// Delete index segments whose last entry timestamp is strictly less than `threshold`.
+    /// Must be called only when all segments are closed (via idle_close_all).
+    /// Returns the number of files removed.
+    pub fn reclaim_expired_segments(
+        &mut self,
+        threshold: i64,
+        _max_file_size: u64,
+    ) -> Result<usize> {
+        let before = self.closed_index_segments.len();
+        self.closed_index_segments.retain(|meta| {
+            // Open briefly with read-only mmap and drop immediately after reading.
+            match segment::last_entry_timestamp(&meta.path) {
+                Ok(Some(last_ts)) if last_ts < threshold => {
+                    let _ = std::fs::remove_file(&meta.path);
+                    log::info!("[retention] deleted index segment: {:?}", meta.path);
+                    false
+                }
+                Ok(None) => {
+                    // Empty segment — only filler? Reclaim to recycle disk.
+                    let _ = std::fs::remove_file(&meta.path);
+                    log::info!(
+                        "[retention] deleted empty index segment: {:?}",
+                        meta.path
+                    );
+                    false
+                }
+                Ok(_) => true,
+                Err(e) => {
+                    log::warn!(
+                        "[retention] failed to read {:?}: {} (keeping)",
+                        meta.path,
+                        e
+                    );
+                    true
+                }
+            }
+        });
+        Ok(before - self.closed_index_segments.len())
+    }
+
     /// Load existing index segments from disk.
     /// Index files are in the `index/` subdirectory.
     pub fn load_existing(

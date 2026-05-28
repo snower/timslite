@@ -49,6 +49,8 @@ int tmsl_store_close(void* store, char* err_buf, size_t err_buf_len);
  * @param index_segment_size   Index segment size in bytes.
  * @param compress_level       Compression level (1-9).
  * @param index_continuous     0 = non-continuous (strict order), 1 = continuous (filler entries).
+ * @param retention_ms         Data validity period (same unit as timestamp, 0 = no limit).
+ *                             Store-level `retention_check_hour` controls daily reclaim schedule.
  * @param err_buf              Buffer for error message.
  * @param err_buf_len          Length of error buffer.
  * @return Opaque dataset pointer, or NULL on error.
@@ -56,6 +58,7 @@ int tmsl_store_close(void* store, char* err_buf, size_t err_buf_len);
 void* tmsl_dataset_create(void* store, const char* name, const char* dataset_type,
                           uint64_t data_segment_size, uint64_t index_segment_size,
                           unsigned char compress_level, unsigned char index_continuous,
+                          uint64_t retention_ms,
                           char* err_buf, size_t err_buf_len);
 
 /**

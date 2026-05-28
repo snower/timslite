@@ -140,6 +140,7 @@ pub extern "C" fn tmsl_dataset_create(
     index_segment_size: u64,
     compress_level: c_uchar,
     index_continuous: c_uchar,
+    retention_ms: u64,
     err_buf: *mut c_char,
     err_buf_len: usize,
 ) -> *mut c_void {
@@ -163,6 +164,7 @@ pub extern "C" fn tmsl_dataset_create(
             index_segment_size,
             compress_level,
             index_continuous,
+            retention_ms,
         )?;
         let boxed = Box::new(FfiDataset {
             store_ptr: ffi_store.0,

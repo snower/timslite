@@ -29,11 +29,12 @@ pub struct DataSetKey {
 pub struct DataSet {
     pub id: DataSetKey,
     pub base_dir: PathBuf,
-    config: DataSetConfig,
+    pub(crate) config: DataSetConfig,
     segments: DataSegmentSet,
     time_index: TimeIndex,
     last_used_at: Instant,
     latest_written_timestamp: i64, // For continuous mode: track the highest timestamp
+    retention_ms: u64,             // 0 = no limit (same unit as timestamp)
 }
 
 impl DataSet {
@@ -51,6 +52,7 @@ impl DataSet {
         index_continuous: u8,
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
+        retention_ms: u64,
     ) -> Result<Self> {
         let meta_path = base_dir.join("meta");
         if meta_path.exists() {
@@ -75,6 +77,7 @@ impl DataSet {
             index_continuous,
             initial_data_segment_size,
             initial_index_segment_size,
+            retention_ms,
         );
         meta.write_to_file(&meta_path)?;
 
@@ -103,11 +106,13 @@ impl DataSet {
                 index_continuous,
                 initial_data_segment_size,
                 initial_index_segment_size,
+                retention_ms,
             },
             segments,
             time_index,
             last_used_at: Instant::now(),
             latest_written_timestamp: 0,
+            retention_ms,
         })
     }
 
@@ -135,7 +140,9 @@ impl DataSet {
             index_continuous: meta.index_continuous,
             initial_data_segment_size: meta.initial_data_segment_size,
             initial_index_segment_size: meta.initial_index_segment_size,
+            retention_ms: meta.retention_ms,
         };
+        let retention_ms = meta.retention_ms;
 
         let segments = DataSegmentSet::load_existing(
             &base_dir,
@@ -164,6 +171,7 @@ impl DataSet {
             time_index,
             last_used_at: Instant::now(),
             latest_written_timestamp,
+            retention_ms,
         })
     }
 
@@ -361,6 +369,10 @@ impl DataSet {
         end_ts: i64,
         cache: Option<&'b BlockCache>,
     ) -> Result<QueryIterator<'a, 'b>> {
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
+        if start_ts > end_ts {
+            return Ok(QueryIterator::new(vec![], &mut self.segments, cache));
+        }
         let entries = self.time_index.query(start_ts, end_ts)?;
         Ok(QueryIterator::new(entries, &mut self.segments, cache))
     }
@@ -379,6 +391,10 @@ impl DataSet {
     }
 
     pub fn query_index_entries(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
+        if start_ts > end_ts {
+            return Ok(vec![]);
+        }
         self.time_index.query(start_ts, end_ts)
     }
 
@@ -466,6 +482,57 @@ impl DataSet {
     pub fn last_used_at(&self) -> Instant {
         self.last_used_at
     }
+
+    /// Data retention period (same unit as timestamp; 0 = no limit).
+    pub fn retention_ms(&self) -> u64 {
+        self.retention_ms
+    }
+
+    /// Clamp an inclusive query range to the data retention window.
+    /// Returns (effective_start, effective_end). If retention is disabled
+    /// or latest_written_timestamp is unknown, returns the original range.
+    fn clamp_query_range(&self, start_ts: i64, end_ts: i64) -> (i64, i64) {
+        if self.retention_ms == 0 || self.latest_written_timestamp <= 0 {
+            return (start_ts, end_ts);
+        }
+        let threshold = self
+            .latest_written_timestamp
+            .saturating_sub(self.retention_ms as i64);
+        (start_ts.max(threshold), end_ts)
+    }
+
+    /// Compute retention expiration threshold, or -1 if retention disabled / no data yet.
+    fn retention_threshold(&self) -> i64 {
+        if self.retention_ms == 0 || self.latest_written_timestamp <= 0 {
+            return -1;
+        }
+        self.latest_written_timestamp
+            .saturating_sub(self.retention_ms as i64)
+    }
+
+    /// Reclaim expired data & index segments whose entries fall entirely before the
+    /// retention threshold. Closes the dataset first (all segments go to closed set).
+    /// Returns the total number of segment files deleted.
+    pub fn reclaim_expired_segments(&mut self) -> Result<usize> {
+        let threshold = self.retention_threshold();
+        if threshold < 0 {
+            return Ok(0);
+        }
+
+        // Close all open segments so they appear in closed_segments / closed_index_segments
+        self.close()?;
+
+        // Reclaim index segments (read-only mmap per segment, released immediately)
+        let idx_reclaimed = self
+            .time_index
+            .reclaim_expired_segments(threshold, self.config.index_segment_size)?;
+
+        // Reclaim data segments (uses cached max_timestamp in closed_segments vec)
+        let data_reclaimed = self.segments.reclaim_expired_segments(threshold)?;
+
+        self.last_used_at = Instant::now();
+        Ok(idx_reclaimed + data_reclaimed)
+    }
 }
 
 #[cfg(test)]
@@ -497,6 +564,7 @@ mod tests {
             1,          // continuous
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
+            0,          // retention_ms
         )
         .unwrap();
 
@@ -535,6 +603,7 @@ mod tests {
             1,          // continuous
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
+            0,          // retention_ms
         )
         .unwrap();
 
@@ -571,6 +640,7 @@ mod tests {
             1,
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
+            0,          // retention_ms
         )
         .unwrap();
 
@@ -603,6 +673,7 @@ mod tests {
             0,          // non-continuous (default)
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
+            0,          // retention_ms
         )
         .unwrap();
 
@@ -632,6 +703,7 @@ mod tests {
             1,
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
+            0,          // retention_ms
         )
         .unwrap();
 
@@ -664,6 +736,7 @@ mod tests {
             1,
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
+            0,          // retention_ms
         )
         .unwrap();
 
@@ -696,6 +769,7 @@ mod tests {
             1,
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
+            0,          // retention_ms
         )
         .unwrap();
 
@@ -733,6 +807,7 @@ mod tests {
                 1,
                 256 * 1024, // initial_data_segment_size
                 4 * 1024,   // initial_index_segment_size
+                0,          // retention_ms
             )
             .unwrap();
             ds.write(100, b"first").unwrap();
@@ -743,5 +818,192 @@ mod tests {
         // Open and check latest_written_timestamp recovered
         let ds2 = DataSet::open(id, dir, 65536).unwrap();
         assert_eq!(ds2.latest_written_timestamp, 150);
+    }
+
+    // ─── Retention tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_retention_ms_no_reclaim_when_zero() {
+        let dir = temp_dir("retention_no_reclaim");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0, // retention_ms = 0 (no limit)
+        )
+        .unwrap();
+
+        // Write old data, then idle-close all segments
+        ds.write(100, b"old").unwrap();
+        ds.flush().unwrap();
+        ds.segments.idle_close_all().unwrap();
+        ds.time_index.idle_close_all().unwrap();
+
+        // Write new data to force different segment
+        ds.write(200, b"new").unwrap();
+
+        // reclaim should do nothing because retention_ms = 0
+        let reclaimed = ds.reclaim_expired_segments().unwrap();
+        assert_eq!(reclaimed, 0);
+        assert!(ds.retention_ms() == 0);
+    }
+
+    #[test]
+    fn test_retention_ms_stored_and_roundtrip() {
+        let dir = temp_dir("retention_stored");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let ret = 30 * 86400 * 1000u64;
+        let ds = DataSet::create(
+            id.clone(),
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            ret,
+        )
+        .unwrap();
+        assert_eq!(ds.retention_ms(), ret);
+
+        // Reopen and verify
+        let ds2 = DataSet::open(id, dir, 65536).unwrap();
+        assert_eq!(ds2.retention_ms(), ret);
+    }
+
+    #[test]
+    fn test_retention_reclaim_basic() {
+        let dir = temp_dir("retention_basic");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        // retention = 50 (same unit as timestamps)
+        let mut ds = DataSet::create(
+            id.clone(),
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            50,
+        )
+        .unwrap();
+
+        // Write multiple records ALL within retention window of latest (200)
+        // threshold = 200 - 50 = 150. All of [150, 200] must be queryable.
+        ds.write(150, b"a").unwrap();
+        ds.write(180, b"b").unwrap();
+        ds.write(200, b"c").unwrap();
+
+        assert_eq!(ds.latest_written_timestamp, 200);
+
+        // Query [150, 200] → clamp to [max(150,150)=150, 200] → 3 records
+        let entries = ds.query(150, 200, None).unwrap();
+        assert_eq!(entries.len(), 3);
+
+        // Query [100, 200] → clamp to [max(100,150)=150, 200] → 3 records
+        let entries_before = ds.query(100, 200, None).unwrap();
+        assert_eq!(entries_before.len(), 3);
+
+        // Single data segment with max_ts=200 >= threshold → no reclaim
+        let reclaimed = ds.reclaim_expired_segments().unwrap();
+        assert_eq!(reclaimed, 0);
+
+        // After reclaim, still queryable
+        let entries_after = ds.query(150, 200, None).unwrap();
+        assert_eq!(entries_after.len(), 3);
+    }
+
+    #[test]
+    fn test_retention_reclaim_removes_all_when_expired() {
+        // This test confirms that when retention is 0 (no limit), nothing is reclaimed
+        // regardless of how old the data is.
+        let dir = temp_dir("retention_zero_no_reclaim");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id.clone(),
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0, // retention_ms = 0
+        )
+        .unwrap();
+
+        ds.write(100, b"a").unwrap();
+        ds.write(130, b"b").unwrap();
+        ds.write(500, b"c").unwrap();
+
+        let reclaimed = ds.reclaim_expired_segments().unwrap();
+        assert_eq!(reclaimed, 0);
+
+        let entries = ds.query(100, 500, None).unwrap();
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn test_retention_query_clamped() {
+        let dir = temp_dir("retention_clamped");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            50, // retention_ms = 50
+        )
+        .unwrap();
+
+        // Write old ts=100, then new ts=200
+        ds.write(100, b"old").unwrap();
+        ds.write(200, b"new").unwrap();
+
+        // threshold = 200 - 50 = 150
+        // Query [100, 200] should be clamped to [150, 200], returning only 1 record
+        let entries = ds.query(100, 200, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, 200);
+
+        // Query entirely within expired range → empty
+        let empty = ds.query(50, 130, None).unwrap();
+        assert!(empty.is_empty());
+
+        // Query fully within valid range
+        let valid = ds.query(180, 200, None).unwrap();
+        assert_eq!(valid.len(), 1);
     }
 }

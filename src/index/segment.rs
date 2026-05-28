@@ -547,6 +547,47 @@ impl IndexSegmentMeta {
     }
 }
 
+/// Read the last entry's timestamp from an index segment file, if non-empty.
+///
+/// Opens the file in read-only mmap mode (safe on Windows), reads the last 18-byte
+/// entry's timestamp, and immediately drops the mmap+file handle.
+///
+/// Returns `Ok(Some(ts))` if the segment has at least one entry, or `Ok(None)` if
+/// the segment is empty. Caller should fall back to `meta.start_timestamp` for
+/// deciding whether to reclaim empty segments.
+pub fn last_entry_timestamp(path: &Path) -> Result<Option<i64>> {
+    let file = OpenOptions::new().read(true).open(path)?;
+    let file_len = file.metadata()?.len();
+    if file_len < INDEX_HEADER_SIZE {
+        return Ok(None);
+    }
+    let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+
+    // wrote_position at absolute offset 44 (first state field of IndexFileMetadata)
+    let wrote_pos = u64::from_le_bytes(
+        mmap[44..52]
+            .try_into()
+            .map_err(|_| TmslError::InvalidData("truncated wrote_position".into()))?,
+    );
+
+    let wrote_count = if wrote_pos > INDEX_HEADER_SIZE {
+        ((wrote_pos - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize
+    } else {
+        0
+    };
+
+    if wrote_count == 0 {
+        return Ok(None);
+    }
+
+    let last_offset = INDEX_HEADER_SIZE as usize + (wrote_count - 1) * INDEX_ENTRY_SIZE;
+    if last_offset + 8 > mmap.len() {
+        return Err(TmslError::InvalidData("truncated last index entry".into()));
+    }
+    let last_ts = i64::from_le_bytes(mmap[last_offset..last_offset + 8].try_into().unwrap());
+    Ok(Some(last_ts))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

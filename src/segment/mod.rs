@@ -346,6 +346,23 @@ impl DataSegmentSet {
     pub fn flush_all(&mut self) -> Result<()> {
         self.sync_all()
     }
+
+    /// Delete data segments whose `max_timestamp` is strictly less than `threshold`.
+    /// Must be called only when all data segments are closed (via idle_close_all).
+    /// Returns the number of files removed.
+    pub fn reclaim_expired_segments(&mut self, threshold: i64) -> Result<usize> {
+        let before = self.closed_segments.len();
+        self.closed_segments.retain(|meta| {
+            if meta.max_timestamp < threshold && meta.max_timestamp != TIMESTAMP_MAX_SENTINEL {
+                let _ = std::fs::remove_file(&meta.path);
+                log::info!("[retention] deleted data segment: {:?}", meta.path);
+                false
+            } else {
+                true
+            }
+        });
+        Ok(before - self.closed_segments.len())
+    }
 }
 
 // ─── Helper ──────────────────────────────────────────────────────────────────

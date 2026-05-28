@@ -20,6 +20,7 @@ use std::time::Duration;
 /// - `compress_level`: 6
 /// - `cache_max_memory`: 256 MiB (0 = disabled)
 /// - `cache_idle_timeout`: 30 minutes (1800s)
+/// - `retention_check_hour`: 0 (daily at midnight)
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
     /// Interval between background flush cycles (mmap sync only).
@@ -42,6 +43,8 @@ pub struct StoreConfig {
     pub cache_max_memory: usize,
     /// Idle timeout for cache entries (eviction by background thread).
     pub cache_idle_timeout: Duration,
+    /// Hour (0-23) at which the daily retention reclamation runs.
+    pub retention_check_hour: u8,
 }
 
 impl Default for StoreConfig {
@@ -57,6 +60,7 @@ impl Default for StoreConfig {
             compress_level: 6,
             cache_max_memory: 256 * 1024 * 1024, // 256 MiB
             cache_idle_timeout: Duration::from_secs(1800), // 30 min
+            retention_check_hour: 0,             // midnight
         }
     }
 }
@@ -81,6 +85,7 @@ pub struct StoreConfigBuilder {
     compress_level: Option<u8>,
     cache_max_memory: Option<usize>,
     cache_idle_timeout: Option<Duration>,
+    retention_check_hour: Option<u8>,
 }
 
 impl StoreConfigBuilder {
@@ -144,6 +149,12 @@ impl StoreConfigBuilder {
         self
     }
 
+    /// Set the daily retention reclamation hour (0-23, default 0 = midnight).
+    pub fn retention_check_hour(mut self, hour: u8) -> Self {
+        self.retention_check_hour = Some(hour.clamp(0, 23));
+        self
+    }
+
     /// Build the `StoreConfig`.
     pub fn build(self) -> StoreConfig {
         let defaults = StoreConfig::default();
@@ -166,6 +177,9 @@ impl StoreConfigBuilder {
             cache_idle_timeout: self
                 .cache_idle_timeout
                 .unwrap_or(defaults.cache_idle_timeout),
+            retention_check_hour: self
+                .retention_check_hour
+                .unwrap_or(defaults.retention_check_hour),
         }
     }
 }
@@ -180,6 +194,8 @@ pub struct DataSetConfig {
     pub index_continuous: u8,
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
+    /// Data validity period in same unit as timestamps. 0 = no limit.
+    pub retention_ms: u64,
 }
 
 #[allow(dead_code)]
@@ -193,6 +209,7 @@ impl DataSetConfig {
             index_continuous: 0,
             initial_data_segment_size: config.initial_data_segment_size,
             initial_index_segment_size: config.initial_index_segment_size,
+            retention_ms: 0,
         }
     }
 
@@ -231,6 +248,7 @@ pub struct DataSetConfigBuilder {
     index_continuous: Option<u8>,
     initial_data_segment_size: Option<u64>,
     initial_index_segment_size: Option<u64>,
+    retention_ms: Option<u64>,
 }
 
 impl DataSetConfigBuilder {
@@ -245,6 +263,7 @@ impl DataSetConfigBuilder {
             index_continuous: Some(0),
             initial_data_segment_size: Some(store.initial_data_segment_size),
             initial_index_segment_size: Some(store.initial_index_segment_size),
+            retention_ms: Some(0),
         }
     }
 
@@ -290,6 +309,12 @@ impl DataSetConfigBuilder {
         self
     }
 
+    /// Set the data retention period (same unit as timestamp, 0 = no limit).
+    pub fn retention_ms(mut self, ms: u64) -> Self {
+        self.retention_ms = Some(ms);
+        self
+    }
+
     /// Build the `DataSetConfig`.
     pub fn build(self) -> DataSetConfig {
         let defaults = DataSetConfig::from_store(&StoreConfig::default());
@@ -307,6 +332,7 @@ impl DataSetConfigBuilder {
             initial_index_segment_size: self
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
+            retention_ms: self.retention_ms.unwrap_or(0),
         }
     }
 }
@@ -328,6 +354,7 @@ mod tests {
         assert_eq!(cfg.compress_level, 6);
         assert_eq!(cfg.cache_max_memory, 256 * 1024 * 1024);
         assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(1800));
+        assert_eq!(cfg.retention_check_hour, 0);
     }
 
     #[test]
@@ -343,6 +370,7 @@ mod tests {
             .compress_level(9)
             .cache_max_memory(128 * 1024 * 1024)
             .cache_idle_timeout(Duration::from_secs(600))
+            .retention_check_hour(2)
             .build();
 
         assert_eq!(cfg.flush_interval, Duration::from_secs(1200));
@@ -355,6 +383,7 @@ mod tests {
         assert_eq!(cfg.compress_level, 9);
         assert_eq!(cfg.cache_max_memory, 128 * 1024 * 1024);
         assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(600));
+        assert_eq!(cfg.retention_check_hour, 2);
     }
 
     #[test]
@@ -367,12 +396,21 @@ mod tests {
         assert_eq!(cfg.flush_interval, Duration::from_secs(300));
         assert_eq!(cfg.idle_timeout, defaults.idle_timeout);
         assert_eq!(cfg.block_max_size, defaults.block_max_size);
+        assert_eq!(cfg.retention_check_hour, defaults.retention_check_hour);
     }
 
     #[test]
     fn test_builder_compress_level_cap() {
         let cfg = StoreConfig::builder().compress_level(15).build();
         assert_eq!(cfg.compress_level, 9); // capped at 9
+    }
+
+    #[test]
+    fn test_builder_retention_check_hour_clamp() {
+        let cfg = StoreConfig::builder().retention_check_hour(99).build();
+        assert_eq!(cfg.retention_check_hour, 23);
+        let cfg2 = StoreConfig::builder().retention_check_hour(12).build();
+        assert_eq!(cfg2.retention_check_hour, 12);
     }
 
     #[test]
@@ -385,6 +423,7 @@ mod tests {
         assert_eq!(dataset.data_segment_size, 32 * 1024 * 1024);
         assert_eq!(dataset.compress_level, 3);
         assert_eq!(dataset.block_max_size, 65536); // default
+        assert_eq!(dataset.retention_ms, 0);
     }
 
     #[test]
@@ -404,6 +443,7 @@ mod tests {
         assert_eq!(config.index_continuous, 0);
         assert_eq!(config.initial_data_segment_size, 512 * 1024);
         assert_eq!(config.initial_index_segment_size, 8 * 1024);
+        assert_eq!(config.retention_ms, 0);
     }
 
     #[test]
@@ -416,11 +456,13 @@ mod tests {
         let config = DataSetConfigBuilder::from_store(&store)
             .compress_level(9)
             .index_continuous(1)
+            .retention_ms(30 * 86400 * 1000)
             .build();
 
         // Override takes effect
         assert_eq!(config.compress_level, 9);
         assert_eq!(config.index_continuous, 1);
+        assert_eq!(config.retention_ms, 30 * 86400 * 1000);
         // Store default is inherited
         assert_eq!(config.data_segment_size, 64 * 1024 * 1024);
     }
