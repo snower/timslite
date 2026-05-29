@@ -19,7 +19,7 @@
 
 **Block 大小限制**: 最大 64KB (65536 字节)。如果单条 record 的原始数据就超过 64KB, 则该 record **独占一个 Block**, Block 实际大小可超过 64KB。
 
-**纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时触发纠正写入。最新记录必然位于 **最新数据段的最后一个未压缩 block** (可以是 pending block 或 SEALED 但未压缩的 block) 的最末位置, 因此可通过 mmap 直接修改该 record 的 data 字节, **支持改变 data 长度** (增长或缩小)。索引条目保持不变 (block_offset/in_block_offset 不变)。约束: 最后一个 block 必须未压缩 (flags 不含 COMPRESSED), 否则不支持纠正写入, 返回错误。修改时 delta = new_data.len() - old_data_len, 需同步更新 5 个字段: block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position (仅 pending) / total_uncompressed_size / wrote_position。
+**纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时触发纠正写入。最新记录必然位于 **最新数据段的最后一个未压缩 block** (可以是 pending block 或 SEALED 但未压缩的 block) 的最末位置, 因此可通过 mmap 直接修改该 record 的 data 字节, **支持改变 data 长度** (增长或缩小)。索引条目保持不变 (block_offset/in_block_offset 不变)。修改时 delta = new_data.len() - old_data_len, 需同步更新 5 个字段: block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position (仅 pending) / total_uncompressed_size / wrote_position。**回退行为**: 若目标 block 已密封或已压缩 (无法原地修改), 则自动回退为更新写入: 数据追加到最新数据段、更新索引值, 同时旧数据所在段的 `invalid_record_count` 加一。
 
 ### 3.3 Block Layout (磁盘上的 Block 结构)
 

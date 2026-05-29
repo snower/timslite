@@ -109,17 +109,18 @@ DataSet::write(timestamp, data):
     │    ├─ 1. time_index.find_entry(timestamp)
     │    │      → 获取 (block_offset, in_block_offset)
     │    │
-    │    ├─ 2. 验证该 record 是"最新数据段的最后一个未压缩 block 的最后一条 record"
+    │    ├─ 2. 尝试验证该 record 是"最新数据段的最后一个未压缩 block 的最后一条 record"
     │    │      ├─ 必须是最后一段 + block 为该段最后一个 block
-    │    │      ├─ block.flags 不能含 COMPRESSED flag (否则错误: "correction not supported on compressed block")
+    │    │      ├─ block.flags 不能含 COMPRESSED flag
     │    │      └─ record 必须是 block 内最后一条 (in_block_offset + RECORD_HEADER_SIZE + old_data_len == payload_size)
     │    │
     │    ├─ 3. segments.overwrite_in_last_block(block_offset, in_block_offset, timestamp, new_data)
-    │    │      ├─ 支持改变 data 长度 (可增长或缩小)
-    │    │      └─ 更新 5 个字段 (见下文)
+    │    │      ├─ 成功 → 返回 Ok(())
+    │    │      │        (支持改变 data 长度, 更新 5 个字段, 索引条目不变)
+    │    │      └─ 失败 → 目标 block 无法原地修改 (已压缩、已密封或非法位置)
+    │    │           └─ **回退到乱序写入**: append 到最新段 + update_entry + invalid_record_count++
     │    │
-    │    └─ 成功 → return Ok(())
-    │       (索引条目不变, latest_written_timestamp 不变)
+    │    └─ 索引条目不变 (仅当原地覆盖成功时), latest_written_timestamp 不变
     │
     ├─ if timestamp < latest_written_timestamp (乱序写入, 两种模式通用):
     │    │
@@ -160,7 +161,7 @@ DataSet::write(timestamp, data):
 1. **前提**: 最新写入的记录必然位于 **最新数据段** 的 **最后一个未压缩 block** 的最后一条位置。可能形态:
    - **Pending block** (flags = 0): 尚未密封, 未压缩
    - **Sealed block** (flags = SEALED): 已密封但未压缩 (压缩未受益, seal 时保留原始格式)
-2. **不支持**: 如果最后一个 block 的 flags 含 `COMPRESSED`, 数据已被压缩, 无法原地修改 → 返回错误
+2. **回退 (非错误)**: 如果最后一个 block 的 flags 含 `COMPRESSED` (数据已被压缩)、block 已密封、record 不是最后一条, 或最新数据段无打开的映射 — 无法原地修改时, 自动回退为**乱序写入**: 新数据追加到最新数据段 (新的 pending block), 索引条目原地更新为新的 (block_offset, in_block_offset), 同时旧数据所在段的 `invalid_record_count += 1`
 3. **支持变 size**: 新 data 可以比原 data 大或小, 只需移动后续字节并更新相关计数字段
 4. **索引不变**: block_offset + in_block_offset 仍指向同一 record 起始位置, data_len (u16) 更新为新长度
 5. **索引条目不变**: 索引中的 block_offset/in_block_offset 字段无需修改
@@ -185,7 +186,7 @@ DataSet::write(timestamp, data):
 //      验证 block_offset 落在该段且为段内最后一个 block
 //      block.start = DATA_HEADER_SIZE + (block_offset - seg.file_offset)
 //   2. 读取 block header (16B at block.start)
-//      - 检查 flags & COMPRESSED == 0 (若含 COMPRESSED → 返回错误)
+//      - 检查 flags & COMPRESSED == 0 (若含 COMPRESSED → 返回错误, 由 correct_write 捕获并回退到乱序写入)
 //      - 计算 record 在 payload 中的位置
 //      - 验证 record 是 block 内最后一条:
 //        in_block_offset + 10 + old_data_len == payload_size

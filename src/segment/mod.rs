@@ -363,7 +363,13 @@ impl DataSegmentSet {
     ) -> Result<(i64, Vec<u8>)> {
         let seg_offset = entry.block_offset;
         let seg = self.find_or_open_segment(seg_offset)?;
-        seg.read_at_index(entry, cache)
+        let seg_file_offset = seg.file_offset;
+        let rel_entry = crate::segment::data::ReadIndexEntry {
+            timestamp: entry.timestamp,
+            block_offset: entry.block_offset - seg_file_offset,
+            in_block_offset: entry.in_block_offset,
+        };
+        seg.read_at_index(&rel_entry, cache)
     }
 
     /// Find the segment and read the record with HotBlockCache support.
@@ -374,7 +380,13 @@ impl DataSegmentSet {
         hot_block: &mut HotBlockCache,
     ) -> Result<(i64, Vec<u8>)> {
         let seg = self.find_or_open_segment(entry.block_offset)?;
-        seg.read_at_index_with_hot_cache(entry, cache, hot_block)
+        let seg_file_offset = seg.file_offset;
+        let rel_entry = crate::segment::data::ReadIndexEntry {
+            timestamp: entry.timestamp,
+            block_offset: entry.block_offset - seg_file_offset,
+            in_block_offset: entry.in_block_offset,
+        };
+        seg.read_at_index_with_hot_cache(&rel_entry, cache, hot_block)
     }
 
     fn find_or_open_segment(&mut self, absolute_offset: u64) -> Result<&mut DS> {

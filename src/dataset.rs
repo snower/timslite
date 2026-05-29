@@ -188,7 +188,10 @@ impl DataSet {
     /// - `timestamp <= 0`: error.
     /// - `timestamp == latest_written_timestamp` (and latest > 0): **correction write** —
     ///   in-place overwrite of the data bytes in the last uncompressed block of the latest
-    ///   data segment. The index entry is unchanged. May change data length.
+    ///   data segment. The index entry is unchanged. If the target block has already been
+    ///   sealed and compressed (COMPRESSED flag set), falls back to out-of-order write:
+    ///   appends data to latest segment, updates index entry, and increments the old
+    ///   segment's `invalid_record_count`.
     /// - `timestamp < latest_written_timestamp`: **out-of-order write** — appends data to
     ///   the latest data segment and updates the existing index entry in place. Requires
     ///   that an index entry at `timestamp` already exists (always true in continuous mode;
@@ -269,24 +272,37 @@ impl DataSet {
     /// The record is located via the existing index entry, then its data bytes
     /// in the last uncompressed block of the latest data segment are replaced.
     /// Supports variable data length — updates block + segment counters accordingly.
+    ///
+    /// If the target block has been sealed and compressed (COMPRESSED flag set),
+    /// falls back to out-of-order write: appends data to latest segment, updates
+    /// the index entry, and increments `invalid_record_count` on the old segment.
     fn correct_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
-        let entry = self.time_index.find_entry(timestamp)?.ok_or_else(|| {
-            TmslError::NotFound(format!(
+        match self.time_index.find_entry(timestamp)? {
+            Some(entry) => {
+                match self.segments.overwrite_in_last_block(
+                    entry.block_offset,
+                    entry.in_block_offset,
+                    timestamp,
+                    data,
+                ) {
+                    Ok(()) => {
+                        // latest_written_timestamp unchanged; index unchanged.
+                        self.last_used_at = Instant::now();
+                        Ok(())
+                    }
+                    Err(_) => {
+                        // Target block cannot be modified in place (compressed, sealed, or
+                        // not the last block/record) → fall back to out-of-order write:
+                        // append to latest segment, update index, increment invalid_record_count
+                        self.out_of_order_write(timestamp, data)
+                    }
+                }
+            }
+            None => Err(TmslError::NotFound(format!(
                 "no index entry for correction timestamp {}",
                 timestamp
-            ))
-        })?;
-
-        self.segments.overwrite_in_last_block(
-            entry.block_offset,
-            entry.in_block_offset,
-            timestamp,
-            data,
-        )?;
-
-        // latest_written_timestamp unchanged; index unchanged.
-        self.last_used_at = Instant::now();
-        Ok(())
+            ))),
+        }
     }
 
     /// Delete the record at the given timestamp.
@@ -1512,5 +1528,148 @@ mod tests {
         // Reopened segment should preserve invalid_record_count
         let seg2 = ds2.segments.segments.last().unwrap();
         assert_eq!(seg2.invalid_record_count, 1);
+    }
+
+    // ─── Correction write fallback on sealed/compressed block ────────────
+
+    #[test]
+    fn test_correction_write_falls_back_after_reopen() {
+        // When a correction write targets a sealed block (sealed by close → reopen),
+        // in-place overwrite fails → falls back to out-of-order write:
+        // data is appended to a new pending block, the index entry is updated in place,
+        // and the old data segment's invalid_record_count is incremented.
+        let dir = temp_dir("correction_fallback_reopen");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                65536,
+                0,
+                256 * 1024,
+                4 * 1024,
+                0,
+            )
+            .unwrap();
+            ds.write(100, b"original").unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+        {
+            let mut ds = DataSet::open(id, dir.clone(), 65536).unwrap();
+            // Block is now SEALED → in-place correction fails → falls back to out-of-order
+            ds.write(100, b"corrected").unwrap();
+
+            // Query should return the corrected data
+            let entries = ds.query(100, 100, None).unwrap();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].0, 100);
+            assert_eq!(entries[0].1, b"corrected");
+
+            // latest_written_timestamp unchanged
+            assert_eq!(ds.latest_written_timestamp, 100);
+        }
+    }
+
+    #[test]
+    fn test_correction_write_falls_back_on_compressed_block() {
+        // When a correction write targets a SEALED+COMPRESSED block (single-record
+        // compression), in-place overwrite fails → falls back to out-of-order write.
+        // Triggers compressed block via block_max_size=0 (forces any record > 0 bytes
+        // to be written as an exclusive sealed block, which is compressed if effective).
+        let dir = temp_dir("correction_fallback_compressed");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0, // block_max_size=0 → every record is an exclusive block
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        // Use highly compressible data to ensure compression is effective → COMPRESSED flag
+        let compressible = vec![0xAB_u8; 500];
+        ds.write(100, &compressible).unwrap();
+
+        // Correction write at ts=100 → target block is SEALED+COMPRESSED → falls back
+        let corrected = vec![0xCD_u8; 300];
+        ds.write(100, &corrected).unwrap();
+
+        // Query should return the corrected data
+        let entries = ds.query(100, 100, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, corrected);
+
+        // latest_written_timestamp unchanged
+        assert_eq!(ds.latest_written_timestamp, 100);
+
+        // invalid_record_count should be 1 (old data orphaned)
+        let seg = ds.segments.segments.last().unwrap();
+        assert_eq!(seg.invalid_record_count, 1);
+    }
+
+    #[test]
+    fn test_correction_write_fallback_reopen_persistence() {
+        // Correction-write fallback result must persist across close+reopen.
+        let dir = temp_dir("correction_fallback_persist");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        // Phase 1: write multiple records, then close
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                65536,
+                0,
+                256 * 1024,
+                4 * 1024,
+                0,
+            )
+            .unwrap();
+            ds.write(100, b"first").unwrap();
+            ds.write(200, b"last").unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+        // Phase 2: reopen and correct ts=100 (block was sealed → fallback)
+        {
+            let mut ds = DataSet::open(id.clone(), dir.clone(), 65536).unwrap();
+            ds.write(100, b"corrected_100").unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+        // Phase 3: reopen and verify
+        {
+            let mut ds = DataSet::open(id, dir, 65536).unwrap();
+            let entries = ds.query(100, 200, None).unwrap();
+            assert_eq!(entries.len(), 2);
+            assert_eq!(entries[0].0, 100);
+            assert_eq!(entries[0].1, b"corrected_100");
+            assert_eq!(entries[1].0, 200);
+            assert_eq!(entries[1].1, b"last");
+
+            let seg = ds.segments.segments.last().unwrap();
+            assert_eq!(seg.invalid_record_count, 1);
+        }
     }
 }
