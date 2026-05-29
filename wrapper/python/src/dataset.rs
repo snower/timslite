@@ -67,6 +67,23 @@ impl PyDataset {
         wrap(ds.read(timestamp, None))
     }
 
+    /// Delete the record at the given timestamp.
+    ///
+    /// Marks the index entry as sentinel (block_offset = 0xFFFF..., in_block = 0xFFFF)
+    /// and increments the data segment's invalid_record_count. The physical data
+    /// remains on disk until retention-based reclamation or future compaction.
+    ///
+    /// Args:
+    ///     timestamp: Timestamp of the record to delete (> 0).
+    ///
+    /// Raises:
+    ///     TmslNotFoundError: no real data exists at that timestamp.
+    ///     TmslInvalidDataError: timestamp <= 0 or dataset is empty.
+    fn delete(&mut self, timestamp: i64) -> PyResult<()> {
+        let mut ds = self.inner.lock().unwrap();
+        wrap(ds.delete(timestamp))
+    }
+
     /// Query records in [start_ts, end_ts], returns a lazy iterator.
     ///
     /// Yields (timestamp: int, data: bytes) tuples.
