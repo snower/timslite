@@ -136,7 +136,7 @@ Offset  (相对 state 起始)    Size  Field                       Description
 40      u64(8)  pending_block_offset      当前未完成 block 相对偏移 (u64::MAX=无)
 48      u64(8)  pending_wrote_position    pending block 内已写入位置(从 payload 起始)
 56      u64(8)  pending_record_count      pending block 内 record 数量
-64      u64(8)  reserved                  保留字段 (初始化为 0)
+64      u64(8)  invalid_record_count      段内无效记录数 (索引已不指向该 record, 但物理数据仍存在)
 ```
 
 > `min_timestamp` / `max_timestamp`: 每次 `append_record` 更新, 用于 DataSegmentSet 的时间范围段级过滤优化。空段时 `min_timestamp = i64::MAX`, `max_timestamp = i64::MIN`。
@@ -310,7 +310,7 @@ struct DataFileMetadata {
     pending_block_offset: u64,
     pending_wrote_position: u64,
     pending_record_count: u64,
-    reserved: u64,              // 保留字段
+    invalid_record_count: u64,  // 段内无效记录数 (乱序写入/delete 导致)
 }
 
 /// 索引段文件元数据头 (IndexFileHeader, 52 bytes)

@@ -12,7 +12,8 @@
 
 当 `index_continuous=false` 时:
 - 索引按实际写入时间戳顺序 append, 无填充
-- 逆序写入 (timestamp < 最新已写入时间戳) → **拒绝**
+- 逆序写入 (timestamp < 最新已写入时间戳) 且索引中**存在**该时间戳条目 → **乱序写入** (追加数据到最新段 + 原地更新索引 + 旧段 `invalid_record_count++`)
+- 逆序写入且索引中**不存在**该时间戳条目 → **拒绝** (Error)
 - 相同时间戳 (timestamp == 最新已写入时间戳) → **纠正写入** (最新数据段最后一个未压缩 block 的最后一条 record, 就地覆盖 data 字节, 支持变 size, 索引不变)
 
 ## 23.2 写入行为
@@ -37,15 +38,19 @@ DataSet::write(timestamp, data):
        │    │
        │    └─ 写入真实条目 → latest_written_timestamp = timestamp
        │
-       ├─ 情况B: timestamp < latest 且 index_continuous == true (补数据)
-       │    ├─ 二分查找 filler entry at timestamp
-       │    ├─ 找到 filler → mmap 覆盖写 18 字节 → 替换为真实 entry
-       │    └─ 未找到 filler → Error
-       │
-       ├─ 情况C: timestamp < latest 且 index_continuous == false
-       │    └─ Error("out-of-order")
-       │
-        └─ 情况D: timestamp == latest (纠正写入, 两种模式均适用)
+        ├─ 情况B: timestamp < latest (乱序写入, 两种模式通用)
+        │    ├─ 数据 append 到最新数据段 → (new_block_offset, new_in_block_offset)
+        │    ├─ 查找索引条目 at timestamp:
+        │    │    ├─ 条目存在且引用数据 (block_offset ≠ FILLER):
+        │    │    │    ├─ 原地覆盖条目为新 (block_offset, in_block_offset)
+        │    │    │    └─ 旧数据段 invalid_record_count += 1
+        │    │    ├─ 条目存在且为 filler (仅连续模式):
+        │    │    │    └─ 替换 filler → 真实 entry (invalid_record_count 不变)
+        │    │    └─ 条目不存在:
+        │    │         └─ Error("out-of-order write requires existing index entry")
+        │    └─ latest_written_timestamp 不变
+        │
+         └─ 情况C: timestamp == latest (纠正写入, 两种模式均适用)
              ├─ 查找索引条目获取 (block_offset, in_block_offset)
              ├─ 验证该 record 位于: 最新数据段 + 最后一个 block (未压缩) + block 的最末 record
              ├─ 若最后一个 block 含 COMPRESSED flag → 不支持 (返回错误)
@@ -61,12 +66,17 @@ DataSet::write(timestamp, data):
 |------|------|
 | ts < 0 | Error |
 | ts = 0 | Error (保留给 index segment 命名) |
-| ts = latest_written_timestamp | **纠正写入**: 最新数据段最后一个未压缩 block 的最末 record 原地覆盖, 支持变 size, 需更新 5 个字段 (block payload_size/uncompressed_size + 段 wrote_position/total_uncompressed_size/pending_wrote_position); 若最后 block 含 COMPRESSED → 不支持 |
-| ts 对应真实 entry (补数据场景) | Error (不覆盖真实数据, 仅限 filler → 真实) |
-| ts 对应 filler | 替换 filler → 真实 entry |
-| ts > latest_written_timestamp | 填充 + 正常写入 |
+| ts = latest_written_timestamp | **纠正写入** (两种模式): 最新数据段最后一个未压缩 block 的最末 record 原地覆盖, 支持变 size, 需更新 5 个字段; 若最后 block 含 COMPRESSED → 不支持 |
+| ts < latest, 索引存在条目且引用真实数据 | **乱序写入** (两种模式): 追加数据到最新段 + 原地更新索引条目 + 旧数据段 `invalid_record_count += 1` |
+| ts < latest, 索引存在 filler (仅连续模式) | **乱序写入**: 追加数据到最新段 + 替换 filler → 真实 entry (`invalid_record_count` 不变) |
+| ts < latest, 索引无条目 | Error("out-of-order write requires existing index entry") |
+| ts > latest_written_timestamp | 正序写入 (非连续模式: 追加; 连续模式: 填充 filler + 写入) |
 
 > **纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖最近一次写入的数据。该 record 必然位于 **最新数据段的最后一个未压缩 block** (可以是 pending block 或 SEALED 无 COMPRESSED flag 的 block) 的 **最末位置**。通过已有索引条目的 `(block_offset, in_block_offset)` 定位 record 后, 直接 mmap 覆写 data 字节, 支持 `data.len()` 与原 `data_len` 不同 (增长或缩小), 需同步更新 5 个字段 (block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position/total_uncompressed_size/wrote_position)。索引条目完全不变, 不产生孤儿记录。若最后一个 block 含 COMPRESSED flag, 因压缩后大小不可预测, 不支持纠正写入。详见 [数据集操作 §9.1](dataset-operations.md#91-时间戳验证与写入分支)。
+>
+> **乱序写入 (Out-of-Order Write)**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入), 索引中该时间戳的现有条目被原地更新为新的数据位置。**要求索引中存在该时间戳的条目**: 连续模式总是存在 (filler 或真实数据), 非连续模式仅在曾写入过该时间戳时存在。若旧条目引用了实际数据, 旧数据段的 `invalid_record_count` 递增 (旧数据成为孤儿记录); 若旧条目为 filler, `invalid_record_count` 不变。`latest_written_timestamp` 不因乱序写入而改变。
+>
+> **删除 (Delete)**: `DataSet::delete(timestamp)` 将索引条目标记为哨兵值 (block_offset = `0xFFFFFFFFFFFFFFFF`, in_block_offset = `0xFFFF`), 原数据段的 `invalid_record_count` 递增。条目不存在或为 filler 时返回错误。查询路径自动跳过哨兵条目, 无需修改。详见 [数据集操作 §9.3](dataset-operations.md#93-删除操作)。
 
 ## 23.3 配置持久化
 
@@ -80,14 +90,18 @@ DataSet::write(timestamp, data):
 
 | 字段 | 哨兵值 | 含义 | 合法性保证 |
 |------|--------|------|-----------|
-| `block_offset: u64` | `0xFFFFFFFFFFFFFFFF` | 此位置无真实数据 (filler) | 合法全局偏移远低于 u64::MAX |
-| `in_block_offset: u16` | `0xFFFF` | 此位置无真实数据 (filler) | 合法偏移 ≤ block_max_size = 64KB |
+| `block_offset: u64` | `0xFFFFFFFFFFFFFFFF` | 此位置无真实数据 (filler 或已删除) | 合法全局偏移远低于 u64::MAX |
+| `in_block_offset: u16` | `0xFFFF` | 此位置无真实数据 (filler 或已删除) | 合法偏移 ≤ block_max_size = 64KB |
+
+**哨兵值使用场景**:
+- **Filler 条目** (连续模式): 初始化时填充缺失时间戳位置, 等待后续写入替换
+- **Delete 条目** (两种模式): `DataSet::delete(timestamp)` 将真实条目覆盖为哨兵值, 旧数据段 `invalid_record_count++`
 
 **读取时过滤**:
 ```rust
 for entry in &entries {
     if entry.block_offset == 0xFFFFFFFFFFFFFFFF {
-        continue;  // 跳过 filler
+        continue;  // 跳过 filler / 已删除条目
     }
     // ... 正常读取 ...
 }

@@ -95,7 +95,7 @@ const DATA_HEADER_SIZE: u64 = 116;  // 数据段文件头大小
 │   min_timestamp, max_timestamp, wrote_position,  │
 │   record_count, total_uncompressed_size,         │
 │   pending_block_offset, pending_wrote_position,  │
-│   pending_record_count, reserved                 │
+│   pending_record_count, invalid_record_count     │
 ├──────────────────────────────────────────────────┤
 │ Block 1 (sealed, compressed)                     │
 │   BlockHeader (16 bytes)                         │

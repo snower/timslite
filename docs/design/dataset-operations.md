@@ -46,6 +46,9 @@ impl DataSet {
     fn flush(&mut self) -> io::Result<()>;
     fn config(&self) -> &DataSetConfig;
 
+    /// 删除指定时间戳的记录 (索引标记为哨兵, 数据段 invalid_record_count++)
+    fn delete(&mut self, timestamp: i64) -> io::Result<()>;
+
     /// 回收超过有效期的分段文件 (需先 close)
     /// retention_ms=0 时跳过; retention_ms > 0 时计算过期阈值并删除过期分段
     fn reclaim_expired_segments(&mut self) -> io::Result<usize>;
@@ -118,18 +121,39 @@ DataSet::write(timestamp, data):
     │    └─ 成功 → return Ok(())
     │       (索引条目不变, latest_written_timestamp 不变)
     │
-    ├─ 非连续模式 (index_continuous == 0):
+    ├─ if timestamp < latest_written_timestamp (乱序写入, 两种模式通用):
     │    │
-    │    └─ timestamp < latest → Error("out-of-order")
-    │       timestamp > latest → 正常写入
+    │    ├─ 1. 新数据 append 到最新数据段 → (seg_offset, new_block_offset, new_in_block_offset)
+    │    │
+    │    ├─ 2. time_index.update_entry(timestamp, new_block_offset, new_in_block_offset)
+    │    │      → 返回 old_entry (旧索引条目, 用于判断是否需要 invalid_record_count++)
+    │    │
+    │    ├─ 3. 根据 old_entry 状态:
+    │    │      ├─ 条目存在且引用数据 (block_offset ≠ FILLER):
+    │    │      │    ├─ 原地覆盖索引条目 (block_offset + in_block_offset)
+    │    │      │    ├─ 定位旧数据所在数据段 (block_offset → segment)
+    │    │      │    └─ 该段 invalid_record_count += 1
+    │    │      │
+    │    │      ├─ 条目存在且为 filler (仅连续模式):
+    │    │      │    └─ 原地覆盖为真实条目 (invalid_record_count 不变)
+    │    │      │
+    │    │      └─ 条目不存在:
+    │    │           └─ Error("out-of-order write requires existing index entry")
+    │    │
+    │    └─ 成功 → return Ok(())
+    │       (latest_written_timestamp 不变)
     │
-    └─ 连续模式 (index_continuous != 0):
-         │
-         ├─ timestamp < latest (补数据): append + replace_filler_with_real
-         └─ timestamp > latest: 填充 filler + 正常写入
+    ├─ timestamp > latest (正序写入):
+    │    │
+    │    ├─ 非连续模式: 正常写入 + 追加索引
+    │    └─ 连续模式: 填充 filler + 正常写入
+    │
+    └─ latest_written_timestamp = timestamp (仅正序写入时更新)
 ```
 
 **纠正写入**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
+
+**乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时查找索引中该时间戳的现有条目并原地更新为新的数据位置。**两种模式均要求索引中存在该时间戳的条目** (连续模式总是存在 filler 条目, 非连续模式仅在曾写入过该时间戳时存在)。若索引中无条目则返回错误。
 
 **原地覆盖策略 (In-Place Overwrite, 支持变长)**:
 
@@ -178,6 +202,31 @@ DataSet::write(timestamp, data):
 //   7. 更新 file header 中 wrote_position (update_file_wrote_position)
 ```
 
+**乱序写入机制 (Out-of-Order Write)**:
+
+当 `timestamp < latest_written_timestamp` 时, 数据不会写入到其时间戳对应的位置, 而是**追加到最新数据段**的最新位置, 同时原地更新索引中的现有条目:
+
+```
+// DataSegmentSet::append_record + TimeIndex::update_entry:
+//   1. 新数据追加到最新数据段 (正常写入到 pending block 或创建新 block)
+//      → (seg_offset, new_block_offset, new_in_block_offset)
+//   2. time_index.update_entry(timestamp, new_block_offset, new_in_block_offset)
+//      → 查找现有索引条目, 原地覆盖 18 字节为新的 (block_offset, in_block_offset)
+//      → 返回 old_entry (旧索引条目)
+//   3. if old_entry.block_offset ≠ FILLER (旧索引引用了实际数据):
+//        old_segment = segments.locate_segment(old_entry.block_offset)
+//        old_segment.invalid_record_count += 1
+//      else (旧索引为 filler, 仅连续模式):
+//        // 无实际数据被替代, invalid_record_count 不变
+```
+
+> **索引原地更新**: 索引条目 18 字节通过 mmap 直接覆盖, 不改变条目总数。
+> - **连续模式**: O(1) 定位 — `pos = INDEX_HEADER_SIZE + (ts - seg_start_ts) × INDEX_ENTRY_SIZE`
+> - **非连续模式**: 在 in_memory_buffer 中线性搜索, 或在已打开的 IndexSegment 中二分查找; 若目标在 closed segment 中, 临时打开 → 覆盖 → idle_close
+> - **崩溃安全**: 18 字节非原子写入, 与现有 mmap 写入的崩溃容忍度一致 (最坏损失 = flush 间隔内未 sync 的写入)
+>
+> **invalid_record_count 更新**: 通过 `block_offset` 计算旧数据所在数据段 (段路由: `file_offset = (block_offset / segment_size) × segment_size`), 再对该段 `invalid_record_count` 字段 +1。段可能已关闭, 需通过 `lazy_open` 临时打开以更新 mmap state 字段。
+
 ### 9.2 Flush 行为 (mmap sync only)
 
 ```
@@ -192,6 +241,46 @@ flush (配置化，默认10分钟):
 ```
 
 > **关键区别**: flush ≠ seal。flush 只 msync，密封/压缩只发生在 block 溢出或 idle-close 时。
+
+### 9.3 删除操作 (DataSet::delete)
+
+**语义**: 将指定时间戳对应的记录从索引中移除 (标记为哨兵), 数据段中的物理数据保留但 `invalid_record_count` 递增, 表示该 record 不再有效。
+
+```
+DataSet::delete(timestamp):
+    │
+    ├─ if timestamp <= 0 → Error("timestamp must be > 0")
+    │
+    ├─ if latest_written_timestamp == 0 → Error("no data")
+    │
+    ├─ time_index.find_and_delete_entry(timestamp)
+    │    │
+    │    ├─ 查找索引条目 (三级搜索: in_memory_buffer → open segments → closed segments):
+    │    │    ├─ 连续模式: O(1) 直接计算位置
+    │    │    └─ 非连续模式: 二分查找 / in_memory_buffer 线性搜索
+    │    │
+    │    ├─ 条目存在且引用真实数据 (block_offset ≠ FILLER):
+    │    │    ├─ 将索引条目覆盖为哨兵: block_offset = 0xFFFFFFFFFFFFFFFF, in_block_offset = 0xFFFF
+    │    │    │   (timestamp 字段保持不变, 查询路径跳过 sentinel 条目)
+    │    │    ├─ 定位旧数据所在数据段: segment = locate_segment(old_block_offset)
+    │    │    ├─ segment.invalid_record_count += 1
+    │    │    └─ 更新段 file header state
+    │    │
+    │    └─ 条目不存在 / 条目为 filler:
+    │         └─ Error("not found") — 无可删除的记录
+    │
+    └─ return Ok(())
+```
+
+> **查询影响**: 删除后, 查询路径自动跳过 `block_offset == 0xFFFFFFFFFFFFFFFF` 的哨兵条目, 被删除的记录不会出现在查询结果中。无需修改查询逻辑。
+>
+> **物理数据保留**: 被删除的 record 物理上仍存在于数据段 block 中, 不影响后续 block 的读写。仅在数据段回收时 (retention reclaim 或 `invalid_record_count` 达到阈值触发 compaction) 才会物理清除。
+>
+> **崩溃安全**: 与写入操作一致 — 索引覆盖 + `invalid_record_count` 递增均为 mmap 写入, 最坏损失 = flush 间隔内未 sync 的操作。
+>
+> **与 `invalid_record_count` 的关系**: 每次 delete 操作使旧数据段的 `invalid_record_count += 1`。该计数器可用于:
+> - 诊断: 监控段内无效记录占比 (`invalid_record_count / record_count`)
+> - 未来 compaction: 当无效占比超过阈值时触发段压缩, 物理回收空间
 
 ## 十、读取流程详解 (含缓存)
 

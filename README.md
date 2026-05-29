@@ -192,6 +192,7 @@ int main() {
 | `tmsl_dataset_drop` | 删除整个数据集 | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_flush` | 手动 flush 数据集 | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_write` | 写入一条记录 | `0`=成功, `-1`=失败 |
+| `tmsl_dataset_delete` | 删除指定时间戳的记录 (索引标哨兵, invalid_record_count++) | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_query` | 查询时间范围, 返回迭代器 | `*mut c_void` (NULL=失败) |
 | `tmsl_iter_next` | 获取下一条记录 | `0`=成功, `1`=无数据, `-1`=失败 |
 | `tmsl_iter_free_data` | 释放 `tmsl_iter_next` 分配的数据 | void |
@@ -313,7 +314,7 @@ let config = StoreConfig::builder()
 │   min_timestamp, max_timestamp, wrote_position,          │
 │   record_count, total_uncompressed_size,                 │
 │   pending_block_offset, pending_wrote_position,          │
-│   pending_record_count, reserved                         │
+│   pending_record_count, invalid_record_count             │
 └──────────────────────────────────────────────────────────┘
 ```
 

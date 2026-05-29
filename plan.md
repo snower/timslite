@@ -26,6 +26,7 @@
 | 15 | Header State 分化 | ✅ 完成 | [phase-15-header-state-split.md](docs/plan/phase-15-header-state-split.md) |
 | 16 | 数据保留 (Retention) | ✅ 完成 | [phase-16-data-retention.md](docs/plan/phase-16-data-retention.md) |
 | 17 | 纠正写入 (Correction Write) | ✅ 完成 | [phase-17-correction-write.md](docs/plan/phase-17-correction-write.md) |
+| 18 | 乱序写入与删除 (Out-of-Order Write & Delete) | 📋 待实现 | [phase-18-out-of-order-write-and-delete.md](docs/plan/phase-18-out-of-order-write-and-delete.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -146,6 +147,19 @@
 - [x] `cargo clippy -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (107 unit + 21 integration = 128 tests)
 
+### Phase 18: 乱序写入与删除 (Out-of-Order Write & Delete) 📋 待实现
+- [ ] `header.rs`: Data Segment State 第 9 个字段 `reserved` → `invalid_record_count` (段内无效记录计数器, 结构体字段重命名 + 序列化/反序列化/默认值)
+- [ ] `segment/data.rs`: `invalid_record_count` 字段读取/递增方法 + file header state 持久化
+- [ ] `index/mod.rs` 或 `index/segment.rs`: 新增 `TimeIndex::update_entry(timestamp, new_block_offset, new_in_block_offset) -> Result<IndexEntry>` — 原地更新索引条目 (覆盖 18 字节), 返回旧条目供调用方判断 `invalid_record_count` 是否需要递增; 三级搜索: in_memory_buffer → open segments → closed segments
+- [ ] `dataset.rs`: `write()` 乱序分支重写: `timestamp < latest_written_timestamp` → 追加数据到最新段 + `time_index.update_entry()` → 根据旧条目判断 `invalid_record_count` (连续模式 filler → 不变; 真实数据 → ++; 无条目 → Error)
+- [ ] `dataset.rs`: 新增 `DataSet::delete(timestamp) -> Result<()>` — 查找索引条目 → 覆盖为哨兵 (block_offset = FILLER, in_block_offset = FILLER) + 旧数据段 `invalid_record_count++`; 条目不存在/filler → Error("not found")
+- [ ] `segment/mod.rs`: 新增 `DataSegmentSet::increment_invalid_record_count(block_offset)` — 路由 block_offset 到对应段 (可能需 lazy_open closed segment) + 递增 `invalid_record_count` state 字段
+- [ ] `ffi.rs` + `timslite.h`: 新增 `tmsl_dataset_delete(void* ds, i64 timestamp, char* err_buf, size_t err_len) -> c_int`
+- [ ] 单元测试: out-of-order write 连续模式 (filler → 真实), out-of-order write 非连续模式 (真实条目更新), out-of-order write 无条目 → Error, delete 真实条目, delete filler → Error, delete 不存在 → Error, invalid_record_count 递增验证, reopen 后 invalid_record_count 持久化
+- [ ] `tests/integration_test.rs`: 新增乱序写入 + delete 端到端集成测试 (t18_1, t18_2, t18_3)
+- [ ] `cargo clippy -- -D warnings` clean
+- [ ] `cargo test -- --test-threads=1` 全部通过
+
 ## 文档结构
 
 详细计划内容已拆分到 `docs/plan/` 目录, 每个 Phase 独立文档:
@@ -170,7 +184,8 @@ docs/plan/
 ├── phase-14-dataset-config-builder.md ← Phase 14: Builder 优化
 ├── phase-15-header-state-split.md   ← Phase 15: Header State 分化
 ├── phase-16-data-retention.md       ← Phase 16: 数据保留 (Retention)
-└── phase-17-correction-write.md     ← Phase 17: 纠正写入 (Correction Write) (待实现)
+├── phase-17-correction-write.md     ← Phase 17: 纠正写入 (Correction Write)
+└── phase-18-out-of-order-write-and-delete.md ← Phase 18: 乱序写入与删除 (待实现)
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:
