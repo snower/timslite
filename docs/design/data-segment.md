@@ -120,7 +120,7 @@ impl DataSegment {
         block_max_size: u32,
         compress_level: u8,
     ) -> io::Result<(u64, u16)> {
-        let record_size = 2 + 8 + data.len();
+        let record_size = 4 + 8 + data.len();
 
         // 情况1: 单条 record 超过 block_max_size → 独占 Block
         if record_size > block_max_size as usize {
@@ -191,12 +191,12 @@ fn overwrite_in_last_block(
     //    - payload_size / uncompressed_size
     //
     // 3. 验证 record 是块内最末 record:
-    //    - 读取 record.data_len (2 bytes at record_pos)
-    //    - 若 in_block_offset + 10 + old_data_len != payload_size → 错误
+    //    - 读取 record.data_len (4 bytes at record_pos)
+    //    - 若 in_block_offset + 12 + old_data_len != payload_size → 错误
     //
-    // 4. 计算 delta = (new_data.len() + 10) - (old_data_len + 10) = new_data.len() - old_data_len
+    // 4. 计算 delta = (new_data.len() + 12) - (old_data_len + 12) = new_data.len() - old_data_len
     //
-    // 5. 修改 mmap 中 record 的 data_len (u16) 和 data 字节 (覆盖/扩展)
+    // 5. 修改 mmap 中 record 的 data_len (u32) 和 data 字节 (覆盖/扩展)
     //    record_pos = DATA_HEADER_SIZE + block_rel_offset + BLOCK_HEADER_SIZE + in_block_offset
     //
     // 6. 更新 block header:

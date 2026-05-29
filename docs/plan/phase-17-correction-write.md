@@ -71,10 +71,10 @@ pub fn overwrite_in_last_block(
 
     // 3. 读取 record 并验证为块内最末 record
     let record_pos = block_abs_start + BLOCK_HEADER_SIZE as usize + in_block_offset as usize;
-    let old_data_len = u16::from_le_bytes(
-        mmap[record_pos..record_pos + 2].try_into().unwrap()
+    let old_data_len = u32::from_le_bytes(
+        mmap[record_pos..record_pos + 4].try_into().unwrap()
     ) as usize;
-    let record_size = 10 + old_data_len;  // record_overhead=10
+    let record_size = 12 + old_data_len;  // record_overhead=12
 
     if in_block_offset as usize + record_size != hdr.payload_size as usize {
         return Err(TmslError::InvalidData(
@@ -86,11 +86,11 @@ pub fn overwrite_in_last_block(
     let delta_i32 = new_data.len() as i32 - old_data_len as i32;
     let delta_u64 = if delta_i32 >= 0 { delta_i32 as u64 } else { (-delta_i32) as u64 };
 
-    // 5. 写入新 record 的 data_len (u16) + data bytes
-    let new_data_len_u16 = new_data.len() as u16;
-    mmap[record_pos..record_pos + 2].copy_from_slice(&new_data_len_u16.to_le_bytes());
-    // timestamp (8 bytes at record_pos+2) 不变
-    let new_data_pos = record_pos + 10;
+    // 5. 写入新 record 的 data_len (u32) + data bytes
+    let new_data_len_u32 = new_data.len() as u32;
+    mmap[record_pos..record_pos + 4].copy_from_slice(&new_data_len_u32.to_le_bytes());
+    // timestamp (8 bytes at record_pos+4) 不变
+    let new_data_pos = record_pos + 12;
     mmap[new_data_pos..new_data_pos + new_data.len()].copy_from_slice(new_data);
 
     // 6. 更新 block header

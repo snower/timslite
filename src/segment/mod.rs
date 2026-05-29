@@ -191,7 +191,8 @@ impl DataSegmentSet {
         } else {
             let last = self.segments.last().unwrap();
             if last.lifecycle == SL::Closed
-                || last.wrote_position + crate::block::BLOCK_HEADER_SIZE + 10 > self.segment_size
+                || last.wrote_position + crate::block::BLOCK_HEADER_SIZE + data::RECORD_OVERHEAD
+                    > self.segment_size
             {
                 self.next_offset
             } else {

@@ -13,7 +13,7 @@
 |---|------|---------|---------|
 | 1 | [架构概览](docs/design/architecture.md) | 整体架构、目录结构、命名规则、隔离保证、模块结构 | **入口文档**, 了解全局 |
 | 2 | [元数据格式](docs/design/meta-format.md) | DataSetMeta TLV 格式、字段定义、序列化/反序列化、向前兼容 | 新增 meta 字段时 |
-| 3 | [数据模型](docs/design/data-model.md) | Record/Block/IndexEntry 结构、DataFileMetadata(116B)/IndexFileMetadata(52B) 布局、类型定义 | 理解存储格式 |
+| 3 | [数据模型](docs/design/data-model.md) | Record(`u32 data_len`)/Block/IndexEntry 结构、DataFileMetadata(116B)/IndexFileMetadata(52B) 布局、类型定义 | 理解存储格式 |
 | 4 | [数据段管理](docs/design/data-segment.md) | DataSegmentSet 路由、DataSegment Block 生命周期、Pending 恢复 | 数据写入/读取相关 |
 | 5 | [时间索引](docs/design/time-index.md) | TimeIndex 生命周期、IndexSegment 二分查找、18 字节序列化 | 索引查询优化 |
 | 6 | [数据集操作](docs/design/dataset-operations.md) | DataSet create/open/close 生命周期、写入/读取/流程详解 | 数据集 API 行为 |
@@ -33,6 +33,7 @@
 
 ### 按功能查找
 - **写入数据**: [数据段管理](docs/design/data-segment.md) → [数据集操作·写入流程](docs/design/dataset-operations.md#九写入流程详解) → [压缩策略](docs/design/compression.md)
+- **Record 编码**: [数据模型·Block Payload 内部结构](docs/design/data-model.md#block-payload-内部结构-record-编码)
 - **纠正写入**: [数据集操作·§9.1 时间戳验证与写入分支](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.2](docs/design/index-continuous.md#232-写入行为)
 - **乱序写入**: [数据集操作·§9.1 乱序写入机制](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.2 情况B](docs/design/index-continuous.md#232-写入行为)
 - **删除记录**: [数据集操作·§9.3 删除操作](docs/design/dataset-operations.md#93-删除操作-datasetdelete) → [索引连续存储·§23.4 哨兵值设计](docs/design/index-continuous.md#234-哨兵值设计)

@@ -92,7 +92,7 @@ DataSet::write(timestamp, data):
 | 字段 | 哨兵值 | 含义 | 合法性保证 |
 |------|--------|------|-----------|
 | `block_offset: u64` | `0xFFFFFFFFFFFFFFFF` | 此位置无真实数据 (filler 或已删除) | 合法全局偏移远低于 u64::MAX |
-| `in_block_offset: u16` | `0xFFFF` | 此位置无真实数据 (filler 或已删除) | 合法偏移 ≤ block_max_size = 64KB |
+| `in_block_offset: u16` | `0xFFFF` | 此位置无真实数据 (filler 或已删除) | 普通聚合 Block 的 payload 硬上限为 64KB, 真实 record 起始偏移不会达到 `0xFFFF`; 超大独占 Block 只含一条 record, offset 固定为 0 |
 
 **哨兵值使用场景**:
 - **Filler 条目** (连续模式): 初始化时填充缺失时间戳位置, 等待后续写入替换

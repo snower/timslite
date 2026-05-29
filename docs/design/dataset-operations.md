@@ -68,7 +68,7 @@ impl DataSet {
 ```
 写入 record(timestamp, data)
     │
-    ├─ record_size = 2 + 8 + data.len()
+    ├─ record_size = 4 + 8 + data.len()
     │
     ├─ record_size > 64KB? ──Yes──→ 独占 Block
     │    │                            1. 密封当前 pending (如果有)
@@ -168,7 +168,7 @@ DataSet::write(timestamp, data):
    - **Sealed block** (flags = SEALED): 已密封但未压缩 (压缩未受益, seal 时保留原始格式)
 2. **回退 (非错误)**: 如果最后一个 block 的 flags 含 `COMPRESSED` (数据已被压缩)、block 已密封、record 不是最后一条, 或最新数据段无打开的映射 — 无法原地修改时, 自动回退为**乱序写入**: 新数据追加到最新数据段 (新的 pending block), 索引条目原地更新为新的 (block_offset, in_block_offset), 同时旧数据所在段的 `invalid_record_count += 1`
 3. **支持变 size**: 新 data 可以比原 data 大或小, 只需移动后续字节并更新相关计数字段
-4. **索引不变**: block_offset + in_block_offset 仍指向同一 record 起始位置, data_len (u16) 更新为新长度
+4. **索引不变**: block_offset + in_block_offset 仍指向同一 record 起始位置, data_len (u32) 更新为新长度
 5. **索引条目不变**: 索引中的 block_offset/in_block_offset 字段无需修改
 6. **latest_written_timestamp**: 不变
 
@@ -182,7 +182,7 @@ DataSet::write(timestamp, data):
 | DataSegment.total_uncompressed_size (u64) | 段状态 | `+ delta` |
 | DataSegment.wrote_position (u64) | 段状态 | `+ delta` |
 
-其中 `delta = new_record_bytes - old_record_bytes = new_data.len() - old_data_len` (record_overhead 固定为 10)
+其中 `delta = new_record_bytes - old_record_bytes = new_data.len() - old_data_len` (record_overhead 固定为 12)
 
 **overwrite_in_last_block 实现逻辑**:
 ```rust
@@ -194,10 +194,10 @@ DataSet::write(timestamp, data):
 //      - 检查 flags & COMPRESSED == 0 (若含 COMPRESSED → 返回错误, 由 correct_write 捕获并回退到乱序写入)
 //      - 计算 record 在 payload 中的位置
 //      - 验证 record 是 block 内最后一条:
-//        in_block_offset + 10 + old_data_len == payload_size
+//        in_block_offset + 12 + old_data_len == payload_size
 //      - 若否, 返回错误 (只支持最新 block 的最末 record)
 //   3. 计算 delta = new_data.len() - old_data_len (i32)
-//   4. 更新 mmap 中 record 的 data_len (u16) 和 data 字节
+//   4. 更新 mmap 中 record 的 data_len (u32) 和 data 字节
 //   5. 更新 block header: payload_size += delta, uncompressed_size += delta
 //   6. 更新段内计数字段:
 //      - wrote_position += delta
@@ -308,7 +308,7 @@ DataSet::delete(timestamp):
     │      ├─ 读 BlockHeader, 检查 compressed flag
     │      ├─ compressed → 解压 entire block payload → 存入缓存池
     │      ├─ uncompressed → 读取 raw block payload → 存入缓存池
-    │      ├─ in_block_offset → 定位到 [data_len:2]
+    │      ├─ in_block_offset → 定位到 [data_len:4]
     │      ├─ 读 data_len, timestamp, data
     │      └─ 返回
     │

@@ -7,7 +7,7 @@
 - 延迟压缩: pending 时 raw, 溢出时 seal+压缩
 - 如果压缩后不缩小, 保留 raw (不设 COMPRESSED flag)
 - **idle-close 仅密封 pending, 不压缩** — 压缩延迟至 next write overflow
-- 超大 record (独占 block) → 立即 seal+压缩 (因为不存在 pending)
+- 超大 record (独占 block) → 立即 seal+压缩 (因为不存在 pending); record payload 仍使用统一的 `data_len: u32 + timestamp: i64 + data` 编码
 
 ### 压缩数据流
 

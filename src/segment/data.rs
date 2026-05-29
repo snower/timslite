@@ -18,7 +18,7 @@ use crate::header::{
     clear_pending_from_mmap, DataFileMetadata, DATA_HEADER_SIZE, PENDING_NONE,
     TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL,
 };
-use crate::util::{read_i64_le, read_u16_from_mmap, read_u16_le, read_u32_from_mmap};
+use crate::util::{read_i64_le, read_u16_from_mmap, read_u32_from_mmap, read_u32_le};
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -301,8 +301,21 @@ impl DataSegment {
 // ─── Write Operations ────────────────────────────────────────────────────────
 
 /// The size overhead of a single record in a block:
-/// `data_len` (2 bytes) + `timestamp` (8 bytes) = 10 bytes.
-const RECORD_OVERHEAD: u64 = 10;
+/// `data_len` (4 bytes) + `timestamp` (8 bytes) = 12 bytes.
+pub(crate) const RECORD_HEADER_SIZE: usize = 12;
+pub(crate) const RECORD_OVERHEAD: u64 = RECORD_HEADER_SIZE as u64;
+
+fn checked_record_size(data_len: usize) -> Result<usize> {
+    let record_size = RECORD_HEADER_SIZE
+        .checked_add(data_len)
+        .ok_or_else(|| TmslError::InvalidData("record size overflow".into()))?;
+    if record_size > u32::MAX as usize {
+        return Err(TmslError::InvalidData(
+            "record payload exceeds u32 block payload limit".into(),
+        ));
+    }
+    Ok(record_size)
+}
 
 impl DataSegment {
     /// Append a record to this segment.
@@ -320,7 +333,8 @@ impl DataSegment {
         block_max_size: u32,
         compress_level: u8,
     ) -> Result<(u64, u16)> {
-        let record_size = RECORD_OVERHEAD as usize + data.len();
+        let block_max_size = block_max_size.min(crate::block::BLOCK_MAX_SIZE);
+        let record_size = checked_record_size(data.len())?;
         let total_needed = crate::block::BLOCK_HEADER_SIZE + record_size as u64;
 
         // Space check: can the current file accommodate at least one more block + record?
@@ -352,7 +366,8 @@ impl DataSegment {
             }
 
             // Append to pending (raw, no compression)
-            let in_block_offset = self.pending_wrote_position as u16;
+            let in_block_offset = u16::try_from(self.pending_wrote_position)
+                .map_err(|_| TmslError::InvalidData("pending record offset exceeds u16".into()))?;
             self.write_raw_record_to_pending(timestamp, data)?;
             self.pending_wrote_position = new_total;
             self.pending_record_count += 1;
@@ -372,12 +387,13 @@ impl DataSegment {
             + self.pending_wrote_position) as usize;
 
         let mmap = self.mmap.as_mut().unwrap();
-        let data_len = data.len() as u16;
+        let data_len = u32::try_from(data.len())
+            .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?;
 
-        // [data_len: u16][timestamp: i64][data]
-        mmap[base..base + 2].copy_from_slice(&data_len.to_le_bytes());
-        mmap[base + 2..base + 10].copy_from_slice(&timestamp.to_le_bytes());
-        mmap[base + 10..base + 10 + data.len()].copy_from_slice(data);
+        // [data_len: u32][timestamp: i64][data]
+        mmap[base..base + 4].copy_from_slice(&data_len.to_le_bytes());
+        mmap[base + 4..base + 12].copy_from_slice(&timestamp.to_le_bytes());
+        mmap[base + 12..base + 12 + data.len()].copy_from_slice(data);
 
         // Update block header: payload_size + record_count
         let hdr = (DATA_HEADER_SIZE + self.pending_block_offset.unwrap()) as usize;
@@ -418,10 +434,11 @@ impl DataSegment {
 
         // Write record payload
         let data_pos = hdr_start + crate::block::BLOCK_HEADER_SIZE as usize;
-        let data_len = data.len() as u16;
-        mmap[data_pos..data_pos + 2].copy_from_slice(&data_len.to_le_bytes());
-        mmap[data_pos + 2..data_pos + 10].copy_from_slice(&timestamp.to_le_bytes());
-        mmap[data_pos + 10..data_pos + 10 + data.len()].copy_from_slice(data);
+        let data_len = u32::try_from(data.len())
+            .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?;
+        mmap[data_pos..data_pos + 4].copy_from_slice(&data_len.to_le_bytes());
+        mmap[data_pos + 4..data_pos + 12].copy_from_slice(&timestamp.to_le_bytes());
+        mmap[data_pos + 12..data_pos + 12 + data.len()].copy_from_slice(data);
 
         self.pending_block_offset = Some(block_pos - DATA_HEADER_SIZE);
         self.pending_wrote_position = rec_size;
@@ -494,12 +511,16 @@ impl DataSegment {
         data: &[u8],
         compress_level: u8,
     ) -> Result<(u64, u16)> {
-        let rec_size = RECORD_OVERHEAD as usize + data.len();
+        let rec_size = checked_record_size(data.len())?;
         let block_pos = DATA_HEADER_SIZE + self.wrote_position;
 
-        // Build record payload: [data_len:2][ts:8][data]
+        // Build record payload: [data_len:4][ts:8][data]
         let mut raw = Vec::with_capacity(rec_size);
-        raw.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        raw.extend_from_slice(
+            &u32::try_from(data.len())
+                .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?
+                .to_le_bytes(),
+        );
         raw.extend_from_slice(&timestamp.to_le_bytes());
         raw.extend_from_slice(data);
 
@@ -584,8 +605,11 @@ impl DataSegment {
         // 3. Read old record and verify it is the last record in the block
         let record_pos =
             block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + in_block_offset as usize;
-        let old_data_len = u16::from_le_bytes(
-            mmap[record_pos..record_pos + 2]
+        if record_pos + RECORD_HEADER_SIZE > mmap.len() {
+            return Err(TmslError::InvalidData("cannot read record header".into()));
+        }
+        let old_data_len = u32::from_le_bytes(
+            mmap[record_pos..record_pos + 4]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
         ) as usize;
@@ -599,17 +623,44 @@ impl DataSegment {
         }
 
         // 4. Compute delta
-        let new_record_bytes = RECORD_OVERHEAD as usize + new_data.len();
+        let new_record_bytes = checked_record_size(new_data.len())?;
         let delta = new_record_bytes as i64 - old_record_bytes as i64;
+        let new_payload_size_i64 = hdr.payload_size as i64 + delta;
+        let new_uncomp_size_i64 = hdr.uncompressed_size as i64 + delta;
+        if new_payload_size_i64 < 0 || new_uncomp_size_i64 < 0 {
+            return Err(TmslError::InvalidData(
+                "correction write: negative block size".into(),
+            ));
+        }
+        if new_payload_size_i64 > u32::MAX as i64 || new_uncomp_size_i64 > u32::MAX as i64 {
+            return Err(TmslError::InvalidData(
+                "correction write: block size exceeds u32".into(),
+            ));
+        }
+        let new_payload_size = new_payload_size_i64 as u32;
+        let new_uncomp_size = new_uncomp_size_i64 as u32;
+        if new_payload_size > crate::block::BLOCK_MAX_SIZE && !hdr.is_single_record() {
+            return Err(TmslError::InvalidData(
+                "correction write: oversized record requires exclusive block".into(),
+            ));
+        }
+        if delta > 0 {
+            let required = DATA_HEADER_SIZE + self.wrote_position + delta as u64;
+            if required > self.file_size {
+                return Err(TmslError::SegmentFull);
+            }
+        }
 
-        // 5. Write new data_len (u16) and data bytes at the record position
-        mmap[record_pos..record_pos + 2].copy_from_slice(&(new_data.len() as u16).to_le_bytes());
-        // timestamp at record_pos+2..record_pos+10 is preserved
-        mmap[record_pos + 10..record_pos + 10 + new_data.len()].copy_from_slice(new_data);
+        // 5. Write new data_len (u32) and data bytes at the record position
+        mmap[record_pos..record_pos + 4].copy_from_slice(
+            &u32::try_from(new_data.len())
+                .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?
+                .to_le_bytes(),
+        );
+        // timestamp at record_pos+4..record_pos+12 is preserved
+        mmap[record_pos + 12..record_pos + 12 + new_data.len()].copy_from_slice(new_data);
 
         // 6. Update block header: payload_size + uncompressed_size
-        let new_payload_size = (hdr.payload_size as i64 + delta) as u32;
-        let new_uncomp_size = (hdr.uncompressed_size as i64 + delta) as u32;
         let new_hdr = BlockHeader::new(
             new_payload_size,
             hdr.flags,
@@ -727,23 +778,24 @@ impl DataSegment {
         // Try cache hit first: extract record directly from cached data
         if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
             let pos = entry.in_block_offset as usize;
-            if pos + 10 > cached.len() {
+            if pos + RECORD_HEADER_SIZE > cached.len() {
                 return Err(TmslError::InvalidData("record index out of bounds".into()));
             }
-            let data_len = read_u16_le(
-                cached[pos..pos + 2]
+            let data_len = read_u32_le(
+                cached[pos..pos + 4]
                     .try_into()
                     .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
             ) as usize;
             let timestamp = read_i64_le(
-                cached[pos + 2..pos + 10]
+                cached[pos + 4..pos + 12]
                     .try_into()
                     .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
             );
-            if pos + 10 + data_len > cached.len() {
+            if pos + RECORD_HEADER_SIZE + data_len > cached.len() {
                 return Err(TmslError::InvalidData("record data out of bounds".into()));
             }
-            let data = cached[pos + 10..pos + 10 + data_len].to_vec();
+            let data =
+                cached[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
             return Ok((timestamp, data));
         }
 
@@ -762,28 +814,29 @@ impl DataSegment {
             c.put(cache_key, block_data.clone());
         }
 
-        // Locate record: entry.in_block_offset points to [data_len:2]
+        // Locate record: entry.in_block_offset points to [data_len:4]
         let pos = entry.in_block_offset as usize;
-        if pos + 10 > block_data.len() {
+        if pos + RECORD_HEADER_SIZE > block_data.len() {
             return Err(TmslError::InvalidData("record index out of bounds".into()));
         }
 
-        let data_len = read_u16_le(
-            block_data[pos..pos + 2]
+        let data_len = read_u32_le(
+            block_data[pos..pos + 4]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
         ) as usize;
         let timestamp = read_i64_le(
-            block_data[pos + 2..pos + 10]
+            block_data[pos + 4..pos + 12]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
         );
 
-        if pos + 10 + data_len > block_data.len() {
+        if pos + RECORD_HEADER_SIZE + data_len > block_data.len() {
             return Err(TmslError::InvalidData("record data out of bounds".into()));
         }
 
-        let data = block_data[pos + 10..pos + 10 + data_len].to_vec();
+        let data =
+            block_data[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
         Ok((timestamp, data))
     }
 
@@ -830,26 +883,28 @@ impl DataSegment {
         }
 
         let pos = entry.in_block_offset as usize;
-        if pos + 10 > hot_block.current_data.len() {
+        if pos + RECORD_HEADER_SIZE > hot_block.current_data.len() {
             return Err(TmslError::InvalidData("record index out of bounds".into()));
         }
 
         let timestamp = read_i64_le(
-            hot_block.current_data[pos + 2..pos + 10]
+            hot_block.current_data[pos + 4..pos + 12]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
         );
-        let data_len = read_u16_le(
-            hot_block.current_data[pos..pos + 2]
+        let data_len = read_u32_le(
+            hot_block.current_data[pos..pos + 4]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
         ) as usize;
 
-        if pos + 10 + data_len > hot_block.current_data.len() {
+        if pos + RECORD_HEADER_SIZE + data_len > hot_block.current_data.len() {
             return Err(TmslError::InvalidData("record data out of bounds".into()));
         }
 
-        let data = hot_block.current_data[pos + 10..pos + 10 + data_len].to_vec();
+        let data = hot_block.current_data
+            [pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len]
+            .to_vec();
         Ok((timestamp, data))
     }
 }
@@ -895,11 +950,11 @@ mod tests {
     #[test]
     fn test_block_overflow_triggers_seal() {
         let (mut seg, _path) = make_segment("test_overflow");
-        // With block_max_size=40, first record (10+20=30) fits,
-        // second record (10+12=22) would overflow 30+22=52>40
+        // With block_max_size=40, first record (12+20=32) fits,
+        // second record (12+12=24) would overflow 32+24=56>40
         let max = 40u32;
-        let data1 = vec![0xAAu8; 20]; // record_size = 10+20 = 30
-        let data2 = vec![0xBBu8; 12]; // record_size = 10+12 = 22, total would be 52>40
+        let data1 = vec![0xAAu8; 20]; // record_size = 12+20 = 32
+        let data2 = vec![0xBBu8; 12]; // record_size = 12+12 = 24, total would be 56>40
         let (off0, _) = seg.append_record(1000, &data1, max, 6).unwrap();
         let (off1, ib1) = seg.append_record(2000, &data2, max, 6).unwrap();
         // Second record should be in a NEW block
@@ -910,10 +965,10 @@ mod tests {
     #[test]
     fn test_large_record_exclusive_block() {
         let (mut seg, _path) = make_segment("test_large");
-        // Use 60KB data - within u16::MAX but the record overhead (10 bytes)
-        // still makes it exceed the default 64KB block_max_size
+        // Use 60KB data - within u16::MAX. It still fits the default
+        // 64KB block_max_size, so use a smaller max to force exclusivity.
         let data = vec![0xABu8; 60_000];
-        // block_max_size = 65536, record_size = 10 + 60000 = 60010 < 65536
+        // block_max_size = 65536, record_size = 12 + 60000 = 60012 < 65536
         // This won't trigger single-record path! Let's use smaller max:
         let (off, ib) = seg.append_record(5000, &data, 50_000, 6).unwrap();
         assert_eq!(ib, 0);
@@ -925,6 +980,25 @@ mod tests {
         };
         let (ts, recovered) = seg.read_at_index(&entry, None).unwrap();
         assert_eq!(ts, 5000);
+        assert_eq!(recovered, data);
+    }
+
+    #[test]
+    fn test_large_record_above_u16_roundtrip() {
+        let (mut seg, _path) = make_segment("test_large_above_u16");
+        let data: Vec<u8> = (0..70_000).map(|i| (i % 251) as u8).collect();
+
+        let (off, ib) = seg.append_record(6000, &data, 65_536, 6).unwrap();
+        assert_eq!(ib, 0);
+
+        let entry = ReadIndexEntry {
+            timestamp: 6000,
+            block_offset: off,
+            in_block_offset: ib,
+        };
+        let (ts, recovered) = seg.read_at_index(&entry, None).unwrap();
+        assert_eq!(ts, 6000);
+        assert_eq!(recovered.len(), data.len());
         assert_eq!(recovered, data);
     }
 

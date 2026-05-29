@@ -36,7 +36,7 @@ pub struct StoreConfig {
     pub initial_data_segment_size: u64,
     /// Initial size of an index segment file when created (expanded up to index_segment_size).
     pub initial_index_segment_size: u64,
-    /// Maximum block payload size (excluding block header).
+    /// Maximum normal block payload size (excluding block header), capped at 64 KiB.
     pub block_max_size: u32,
     /// Deflate compression level (0-9).
     pub compress_level: u8,
@@ -131,9 +131,9 @@ impl StoreConfigBuilder {
         self
     }
 
-    /// Set the maximum block payload size.
+    /// Set the maximum normal block payload size. Values above 64 KiB are capped.
     pub fn block_max_size(mut self, size: u32) -> Self {
-        self.block_max_size = Some(size);
+        self.block_max_size = Some(size.min(crate::block::BLOCK_MAX_SIZE));
         self
     }
 
@@ -297,9 +297,9 @@ impl DataSetConfigBuilder {
         self
     }
 
-    /// Set the maximum block payload size.
+    /// Set the maximum normal block payload size. Values above 64 KiB are capped.
     pub fn block_max_size(mut self, size: u32) -> Self {
-        self.block_max_size = Some(size);
+        self.block_max_size = Some(size.min(crate::block::BLOCK_MAX_SIZE));
         self
     }
 
@@ -422,6 +422,17 @@ mod tests {
     fn test_builder_compress_level_cap() {
         let cfg = StoreConfig::builder().compress_level(15).build();
         assert_eq!(cfg.compress_level, 9); // capped at 9
+    }
+
+    #[test]
+    fn test_builder_block_max_size_cap() {
+        let cfg = StoreConfig::builder().block_max_size(128 * 1024).build();
+        assert_eq!(cfg.block_max_size, crate::block::BLOCK_MAX_SIZE);
+
+        let dataset = DataSetConfigBuilder::from_store(&StoreConfig::default())
+            .block_max_size(128 * 1024)
+            .build();
+        assert_eq!(dataset.block_max_size, crate::block::BLOCK_MAX_SIZE);
     }
 
     #[test]

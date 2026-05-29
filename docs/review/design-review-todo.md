@@ -19,7 +19,7 @@
 
 | 状态 | ID | 事项 | 验收标准 | 处理记录 |
 |------|----|------|----------|----------|
-| [ ] | P0-1 | 修正超大 record 与 `data_len: u16` 编码冲突 | 明确选择限制 `data_len <= u16::MAX` 或升级/扩展 record 长度编码; 设计文档、常量、校验规则一致 | |
+| [x] | P0-1 | 修正超大 record 与 `data_len: u16` 编码冲突 | 明确选择限制 `data_len <= u16::MAX` 或升级/扩展 record 长度编码; 设计文档、常量、校验规则一致 | 2026-05-29 已完成: 选择升级为 `data_len: u32 LE`, record header 固定 12B; 普通聚合 Block 保持 64KB hard cap, 超大 record 走独占 Block。已更新 `design.md`, `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `docs/design/query-iterator.md`, `docs/design/design-decisions.md`, `docs/design/index-continuous.md`, `docs/design/compression.md`, `docs/plan/phase-23-record-length-u32.md`, `plan.md`; 已修改 `src/segment/data.rs`, `src/cache.rs`, `src/segment/mod.rs`, `src/block.rs`, `src/config.rs`, `src/lib.rs`; 验证: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -- --test-threads=1` 通过。 |
 | [ ] | P0-2 | 重设计连续索引 filler 机制 | 连续模式不再按 Unix 秒/毫秒 timestamp 全量物化 filler; 明确 `base_timestamp`、`time_step`、gap 表示和 first write 行为 | |
 | [ ] | P0-3 | 统一 Header 可扩展性与固定数据区起点 | 明确采用固定 header 或可变 header; `DATA_HEADER_SIZE`/`INDEX_HEADER_SIZE`、TLV/state 扩展和兼容策略无矛盾 | |
 | [ ] | P0-4 | 解决纠正写入与 BlockCache 不可变假设冲突 | 明确 pending/sealed raw/sealed compressed 的可写、可读、可缓存规则; 设计缓存失效或限制纠正写入只作用于 pending block | |
@@ -53,4 +53,3 @@
 3. [ ] 重写连续索引设计: 时间粒度、gap 表示、跳段查找、first write 行为。
 4. [ ] 补齐 FFI 配置和生命周期: `StoreConfigFFI`、子句柄失效规则、通用 free 函数。
 5. [ ] 整理性能设计: 真正惰性的 QueryIterator、retention/compaction、benchmark 文档。
-

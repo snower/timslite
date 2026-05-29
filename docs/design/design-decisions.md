@@ -23,7 +23,7 @@
 | Block 上限 | 64KB | 适配 L1/L2 缓存 |
 | 压缩时机 | 延迟 (pending→sealed) | 写入时零 CPU, 避免重复压缩 |
 | 超大 record | 独占 block | 不截断数据 |
-| Record 编码 | data_len(2)+ts(8)+data | 支持 block 内随机定位 |
+| Record 编码 | data_len(4)+ts(8)+data | 支持 block 内随机定位, `u32` 长度可表达超大独占 record |
 | 索引条目 | 18 字节 | 精确定位到 block 内 record |
 | 文件头 | 100 字节 | meta(不可变TLV)/state(可变7×8B)分离, 版本化扩展 |
 | meta 扩展 | TLV {type:1}{len:2}{value:N} | 未知 type 通过 length 跳过, 向前兼容 |

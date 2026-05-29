@@ -31,6 +31,7 @@
 | 20 | 最新时间戳读取 (Latest Timestamp Read) | ✅ 完成 | (本节) |
 | 21 | 后台任务手动执行 (Manual Background Execution) | ✅ 完成 | (本节) |
 | 22 | Manual Background Execution Python Wrapper | ✅ 完成 | (本节) |
+| 23 | Record 长度编码升级为 u32 | ✅ 完成 | [phase-23-record-length-u32.md](docs/plan/phase-23-record-length-u32.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -255,6 +256,30 @@
 - [x] `cargo fmt -- --check` clean
 - [x] `cargo build --lib` 编译通过
 
+### Phase 23: Record 长度编码升级为 u32 ✅ 已完成
+
+> 目标: 修复设计审查 P0-1。将 Block payload 内 record header 从 `data_len: u16 + timestamp: i64` 升级为 `data_len: u32 + timestamp: i64`, 固定 12B, 使超大独占 record 不再发生长度截断。
+
+**设计文档**:
+- [x] `design.md`: 设计索引增加 `u32 data_len` record 编码入口
+- [x] `docs/design/data-model.md`: Record 编码改为 `data_len: u32`, record header 固定 12B; 补充普通 Block 64KB 上限与 `in_block_offset` 哨兵合法性
+- [x] `docs/design/data-segment.md`: 写入流程与纠正写入伪代码改为 12B record header / `u32 data_len`
+- [x] `docs/design/dataset-operations.md`: 写入、纠正写入、读取流程改为 12B record header / `u32 data_len`
+- [x] `docs/design/query-iterator.md`: HotBlockCache 提取逻辑改为 `read_u32_le` 和 12B 偏移
+- [x] `docs/design/design-decisions.md`, `docs/design/index-continuous.md`, `docs/design/compression.md`: 同步格式决策、哨兵约束和独占 Block 说明
+
+**实现**:
+- [x] `src/segment/data.rs`: 写入、独占 Block、纠正写入、读取路径全部改为 4 字节长度
+- [x] `src/cache.rs`: HotBlockCache 提取逻辑改为读取 `u32 data_len`
+- [x] `src/segment/mod.rs`: 新 Block 最小空间判断改为 12B record header
+- [x] `src/block.rs` / `src/config.rs`: 明确普通 Block payload hard cap 为 64KB
+
+**测试与验收**:
+- [x] 新增 >64KB 单条 record roundtrip 回归测试 (`segment::data::tests::test_large_record_above_u16_roundtrip`)
+- [x] `cargo fmt -- --check` clean
+- [x] `cargo clippy --all-targets -- -D warnings` clean
+- [x] `cargo test -- --test-threads=1` 全部通过 (143 unit + 28 integration)
+
 ## 文档结构
 
 详细计划内容已拆分到 `docs/plan/` 目录, 每个 Phase 独立文档:
@@ -282,7 +307,8 @@ docs/plan/
 ├── phase-17-correction-write.md     ← Phase 17: 纠正写入 (Correction Write)
 ├── phase-17-correction-write.md   ← Phase 17: 纠正写入 (Correction Write)
 ├── phase-18-out-of-order-write-and-delete.md ← Phase 18: 乱序写入与删除
-└── phase-21-manual-bg-execution.md ← Phase 21: 后台任务手动执行
+├── phase-21-manual-bg-execution.md ← Phase 21: 后台任务手动执行
+└── phase-23-record-length-u32.md   ← Phase 23: Record 长度编码升级为 u32
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

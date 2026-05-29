@@ -73,6 +73,9 @@ pub const INDEX_HEADER_SIZE: u64 = header::INDEX_HEADER_SIZE;
 /// Size of a block header in bytes.
 pub const BLOCK_HEADER_SIZE: u64 = block::BLOCK_HEADER_SIZE;
 
+/// Maximum payload size of a normal aggregated block in bytes.
+pub const BLOCK_MAX_SIZE: u32 = block::BLOCK_MAX_SIZE;
+
 /// Size of an index entry in bytes.
 pub const INDEX_ENTRY_SIZE: usize = index::INDEX_ENTRY_SIZE;
 
@@ -96,6 +99,7 @@ mod tests {
         assert_eq!(crate::DATA_HEADER_SIZE, 116);
         assert_eq!(crate::INDEX_HEADER_SIZE, 52);
         assert_eq!(crate::BLOCK_HEADER_SIZE, 16);
+        assert_eq!(crate::BLOCK_MAX_SIZE, 65_536);
         assert_eq!(crate::INDEX_ENTRY_SIZE, 18);
         assert_eq!(&crate::MAGIC, b"TMSL");
         assert_eq!(crate::VERSION, 1);

@@ -8,6 +8,7 @@ use crate::util::*;
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 pub const BLOCK_HEADER_SIZE: u64 = 16;
+pub const BLOCK_MAX_SIZE: u32 = 65_536;
 
 /// Block flags
 pub const BLOCK_FLAG_COMPRESSED: u16 = 0x0001;

@@ -123,13 +123,13 @@ impl HotBlockCache {
     /// 从热点缓存中提取单条 record
     fn extract_record(&self, in_block_offset: u16) -> Result<(i64, Vec<u8>)> {
         let pos = in_block_offset as usize;
-        // [data_len:2][timestamp:8][data:N]
-        if pos + 10 > self.current_data.len() {
+        // [data_len:4][timestamp:8][data:N]
+        if pos + 12 > self.current_data.len() {
             return Err(...);
         }
-        let data_len = read_u16_le(&self.current_data[pos..pos+2]) as usize;
-        let timestamp = read_i64_le(&self.current_data[pos+2..pos+10]);
-        let data = self.current_data[pos+10..pos+10+data_len].to_vec();
+        let data_len = read_u32_le(&self.current_data[pos..pos+4]) as usize;
+        let timestamp = read_i64_le(&self.current_data[pos+4..pos+12]);
+        let data = self.current_data[pos+12..pos+12+data_len].to_vec();
         Ok((timestamp, data))
     }
 }

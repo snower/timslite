@@ -4,7 +4,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 use crate::error::{Result, TmslError};
-use crate::util::{read_i64_le, read_u16_le};
+use crate::util::{read_i64_le, read_u32_le};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CacheKey {
@@ -261,9 +261,11 @@ mod tests {
 /// Per-query local Block cache, no lock contention.
 pub struct HotBlockCache {
     pub(crate) current_key: Option<CacheKey>,
-    /// Decompressed block payload: [data_len:2][ts:8][data:N]...
+    /// Decompressed block payload: [data_len:4][ts:8][data:N]...
     pub(crate) current_data: Vec<u8>,
 }
+
+const RECORD_HEADER_SIZE: usize = 12;
 
 impl HotBlockCache {
     pub fn new() -> Self {
@@ -286,31 +288,32 @@ impl HotBlockCache {
     /// Extract a single record from the cached block payload.
     pub fn extract_record(&self, in_block_offset: u16) -> Result<(i64, Vec<u8>)> {
         let pos = in_block_offset as usize;
-        if pos + 10 > self.current_data.len() {
+        if pos + RECORD_HEADER_SIZE > self.current_data.len() {
             return Err(TmslError::InvalidData(
                 "hot block: record index out of bounds".into(),
             ));
         }
 
-        let data_len = read_u16_le(
-            self.current_data[pos..pos + 2]
+        let data_len = read_u32_le(
+            self.current_data[pos..pos + 4]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("hot block: cannot read data_len".into()))?,
         ) as usize;
 
         let timestamp = read_i64_le(
-            self.current_data[pos + 2..pos + 10]
+            self.current_data[pos + 4..pos + 12]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("hot block: cannot read timestamp".into()))?,
         );
 
-        if pos + 10 + data_len > self.current_data.len() {
+        if pos + RECORD_HEADER_SIZE + data_len > self.current_data.len() {
             return Err(TmslError::InvalidData(
                 "hot block: record data out of bounds".into(),
             ));
         }
 
-        let data = self.current_data[pos + 10..pos + 10 + data_len].to_vec();
+        let data = self.current_data[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len]
+            .to_vec();
         Ok((timestamp, data))
     }
 
@@ -333,11 +336,11 @@ mod hot_block_tests {
     fn make_cache() -> HotBlockCache {
         let mut data = Vec::new();
         // record 1 at offset 0: data_len=5, ts=100, data=[1,2,3,4,5]
-        data.extend_from_slice(&5u16.to_le_bytes());
+        data.extend_from_slice(&5u32.to_le_bytes());
         data.extend_from_slice(&100i64.to_le_bytes());
         data.extend_from_slice(&[1, 2, 3, 4, 5]);
-        // record 2 at offset 15: data_len=3, ts=200, data=[6,7,8]
-        data.extend_from_slice(&3u16.to_le_bytes());
+        // record 2 at offset 17: data_len=3, ts=200, data=[6,7,8]
+        data.extend_from_slice(&3u32.to_le_bytes());
         data.extend_from_slice(&200i64.to_le_bytes());
         data.extend_from_slice(&[6, 7, 8]);
 
@@ -365,7 +368,7 @@ mod hot_block_tests {
     #[test]
     fn test_extract_second_record() {
         let cache = make_cache();
-        let (ts, data) = cache.extract_record(15).unwrap();
+        let (ts, data) = cache.extract_record(17).unwrap();
         assert_eq!(ts, 200);
         assert_eq!(data, vec![6, 7, 8]);
     }
