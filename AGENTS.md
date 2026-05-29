@@ -24,7 +24,7 @@ timslite/
 │   ├── store.rs        # Store 门面 (数据集注册表 + 后台任务管理)
 │   ├── ffi.rs          # extern "C" FFI 接口
 │   ├── bg/
-│   │   └── mod.rs      # BackgroundTasks 单线程统一循环 (flush + idle check)
+│   │   └── mod.rs      # BackgroundTasks 统一执行器 (flush + idle + cache + retention; 支持线程/手动双模式)
 │   ├── segment/
 │   │   ├── mod.rs      # DataSegmentSet (段路由 + 懒加载管理)
 │   │   └── data.rs     # DataSegment (mmap 生命周期 + Block 写入/读取)
@@ -139,7 +139,7 @@ DataSet: Arc<Mutex<DataSet<>>>      (读写互斥, 数据集内部操作)
 | | [时间索引](docs/design/time-index.md) | TimeIndex、IndexSegment 二分查找 |
 | | [数据集操作](docs/design/dataset-operations.md) | DataSet create/open/close/drop/write/query |
 | | [Store 与 FFI](docs/design/store-and-ffi.md) | Store 门面、FFI 函数列表、C 示例 |
-| | [后台任务与缓存](docs/design/background-and-cache.md) | Flush/Idle-Close、BlockCache LRU |
+| | [后台任务与缓存](docs/design/background-and-cache.md) | 统一执行器 (线程/手动双模式)、Flush/Idle-Close/Retention、BlockCache LRU |
 | | [内存与并发](docs/design/memory-and-concurrency.md) | mmap 生命周期、Crash 安全 |
 | | [压缩策略](docs/design/compression.md) | Block 延迟压缩、miniz_oxide deflate |
 | | [设计决策](docs/design/design-decisions.md) | 与 TimeStore(Java) 的差异 |
@@ -198,14 +198,29 @@ drop → 删除整个目录 (不可恢复)
 
 ## 后台任务
 
-单一线程统一循环执行两个周期性任务:
+通过统一执行器 (`ExecutorState` + `Mutex`) 管理四个周期性任务:
 
 | 任务 | 默认间隔 | 行为 |
 |------|----------|------|
 | Flush | 10 分钟 | 遍历打开的 segment, 执行 mmap.sync (MS_SYNC) |
 | Idle Check | 60 秒 | 扫描 last_used_at, ≥30min → sync + seal pending + unmap + close |
+| Cache Eviction | 60 秒 | 扫描缓存池 idle 条目, 超时回收 |
+| Retention Reclaim | 每日指定时刻 | 扫描 retention_ms > 0 的 dataset, 删除过期分段 |
 
-动态计算下一次唤醒时间, 无固定轮询。
+**线程启用控制**:
+- `StoreConfig.enable_background_thread: bool` (默认 `true`)
+- `true` (默认): `Store::open` 自动启动单个后台线程, 动态计算下一次唤醒时间, 无固定轮询
+- `false`: 不启动后台线程, 调用方通过 `Store::tick_background_tasks()` 主动驱动
+
+**手动执行 API (与后台线程共存)**:
+- `Store::tick_background_tasks() -> TickResult { executed_tasks: usize, next_delay: Duration }`
+  - 同步执行一次到期任务检查, 到期则立即执行
+  - `enable_background_thread=true` 下也可调用, 与后台线程通过 `Mutex` 串行互斥
+  - `enable_background_thread=false` 时由外部主动驱动
+- `Store::next_background_delay() -> Duration`
+  - 仅计算下一次任务到期延迟, 不执行; 快速读快照
+
+**并发安全**: `executor.state: Mutex<ExecutorState>` 保证后台线程与外部 `tick` 互斥串行, 无死锁风险 (锁顺序: state → datasets → DataSet)。
 
 ## 重要注意事项
 

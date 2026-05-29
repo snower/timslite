@@ -186,6 +186,8 @@ int main() {
 |------|------|--------|
 | `tmsl_store_open` | 打开存储实例 | `*mut c_void` (NULL=失败) |
 | `tmsl_store_close` | 关闭存储实例 | `0`=成功, `-1`=失败 |
+| `tmsl_store_tick_background_tasks` | 手动执行一次后台任务 (可与后台线程共存; `out_executed` 写入已执行任务数, `out_next_delay_ms` 写入下一次任务到期等待时间) | `0`=成功, `-1`=失败 |
+| `tmsl_store_next_background_delay` | 查询下一次后台任务剩余等待时间 (ms, 不执行任何任务) | `0`=成功, `-1`=失败; `out_next_delay_ms` 写入 |
 | `tmsl_dataset_create` | 创建新数据集 | `*mut c_void` (NULL=失败) |
 | `tmsl_dataset_open` | 打开已有数据集 | `*mut c_void` (NULL=失败) |
 | `tmsl_dataset_close` | 关闭数据集 | `0`=成功, `-1`=失败 |

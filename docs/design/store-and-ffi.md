@@ -14,11 +14,20 @@
 /// FFI 数据集句柄 (不透明指针)
 pub struct DataSetHandle(pub u64);
 
+/// 手动 tick 后台任务的返回结果
+pub struct TickResult {
+    /// 本次 tick 中实际被执行的任务数量 (0..=4)
+    pub executed_tasks: usize,
+    /// 距离下一次任一任务到期的剩余时间 (saturating, 不低于 0)
+    pub next_delay: Duration,
+}
+
 pub struct Store {
     data_dir: PathBuf,
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,
+    // 内部共享的执行器 (详见 §17.9), 由 BackgroundTasks 持有
     bg_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
 }
@@ -33,6 +42,10 @@ impl Store {
     pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>;
     pub fn drop_dataset(&self, handle: DataSetHandle) -> Result<()>;
     pub fn close(self) -> Result<()>;
+
+    // 后台任务手动执行与查询 (详见 §17.10)
+    pub fn tick_background_tasks(&self) -> Result<TickResult>;
+    pub fn next_background_delay(&self) -> Duration;
 }
 ```
 
@@ -69,6 +82,86 @@ impl StoreConfigBuilder {
 
 详见 [后台任务 §17.8](background-and-cache.md#十七后台任务)。
 
+### 11.4 StoreConfig: enable_background_thread
+
+```rust
+pub struct StoreConfig {
+    // ... existing fields ...
+    /// 是否启用内置后台线程 (默认 true)
+    pub enable_background_thread: bool,
+}
+
+impl StoreConfigBuilder {
+    /// 设置是否启用内置后台线程。
+    ///
+    /// - `true` (默认): `Store::open` 自动启动单个后台线程, 按配置间隔执行 flush /
+    ///   idle-close / cache-eviction / retention-reclaim 任务
+    /// - `false`: 不启动后台线程, 由调用方通过 `Store::tick_background_tasks()` 主动驱动
+    pub fn enable_background_thread(mut self, enable: bool) -> Self {
+        self.enable_background_thread = Some(enable);
+        self
+    }
+}
+```
+
+**使用场景 (enable_background_thread = false)**:
+- 集成到外部事件循环 (如 C 端的 `select` / `epoll` / libuv loop)
+- 严格控制线程数的宿主程序 (如嵌入式或单线程运行环境)
+- 单元/集成测试中需要精确控制任务执行时机
+
+**与 `tmsl_store_open` 的兼容性**:
+- `tmsl_store_open(data_dir)` 使用全部默认配置 (含 `enable_background_thread=true`)
+- 需要禁用线程时, 调用方应使用 `tmsl_store_open_with_config(data_dir, config_ptr, ...)`
+- `tmsl_store_open_with_config` 当前已作为 FFI 声明存在, 实现待 Phase 21 补齐
+
+### 11.5 Store: 后台任务手动执行与查询
+
+```rust
+impl Store {
+    /// 同步执行一次后台任务到期检查。
+    ///
+    /// 根据配置间隔判断 flush / idle / cache / retention 各任务是否到期,
+    /// 到期则立即执行。返回本次执行的任务数量 + 距离下一次任一任务到期的剩余时间。
+    ///
+    /// # 并发
+    /// - `enable_background_thread=true` 下也可调用, 与后台线程通过 `Mutex` 串行执行
+    /// - `enable_background_thread=false` 时, 必须由外部主动调用以驱动后台逻辑
+    pub fn tick_background_tasks(&self) -> Result<TickResult>;
+
+    /// 返回距离下一次后台任务执行应等待的时间。
+    ///
+    /// 仅计算, 不执行任何任务。后台线程或外部 tick 执行期间短暂阻塞 (等待状态锁释放)。
+    pub fn next_background_delay(&self) -> Duration;
+}
+
+/// tick 返回结果
+pub struct TickResult {
+    pub executed_tasks: usize,   // 本次执行的任务数量 (0..=4)
+    pub next_delay: Duration,    // 距离下一次任一任务到期的剩余时间
+}
+```
+
+**调用示例 (Rust)**:
+```rust
+let config = StoreConfig::builder()
+    .enable_background_thread(false)
+    .build();
+let store = Store::open("/data/timslite", config)?;
+
+// 外部事件循环: 每次唤醒后调用 tick, 根据返回的 next_delay 调度下一次唤醒
+loop {
+    let result = store.tick_background_tasks()?;
+    if result.executed_tasks > 0 {
+        log::info!("[ext] executed {} tasks, next in {:?}",
+                   result.executed_tasks, result.next_delay);
+    }
+    // 外部 select / epoll / sleep 使用 next_delay...
+    std::thread::sleep(result.next_delay);
+}
+```
+
+详见 [后台任务 §17.10](background-and-cache.md#1710-外部手动执行-external-manual-execution)。
+
 ## 十二、FFI API
 
 ```rust
@@ -76,6 +169,22 @@ impl StoreConfigBuilder {
 #[no_mangle] pub extern "C" fn tmsl_store_open(data_dir: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_store_open_with_config(data_dir: *const c_char, config_ptr: *const StoreConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_store_close(store: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+// Store 后台任务控制 (手动模式 / 与后台线程共存; 详见 §11.5)
+/// 手动执行一次后台任务 (flush / idle-close / cache-eviction / retention-reclaim)。
+/// out_executed 写入本次实际执行的任务数量 (0..=4); out_next_delay_ms 写入下一次任务到期的 ms 数。
+/// 返回 0=成功, -1=失败; 即使没有任何任务到期 (executed=0) 也返回 0。
+/// 与后台线程通过 state Mutex 串行; enable_background_thread=false 时由 C 端驱动调用。
+#[no_mangle] pub extern "C" fn tmsl_store_tick_background_tasks(store: *mut c_void,
+    out_executed: *mut u32, out_next_delay_ms: *mut u64,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+/// 查询下一次后台任务应执行的剩余等待时间 (毫秒)。
+/// 不会执行任何任务; 仅读取状态快照并计算 min(next_*) - now。
+/// out_next_delay_ms 写入毫秒数; 返回 0=成功, -1=失败。
+#[no_mangle] pub extern "C" fn tmsl_store_next_background_delay(store: *mut c_void,
+    out_next_delay_ms: *mut u64,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // 数据集管理 — create/open/close/drop 分离
 #[no_mangle] pub extern "C" fn tmsl_dataset_create(store: *mut c_void,

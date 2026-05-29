@@ -18,7 +18,7 @@
 | 5 | [时间索引](docs/design/time-index.md) | TimeIndex 生命周期、IndexSegment 二分查找、18 字节序列化 | 索引查询优化 |
 | 6 | [数据集操作](docs/design/dataset-operations.md) | DataSet create/open/close 生命周期、写入/读取/流程详解 | 数据集 API 行为 |
 | 7 | [Store 与 FFI](docs/design/store-and-ffi.md) | Store 门面 API、FFI C ABI 函数列表、C 侧调用示例 | 外部集成/跨语言调用 |
-| 8 | [后台任务与缓存](docs/design/background-and-cache.md) | 单线程统一循环、Flush/Idle-Close、BlockCache LRU+Idle 回收 | 性能调优/后台行为 |
+| 8 | [后台任务与缓存](docs/design/background-and-cache.md) | 统一执行器 (线程/手动双路径)、Flush/Idle-Close/Retention、外部手动 Execute、BlockCache LRU+Idle 回收 | 性能调优/后台行为/外部事件循环集成 |
 | 9 | [内存与并发](docs/design/memory-and-concurrency.md) | mmap 生命周期、并发控制、Crash 安全、Pending 恢复 | 稳定性保障 |
 | 10 | [压缩策略](docs/design/compression.md) | Block 级延迟压缩、miniz_oxide deflate、flags 设计 | 压缩相关优化 |
 | 11 | [设计决策](docs/design/design-decisions.md) | 关键决策对比表、与 TimeStore(Java) 的差异 | 架构评审/迁移 |

@@ -29,6 +29,8 @@
 | 18 | 乱序写入与删除 (Out-of-Order Write & Delete) | ✅ 完成 | [phase-18-out-of-order-write-and-delete.md](docs/plan/phase-18-out-of-order-write-and-delete.md) |
 | 19 | 单时间戳读取 (Single Timestamp Read) | ✅ 完成 | (本节) |
 | 20 | 最新时间戳读取 (Latest Timestamp Read) | ✅ 完成 | (本节) |
+| 21 | 后台任务手动执行 (Manual Background Execution) | ⏳ 待实现 | (本节) |
+| 22 | Manual Background Execution Python Wrapper | ⏳ 待实现 | (本节) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -187,6 +189,67 @@
 - [x] `cargo fmt -- --check` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (124 unit + 25 integration = 149 tests)
 
+### Phase 21: 后台任务手动执行 (Manual Background Execution) ⏳ 待实现
+
+> 目标: 让调用方能够选择性禁用内置后台线程, 并通过主动 API 驱动后台任务 (flush / idle-close / cache-eviction / retention-reclaim);同时保证即使启用了后台线程, 外部也可安全调用相同 API。
+
+**设计文档**:
+- [x] 设计文档更新: `docs/design/background-and-cache.md` 新增 §17.9 (统一执行器 + state Mutex) / §17.10 (外部手动执行 API + TickResult) / §17.11 (并发安全矩阵 + 锁顺序)
+- [x] 设计文档更新: `docs/design/store-and-ffi.md` 新增 §11.4 (StoreConfig `enable_background_thread`) / §11.5 (Store API `tick_background_tasks` / `next_background_delay`) + FFI 函数 `tmsl_store_tick_background_tasks` / `tmsl_store_next_background_delay` 声明
+- [x] 设计文档更新: `design.md` 后台任务条目描述更新
+
+**实现**:
+- [ ] `config.rs`: `StoreConfig` 新增 `enable_background_thread: bool` 字段 (默认 `true`) + `StoreConfigBuilder::enable_background_thread()` + 单元测试
+- [ ] `bg/mod.rs`: 抽取调度状态到 `ExecutorState { last_flush, last_idle_check, last_cache_eviction, next_retention }`, 放入 `Mutex<ExecutorState>`; `BackgroundTasks::start` 改为持有共享 `state` + 线程 loop 与 `tick` 使用相同执行路径
+- [ ] `bg/mod.rs`: 实现 `BackgroundTasks::tick() -> TickResult` (单次到期检查 + 执行, 返回 `executed_tasks` + `next_delay`)
+- [ ] `bg/mod.rs`: 实现 `BackgroundTasks::next_delay() -> Duration` (读快照快速计算, 不执行任务)
+- [ ] `bg/mod.rs`: `start` 支持 `enable_background_thread=false` 模式 — 不 spawn 线程, 仅初始化 `state`
+- [ ] `bg/mod.rs`: 新增 `TickResult { executed_tasks: usize, next_delay: Duration }` 返回类型, `pub` 并导出
+- [ ] `store.rs`: `Store::open` 按 `config.enable_background_thread` 启用/禁用线程 (新增 `BackgroundTasks::start` 参数或构造新方法)
+- [ ] `store.rs`: 新增 `Store::tick_background_tasks() -> Result<TickResult>` 委托到 `BackgroundTasks::tick`
+- [ ] `store.rs`: 新增 `Store::next_background_delay() -> Duration` 委托到 `BackgroundTasks::next_delay`
+- [ ] `lib.rs`: 导出 `TickResult` (pub)
+- [ ] `ffi.rs`: 新增 `tmsl_store_tick_background_tasks(store, out_executed, out_next_delay_ms, err_buf, err_buf_len) -> c_int`
+- [ ] `ffi.rs`: 新增 `tmsl_store_next_background_delay(store, out_next_delay_ms, err_buf, err_buf_len) -> c_int`
+- [ ] `include/timslite.h`: 新增两个 FFI 函数声明 + doxygen 注释
+
+**测试**:
+- [ ] 单元测试: `test_tick_bg_disabled_mode` (enable_background_thread=false, 手动 tick 触发 flush)
+- [ ] 单元测试: `test_tick_bg_returns_next_delay` (执行后 next_delay 与 flush_interval 大致一致)
+- [ ] 单元测试: `test_tick_bg_respects_interval` (短时间内连续 tick 不重复执行 flush)
+- [ ] 单元测试: `test_tick_bg_all_four_tasks_due` (构造全到期场景, executed_tasks == 4)
+- [ ] 单元测试: `test_next_delay_no_side_effects` (调用 next_delay 后不改变执行状态)
+- [ ] 单元测试: `test_thread_enabled_external_tick_safe` (启用线程的同时外部调用 tick, 无 panic 无重复执行)
+- [ ] 单元测试: `test_concurrent_external_ticks_serialized` (多线程同时 tick, 仅一个真正执行)
+- [ ] 单元测试: `test_next_delay_during_tick` (tick 进行中 next_delay 可能等待, 但最终返回值正确)
+- [ ] 单元测试: `test_enable_background_thread_default_true` (默认构造 = true, 兼容性)
+- [ ] 单元测试: `test_thread_disabled_close_safe` (close 在未启用线程时正常结束)
+- [ ] 集成测试: `t21_1_manual_bg_lifecycle` (open with disabled thread → write → tick → verify flush via reopen)
+- [ ] 集成测试: `t21_2_manual_bg_idle_close` (手动 tick 多次 → 触发 idle-close → 验证段被关闭)
+- [ ] 集成测试: `t21_3_manual_bg_concurrent_with_thread` (启用线程 + 外部 tick 并发, 无数据损坏)
+
+**验收**:
+- [ ] `cargo clippy --all-targets -- -D warnings` clean
+- [ ] `cargo fmt -- --check` clean
+- [ ] `cargo test -- --test-threads=1` 全部通过
+
+### Phase 22: Manual Background Execution Python Wrapper ⏳ 待实现
+
+> 目标: 为 Phase 21 的新 API 提供 Python FFI 绑定。
+
+**实现**:
+- [ ] `wrapper/python/src/dataset.rs` (或新增 `store.rs` 模块):
+      - `Store::tick_background_tasks()` → 返回 `(executed: int, next_delay_ms: int)` 元组
+      - `Store::next_background_delay()` → 返回 `int` (毫秒)
+      - 支持通过 `Store(enable_background_thread=False, ...)` 配置构造
+
+**测试**:
+- [ ] `tests/test_store_manual_bg.py`: 验证 enable=False + tick 触发 flush + next_delay 返回
+- [ ] `tests/test_store_manual_bg.py`: 验证 tick 返回值结构正确
+
+**文档**:
+- [ ] `wrapper/python/README.md`: 更新使用示例, 演示手动后台模式
+
 ## 文档结构
 
 详细计划内容已拆分到 `docs/plan/` 目录, 每个 Phase 独立文档:
@@ -212,7 +275,9 @@ docs/plan/
 ├── phase-15-header-state-split.md   ← Phase 15: Header State 分化
 ├── phase-16-data-retention.md       ← Phase 16: 数据保留 (Retention)
 ├── phase-17-correction-write.md     ← Phase 17: 纠正写入 (Correction Write)
-└── phase-18-out-of-order-write-and-delete.md ← Phase 18: 乱序写入与删除
+├── phase-17-correction-write.md   ← Phase 17: 纠正写入 (Correction Write)
+├── phase-18-out-of-order-write-and-delete.md ← Phase 18: 乱序写入与删除
+└── phase-21-manual-bg-execution.md ← Phase 21: 后台任务手动执行
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:
