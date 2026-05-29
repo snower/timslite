@@ -144,6 +144,27 @@ int tmsl_dataset_write(void* dataset, int64_t timestamp,
 int tmsl_dataset_delete(void* dataset, int64_t timestamp,
                         char* err_buf, size_t err_buf_len);
 
+/* ─── Single Record Read ────────────────────────────────────────────────── */
+
+/**
+ * Read a single record by exact timestamp.
+ *
+ * On success (record found): allocates `out_data` via malloc, sets `out_ts`
+ * and `out_data_len`. Caller must free `out_data` via `tmsl_iter_free_data`.
+ *
+ * @param dataset      Opaque dataset pointer.
+ * @param timestamp    Timestamp of the record to read.
+ * @param out_ts       Output: timestamp (same value as `timestamp` on success).
+ * @param out_data     Output: pointer to data (malloc'd, must be freed via tmsl_iter_free_data).
+ * @param out_data_len Output: data length in bytes.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 = success, 1 = not found (or filler/deleted), -1 = error.
+ */
+int tmsl_dataset_read(void* dataset, int64_t timestamp,
+                      int64_t* out_ts, unsigned char** out_data, size_t* out_data_len,
+                      char* err_buf, size_t err_buf_len);
+
 /* ─── Query Iterator ────────────────────────────────────────────────────── */
 
 /**

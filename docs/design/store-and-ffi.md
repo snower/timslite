@@ -98,6 +98,11 @@ impl StoreConfigBuilder {
 // 数据删除 (索引标记为哨兵, 数据段 invalid_record_count++)
 #[no_mangle] pub extern "C" fn tmsl_dataset_delete(dataset: *mut c_void, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
+// 单时间戳读取 (malloc'd out_data, 0=成功, 1=未找到, -1=错误)
+#[no_mangle] pub extern "C" fn tmsl_dataset_read(dataset: *mut c_void, timestamp: c_longlong,
+    out_ts: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
 // 查询迭代器
 #[no_mangle] pub extern "C" fn tmsl_dataset_query(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_iter_next(iter: *mut c_void, out_ts: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
@@ -107,6 +112,7 @@ impl StoreConfigBuilder {
 
 > **内存所有权**:
 > - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_iter_free_data` 释放
+> - `tmsl_dataset_read` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_iter_free_data` 释放
 > - `tmsl_iter_close` 释放迭代器本身 (Rust `Box::from_raw` + drop)
 > - 所有 FFI 函数用 `catch_unwind` 包裹, panic 时返回 -1/null + err_buf 写错误信息
 

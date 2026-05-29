@@ -193,12 +193,13 @@ int main() {
 | `tmsl_dataset_flush` | 手动 flush 数据集 | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_write` | 写入一条记录 | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_delete` | 删除指定时间戳的记录 (索引标哨兵, invalid_record_count++) | `0`=成功, `-1`=失败 |
+| `tmsl_dataset_read` | 读取单个时间戳的记录 | `0`=成功, `1`=未找到, `-1`=失败 |
 | `tmsl_dataset_query` | 查询时间范围, 返回迭代器 | `*mut c_void` (NULL=失败) |
 | `tmsl_iter_next` | 获取下一条记录 | `0`=成功, `1`=无数据, `-1`=失败 |
-| `tmsl_iter_free_data` | 释放 `tmsl_iter_next` 分配的数据 | void |
+| `tmsl_iter_free_data` | 释放 `tmsl_iter_next` / `tmsl_dataset_read` 分配的数据 | void |
 | `tmsl_iter_close` | 关闭并释放迭代器 | void |
 
-> **内存所有权**: `tmsl_iter_next` 返回的数据由 `libc::malloc` 分配, C 侧必须调用 `tmsl_iter_free_data` 释放。
+> **内存所有权**: `tmsl_iter_next` 和 `tmsl_dataset_read` 返回的数据由 `libc::malloc` 分配, C 侧必须调用 `tmsl_iter_free_data` 释放。
 
 ## 数据集生命周期
 

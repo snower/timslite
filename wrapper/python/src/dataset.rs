@@ -52,6 +52,20 @@ impl PyDataset {
         wrap(ds.write(timestamp, &data))
     }
 
+    /// Read a single record by exact timestamp.
+    ///
+    /// Returns (timestamp, data) if found, or None if not found / deleted / filler.
+    ///
+    /// Args:
+    ///     timestamp: Timestamp of the record to read.
+    ///
+    /// Returns:
+    ///     Optional[tuple[int, bytes]]: (timestamp, data) or None.
+    fn read(&mut self, timestamp: i64) -> PyResult<Option<(i64, Vec<u8>)>> {
+        let mut ds = self.inner.lock().unwrap();
+        wrap(ds.read(timestamp, None))
+    }
+
     /// Query records in [start_ts, end_ts], returns a lazy iterator.
     ///
     /// Yields (timestamp: int, data: bytes) tuples.

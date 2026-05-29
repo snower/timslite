@@ -41,6 +41,7 @@ impl DataSet {
     fn drop_dataset(base_dir: &Path) -> io::Result<()>;
 
     fn write(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
+    fn read(&mut self, timestamp: i64, cache: Option<&BlockCache>) -> io::Result<Option<(i64, Vec<u8>)>>;
     fn query(&mut self, start_ts: i64, end_ts: i64, cache: Option<&BlockCache>) -> io::Result<Vec<(i64, Vec<u8>)>>;
     fn query_iter(&mut self, start_ts: i64, end_ts: i64, cache: Option<&BlockCache>) -> io::Result<QueryIterator<'_>>;
     fn flush(&mut self) -> io::Result<()>;
@@ -351,6 +352,30 @@ DataSet::delete(timestamp):
 > - **内存节省**: 查询 100 万条记录仅需 ~64KB (1 Block) 内存, 而非 ~100MB
 >
 > **旧 API 兼容**: `DataSet::query()` 方法保留, 内部改为 `query_iter().collect()`
+
+### 10.3 单时间戳读取 (`read`)
+
+```
+read(timestamp) → Option<(i64, Vec<u8>)>
+    │
+    ├─ 1. TimeIndex.find_entry(timestamp)
+    │      → 三级搜索: in_memory_buffer → open segments → closed segments
+    │      → 返回 None: 时间戳不存在, 直接返回 Ok(None)
+    │
+    ├─ 2. 检查 entry.block_offset
+    │      └─ == BLOCK_OFFSET_FILLER (0xFFFFFFFFFFFFFFFF)
+    │         → 已删除或未写入 (连续模式 filler), 返回 Ok(None)
+    │
+    └─ 3. segments.read_at_index(entry, cache)
+           → 定位数据段, 读 Block + 解压 (如需), 定位 record, 返回 (ts, data)
+```
+
+> **与 `query` 的区别**:
+> - `read` 查找单个时间戳, 不构建迭代器, 开销更小
+> - `read` 返回 `Option`, 未找到时不报错 (区别于 `delete` 的 `NotFound` 错误)
+> - `read` 复用 `TimeIndex.find_entry()` (三级搜索), 与 correction-write 路径一致
+> - FFI 层 `tmsl_dataset_read` 返回码: 0=成功, 1=未找到, -1=错误
+> - `out_data` 由 `libc::malloc` 分配, C 侧通过 `tmsl_iter_free_data` 释放 (与迭代器共享分配/释放路径)
 
 ## 十一、数据保留 (Retention) 与回收
 

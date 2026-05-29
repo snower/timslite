@@ -335,6 +335,32 @@ impl DataSet {
         Ok(())
     }
 
+    /// Read a single record by exact timestamp.
+    ///
+    /// Returns `Ok(Some((timestamp, data)))` if found, `Ok(None)` if not found
+    /// or entry is a filler (deleted or never-written in continuous mode).
+    pub fn read(
+        &mut self,
+        timestamp: i64,
+        cache: Option<&BlockCache>,
+    ) -> Result<Option<(i64, Vec<u8>)>> {
+        let entry = match self.time_index.find_entry(timestamp)? {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+        if entry.block_offset == BLOCK_OFFSET_FILLER {
+            return Ok(None);
+        }
+        let re = ReadIndexEntry {
+            timestamp: entry.timestamp,
+            block_offset: entry.block_offset,
+            in_block_offset: entry.in_block_offset,
+        };
+        let (ts, data) = self.segments.read_at_index(&re, cache)?;
+        self.last_used_at = Instant::now();
+        Ok(Some((ts, data)))
+    }
+
     /// Return a lazy query iterator for records in [start_ts, end_ts].
     #[allow(clippy::needless_lifetimes)]
     pub fn query_iter<'a, 'b>(
@@ -1670,6 +1696,197 @@ mod tests {
 
             let seg = ds.segments.segments.last().unwrap();
             assert_eq!(seg.invalid_record_count, 1);
+        }
+    }
+
+    // ─── read() tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_read_found() {
+        let dir = temp_dir("read_found");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"hello").unwrap();
+        ds.write(200, b"world").unwrap();
+
+        // Read existing timestamp
+        let result = ds.read(100, None).unwrap();
+        assert!(result.is_some());
+        let (ts, data) = result.unwrap();
+        assert_eq!(ts, 100);
+        assert_eq!(data, b"hello");
+
+        // Read second timestamp
+        let result = ds.read(200, None).unwrap();
+        assert!(result.is_some());
+        let (ts, data) = result.unwrap();
+        assert_eq!(ts, 200);
+        assert_eq!(data, b"world");
+    }
+
+    #[test]
+    fn test_read_not_found() {
+        let dir = temp_dir("read_not_found");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"hello").unwrap();
+
+        // Read non-existent timestamp → None
+        let result = ds.read(999, None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_read_deleted_returns_none() {
+        let dir = temp_dir("read_deleted");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"hello").unwrap();
+        ds.write(200, b"world").unwrap();
+
+        // Delete ts=100
+        ds.delete(100).unwrap();
+
+        // Read deleted timestamp → None (filler)
+        let result = ds.read(100, None).unwrap();
+        assert!(result.is_none());
+
+        // Other timestamp still readable
+        let result = ds.read(200, None).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().1, b"world");
+    }
+
+    #[test]
+    fn test_read_continuous_filler_returns_none() {
+        let dir = temp_dir("read_continuous_filler");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            1, // continuous mode
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"hello").unwrap();
+        ds.write(110, b"world").unwrap();
+        ds.flush().unwrap();
+
+        // Filler positions (101..109) → None
+        let result = ds.read(105, None).unwrap();
+        assert!(result.is_none());
+
+        // Real positions (100, 110) → Some
+        let result = ds.read(100, None).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().1, b"hello");
+
+        let result = ds.read(110, None).unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().1, b"world");
+    }
+
+    #[test]
+    fn test_read_after_reopen() {
+        let dir = temp_dir("read_reopen");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+
+        // Phase 1: write + close
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                65536,
+                0,
+                256 * 1024,
+                4 * 1024,
+                0,
+            )
+            .unwrap();
+            ds.write(100, b"persistent").unwrap();
+            ds.write(200, b"data").unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+
+        // Phase 2: reopen and read
+        {
+            let mut ds = DataSet::open(id, dir, 65536).unwrap();
+
+            let result = ds.read(100, None).unwrap();
+            assert!(result.is_some());
+            assert_eq!(result.unwrap().1, b"persistent");
+
+            let result = ds.read(200, None).unwrap();
+            assert!(result.is_some());
+            assert_eq!(result.unwrap().1, b"data");
+
+            let result = ds.read(999, None).unwrap();
+            assert!(result.is_none());
         }
     }
 }

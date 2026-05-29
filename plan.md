@@ -27,6 +27,7 @@
 | 16 | 数据保留 (Retention) | ✅ 完成 | [phase-16-data-retention.md](docs/plan/phase-16-data-retention.md) |
 | 17 | 纠正写入 (Correction Write) | ✅ 完成 | [phase-17-correction-write.md](docs/plan/phase-17-correction-write.md) |
 | 18 | 乱序写入与删除 (Out-of-Order Write & Delete) | ✅ 完成 | [phase-18-out-of-order-write-and-delete.md](docs/plan/phase-18-out-of-order-write-and-delete.md) |
+| 19 | 单时间戳读取 (Single Timestamp Read) | ✅ 完成 | (本节) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -161,6 +162,16 @@
 - [x] `cargo clippy --tests` clean (零 warnings)
 - [x] `cargo fmt -- --check` clean
 - [x] `cargo test -- --test-threads=1` — lib 116 passed, integration 25 passed, total 141
+
+### Phase 19: 单时间戳读取 (Single Timestamp Read) ✅ 已完成
+- [x] `dataset.rs`: 新增 `DataSet::read(timestamp, cache) -> Result<Option<(i64, Vec<u8>)>>` — 通过 `time_index.find_entry()` 三级搜索 + filler 过滤 + `segments.read_at_index()` 读取数据
+- [x] `ffi.rs`: 新增 `tmsl_dataset_read(dataset, timestamp, out_ts, out_data, out_data_len, err_buf, err_buf_len) -> c_int` — 返回码 0=成功, 1=未找到, -1=错误; `out_data` 由 `libc::malloc` 分配, 复用 `tmsl_iter_free_data` 释放路径
+- [x] `include/timslite.h`: 新增 `tmsl_dataset_read` C 函数声明 + doxygen 注释
+- [x] 单元测试 (5 项): test_read_found, test_read_not_found, test_read_deleted_returns_none, test_read_continuous_filler_returns_none, test_read_after_reopen
+- [x] 设计文档更新: dataset-operations.md (§10.3) + store-and-ffi.md (FFI 函数列表 + 内存所有权说明)
+- [x] `cargo clippy --tests -- -D warnings` clean
+- [x] `cargo fmt -- --check` clean
+- [x] `cargo test -- --test-threads=1` 全部通过 (124 unit + 25 integration = 149 tests)
 
 ## 文档结构
 
