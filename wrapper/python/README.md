@@ -35,4 +35,42 @@ with timslite.Store.open("/data/timslite") as store:
     # Range query
     for ts, data in ds.query(1, 100):
         print(f"ts={ts}, data={data}")
+
+    # Delete a record
+    ds.delete(1)
+```
+
+### Manual Background Tasks
+
+When `enable_background_thread=False`, the store does not spawn an internal
+background thread.  You must call `store.tick_background_tasks()` periodically
+to drive flush, idle-close, cache eviction, and retention reclaim.
+
+```python
+import timslite
+
+cfg = timslite.StoreConfig(enable_background_thread=False)
+store = timslite.Store.open("/data/timslite", cfg)
+
+store.create_dataset("sensor", "waveform")
+ds = store.open_dataset("sensor", "waveform")
+ds.write(1, b"reading_1")
+
+# Manually execute a tick — returns (executed_tasks, next_delay_ms)
+executed, delay_ms = store.tick_background_tasks()
+print(f"executed={executed}, next in {delay_ms}ms")
+
+# Check the delay without executing anything
+delay = store.next_background_delay()
+print(f"next task due in {delay}ms")
+
+# In an event loop:
+import time
+while True:
+    executed, delay_ms = store.tick_background_tasks()
+    if executed > 0:
+        print(f"ran {executed} background tasks")
+    time.sleep(delay_ms / 1000.0)
+
+store.close()
 ```

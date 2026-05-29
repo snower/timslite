@@ -173,6 +173,36 @@ impl PyStore {
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
         wrap(store.drop_dataset_by_name(name, dataset_type))
     }
+
+    /// Execute one tick of background tasks synchronously.
+    ///
+    /// Checks if flush, idle-close, cache eviction, or retention reclaim are
+    /// due and runs them immediately.  Returns `(executed, next_delay_ms)`.
+    ///
+    /// Can be called regardless of whether the background thread is enabled.
+    /// When `enable_background_thread=False`, call this periodically to drive
+    /// background logic (e.g. in an event loop).
+    fn tick_background_tasks(&self) -> PyResult<(usize, u64)> {
+        let store = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
+        let result = wrap(store.tick_background_tasks())?;
+        Ok((result.executed_tasks, result.next_delay.as_millis() as u64))
+    }
+
+    /// Return the delay in milliseconds until the next background task is due.
+    ///
+    /// Does NOT execute any tasks — reads a snapshot of the executor state.
+    /// Useful for scheduling the next `tick_background_tasks()` call.
+    fn next_background_delay(&self) -> PyResult<u64> {
+        let store = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
+        let delay = wrap(store.next_background_delay())?;
+        Ok(delay.as_millis() as u64)
+    }
 }
 
 impl Drop for PyStore {

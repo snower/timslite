@@ -11,7 +11,7 @@ pub struct PyStoreConfig {
 #[pymethods]
 impl PyStoreConfig {
     #[new]
-    #[pyo3(signature = (*, flush_interval=600, idle_timeout=1800, data_segment_size=67108864, index_segment_size=4194304, initial_data_segment_size=262144, initial_index_segment_size=4096, block_max_size=65536, compress_level=6, cache_max_memory=268435456, cache_idle_timeout=1800))]
+    #[pyo3(signature = (*, flush_interval=600, idle_timeout=1800, data_segment_size=67108864, index_segment_size=4194304, initial_data_segment_size=262144, initial_index_segment_size=4096, block_max_size=65536, compress_level=6, cache_max_memory=268435456, cache_idle_timeout=1800, retention_check_hour=0, enable_background_thread=true))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         flush_interval: u64,
@@ -24,6 +24,8 @@ impl PyStoreConfig {
         compress_level: u8,
         cache_max_memory: usize,
         cache_idle_timeout: u64,
+        retention_check_hour: u8,
+        enable_background_thread: bool,
     ) -> Self {
         Self {
             inner: timslite::StoreConfig::builder()
@@ -37,6 +39,8 @@ impl PyStoreConfig {
                 .compress_level(compress_level)
                 .cache_max_memory(cache_max_memory)
                 .cache_idle_timeout(std::time::Duration::from_secs(cache_idle_timeout))
+                .retention_check_hour(retention_check_hour)
+                .enable_background_thread(enable_background_thread)
                 .build(),
         }
     }
@@ -96,6 +100,16 @@ impl PyStoreConfig {
     #[getter]
     fn cache_idle_timeout(&self) -> u64 {
         self.inner.cache_idle_timeout.as_secs()
+    }
+
+    #[getter]
+    fn retention_check_hour(&self) -> u8 {
+        self.inner.retention_check_hour
+    }
+
+    #[getter]
+    fn enable_background_thread(&self) -> bool {
+        self.inner.enable_background_thread
     }
 }
 

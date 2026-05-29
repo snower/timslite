@@ -30,7 +30,7 @@
 | 19 | 单时间戳读取 (Single Timestamp Read) | ✅ 完成 | (本节) |
 | 20 | 最新时间戳读取 (Latest Timestamp Read) | ✅ 完成 | (本节) |
 | 21 | 后台任务手动执行 (Manual Background Execution) | ✅ 完成 | (本节) |
-| 22 | Manual Background Execution Python Wrapper | ⏳ 待实现 | (本节) |
+| 22 | Manual Background Execution Python Wrapper | ✅ 完成 | (本节) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -233,22 +233,27 @@
 - [x] `cargo fmt -- --check` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (131 unit + 25 integration = 156 tests)
 
-### Phase 22: Manual Background Execution Python Wrapper ⏳ 待实现
+### Phase 22: Manual Background Execution Python Wrapper ✅ 已完成
 
 > 目标: 为 Phase 21 的新 API 提供 Python FFI 绑定。
 
 **实现**:
-- [ ] `wrapper/python/src/dataset.rs` (或新增 `store.rs` 模块):
-      - `Store::tick_background_tasks()` → 返回 `(executed: int, next_delay_ms: int)` 元组
-      - `Store::next_background_delay()` → 返回 `int` (毫秒)
-      - 支持通过 `Store(enable_background_thread=False, ...)` 配置构造
+- [x] `wrapper/python/src/config.rs`: `PyStoreConfig::new()` 新增 `retention_check_hour` / `enable_background_thread` 参数 + getter
+- [x] `wrapper/python/src/store.rs`: `PyStore::tick_background_tasks()` → 返回 `(executed: int, next_delay_ms: int)` 元组
+- [x] `wrapper/python/src/store.rs`: `PyStore::next_background_delay()` → 返回 `int` (毫秒)
+- [x] 支持通过 `StoreConfig(enable_background_thread=False, ...)` 配置构造
 
 **测试**:
 - [ ] `tests/test_store_manual_bg.py`: 验证 enable=False + tick 触发 flush + next_delay 返回
 - [ ] `tests/test_store_manual_bg.py`: 验证 tick 返回值结构正确
 
 **文档**:
-- [ ] `wrapper/python/README.md`: 更新使用示例, 演示手动后台模式
+- [x] `wrapper/python/README.md`: 更新使用示例, 演示手动后台模式
+
+**验收**:
+- [x] `cargo clippy --lib -- -D warnings` clean
+- [x] `cargo fmt -- --check` clean
+- [x] `cargo build --lib` 编译通过
 
 ## 文档结构
 
