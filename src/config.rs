@@ -21,6 +21,7 @@ use std::time::Duration;
 /// - `cache_max_memory`: 256 MiB (0 = disabled)
 /// - `cache_idle_timeout`: 30 minutes (1800s)
 /// - `retention_check_hour`: 0 (daily at midnight)
+/// - `enable_background_thread`: true
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
     /// Interval between background flush cycles (mmap sync only).
@@ -45,6 +46,9 @@ pub struct StoreConfig {
     pub cache_idle_timeout: Duration,
     /// Hour (0-23) at which the daily retention reclamation runs.
     pub retention_check_hour: u8,
+    /// Whether to launch a background thread. When false, callers must invoke
+    /// `Store::tick_background_tasks()` periodically to drive flush/idle/cache/retention.
+    pub enable_background_thread: bool,
 }
 
 impl Default for StoreConfig {
@@ -61,6 +65,7 @@ impl Default for StoreConfig {
             cache_max_memory: 256 * 1024 * 1024, // 256 MiB
             cache_idle_timeout: Duration::from_secs(1800), // 30 min
             retention_check_hour: 0,             // midnight
+            enable_background_thread: true,      // default: auto thread
         }
     }
 }
@@ -86,6 +91,7 @@ pub struct StoreConfigBuilder {
     cache_max_memory: Option<usize>,
     cache_idle_timeout: Option<Duration>,
     retention_check_hour: Option<u8>,
+    enable_background_thread: Option<bool>,
 }
 
 impl StoreConfigBuilder {
@@ -155,6 +161,15 @@ impl StoreConfigBuilder {
         self
     }
 
+    /// Whether to launch a background thread (default true).
+    ///
+    /// When `false`, callers must invoke `Store::tick_background_tasks()` periodically
+    /// to drive flush, idle-close, cache eviction, and retention reclaim.
+    pub fn enable_background_thread(mut self, enable: bool) -> Self {
+        self.enable_background_thread = Some(enable);
+        self
+    }
+
     /// Build the `StoreConfig`.
     pub fn build(self) -> StoreConfig {
         let defaults = StoreConfig::default();
@@ -180,6 +195,9 @@ impl StoreConfigBuilder {
             retention_check_hour: self
                 .retention_check_hour
                 .unwrap_or(defaults.retention_check_hour),
+            enable_background_thread: self
+                .enable_background_thread
+                .unwrap_or(defaults.enable_background_thread),
         }
     }
 }
@@ -355,6 +373,7 @@ mod tests {
         assert_eq!(cfg.cache_max_memory, 256 * 1024 * 1024);
         assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(1800));
         assert_eq!(cfg.retention_check_hour, 0);
+        assert!(cfg.enable_background_thread);
     }
 
     #[test]
@@ -411,6 +430,17 @@ mod tests {
         assert_eq!(cfg.retention_check_hour, 23);
         let cfg2 = StoreConfig::builder().retention_check_hour(12).build();
         assert_eq!(cfg2.retention_check_hour, 12);
+    }
+
+    #[test]
+    fn test_builder_disable_background_thread() {
+        let cfg = StoreConfig::builder()
+            .enable_background_thread(false)
+            .build();
+        assert!(!cfg.enable_background_thread);
+        // default is true
+        let default = StoreConfig::default();
+        assert!(default.enable_background_thread);
     }
 
     #[test]

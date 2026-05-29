@@ -38,6 +38,35 @@ void* tmsl_store_open(const char* data_dir, char* err_buf, size_t err_buf_len);
  */
 int tmsl_store_close(void* store, char* err_buf, size_t err_buf_len);
 
+/**
+ * Execute one tick of background tasks synchronously (flush, idle-close,
+ * cache eviction, retention reclaim).  Safe to call even when the
+ * background thread is enabled.
+ * @param store            Opaque store pointer.
+ * @param out_executed     Written with the number of tasks executed (0-4).
+ * @param out_next_delay_ms Written with the delay in ms until the next task is due.
+ * @param err_buf          Buffer for error message.
+ * @param err_buf_len      Length of error buffer.
+ * @return 0 on success (even if no task was due, executed=0), -1 on error.
+ */
+int tmsl_store_tick_background_tasks(void* store,
+                                     unsigned int* out_executed,
+                                     uint64_t* out_next_delay_ms,
+                                     char* err_buf, size_t err_buf_len);
+
+/**
+ * Query the delay until the next background task is due, without
+ * executing any tasks.
+ * @param store            Opaque store pointer.
+ * @param out_next_delay_ms Written with the delay in milliseconds.
+ * @param err_buf          Buffer for error message.
+ * @param err_buf_len      Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_store_next_background_delay(void* store,
+                                     uint64_t* out_next_delay_ms,
+                                     char* err_buf, size_t err_buf_len);
+
 /* ─── Dataset Management ────────────────────────────────────────────────── */
 
 /**

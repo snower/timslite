@@ -29,7 +29,7 @@
 | 18 | 乱序写入与删除 (Out-of-Order Write & Delete) | ✅ 完成 | [phase-18-out-of-order-write-and-delete.md](docs/plan/phase-18-out-of-order-write-and-delete.md) |
 | 19 | 单时间戳读取 (Single Timestamp Read) | ✅ 完成 | (本节) |
 | 20 | 最新时间戳读取 (Latest Timestamp Read) | ✅ 完成 | (本节) |
-| 21 | 后台任务手动执行 (Manual Background Execution) | ⏳ 待实现 | (本节) |
+| 21 | 后台任务手动执行 (Manual Background Execution) | ✅ 完成 | (本节) |
 | 22 | Manual Background Execution Python Wrapper | ⏳ 待实现 | (本节) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
@@ -199,19 +199,19 @@
 - [x] 设计文档更新: `design.md` 后台任务条目描述更新
 
 **实现**:
-- [ ] `config.rs`: `StoreConfig` 新增 `enable_background_thread: bool` 字段 (默认 `true`) + `StoreConfigBuilder::enable_background_thread()` + 单元测试
-- [ ] `bg/mod.rs`: 抽取调度状态到 `ExecutorState { last_flush, last_idle_check, last_cache_eviction, next_retention }`, 放入 `Mutex<ExecutorState>`; `BackgroundTasks::start` 改为持有共享 `state` + 线程 loop 与 `tick` 使用相同执行路径
-- [ ] `bg/mod.rs`: 实现 `BackgroundTasks::tick() -> TickResult` (单次到期检查 + 执行, 返回 `executed_tasks` + `next_delay`)
-- [ ] `bg/mod.rs`: 实现 `BackgroundTasks::next_delay() -> Duration` (读快照快速计算, 不执行任务)
-- [ ] `bg/mod.rs`: `start` 支持 `enable_background_thread=false` 模式 — 不 spawn 线程, 仅初始化 `state`
-- [ ] `bg/mod.rs`: 新增 `TickResult { executed_tasks: usize, next_delay: Duration }` 返回类型, `pub` 并导出
-- [ ] `store.rs`: `Store::open` 按 `config.enable_background_thread` 启用/禁用线程 (新增 `BackgroundTasks::start` 参数或构造新方法)
-- [ ] `store.rs`: 新增 `Store::tick_background_tasks() -> Result<TickResult>` 委托到 `BackgroundTasks::tick`
-- [ ] `store.rs`: 新增 `Store::next_background_delay() -> Duration` 委托到 `BackgroundTasks::next_delay`
-- [ ] `lib.rs`: 导出 `TickResult` (pub)
-- [ ] `ffi.rs`: 新增 `tmsl_store_tick_background_tasks(store, out_executed, out_next_delay_ms, err_buf, err_buf_len) -> c_int`
-- [ ] `ffi.rs`: 新增 `tmsl_store_next_background_delay(store, out_next_delay_ms, err_buf, err_buf_len) -> c_int`
-- [ ] `include/timslite.h`: 新增两个 FFI 函数声明 + doxygen 注释
+- [x] `config.rs`: `StoreConfig` 新增 `enable_background_thread: bool` 字段 (默认 `true`) + `StoreConfigBuilder::enable_background_thread()` + 单元测试
+- [x] `bg/mod.rs`: 抽取调度状态到 `ExecutorState { last_flush, last_idle_check, last_cache_eviction, next_retention }`, 放入 `Arc<Mutex<ExecutorState>>`; `BackgroundTasks::start` 改为持有共享 `state` + 线程 loop 与 `tick` 使用相同执行路径
+- [x] `bg/mod.rs`: 实现 `BackgroundTasks::tick() -> TickResult` (单次到期检查 + 执行, 返回 `executed_tasks` + `next_delay`)
+- [x] `bg/mod.rs`: 实现 `BackgroundTasks::next_delay() -> Duration` (读快照快速计算, 不执行任务)
+- [x] `bg/mod.rs`: `BackgroundTasks::new()` 支持无线程模式 — 不 spawn 线程, 仅初始化 `state`
+- [x] `bg/mod.rs`: 新增 `TickResult { executed_tasks: usize, next_delay: Duration }` 返回类型, `pub` 并导出
+- [x] `store.rs`: `Store::open` 按 `config.enable_background_thread` 启用/禁用线程
+- [x] `store.rs`: 新增 `Store::tick_background_tasks() -> Result<TickResult>` 委托到 `BackgroundTasks::tick`
+- [x] `store.rs`: 新增 `Store::next_background_delay() -> Result<Duration>` 委托到 `BackgroundTasks::next_delay`
+- [x] `lib.rs`: 导出 `TickResult` (pub use)
+- [x] `ffi.rs`: 新增 `tmsl_store_tick_background_tasks(store, out_executed, out_next_delay_ms, err_buf, err_buf_len) -> c_int`
+- [x] `ffi.rs`: 新增 `tmsl_store_next_background_delay(store, out_next_delay_ms, err_buf, err_buf_len) -> c_int`
+- [x] `include/timslite.h`: 新增两个 FFI 函数声明 + doxygen 注释
 
 **测试**:
 - [ ] 单元测试: `test_tick_bg_disabled_mode` (enable_background_thread=false, 手动 tick 触发 flush)
@@ -229,9 +229,9 @@
 - [ ] 集成测试: `t21_3_manual_bg_concurrent_with_thread` (启用线程 + 外部 tick 并发, 无数据损坏)
 
 **验收**:
-- [ ] `cargo clippy --all-targets -- -D warnings` clean
-- [ ] `cargo fmt -- --check` clean
-- [ ] `cargo test -- --test-threads=1` 全部通过
+- [x] `cargo clippy --all-targets -- -D warnings` clean
+- [x] `cargo fmt -- --check` clean
+- [x] `cargo test -- --test-threads=1` 全部通过 (131 unit + 25 integration = 156 tests)
 
 ### Phase 22: Manual Background Execution Python Wrapper ⏳ 待实现
 

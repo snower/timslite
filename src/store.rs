@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use crate::bg::BackgroundTasks;
+use crate::bg::TickResult;
 use crate::cache::BlockCache;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::dataset::{DataSet, DataSetKey};
@@ -84,15 +86,27 @@ impl Store {
             handles: HashMap::new(),
         };
 
-        // Start background tasks
-        store.bg_tasks = Some(BackgroundTasks::start(
-            datasets,
-            block_cache,
-            config.flush_interval,
-            config.idle_timeout,
-            config.cache_idle_timeout,
-            config.retention_check_hour,
-        ));
+        // Start background tasks (or just the executor)
+        if config.enable_background_thread {
+            store.bg_tasks = Some(BackgroundTasks::start(
+                datasets,
+                block_cache,
+                config.flush_interval,
+                config.idle_timeout,
+                config.cache_idle_timeout,
+                config.retention_check_hour,
+            ));
+        } else {
+            store.bg_tasks = Some(BackgroundTasks::new(
+                datasets,
+                block_cache,
+                config.flush_interval,
+                config.idle_timeout,
+                config.cache_idle_timeout,
+                config.retention_check_hour,
+            ));
+            log::info!("[store] background thread disabled, manual tick required");
+        }
 
         Ok(store)
     }
@@ -296,6 +310,34 @@ impl Store {
     /// Get a reference to the store config.
     pub fn config(&self) -> &StoreConfig {
         &self.config
+    }
+
+    /// Execute one tick of all background tasks synchronously.
+    ///
+    /// Checks if flush, idle-close, cache eviction, or retention reclaim are
+    /// due and runs them immediately.  Returns the number of executed tasks
+    /// and the delay until the next one is due.
+    ///
+    /// Safe to call even when the background thread is enabled — it will
+    /// be serialised with the thread via the internal `Mutex`.
+    pub fn tick_background_tasks(&self) -> Result<TickResult> {
+        let bg = self
+            .bg_tasks
+            .as_ref()
+            .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?;
+        Ok(bg.tick())
+    }
+
+    /// Return the duration until the next background task is due.
+    ///
+    /// Reads a snapshot of the executor state without running any tasks.
+    /// Blocks briefly if another thread is currently executing `tick`.
+    pub fn next_background_delay(&self) -> Result<Duration> {
+        let bg = self
+            .bg_tasks
+            .as_ref()
+            .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?;
+        Ok(bg.next_delay())
     }
 
     /// Close the store completely.

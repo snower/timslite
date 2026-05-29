@@ -3,6 +3,7 @@
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_longlong, c_uchar, c_void};
 
+use crate::bg::TickResult;
 use crate::config::StoreConfig;
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
@@ -124,6 +125,68 @@ pub extern "C" fn tmsl_store_close(
         inner
             .close()
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
+        Ok(0)
+    })
+}
+
+/// Execute one tick of background tasks synchronously.
+///
+/// Writes the number of executed tasks (0-4) to `out_executed` and the delay
+/// in milliseconds until the next task is due to `out_next_delay_ms`.
+/// Returns 0 on success, -1 on error.
+///
+/// Can be called regardless of whether the background thread is enabled.
+#[no_mangle]
+pub extern "C" fn tmsl_store_tick_background_tasks(
+    store: *mut c_void,
+    out_executed: *mut u32,
+    out_next_delay_ms: *mut u64,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if store.is_null() || out_executed.is_null() || out_next_delay_ms.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let TickResult {
+            executed_tasks,
+            next_delay,
+        } = store_inner
+            .tick_background_tasks()
+            .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
+        unsafe {
+            *out_executed = executed_tasks as u32;
+            *out_next_delay_ms = next_delay.as_millis() as u64;
+        }
+        Ok(0)
+    })
+}
+
+/// Query the delay until the next background task is due, without executing.
+///
+/// Writes the delay in milliseconds to `out_next_delay_ms`.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn tmsl_store_next_background_delay(
+    store: *mut c_void,
+    out_next_delay_ms: *mut u64,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if store.is_null() || out_next_delay_ms.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let delay = store_inner
+            .next_background_delay()
+            .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
+        unsafe {
+            *out_next_delay_ms = delay.as_millis() as u64;
+        }
         Ok(0)
     })
 }

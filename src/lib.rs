@@ -53,6 +53,7 @@ mod segment;
 mod store;
 
 // ─── Public re-exports ──────────────────────────────────────────────────────
+pub use bg::TickResult;
 pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
 pub use dataset::{DataSet, DataSetKey};
 pub use error::{Result, TmslError};
