@@ -244,8 +244,8 @@
 - [x] 支持通过 `StoreConfig(enable_background_thread=False, ...)` 配置构造
 
 **测试**:
-- [ ] `tests/test_store_manual_bg.py`: 验证 enable=False + tick 触发 flush + next_delay 返回 (deferred: 需 maturin + Python runtime)
-- [ ] `tests/test_store_manual_bg.py`: 验证 tick 返回值结构正确 (deferred: 需 maturin + Python runtime)
+- [x] `tests/test_store_manual_bg.py`: 验证 enable=False + tick 触发 flush + next_delay 返回
+- [x] `tests/test_store_manual_bg.py`: 验证 tick 返回值结构正确
 
 **文档**:
 - [x] `wrapper/python/README.md`: 更新使用示例, 演示手动后台模式
