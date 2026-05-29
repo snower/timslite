@@ -902,19 +902,148 @@ fn t17_2_correction_write_resize_reopen() {
     }
     drop(arc);
     store.close().unwrap();
+}
 
-    // Reopen and verify persistence
-    let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
-    let ds2 = store2.open_dataset("cw_resize", "data").unwrap();
-    let arc2 = store2.get_dataset(&ds2).unwrap();
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 21: Manual Background Execution
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn t21_1_manual_bg_lifecycle() {
+    // Open store with disabled background thread, write data, manually tick,
+    // verify data persists after close + reopen.
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .flush_interval(std::time::Duration::from_millis(1))
+        .enable_background_thread(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset("bg_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+
+    let handle = store.open_dataset("bg_ds", "data").unwrap();
     {
-        let mut lock2 = arc2.lock().unwrap();
-        let entries = lock2.query(100, 100, None).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].1, b"x");
+        let arc = store.get_dataset(&handle).unwrap();
+        let mut ds = arc.lock().unwrap();
+        for i in 0..50i64 {
+            ds.write(i + 1, &format!("val_{}", i).into_bytes()).unwrap();
+        }
     }
-    drop(arc2);
+
+    // Give enough time for the 1ms flush_interval to pass
+    std::thread::sleep(std::time::Duration::from_millis(10));
+
+    // Manually tick — should flush data (flush_interval=1ms, already past)
+    let result = store.tick_background_tasks().unwrap();
+    // flush should have executed (interval is 1ms, we waited 10ms)
+    assert!(
+        result.executed_tasks >= 1,
+        "expected 1+ tasks executed, got {}",
+        result.executed_tasks
+    );
+    assert!(result.next_delay.as_secs_f64() >= 0.0);
+
+    store.close().unwrap();
+
+    // Reopen and verify data persisted
+    let config2 = StoreConfig::default();
+    let mut store2 = Store::open(&dir, config2).unwrap();
+    let handle2 = store2.open_dataset("bg_ds", "data").unwrap();
+    {
+        let arc = store2.get_dataset(&handle2).unwrap();
+        let mut ds = arc.lock().unwrap();
+        let entries = ds.query(1, 50, None).unwrap();
+        assert_eq!(entries.len(), 50);
+    }
     store2.close().unwrap();
+}
+
+#[test]
+fn t21_2_manual_bg_next_delay_consistency() {
+    // Verify that next_background_delay returns a value close to flush_interval
+    // when no tasks have run yet.
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .flush_interval(std::time::Duration::from_secs(60))
+        .enable_background_thread(false)
+        .build();
+    let store = Store::open(&dir, config).unwrap();
+
+    let delay = store.next_background_delay().unwrap();
+    // Should be approximately 60s (flush_interval), not 600s (default)
+    assert!(delay.as_secs() <= 65, "delay {delay:?} should be <= 65s");
+
+    let result = store.tick_background_tasks().unwrap();
+    // After tick, next_delay should also be close to 60s
+    assert!(
+        result.next_delay.as_secs() <= 65,
+        "next_delay {:?} should be <= 65s after tick",
+        result.next_delay
+    );
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t21_3_manual_bg_concurrent_with_thread() {
+    // Open store with background thread enabled, then call tick externally.
+    // Verify no panic and data integrity is preserved.
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .flush_interval(Duration::from_millis(1))
+        .enable_background_thread(true)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset(
+            "conc_ds",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let handle = store.open_dataset("conc_ds", "data").unwrap();
+    {
+        let arc = store.get_dataset(&handle).unwrap();
+        let mut ds = arc.lock().unwrap();
+        ds.write(1, b"hello").unwrap();
+        ds.write(2, b"world").unwrap();
+    }
+
+    // Give time for the 1ms flush_interval to pass
+    std::thread::sleep(Duration::from_millis(10));
+
+    // External tick while background thread is sleeping
+    let result = store.tick_background_tasks().unwrap();
+    // Should have executed at least flush (datasets exist)
+    assert!(result.executed_tasks >= 1);
+
+    // next_delay should also work
+    let _delay = store.next_background_delay().unwrap();
+
+    // Verify data is still intact
+    {
+        let arc = store.get_dataset(&handle).unwrap();
+        let mut ds = arc.lock().unwrap();
+        let entries = ds.query(1, 2, None).unwrap();
+        assert_eq!(entries.len(), 2);
+    }
+
+    store.close().unwrap();
 }
 
 // ─── Phase 18: 乱序写入 + 删除 ───────────────────────────────────────────

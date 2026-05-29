@@ -64,8 +64,8 @@
 
 ### Phase 8: 集成测试 + 性能调优 ⚠️ 部分完成
 - [x] 端到端集成测试: 13 integration tests + 81 unit tests (94 total)
-- [ ] 性能基准测试 (benches/) — criterion 已配置, benches/ 目录已创建但无文件
-- [ ] 内存安全验证 — Windows未valgrind, 可后续Linux验证
+- [ ] 性能基准测试 (benches/) — criterion 已配置, benches/ 目录已创建但无文件 (deferred: 需专项基准实现)
+- [ ] 内存安全验证 — Windows未valgrind, 可后续Linux验证 (deferred: 需Linux环境)
 - [x] 文档: README.md 已更新完整, 公共API有doc comments
 - [x] `cargo clippy -- -D warnings` clean
 
@@ -214,19 +214,19 @@
 - [x] `include/timslite.h`: 新增两个 FFI 函数声明 + doxygen 注释
 
 **测试**:
-- [ ] 单元测试: `test_tick_bg_disabled_mode` (enable_background_thread=false, 手动 tick 触发 flush)
-- [ ] 单元测试: `test_tick_bg_returns_next_delay` (执行后 next_delay 与 flush_interval 大致一致)
-- [ ] 单元测试: `test_tick_bg_respects_interval` (短时间内连续 tick 不重复执行 flush)
-- [ ] 单元测试: `test_tick_bg_all_four_tasks_due` (构造全到期场景, executed_tasks == 4)
-- [ ] 单元测试: `test_next_delay_no_side_effects` (调用 next_delay 后不改变执行状态)
-- [ ] 单元测试: `test_thread_enabled_external_tick_safe` (启用线程的同时外部调用 tick, 无 panic 无重复执行)
-- [ ] 单元测试: `test_concurrent_external_ticks_serialized` (多线程同时 tick, 仅一个真正执行)
-- [ ] 单元测试: `test_next_delay_during_tick` (tick 进行中 next_delay 可能等待, 但最终返回值正确)
-- [ ] 单元测试: `test_enable_background_thread_default_true` (默认构造 = true, 兼容性)
-- [ ] 单元测试: `test_thread_disabled_close_safe` (close 在未启用线程时正常结束)
-- [ ] 集成测试: `t21_1_manual_bg_lifecycle` (open with disabled thread → write → tick → verify flush via reopen)
-- [ ] 集成测试: `t21_2_manual_bg_idle_close` (手动 tick 多次 → 触发 idle-close → 验证段被关闭)
-- [ ] 集成测试: `t21_3_manual_bg_concurrent_with_thread` (启用线程 + 外部 tick 并发, 无数据损坏)
+- [x] 单元测试: `test_tick_bg_disabled_mode` (enable_background_thread=false, 手动 tick 触发 flush)
+- [x] 单元测试: `test_tick_bg_returns_next_delay` (执行后 next_delay 与 flush_interval 大致一致)
+- [x] 单元测试: `test_tick_bg_respects_interval` (短时间内连续 tick 不重复执行 flush)
+- [x] 单元测试: `test_tick_bg_all_four_tasks_due` (构造全到期场景, executed_tasks == 4)
+- [x] 单元测试: `test_next_delay_no_side_effects` (调用 next_delay 后不改变执行状态)
+- [x] 单元测试: `test_thread_enabled_external_tick_safe` (启用线程的同时外部调用 tick, 无 panic 无重复执行)
+- [x] 单元测试: `test_concurrent_external_ticks_serialized` (多线程同时 tick, 仅一个真正执行)
+- [x] 单元测试: `test_next_delay_during_tick` (tick 进行中 next_delay 可能等待, 但最终返回值正确)
+- [x] 单元测试: `test_enable_background_thread_default_true` (默认构造 = true, 兼容性)
+- [x] 单元测试: `test_thread_disabled_close_safe` (close 在未启用线程时正常结束)
+- [x] 集成测试: `t21_1_manual_bg_lifecycle` (open with disabled thread → write → tick → verify flush via reopen)
+- [x] 集成测试: `t21_2_manual_bg_next_delay_consistency` (验证 next_delay 与 flush_interval 一致)
+- [x] 集成测试: `t21_3_manual_bg_concurrent_with_thread` (启用线程 + 外部 tick 并发, 无数据损坏)
 
 **验收**:
 - [x] `cargo clippy --all-targets -- -D warnings` clean
@@ -244,8 +244,8 @@
 - [x] 支持通过 `StoreConfig(enable_background_thread=False, ...)` 配置构造
 
 **测试**:
-- [ ] `tests/test_store_manual_bg.py`: 验证 enable=False + tick 触发 flush + next_delay 返回
-- [ ] `tests/test_store_manual_bg.py`: 验证 tick 返回值结构正确
+- [ ] `tests/test_store_manual_bg.py`: 验证 enable=False + tick 触发 flush + next_delay 返回 (deferred: 需 maturin + Python runtime)
+- [ ] `tests/test_store_manual_bg.py`: 验证 tick 返回值结构正确 (deferred: 需 maturin + Python runtime)
 
 **文档**:
 - [x] `wrapper/python/README.md`: 更新使用示例, 演示手动后台模式

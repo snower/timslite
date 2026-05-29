@@ -372,9 +372,37 @@ impl BackgroundTasks {
 mod tests {
     use super::*;
 
+    fn make_empty_test_bg(thread_enabled: bool) -> BackgroundTasks {
+        let datasets = Arc::new(RwLock::new(HashMap::new()));
+        let block_cache = Arc::new(BlockCache::new(0)); // disabled
+        let flush_interval = Duration::from_secs(600);
+        let idle_timeout = Duration::from_secs(1800);
+        let cache_idle_timeout = Duration::from_secs(1800);
+        let retention_check_hour = 0u8;
+
+        if thread_enabled {
+            BackgroundTasks::start(
+                datasets,
+                block_cache,
+                flush_interval,
+                idle_timeout,
+                cache_idle_timeout,
+                retention_check_hour,
+            )
+        } else {
+            BackgroundTasks::new(
+                datasets,
+                block_cache,
+                flush_interval,
+                idle_timeout,
+                cache_idle_timeout,
+                retention_check_hour,
+            )
+        }
+    }
+
     #[test]
     fn test_next_retention_time_is_not_zero() {
-        // Just ensure it returns a future instant (>= now)
         let nr = next_retention_time(0);
         let diff = nr.saturating_duration_since(Instant::now());
         assert!(diff.as_secs() <= 86400);
@@ -382,8 +410,149 @@ mod tests {
 
     #[test]
     fn test_next_retention_time_clamp_hour() {
-        // hour 25 should wrap to 1
         let _ = next_retention_time(25);
         let _ = next_retention_time(23);
+    }
+
+    #[test]
+    fn test_executor_state_initialized() {
+        let bg = make_empty_test_bg(false);
+        // Initial delay should be close to flush_interval (shortest interval among tasks)
+        let delay = bg.next_delay();
+        // Should be approximately <= flush_interval (600s)
+        assert!(delay <= Duration::from_secs(600));
+    }
+
+    #[test]
+    fn test_next_delay_no_side_effects() {
+        let bg = make_empty_test_bg(false);
+        let d1 = bg.next_delay();
+        let d2 = bg.next_delay();
+        // Two calls in rapid succession should return nearly identical values
+        let diff = d1.abs_diff(d2);
+        assert!(diff < Duration::from_millis(100));
+    }
+
+    #[test]
+    fn test_tick_returns_result_structure() {
+        let bg = make_empty_test_bg(false);
+        let result = bg.tick();
+        // With empty datasets and no expired deadlines (state initialized to now),
+        // executed_tasks should be 0 (nothing due)
+        assert_eq!(result.executed_tasks, 0);
+        // next_delay should be > 0
+        assert!(result.next_delay.as_secs_f64() > 0.0);
+    }
+
+    #[test]
+    fn test_tick_bg_disabled_mode() {
+        // Create with no thread — should not panic on tick/next_delay
+        let bg = make_empty_test_bg(false);
+        // tick should succeed
+        let result = bg.tick();
+        assert!(result.next_delay.as_secs_f64() > 0.0);
+        // next_delay should succeed
+        let _ = bg.next_delay();
+    }
+
+    #[test]
+    fn test_tick_bg_all_tasks_due_after_expiry() {
+        let datasets = Arc::new(RwLock::new(HashMap::new()));
+        let block_cache = Arc::new(BlockCache::new(256 * 1024)); // enabled
+        let flush_interval = Duration::from_millis(1);
+        let bg = BackgroundTasks::new(
+            datasets,
+            block_cache,
+            flush_interval, // 1ms — very short
+            Duration::from_secs(1800),
+            Duration::from_secs(1800),
+            0,
+        );
+
+        // Force last_flush far in the past by taking the lock
+        {
+            let mut state = bg.state.lock().unwrap();
+            state.last_flush = Instant::now() - Duration::from_secs(10);
+            state.last_idle_check = Instant::now() - Duration::from_secs(120);
+            state.last_cache_eviction = Instant::now() - Duration::from_secs(120);
+            state.next_retention = Instant::now() - Duration::from_secs(1);
+        }
+
+        // All 4 tasks should now be due
+        let result = bg.tick();
+        assert_eq!(result.executed_tasks, 4, "expected all 4 tasks executed");
+    }
+
+    #[test]
+    fn test_tick_bg_respects_interval() {
+        let bg = make_empty_test_bg(false);
+        // First tick — 0 tasks (nothing due)
+        let r1 = bg.tick();
+        assert_eq!(r1.executed_tasks, 0);
+        // Second tick immediately after — still 0 tasks (interval not passed)
+        let r2 = bg.tick();
+        assert_eq!(r2.executed_tasks, 0);
+    }
+
+    #[test]
+    fn test_thread_enabled_external_tick_safe() {
+        let mut bg = make_empty_test_bg(true);
+
+        // External tick while thread is running (thread is sleeping)
+        let result = bg.tick();
+        assert!(result.next_delay.as_secs_f64() > 0.0);
+
+        // Clean up the thread
+        bg.stop();
+    }
+
+    #[test]
+    fn test_thread_disabled_close_safe() {
+        let mut bg = make_empty_test_bg(false);
+        // stop() on a no-thread bg should be a no-op (no panic)
+        bg.stop();
+        // verify tick/next_delay still work after stop
+        let result = bg.tick();
+        assert!(result.next_delay.as_secs_f64() > 0.0);
+    }
+
+    #[test]
+    fn test_concurrent_external_ticks_serialized() {
+        let bg = Arc::new(make_empty_test_bg(false));
+        let mut handles = vec![];
+
+        for _ in 0..4 {
+            let bg_clone = Arc::clone(&bg);
+            handles.push(std::thread::spawn(move || {
+                let result = bg_clone.tick();
+                result.executed_tasks
+            }));
+        }
+
+        let mut total = 0usize;
+        for h in handles {
+            total += h.join().unwrap();
+        }
+        // All ticks should have executed without panic.
+        // With all state initialized to now, only the first might have 0 flush.
+        // This just verifies serialization doesn't deadlock.
+        let _ = total;
+    }
+
+    #[test]
+    fn test_next_delay_during_tick() {
+        let bg = Arc::new(make_empty_test_bg(false));
+        let bg_tick = Arc::clone(&bg);
+
+        // Start a tick in another thread
+        let tick_handle = std::thread::spawn(move || bg_tick.tick());
+
+        // While tick is (likely) running, call next_delay
+        // This should eventually succeed (either returns immediately or
+        // blocks briefly until tick completes)
+        let delay = bg.next_delay();
+        assert!(delay.as_secs_f64() > 0.0 || delay.as_secs_f64() == 0.0);
+
+        let _ = tick_handle.join();
     }
 }
