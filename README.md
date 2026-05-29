@@ -191,9 +191,10 @@ int main() {
 | `tmsl_dataset_close` | 关闭数据集 | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_drop` | 删除整个数据集 | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_flush` | 手动 flush 数据集 | `0`=成功, `-1`=失败 |
+| `tmsl_dataset_latest_timestamp` | 获取数据集最新写入时间戳 (0=空) | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_write` | 写入一条记录 | `0`=成功, `-1`=失败 |
 | `tmsl_dataset_delete` | 删除指定时间戳的记录 (索引标哨兵, invalid_record_count++) | `0`=成功, `-1`=失败 |
-| `tmsl_dataset_read` | 读取单个时间戳的记录 | `0`=成功, `1`=未找到, `-1`=失败 |
+| `tmsl_dataset_read` | 读取单个时间戳的记录 (`timestamp=-1` 读最新) | `0`=成功, `1`=未找到, `-1`=失败 |
 | `tmsl_dataset_query` | 查询时间范围, 返回迭代器 | `*mut c_void` (NULL=失败) |
 | `tmsl_iter_next` | 获取下一条记录 | `0`=成功, `1`=无数据, `-1`=失败 |
 | `tmsl_iter_free_data` | 释放 `tmsl_iter_next` / `tmsl_dataset_read` 分配的数据 | void |

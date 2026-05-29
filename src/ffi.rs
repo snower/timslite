@@ -272,6 +272,30 @@ pub extern "C" fn tmsl_dataset_flush(
     })
 }
 
+/// Get the latest successfully written timestamp of a dataset.
+///
+/// Writes the timestamp to `out_ts`. Returns 0. When the dataset is empty,
+/// `out_ts` is set to 0. Returns -1 on error.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_latest_timestamp(
+    dataset: *mut c_void,
+    out_ts: *mut c_longlong,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() || out_ts.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
+        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
+        let ds = ds_arc.lock().unwrap();
+        unsafe { *out_ts = ds.latest_written_timestamp() as c_longlong };
+        Ok(0)
+    })
+}
+
 /// Delete the record at the given timestamp.
 ///
 /// Marks the index entry as sentinel and increments the old data segment's
@@ -321,8 +345,8 @@ pub extern "C" fn tmsl_dataset_read(
         let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
         let mut ds = ds_arc.lock().unwrap();
         match ds.read(timestamp, Some(store_inner.block_cache()))? {
-            Some((_ts, data)) => {
-                unsafe { *out_ts = timestamp };
+            Some((ts, data)) => {
+                unsafe { *out_ts = ts as c_longlong };
                 let ptr = unsafe { libc::malloc(data.len()) as *mut c_uchar };
                 if ptr.is_null() {
                     return Err(TmslError::InvalidData("malloc failed".into()));

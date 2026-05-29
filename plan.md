@@ -28,6 +28,7 @@
 | 17 | 纠正写入 (Correction Write) | ✅ 完成 | [phase-17-correction-write.md](docs/plan/phase-17-correction-write.md) |
 | 18 | 乱序写入与删除 (Out-of-Order Write & Delete) | ✅ 完成 | [phase-18-out-of-order-write-and-delete.md](docs/plan/phase-18-out-of-order-write-and-delete.md) |
 | 19 | 单时间戳读取 (Single Timestamp Read) | ✅ 完成 | (本节) |
+| 20 | 最新时间戳读取 (Latest Timestamp Read) | ✅ 完成 | (本节) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -162,6 +163,19 @@
 - [x] `cargo clippy --tests` clean (零 warnings)
 - [x] `cargo fmt -- --check` clean
 - [x] `cargo test -- --test-threads=1` — lib 116 passed, integration 25 passed, total 141
+
+### Phase 20: 最新时间戳读取 (Latest Timestamp Read) ✅ 已完成
+- [x] `dataset.rs`: 新增 `DataSet::latest_written_timestamp(&self) -> i64` getter — 返回内存中维护的最新写入时间戳 (0 = 空)
+- [x] `dataset.rs`: 修改 `DataSet::read()` — `timestamp == -1` 时解析为 `latest_written_timestamp`, 空数据集直接返回 `None`
+- [x] `ffi.rs`: 新增 `tmsl_dataset_latest_timestamp(dataset, out_ts, err_buf, err_buf_len) -> c_int` FFI 函数
+- [x] `ffi.rs`: 修复 `tmsl_dataset_read` 中 `out_ts` 写入 (原为硬编码输入值, 改为写入实际返回的时间戳, 兼容 -1 快捷路径)
+- [x] `include/timslite.h`: 新增 `tmsl_dataset_latest_timestamp` 声明; 更新 `tmsl_dataset_read` 注释 (timestamp=-1 快捷路径 + out_ts 语义说明)
+- [x] `wrapper/python/src/dataset.rs`: 新增 `latest_timestamp` 只读属性 + 更新 `read()` docstring (timestamp=-1)
+- [x] 单元测试 (6 项): test_latest_written_timestamp_after_writes, test_latest_written_timestamp_after_reopen, test_read_minus_one_empty_dataset, test_read_minus_one_returns_latest, test_read_minus_one_after_delete_latest, test_read_minus_one_after_reopen
+- [x] 设计文档更新: dataset-operations.md (signature block + §10.3 流程图重写 + §10.4 新增说明) + store-and-ffi.md (FFI 函数列表)
+- [x] `cargo clippy --all-targets -- -D warnings` clean
+- [x] `cargo fmt -- --check` clean
+- [x] `cargo test -- --test-threads=1` 全部通过 (130 unit + 25 integration = 155 tests)
 
 ### Phase 19: 单时间戳读取 (Single Timestamp Read) ✅ 已完成
 - [x] `dataset.rs`: 新增 `DataSet::read(timestamp, cache) -> Result<Option<(i64, Vec<u8>)>>` — 通过 `time_index.find_entry()` 三级搜索 + filler 过滤 + `segments.read_at_index()` 读取数据

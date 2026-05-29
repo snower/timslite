@@ -92,13 +92,16 @@ impl StoreConfigBuilder {
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_flush(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
+// 数据集状态 — 最新写入时间戳 (0 = 空数据集)
+#[no_mangle] pub extern "C" fn tmsl_dataset_latest_timestamp(dataset: *mut c_void, out_ts: *mut c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
 // 数据写入
 #[no_mangle] pub extern "C" fn tmsl_dataset_write(dataset: *mut c_void, timestamp: c_longlong, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // 数据删除 (索引标记为哨兵, 数据段 invalid_record_count++)
 #[no_mangle] pub extern "C" fn tmsl_dataset_delete(dataset: *mut c_void, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-// 单时间戳读取 (malloc'd out_data, 0=成功, 1=未找到, -1=错误)
+// 单时间戳读取 (timestamp=-1 读最新记录; malloc'd out_data, 0=成功/1=未找到/-1=错误)
 #[no_mangle] pub extern "C" fn tmsl_dataset_read(dataset: *mut c_void, timestamp: c_longlong,
     out_ts: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;

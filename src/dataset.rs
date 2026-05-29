@@ -337,6 +337,10 @@ impl DataSet {
 
     /// Read a single record by exact timestamp.
     ///
+    /// Special case: `timestamp == -1` resolves to `latest_written_timestamp` and
+    /// reads the newest record. Returns `None` if the dataset is empty or the
+    /// latest entry has been deleted.
+    ///
     /// Returns `Ok(Some((timestamp, data)))` if found, `Ok(None)` if not found
     /// or entry is a filler (deleted or never-written in continuous mode).
     pub fn read(
@@ -344,7 +348,16 @@ impl DataSet {
         timestamp: i64,
         cache: Option<&BlockCache>,
     ) -> Result<Option<(i64, Vec<u8>)>> {
-        let entry = match self.time_index.find_entry(timestamp)? {
+        let effective_ts = if timestamp == -1 {
+            if self.latest_written_timestamp <= 0 {
+                return Ok(None);
+            }
+            self.latest_written_timestamp
+        } else {
+            timestamp
+        };
+
+        let entry = match self.time_index.find_entry(effective_ts)? {
             Some(e) => e,
             None => return Ok(None),
         };
@@ -486,6 +499,14 @@ impl DataSet {
     /// Data retention period (same unit as timestamp; 0 = no limit).
     pub fn retention_ms(&self) -> u64 {
         self.retention_ms
+    }
+
+    /// Latest successfully written timestamp (0 = dataset is empty).
+    ///
+    /// Recovered from index segments on `open`, then maintained in memory.
+    /// Used by `read(-1)` shortcut and retention threshold calculation.
+    pub fn latest_written_timestamp(&self) -> i64 {
+        self.latest_written_timestamp
     }
 
     /// Clamp an inclusive query range to the data retention window.
@@ -1887,6 +1908,211 @@ mod tests {
 
             let result = ds.read(999, None).unwrap();
             assert!(result.is_none());
+        }
+    }
+
+    // ─── latest_written_timestamp() + read(-1) tests ────────────────────
+
+    #[test]
+    fn test_latest_written_timestamp_after_writes() {
+        let dir = temp_dir("latest_ts_writes");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        // Empty dataset
+        assert_eq!(ds.latest_written_timestamp(), 0);
+
+        // First write sets latest
+        ds.write(100, b"a").unwrap();
+        assert_eq!(ds.latest_written_timestamp(), 100);
+
+        ds.write(150, b"b").unwrap();
+        assert_eq!(ds.latest_written_timestamp(), 150);
+
+        // Correction write at 150 (== latest) keeps latest unchanged
+        ds.write(150, b"corrected").unwrap();
+        assert_eq!(ds.latest_written_timestamp(), 150);
+
+        // Out-of-order write at an existing timestamp keeps latest unchanged
+        ds.write(100, b"ooo_at_100").unwrap();
+        assert_eq!(ds.latest_written_timestamp(), 150);
+    }
+
+    #[test]
+    fn test_latest_written_timestamp_after_reopen() {
+        let dir = temp_dir("latest_ts_reopen");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                65536,
+                0,
+                256 * 1024,
+                4 * 1024,
+                0,
+            )
+            .unwrap();
+            ds.write(100, b"a").unwrap();
+            ds.write(250, b"b").unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+
+        // Reopen → latest_written_timestamp recovered from index
+        {
+            let ds = DataSet::open(id, dir, 65536).unwrap();
+            assert_eq!(ds.latest_written_timestamp(), 250);
+        }
+    }
+
+    #[test]
+    fn test_read_minus_one_empty_dataset() {
+        let dir = temp_dir("read_minus_one_empty");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        assert!(ds.read(-1, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_read_minus_one_returns_latest() {
+        let dir = temp_dir("read_minus_one_latest");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"first").unwrap();
+        ds.write(200, b"second").unwrap();
+        ds.write(300, b"latest").unwrap();
+
+        let result = ds.read(-1, None).unwrap();
+        assert!(result.is_some());
+        let (ts, data) = result.unwrap();
+        assert_eq!(ts, 300);
+        assert_eq!(data, b"latest");
+    }
+
+    #[test]
+    fn test_read_minus_one_after_delete_latest() {
+        // After deleting the latest, latest_written_timestamp still points to it
+        // but the index entry is a filler, so read(-1) returns None.
+        let dir = temp_dir("read_minus_one_deleted_latest");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"first").unwrap();
+        ds.write(200, b"later").unwrap();
+        ds.delete(200).unwrap();
+
+        assert!(ds.read(-1, None).unwrap().is_none());
+
+        // Earlier record still reachable via explicit timestamp
+        let r = ds.read(100, None).unwrap().unwrap();
+        assert_eq!(r.1, b"first");
+    }
+
+    #[test]
+    fn test_read_minus_one_after_reopen() {
+        let dir = temp_dir("read_minus_one_reopen");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                65536,
+                0,
+                256 * 1024,
+                4 * 1024,
+                0,
+            )
+            .unwrap();
+            ds.write(100, b"a").unwrap();
+            ds.write(500, b"latest").unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+
+        {
+            let mut ds = DataSet::open(id, dir, 65536).unwrap();
+            assert_eq!(ds.latest_written_timestamp(), 500);
+
+            let r = ds.read(-1, None).unwrap().unwrap();
+            assert_eq!(r.0, 500);
+            assert_eq!(r.1, b"latest");
         }
     }
 }

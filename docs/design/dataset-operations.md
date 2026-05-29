@@ -47,6 +47,10 @@ impl DataSet {
     fn flush(&mut self) -> io::Result<()>;
     fn config(&self) -> &DataSetConfig;
 
+    /// 最近成功写入的时间戳 (0 = 数据集为空)
+    /// open 时从索引分段恢复; 写入时在内存中维护
+    fn latest_written_timestamp(&self) -> i64;
+
     /// 删除指定时间戳的记录 (索引标记为哨兵, 数据段 invalid_record_count++)
     fn delete(&mut self, timestamp: i64) -> io::Result<()>;
 
@@ -358,15 +362,21 @@ DataSet::delete(timestamp):
 ```
 read(timestamp) → Option<(i64, Vec<u8>)>
     │
-    ├─ 1. TimeIndex.find_entry(timestamp)
+    ├─ 1. 解析 effective_ts
+    │      └─ timestamp == -1
+    │         → effective_ts = latest_written_timestamp (0 为空 → None)
+    │      └─ 其它情况
+    │         → effective_ts = timestamp
+    │
+    ├─ 2. TimeIndex.find_entry(effective_ts)
     │      → 三级搜索: in_memory_buffer → open segments → closed segments
     │      → 返回 None: 时间戳不存在, 直接返回 Ok(None)
     │
-    ├─ 2. 检查 entry.block_offset
+    ├─ 3. 检查 entry.block_offset
     │      └─ == BLOCK_OFFSET_FILLER (0xFFFFFFFFFFFFFFFF)
     │         → 已删除或未写入 (连续模式 filler), 返回 Ok(None)
     │
-    └─ 3. segments.read_at_index(entry, cache)
+    └─ 4. segments.read_at_index(entry, cache)
            → 定位数据段, 读 Block + 解压 (如需), 定位 record, 返回 (ts, data)
 ```
 
@@ -376,6 +386,23 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - `read` 复用 `TimeIndex.find_entry()` (三级搜索), 与 correction-write 路径一致
 > - FFI 层 `tmsl_dataset_read` 返回码: 0=成功, 1=未找到, -1=错误
 > - `out_data` 由 `libc::malloc` 分配, C 侧通过 `tmsl_iter_free_data` 释放 (与迭代器共享分配/释放路径)
+>
+> **`timestamp = -1` 快捷路径**:
+> - 直接复用内存中的 `latest_written_timestamp` (open 时从索引恢复), 省去一次索引查找
+> - 如果最新时间戳对应的 index entry 已被 delete 标记为 filler, 仍返回 `None` (不会回退到更早的有效记录)
+> - 适合流式消费场景: 每次 "拉最新一条" 而不需要提前知道具体时间戳
+
+### 10.4 `latest_written_timestamp`
+
+数据集实例维护的最高已写时间戳:
+- `DataSet::create` 后初始化为 `0`
+- 每次正常写入 (`timestamp > latest`) 更新为该 `timestamp`
+- 纠正写 (`timestamp == latest`) / 乱序写 (`timestamp < latest`) 不改变
+- `open` 时通过 `recover_latest_timestamp` 从索引分段 (closed + open + in_memory_buffer) 恢复
+- 用于:
+  - `read(-1)` 快捷路径解析最新记录
+  - 数据保留阈值计算 (`latest - retention_ms`)
+  - 连续模式 filler 填充的起始时间戳判定
 
 ## 十一、数据保留 (Retention) 与回收
 

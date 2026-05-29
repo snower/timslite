@@ -54,13 +54,14 @@ impl PyDataset {
 
     /// Read a single record by exact timestamp.
     ///
-    /// Returns (timestamp, data) if found, or None if not found / deleted / filler.
-    ///
     /// Args:
-    ///     timestamp: Timestamp of the record to read.
+    ///     timestamp: Timestamp of the record to read. Pass `-1` to fetch
+    ///         the latest written record.
     ///
     /// Returns:
-    ///     Optional[tuple[int, bytes]]: (timestamp, data) or None.
+    ///     Optional[tuple[int, bytes]]: (timestamp, data) if found, or None
+    ///         when the timestamp does not exist, the entry is deleted/filler,
+    ///         or `-1` is passed on an empty dataset.
     fn read(&mut self, timestamp: i64) -> PyResult<Option<(i64, Vec<u8>)>> {
         let mut ds = self.inner.lock().unwrap();
         wrap(ds.read(timestamp, None))
@@ -111,5 +112,12 @@ impl PyDataset {
     #[getter]
     fn data_dir(&self) -> &str {
         &self.base_dir
+    }
+
+    /// Latest successfully written timestamp (0 if the dataset is empty).
+    #[getter]
+    fn latest_timestamp(&self) -> i64 {
+        let ds = self.inner.lock().unwrap();
+        ds.latest_written_timestamp()
     }
 }

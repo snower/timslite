@@ -103,6 +103,18 @@ int tmsl_dataset_close(void* dataset, char* err_buf, size_t err_buf_len);
  */
 int tmsl_dataset_flush(void* dataset, char* err_buf, size_t err_buf_len);
 
+/**
+ * Get the latest successfully written timestamp of a dataset.
+ *
+ * @param dataset      Opaque dataset pointer.
+ * @param out_ts       Output: latest written timestamp (0 if the dataset is empty).
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_dataset_latest_timestamp(void* dataset, int64_t* out_ts,
+                                  char* err_buf, size_t err_buf_len);
+
 /* ─── Data Write ─────────────────────────────────────────────────────────── */
 
 /**
@@ -150,16 +162,21 @@ int tmsl_dataset_delete(void* dataset, int64_t timestamp,
  * Read a single record by exact timestamp.
  *
  * On success (record found): allocates `out_data` via malloc, sets `out_ts`
- * and `out_data_len`. Caller must free `out_data` via `tmsl_iter_free_data`.
+ * (the actual timestamp of the record) and `out_data_len`. Caller must free
+ * `out_data` via `tmsl_iter_free_data`.
+ *
+ * Shortcut: passing `timestamp = -1` resolves to the latest written timestamp
+ * and returns the newest record. If the dataset is empty or the latest entry
+ * has been deleted, returns 1 (not found).
  *
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Timestamp of the record to read.
- * @param out_ts       Output: timestamp (same value as `timestamp` on success).
+ * @param timestamp    Timestamp of the record to read, or -1 for the latest record.
+ * @param out_ts       Output: actual timestamp of the record returned.
  * @param out_data     Output: pointer to data (malloc'd, must be freed via tmsl_iter_free_data).
  * @param out_data_len Output: data length in bytes.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
- * @return 0 = success, 1 = not found (or filler/deleted), -1 = error.
+ * @return 0 = success, 1 = not found (or filler/deleted/empty dataset with -1), -1 = error.
  */
 int tmsl_dataset_read(void* dataset, int64_t timestamp,
                       int64_t* out_ts, unsigned char** out_data, size_t* out_data_len,
