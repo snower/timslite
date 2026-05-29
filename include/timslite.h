@@ -107,8 +107,16 @@ int tmsl_dataset_flush(void* dataset, char* err_buf, size_t err_buf_len);
 
 /**
  * Write a record to a dataset.
+ *
+ * Supports three timestamp modes:
+ *   - correction: timestamp == latest → overwrite data in place (index unchanged)
+ *   - out-of-order: timestamp < latest → append to latest segment + update index
+ *     entry in place; the old data segment's invalid_record_count is incremented
+ *     if the previous entry referenced real data
+ *   - in-order: timestamp > latest → append; continuous mode fills gaps with filler
+ *
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Timestamp (seconds since epoch).
+ * @param timestamp    Timestamp (unit must match the dataset's timestamp scheme).
  * @param data         Raw data bytes.
  * @param data_len     Length of data.
  * @param err_buf      Buffer for error message.
@@ -118,6 +126,23 @@ int tmsl_dataset_flush(void* dataset, char* err_buf, size_t err_buf_len);
 int tmsl_dataset_write(void* dataset, int64_t timestamp,
                        const unsigned char* data, size_t data_len,
                        char* err_buf, size_t err_buf_len);
+
+/**
+ * Delete the record at the given timestamp.
+ *
+ * Marks the index entry as sentinel (block_offset = 0xFFFFFFFFFFFFFFFF,
+ * in_block_offset = 0xFFFF) and increments the old data segment's
+ * invalid_record_count. The physical data is preserved on disk until
+ * retention-based reclamation or future compaction.
+ *
+ * @param dataset      Opaque dataset pointer.
+ * @param timestamp    Timestamp of the record to delete.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error (e.g. not found or already deleted).
+ */
+int tmsl_dataset_delete(void* dataset, int64_t timestamp,
+                        char* err_buf, size_t err_buf_len);
 
 /* ─── Query Iterator ────────────────────────────────────────────────────── */
 

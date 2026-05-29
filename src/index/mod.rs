@@ -8,8 +8,10 @@ pub mod segment;
 use std::path::Path;
 
 pub use self::segment::INDEX_ENTRY_SIZE;
-use self::segment::{IndexEntry, IndexSegment, IndexSegmentMeta};
-use crate::error::Result;
+use self::segment::{
+    IndexEntry, IndexSegment, IndexSegmentMeta, BLOCK_OFFSET_FILLER, IN_BLOCK_OFFSET_FILLER,
+};
+use crate::error::{Result, TmslError};
 use crate::header::INDEX_HEADER_SIZE;
 use crate::util::read_u64_from_mmap;
 use memmap2::MmapMut;
@@ -107,6 +109,137 @@ impl TimeIndex {
         }
 
         Ok(None)
+    }
+
+    /// Update the index entry at `timestamp` with a new (block_offset, in_block_offset),
+    /// returning the old entry. Used for out-of-order writes.
+    ///
+    /// The caller is responsible for examining the returned old entry to determine
+    /// whether `invalid_record_count` should be incremented on the old data segment
+    /// (i.e. when old_entry.block_offset != BLOCK_OFFSET_FILLER).
+    ///
+    /// Returns Err(NotFound) if no entry exists at `timestamp`.
+    pub fn update_entry(
+        &mut self,
+        timestamp: i64,
+        new_block_offset: u64,
+        new_in_block_offset: u16,
+    ) -> Result<IndexEntry> {
+        let ic = self.index_continuous;
+        let new_entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
+
+        // 1. in-memory buffer (linear search)
+        if let Some(pos) = self
+            .in_memory_buffer
+            .iter()
+            .position(|e| e.timestamp == timestamp)
+        {
+            let old = self.in_memory_buffer[pos];
+            self.in_memory_buffer[pos] = new_entry;
+            return Ok(old);
+        }
+
+        // 2. open segments
+        for seg in &mut self.index_segments {
+            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
+                let old = seg
+                    .find_exact_cs(timestamp, ic)
+                    .expect("entry exists after find_entry_index_cs");
+                seg.ensure_open()?;
+                seg.overwrite_entry(idx, &new_entry)?;
+                return Ok(old);
+            }
+        }
+
+        // 3. closed segments (open briefly → overwrite → idle_close)
+        for meta in &self.closed_index_segments {
+            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, Some(meta.wrote_count)) {
+                let old = seg
+                    .find_exact_cs(timestamp, ic)
+                    .expect("entry exists after find_entry_index_cs");
+                seg.overwrite_entry(idx, &new_entry)?;
+                seg.idle_close()?;
+                return Ok(old);
+            }
+            seg.idle_close()?;
+        }
+
+        Err(TmslError::NotFound(format!(
+            "no index entry at timestamp {} (required for out-of-order write)",
+            timestamp
+        )))
+    }
+
+    /// Find the index entry at `timestamp` and mark it as sentinel (deleted).
+    /// Returns the old entry so the caller can locate its data segment and
+    /// increment `invalid_record_count` there.
+    ///
+    /// Returns Err(NotFound) if no entry exists or the entry is already a filler.
+    pub fn find_and_delete_entry(&mut self, timestamp: i64) -> Result<IndexEntry> {
+        let ic = self.index_continuous;
+        let sentinel = IndexEntry::new(timestamp, BLOCK_OFFSET_FILLER, IN_BLOCK_OFFSET_FILLER);
+
+        // 1. in-memory buffer
+        if let Some(pos) = self
+            .in_memory_buffer
+            .iter()
+            .position(|e| e.timestamp == timestamp)
+        {
+            let old = self.in_memory_buffer[pos];
+            if old.is_filler() {
+                return Err(TmslError::NotFound(format!(
+                    "no real data at timestamp {} (filler)",
+                    timestamp
+                )));
+            }
+            self.in_memory_buffer[pos] = sentinel;
+            return Ok(old);
+        }
+
+        // 2. open segments
+        for seg in &mut self.index_segments {
+            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
+                let old = seg
+                    .find_exact_cs(timestamp, ic)
+                    .expect("entry exists after find_entry_index_cs");
+                if old.is_filler() {
+                    return Err(TmslError::NotFound(format!(
+                        "no real data at timestamp {} (filler)",
+                        timestamp
+                    )));
+                }
+                seg.ensure_open()?;
+                seg.overwrite_entry(idx, &sentinel)?;
+                return Ok(old);
+            }
+        }
+
+        // 3. closed segments (open briefly → overwrite → idle_close)
+        for meta in &self.closed_index_segments {
+            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, Some(meta.wrote_count)) {
+                let old = seg
+                    .find_exact_cs(timestamp, ic)
+                    .expect("entry exists after find_entry_index_cs");
+                if old.is_filler() {
+                    seg.idle_close()?;
+                    return Err(TmslError::NotFound(format!(
+                        "no real data at timestamp {} (filler)",
+                        timestamp
+                    )));
+                }
+                seg.overwrite_entry(idx, &sentinel)?;
+                seg.idle_close()?;
+                return Ok(old);
+            }
+            seg.idle_close()?;
+        }
+
+        Err(TmslError::NotFound(format!(
+            "no entry at timestamp {} to delete",
+            timestamp
+        )))
     }
 
     /// Flush the in-memory buffer to disk segments.

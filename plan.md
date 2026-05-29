@@ -26,7 +26,7 @@
 | 15 | Header State 分化 | ✅ 完成 | [phase-15-header-state-split.md](docs/plan/phase-15-header-state-split.md) |
 | 16 | 数据保留 (Retention) | ✅ 完成 | [phase-16-data-retention.md](docs/plan/phase-16-data-retention.md) |
 | 17 | 纠正写入 (Correction Write) | ✅ 完成 | [phase-17-correction-write.md](docs/plan/phase-17-correction-write.md) |
-| 18 | 乱序写入与删除 (Out-of-Order Write & Delete) | 📋 待实现 | [phase-18-out-of-order-write-and-delete.md](docs/plan/phase-18-out-of-order-write-and-delete.md) |
+| 18 | 乱序写入与删除 (Out-of-Order Write & Delete) | ✅ 完成 | [phase-18-out-of-order-write-and-delete.md](docs/plan/phase-18-out-of-order-write-and-delete.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -147,18 +147,20 @@
 - [x] `cargo clippy -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (107 unit + 21 integration = 128 tests)
 
-### Phase 18: 乱序写入与删除 (Out-of-Order Write & Delete) 📋 待实现
-- [ ] `header.rs`: Data Segment State 第 9 个字段 `reserved` → `invalid_record_count` (段内无效记录计数器, 结构体字段重命名 + 序列化/反序列化/默认值)
-- [ ] `segment/data.rs`: `invalid_record_count` 字段读取/递增方法 + file header state 持久化
-- [ ] `index/mod.rs` 或 `index/segment.rs`: 新增 `TimeIndex::update_entry(timestamp, new_block_offset, new_in_block_offset) -> Result<IndexEntry>` — 原地更新索引条目 (覆盖 18 字节), 返回旧条目供调用方判断 `invalid_record_count` 是否需要递增; 三级搜索: in_memory_buffer → open segments → closed segments
-- [ ] `dataset.rs`: `write()` 乱序分支重写: `timestamp < latest_written_timestamp` → 追加数据到最新段 + `time_index.update_entry()` → 根据旧条目判断 `invalid_record_count` (连续模式 filler → 不变; 真实数据 → ++; 无条目 → Error)
-- [ ] `dataset.rs`: 新增 `DataSet::delete(timestamp) -> Result<()>` — 查找索引条目 → 覆盖为哨兵 (block_offset = FILLER, in_block_offset = FILLER) + 旧数据段 `invalid_record_count++`; 条目不存在/filler → Error("not found")
-- [ ] `segment/mod.rs`: 新增 `DataSegmentSet::increment_invalid_record_count(block_offset)` — 路由 block_offset 到对应段 (可能需 lazy_open closed segment) + 递增 `invalid_record_count` state 字段
-- [ ] `ffi.rs` + `timslite.h`: 新增 `tmsl_dataset_delete(void* ds, i64 timestamp, char* err_buf, size_t err_len) -> c_int`
-- [ ] 单元测试: out-of-order write 连续模式 (filler → 真实), out-of-order write 非连续模式 (真实条目更新), out-of-order write 无条目 → Error, delete 真实条目, delete filler → Error, delete 不存在 → Error, invalid_record_count 递增验证, reopen 后 invalid_record_count 持久化
-- [ ] `tests/integration_test.rs`: 新增乱序写入 + delete 端到端集成测试 (t18_1, t18_2, t18_3)
-- [ ] `cargo clippy -- -D warnings` clean
-- [ ] `cargo test -- --test-threads=1` 全部通过
+### Phase 18: 乱序写入与删除 (Out-of-Order Write & Delete) ✅ 已完成
+- [x] `header.rs`: Data Segment State 第 9 个字段 `reserved` → `invalid_record_count` (常量 `DS_INVALID_RECORD_COUNT`、结构体字段、默认值、`write_to`、`read_from` — 6 处)
+- [x] `segment/data.rs`: `DataSegment` 新增 `invalid_record_count: u64` 字段 + `increment_invalid_record_count()` 方法 + mmap 持久化 (offset 108..116); `create`/`open`/`ensure_open` 正确初始化和读取该字段
+- [x] `segment/mod.rs`: 新增 `DataSegmentSet::increment_invalid_record_count(absolute_offset)` — 路由到 open segment 或 lazy_open closed segment 后递增并 idle_close 回写
+- [x] `index/mod.rs`: 新增 `TimeIndex::update_entry(timestamp, new_block_offset, new_in_block_offset) -> Result<IndexEntry>` + `TimeIndex::find_and_delete_entry(timestamp) -> Result<IndexEntry>` — 三级搜索 + 原地覆盖; 新增 sentinel 常量导入 (`BLOCK_OFFSET_FILLER`, `IN_BLOCK_OFFSET_FILLER`)
+- [x] `dataset.rs`: 新增 `out_of_order_write(timestamp, data)` 方法 (append + update_entry + 条件递增 invalid_record_count); 重写 `write()` dispatch (correction → out-of-order → normal, 两种索引模式统一); 新增 `delete(timestamp)` 方法; 移除已废弃的 `replace_filler_with_real`
+- [x] `dataset.rs`: 更新测试 — 重命名 `test_noncontinuous_mode_out_of_order_rejected` → `test_noncontinuous_mode_out_of_order_rejected_when_no_entry` (适配新错误消息) + `test_noncontinuous_mode_out_of_order_succeeds_with_existing_entry` (新增) + `test_out_of_order_write_overwrites_real_entry` (替代旧 rejected 测试) + `test_out_of_order_increments_invalid_record_count` + 7 个 delete 单元测试 (existing / filler / nonexistent / idempotent / count / rewrite / reopen)
+- [x] `ffi.rs` + `timslite.h`: 新增 `tmsl_dataset_delete(dataset, timestamp, err_buf, err_buf_len) -> c_int` 函数 (extern "C") + C 声明 (doxygen 注释)
+- [x] `tests/integration_test.rs`: 新增 4 个集成测试: t18_1_out_of_order_write (非连续), t18_1b_out_of_order_write_continuous (连续), t18_2_delete_lifecycle (lifecycle + reopen), t18_3_mixed_operations (correction + delete + OOO 组合)
+- [x] Design docs 同步更新 (Phase 18 启动前已完成): data-model.md / data-segment.md / dataset-operations.md (§9.1 重写 + §9.3) / index-continuous.md (§23.2 + §23.2.1 + §23.4) / store-and-ffi.md / design.md / README.md
+- [x] Phase 18 详细计划文档: docs/plan/phase-18-out-of-order-write-and-delete.md (设计 + 实现细节 + 测试计划 + 验收标准)
+- [x] `cargo clippy --tests` clean (零 warnings)
+- [x] `cargo fmt -- --check` clean
+- [x] `cargo test -- --test-threads=1` — lib 116 passed, integration 25 passed, total 141
 
 ## 文档结构
 
@@ -185,7 +187,7 @@ docs/plan/
 ├── phase-15-header-state-split.md   ← Phase 15: Header State 分化
 ├── phase-16-data-retention.md       ← Phase 16: 数据保留 (Retention)
 ├── phase-17-correction-write.md     ← Phase 17: 纠正写入 (Correction Write)
-└── phase-18-out-of-order-write-and-delete.md ← Phase 18: 乱序写入与删除 (待实现)
+└── phase-18-out-of-order-write-and-delete.md ← Phase 18: 乱序写入与删除
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

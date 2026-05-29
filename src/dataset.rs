@@ -183,19 +183,20 @@ impl DataSet {
 
     /// Write a record to this dataset.
     ///
-    /// # Correction Write (both modes)
-    /// - `timestamp == latest_written_timestamp` (and latest > 0): overwrites the data bytes
-    ///   of the existing record in place within the last uncompressed block of the latest
-    ///   segment. The index entry is unchanged. Supports variable data length.
+    /// # Timestamp dispatch (both indexing modes)
     ///
-    /// # Continuous Mode (`index_continuous == 1`)
-    /// - `timestamp > latest_written_timestamp`: fills missing timestamps with filler entries,
-    ///   then appends the real entry.
-    /// - `timestamp < latest_written_timestamp`: data is appended to the latest data segment,
-    ///   but the corresponding filler entry in the index is replaced with the real entry (mmap overwrite).
-    ///
-    /// # Non-Continuous Mode (`index_continuous == 0`)
-    /// - `timestamp < latest_written_timestamp`: error (out-of-order).
+    /// - `timestamp <= 0`: error.
+    /// - `timestamp == latest_written_timestamp` (and latest > 0): **correction write** —
+    ///   in-place overwrite of the data bytes in the last uncompressed block of the latest
+    ///   data segment. The index entry is unchanged. May change data length.
+    /// - `timestamp < latest_written_timestamp`: **out-of-order write** — appends data to
+    ///   the latest data segment and updates the existing index entry in place. Requires
+    ///   that an index entry at `timestamp` already exists (always true in continuous mode;
+    ///   true in non-continuous mode only if `timestamp` was previously written). If the
+    ///   old entry referenced real data, the old data segment's `invalid_record_count`
+    ///   is incremented (the previous data becomes an orphan record).
+    /// - `timestamp > latest_written_timestamp`: **normal write** — in continuous mode fills
+    ///   missing timestamps with filler entries first, then appends the real entry.
     pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
@@ -207,48 +208,58 @@ impl DataSet {
             return self.correct_write(timestamp, data);
         }
 
+        // Out-of-order write: timestamp < latest → append to latest segment,
+        // update existing index entry in place. May increment invalid_record_count
+        // on the old data segment.
+        if timestamp < self.latest_written_timestamp {
+            return self.out_of_order_write(timestamp, data);
+        }
+
+        // Normal write: timestamp > latest
         if self.config.index_continuous == 0 {
-            // Non-continuous mode: reject out-of-order
-            if timestamp < self.latest_written_timestamp {
-                return Err(TmslError::InvalidData(format!(
-                    "out-of-order: timestamp {} < latest {}",
-                    timestamp, self.latest_written_timestamp
-                )));
-            }
-            // Normal write
             let (seg_offset, block_rel_offset, in_block_offset) =
                 self.segments.append(timestamp, data)?;
             self.time_index
                 .add_entry(timestamp, seg_offset + block_rel_offset, in_block_offset)?;
-            self.latest_written_timestamp = timestamp;
         } else {
-            // Continuous mode
-            if timestamp < self.latest_written_timestamp {
-                // Back-fill: find and replace filler
-                let (seg_offset, block_rel_offset, in_block_offset) =
-                    self.segments.append(timestamp, data)?;
-                self.replace_filler_with_real(
-                    timestamp,
-                    seg_offset + block_rel_offset,
-                    in_block_offset,
-                )?;
-                // Do NOT update latest_written_timestamp
-            } else {
-                // Normal in-order write: fill gaps then append
-                for ts in (self.latest_written_timestamp + 1)..timestamp {
-                    self.time_index.add_filler_entry(ts);
-                }
-                let (seg_offset, block_rel_offset, in_block_offset) =
-                    self.segments.append(timestamp, data)?;
-                self.time_index.add_entry(
-                    timestamp,
-                    seg_offset + block_rel_offset,
-                    in_block_offset,
-                )?;
-                self.latest_written_timestamp = timestamp;
+            // Continuous mode: fill gaps with filler, then append
+            for ts in (self.latest_written_timestamp + 1)..timestamp {
+                self.time_index.add_filler_entry(ts);
             }
+            let (seg_offset, block_rel_offset, in_block_offset) =
+                self.segments.append(timestamp, data)?;
+            self.time_index
+                .add_entry(timestamp, seg_offset + block_rel_offset, in_block_offset)?;
+        }
+        self.latest_written_timestamp = timestamp;
+        self.last_used_at = Instant::now();
+        Ok(())
+    }
+
+    /// Out-of-order write: timestamp < latest_written_timestamp (both modes).
+    ///
+    /// Appends data to the latest segment and updates the existing index entry
+    /// in place with the new data location. If the old entry referenced real data,
+    /// the old data segment's `invalid_record_count` is incremented.
+    ///
+    /// Requires an existing index entry at `timestamp`:
+    /// - Continuous mode: always has an entry (filler or real data)
+    /// - Non-continuous mode: only if `timestamp` was previously written
+    fn out_of_order_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+        let (seg_offset, block_rel_offset, in_block_offset) =
+            self.segments.append(timestamp, data)?;
+        let new_block_offset = seg_offset + block_rel_offset;
+
+        let old_entry =
+            self.time_index
+                .update_entry(timestamp, new_block_offset, in_block_offset)?;
+
+        if old_entry.block_offset != BLOCK_OFFSET_FILLER {
+            self.segments
+                .increment_invalid_record_count(old_entry.block_offset)?;
         }
 
+        // latest_written_timestamp unchanged
         self.last_used_at = Instant::now();
         Ok(())
     }
@@ -278,117 +289,34 @@ impl DataSet {
         Ok(())
     }
 
-    /// Replace a filler entry at the given timestamp with real data.
-    /// Only valid in continuous mode when timestamp < latest_written_timestamp.
-    /// In continuous mode, uses O(1) direct calculation to find the entry position.
-    fn replace_filler_with_real(
-        &mut self,
-        timestamp: i64,
-        block_offset: u64,
-        in_block_offset: u16,
-    ) -> Result<()> {
-        let ic = self.time_index.index_continuous;
-
-        // Try in-memory buffer first (unflushed filler entries)
-        if let Some(pos) = self
-            .time_index
-            .in_memory_buffer
-            .iter()
-            .position(|e| e.timestamp == timestamp)
-        {
-            let entry = &self.time_index.in_memory_buffer[pos];
-            if entry.block_offset == BLOCK_OFFSET_FILLER {
-                let new_entry = IndexEntry {
-                    timestamp,
-                    block_offset,
-                    in_block_offset,
-                };
-                self.time_index.in_memory_buffer[pos] = new_entry;
-                return Ok(());
-            } else {
-                return Err(TmslError::InvalidData(format!(
-                    "cannot overwrite: entry at timestamp {} already has real data",
-                    timestamp
-                )));
-            }
+    /// Delete the record at the given timestamp.
+    ///
+    /// Marks the index entry as sentinel (block_offset = FILLER, in_block_offset = FILLER)
+    /// and increments the data segment's `invalid_record_count` by 1.
+    ///
+    /// Returns `TmslError::NotFound` if:
+    /// - `timestamp` is invalid (≤ 0)
+    /// - the dataset is empty
+    /// - no entry exists at `timestamp`
+    /// - the entry is already a filler (no real data)
+    pub fn delete(&mut self, timestamp: i64) -> Result<()> {
+        if timestamp <= 0 {
+            return Err(TmslError::InvalidData("timestamp must be > 0".into()));
+        }
+        if self.latest_written_timestamp == 0 {
+            return Err(TmslError::NotFound(format!(
+                "no entry to delete at timestamp {} (dataset is empty)",
+                timestamp
+            )));
         }
 
-        // Try open segments first
-        for seg in &mut self.time_index.index_segments {
-            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
-                let entry = seg.find_exact_cs(timestamp, ic).unwrap();
-                if entry.block_offset == BLOCK_OFFSET_FILLER {
-                    seg.ensure_open()?;
-                    let new_entry = IndexEntry {
-                        timestamp,
-                        block_offset,
-                        in_block_offset,
-                    };
-                    seg.overwrite_entry(idx, &new_entry)?;
-                    return Ok(());
-                } else {
-                    return Err(TmslError::InvalidData(format!(
-                        "cannot overwrite: entry at timestamp {} already has real data",
-                        timestamp
-                    )));
-                }
-            }
-        }
+        let old_entry = self.time_index.find_and_delete_entry(timestamp)?;
+        // Old entry references real data → increment invalid_record_count on its segment
+        self.segments
+            .increment_invalid_record_count(old_entry.block_offset)?;
 
-        // Try closed segments (use wrote_count from meta for O(1) range check)
-        for meta in &self.time_index.closed_index_segments {
-            // Fast range check using meta.wrote_count (no file open needed in continuous mode)
-            let entry_index = ic.then(|| {
-                if meta.wrote_count == 0 {
-                    return None;
-                }
-                let end_ts = meta.start_timestamp + meta.wrote_count as i64;
-                if timestamp >= meta.start_timestamp && timestamp < end_ts {
-                    Some((timestamp - meta.start_timestamp) as usize)
-                } else {
-                    None
-                }
-            });
-
-            if ic && entry_index.is_none() {
-                continue; // Not in this segment's range (continuous mode)
-            }
-
-            let mut seg = IndexSegment::open(
-                &meta.path,
-                meta.start_timestamp,
-                self.config.index_segment_size,
-            )?;
-            let idx = if ic {
-                entry_index.flatten()
-            } else {
-                seg.find_entry_index(timestamp)
-            };
-
-            if let Some(idx) = idx {
-                let entry = seg.find_exact_cs(timestamp, ic).unwrap();
-                if entry.block_offset == BLOCK_OFFSET_FILLER {
-                    let new_entry = IndexEntry {
-                        timestamp,
-                        block_offset,
-                        in_block_offset,
-                    };
-                    seg.overwrite_entry(idx, &new_entry)?;
-                    seg.idle_close()?;
-                    return Ok(());
-                } else {
-                    return Err(TmslError::InvalidData(format!(
-                        "cannot overwrite: entry at timestamp {} already has real data",
-                        timestamp
-                    )));
-                }
-            }
-        }
-
-        Err(TmslError::NotFound(format!(
-            "no entry found at timestamp {}",
-            timestamp
-        )))
+        self.last_used_at = Instant::now();
+        Ok(())
     }
 
     /// Return a lazy query iterator for records in [start_ts, end_ts].
@@ -885,8 +813,10 @@ mod tests {
     }
 
     #[test]
-    fn test_noncontinuous_mode_out_of_order_rejected() {
-        let dir = temp_dir("noncontinuous_ooo");
+    fn test_noncontinuous_mode_out_of_order_rejected_when_no_entry() {
+        // In non-continuous mode, out-of-order write fails if there is no
+        // existing index entry at the target timestamp.
+        let dir = temp_dir("noncontinuous_ooo_no_entry");
         let id = DataSetKey {
             name: "test".into(),
             dataset_type: "data".into(),
@@ -898,20 +828,61 @@ mod tests {
             4 * 1024 * 1024,
             6,
             65536,
-            0,          // non-continuous (default)
-            256 * 1024, // initial_data_segment_size
-            4 * 1024,   // initial_index_segment_size
-            0,          // retention_ms
+            0, // non-continuous
+            256 * 1024,
+            4 * 1024,
+            0,
         )
         .unwrap();
 
         ds.write(100, b"first").unwrap();
         ds.write(150, b"second").unwrap();
 
-        // Out-of-order should fail
+        // ts=120 was never written → no index entry → out-of-order write rejected
         let result = ds.write(120, b"middle");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("out-of-order"));
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("no index entry") || msg.contains("out-of-order"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_noncontinuous_mode_out_of_order_succeeds_with_existing_entry() {
+        // In non-continuous mode, out-of-order write SUCCEEDS if an entry at
+        // the target timestamp already exists. New data is appended; old data
+        // becomes an orphan (invalid_record_count++).
+        let dir = temp_dir("noncontinuous_ooo_with_entry");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0, // non-continuous
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"first").unwrap();
+        ds.write(200, b"second").unwrap();
+        // Out-of-order write at ts=100 (entry exists from earlier write)
+        ds.write(100, b"updated_first").unwrap();
+
+        assert_eq!(ds.latest_written_timestamp, 200); // unchanged
+        let entries = ds.query(100, 200, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, 100);
+        assert_eq!(entries[0].1, b"updated_first");
+        assert_eq!(entries[1].0, 200);
     }
 
     #[test]
@@ -948,8 +919,11 @@ mod tests {
     }
 
     #[test]
-    fn test_continuous_backfill_non_filler_rejected() {
-        let dir = temp_dir("backfill_real");
+    fn test_out_of_order_write_overwrites_real_entry() {
+        // Out-of-order write at an existing real entry succeeds: data is
+        // appended to latest segment, index entry is updated in place, and
+        // the old data segment's invalid_record_count is incremented.
+        let dir = temp_dir("ooo_overwrite_real");
         let id = DataSetKey {
             name: "test".into(),
             dataset_type: "data".into(),
@@ -961,23 +935,78 @@ mod tests {
             4 * 1024 * 1024,
             6,
             65536,
-            1,
-            256 * 1024, // initial_data_segment_size
-            4 * 1024,   // initial_index_segment_size
-            0,          // retention_ms
+            1, // continuous
+            256 * 1024,
+            4 * 1024,
+            0,
         )
         .unwrap();
 
         ds.write(100, b"first").unwrap();
         ds.write(150, b"last").unwrap();
 
-        // try backfill at ts=100 (which is a real entry, not filler)
-        let result = ds.write(100, b"overwrite_real");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("already has real data"));
+        // Out-of-order at ts=100 (real entry) → succeeds via out_of_order_write
+        ds.write(100, b"updated_first").unwrap();
+        assert_eq!(ds.latest_written_timestamp, 150); // unchanged
+
+        // Query should still return ts=100 and ts=150 with updated data
+        let entries = ds.query(100, 150, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, 100);
+        assert_eq!(entries[0].1, b"updated_first");
+        assert_eq!(entries[1].0, 150);
+    }
+
+    #[test]
+    fn test_out_of_order_increments_invalid_record_count() {
+        // Out-of-order writes that replace real data increment invalid_record_count
+        // on the old data segment, and the count is persisted across reopen.
+        let dir = temp_dir("ooo_invalid_count");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                65536,
+                1,
+                256 * 1024,
+                4 * 1024,
+                0,
+            )
+            .unwrap();
+
+            ds.write(100, b"v1").unwrap();
+            ds.write(200, b"latest").unwrap();
+
+            // Two out-of-order writes at ts=100 — each increments invalid_record_count
+            ds.write(100, b"v2").unwrap();
+            ds.write(100, b"v3").unwrap();
+
+            // The old data segment (only one segment here, everything fits) should have
+            // invalid_record_count = 2 after two out-of-order writes.
+            let seg = ds.segments.segments.last().unwrap();
+            assert_eq!(
+                seg.invalid_record_count, 2,
+                "expected invalid_record_count=2, got {}",
+                seg.invalid_record_count
+            );
+
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+        // Reopen and verify the count persists. Trigger segment open via query.
+        let mut ds2 = DataSet::open(id, dir, 65536).unwrap();
+        // Query forces segment open; after open, invalid_record_count is read from file header.
+        let entries = ds2.query(100, 200, None).unwrap();
+        assert_eq!(entries.len(), 2); // ts=100 ("v3") and ts=200 ("latest")
+        let seg2 = ds2.segments.segments.last().unwrap();
+        assert_eq!(seg2.invalid_record_count, 2);
     }
 
     #[test]
@@ -1233,5 +1262,255 @@ mod tests {
         // Query fully within valid range
         let valid = ds.query(180, 200, None).unwrap();
         assert_eq!(valid.len(), 1);
+    }
+
+    // ─── Delete tests ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_delete_existing_entry() {
+        let dir = temp_dir("delete_existing");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"a").unwrap();
+        ds.write(200, b"b").unwrap();
+
+        ds.delete(100).unwrap();
+
+        // Query should return only ts=200
+        let entries = ds.query(100, 200, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, 200);
+        assert_eq!(entries[0].1, b"b");
+    }
+
+    #[test]
+    fn test_delete_filler_entry_error() {
+        // In continuous mode, a filler position has no real data.
+        // Delete should reject it with NotFound.
+        let dir = temp_dir("delete_filler");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            1, // continuous
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(1, b"first").unwrap();
+        ds.write(5, b"last").unwrap();
+        // ts=3 is a filler
+        let result = ds.delete(3);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("filler"),
+            "expected filler error"
+        );
+    }
+
+    #[test]
+    fn test_delete_nonexistent_error() {
+        let dir = temp_dir("delete_nonexistent");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"a").unwrap();
+        ds.write(200, b"b").unwrap();
+
+        let result = ds.delete(999);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_idempotent_error() {
+        // Deleting the same timestamp twice → second delete errors.
+        let dir = temp_dir("delete_idempotent");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"a").unwrap();
+        ds.delete(100).unwrap();
+
+        // Second delete on same timestamp should fail
+        let result = ds.delete(100);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_increments_invalid_record_count() {
+        let dir = temp_dir("delete_increments_count");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"a").unwrap();
+        ds.write(200, b"b").unwrap();
+        ds.write(300, b"c").unwrap();
+
+        ds.delete(100).unwrap();
+        ds.delete(200).unwrap();
+
+        // Both deletes target the same segment → count = 2
+        let seg = ds.segments.segments.last().unwrap();
+        assert_eq!(seg.invalid_record_count, 2);
+
+        // Only ts=300 should remain queryable
+        let entries = ds.query(100, 300, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, 300);
+    }
+
+    #[test]
+    fn test_delete_then_out_of_order_rewrite() {
+        // After delete(ts), rewrite at ts becomes out-of-order → replaces filler.
+        // invalid_record_count should NOT increase on the rewrite (filler → real).
+        let dir = temp_dir("delete_then_ooo");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            1,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        // Continuous: writes ts=100 and ts=150 with filler in between
+        ds.write(100, b"first").unwrap();
+        ds.write(150, b"last").unwrap();
+
+        ds.delete(100).unwrap();
+        // After delete: entry at 100 is filler, invalid_record_count=1
+
+        // Rewrite at ts=100 → out-of-order, replaces filler (FILLER → real):
+        // invalid_record_count unchanged
+        ds.write(100, b"replaced").unwrap();
+
+        let seg = ds.segments.segments.last().unwrap();
+        assert_eq!(
+            seg.invalid_record_count, 1,
+            "expected 1, got {}",
+            seg.invalid_record_count
+        );
+
+        let entries = ds.query(100, 150, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, 100);
+        assert_eq!(entries[0].1, b"replaced");
+    }
+
+    #[test]
+    fn test_delete_persists_across_reopen() {
+        let dir = temp_dir("delete_reopen");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                65536,
+                0,
+                256 * 1024,
+                4 * 1024,
+                0,
+            )
+            .unwrap();
+            ds.write(100, b"a").unwrap();
+            ds.write(200, b"b").unwrap();
+            ds.delete(100).unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+        // Reopen
+        let mut ds2 = DataSet::open(id, dir, 65536).unwrap();
+        let entries = ds2.query(100, 200, None).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, 200);
+
+        // Reopened segment should preserve invalid_record_count
+        let seg2 = ds2.segments.segments.last().unwrap();
+        assert_eq!(seg2.invalid_record_count, 1);
     }
 }

@@ -56,6 +56,7 @@ pub struct DataSegment {
     pub pending_block_offset: Option<u64>,
     pub pending_wrote_position: u64,
     pub pending_record_count: u64,
+    pub invalid_record_count: u64,
 }
 
 // ─── Construction ────────────────────────────────────────────────────────────
@@ -101,6 +102,7 @@ impl DataSegment {
             pending_block_offset: None,
             pending_wrote_position: 0,
             pending_record_count: 0,
+            invalid_record_count: 0,
         })
     }
 
@@ -145,6 +147,7 @@ impl DataSegment {
             pending_block_offset: None,
             pending_wrote_position: 0,
             pending_record_count: 0,
+            invalid_record_count: metadata.invalid_record_count,
         };
 
         // Pending recovery
@@ -202,6 +205,7 @@ impl DataSegment {
         self.total_uncompressed_size = metadata.total_uncompressed_size;
         self.min_timestamp = metadata.min_timestamp;
         self.max_timestamp = metadata.max_timestamp;
+        self.invalid_record_count = metadata.invalid_record_count;
 
         // Pending recovery (same as open)
         if metadata.pending_block_offset != PENDING_NONE {
@@ -647,6 +651,18 @@ impl DataSegment {
         self.pending_block_offset = None;
         self.pending_wrote_position = 0;
         self.pending_record_count = 0;
+    }
+
+    /// Increment the invalid_record_count in memory and persist to file header state.
+    /// Used when out-of-order writes or deletes orphan a record in this segment.
+    pub fn increment_invalid_record_count(&mut self) -> Result<()> {
+        self.invalid_record_count += 1;
+        if let Some(ref mut mmap) = self.mmap {
+            // invalid_record_count state field lives at offset 108..116 in the mmap
+            // (STATE_START=44 + INVALID_RECORD_COUNT=64 = 108), same layout as header.rs.
+            mmap[108..116].copy_from_slice(&self.invalid_record_count.to_le_bytes());
+        }
+        Ok(())
     }
 
     // ─── File header helpers ──────────────────────────────────────────────

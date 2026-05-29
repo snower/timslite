@@ -191,17 +191,17 @@ pub fn increment_invalid_record_count(&mut self, block_offset: u64) -> Result<()
 
 ## 6. 验收标准
 
-- [ ] `reserved` 字段在所有设计文档和代码中均替换为 `invalid_record_count`
-- [ ] `write(ts < latest)` 在连续模式和非连续模式均支持 (索引存在条目时)
-- [ ] 乱序写入时旧数据段 `invalid_record_count` 正确递增 (真实数据被替代时)
-- [ ] 连续模式 filler 替换时 `invalid_record_count` 不变
-- [ ] `delete(ts)` 成功将真实条目覆盖为哨兵 + old segment `invalid_record_count++`
-- [ ] `delete(ts)` 对 filler / 不存在条目 / 重复删除返回 `TmslError::NotFound`
-- [ ] 查询路径无需修改, 被 delete 的记录自动不可见
-- [ ] FFI `tmsl_dataset_delete` 函数实现 + C 头文件声明
-- [ ] 单元测试 + 集成测试全部通过
-- [ ] `cargo clippy -- -D warnings` clean
-- [ ] `cargo fmt -- --check` clean
+- [x] `reserved` 字段在所有设计文档和代码中均替换为 `invalid_record_count`
+- [x] `write(ts < latest)` 在连续模式和非连续模式均支持 (索引存在条目时)
+- [x] 乱序写入时旧数据段 `invalid_record_count` 正确递增 (真实数据被替代时)
+- [x] 连续模式 filler 替换时 `invalid_record_count` 不变
+- [x] `delete(ts)` 成功将真实条目覆盖为哨兵 + old segment `invalid_record_count++`
+- [x] `delete(ts)` 对 filler / 不存在条目 / 重复删除返回 `TmslError::NotFound`
+- [x] 查询路径无需修改, 被 delete 的记录自动不可见
+- [x] FFI `tmsl_dataset_delete` 函数实现 + C 头文件声明
+- [x] 单元测试 + 集成测试全部通过
+- [x] `cargo clippy -- -D warnings` clean
+- [x] `cargo fmt -- --check` clean
 
 ## 7. 依赖
 

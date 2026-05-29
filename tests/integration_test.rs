@@ -916,3 +916,225 @@ fn t17_2_correction_write_resize_reopen() {
     drop(arc2);
     store2.close().unwrap();
 }
+
+// ─── Phase 18: 乱序写入 + 删除 ───────────────────────────────────────────
+
+#[test]
+fn t18_1_out_of_order_write() {
+    // Out-of-order writes (ts < latest) should append data to the latest segment,
+    // update the existing index entry in place, and increment invalid_record_count
+    // when the previous entry referenced real data.
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset(
+            "ooo_ds",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0, // non-continuous
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("ooo_ds", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    {
+        let mut lock = arc.lock().unwrap();
+        lock.write(100, b"v1").unwrap();
+        lock.write(200, b"v2").unwrap();
+        lock.write(300, b"v3").unwrap();
+
+        // Out-of-order writes — each replaces a real entry
+        lock.write(100, b"v1_updated").unwrap();
+        lock.write(200, b"v2_updated").unwrap();
+
+        // Query should reflect latest data
+        let entries = lock.query(100, 300, None).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].1, b"v1_updated");
+        assert_eq!(entries[1].1, b"v2_updated");
+        assert_eq!(entries[2].1, b"v3");
+    }
+
+    drop(arc);
+    store.close().unwrap();
+}
+
+#[test]
+fn t18_1b_out_of_order_write_continuous() {
+    // Same test as t18_1 but with continuous indexing.
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset(
+            "ooo_ds",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            1, // continuous
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("ooo_ds", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    {
+        let mut lock = arc.lock().unwrap();
+        lock.write(100, b"v1").unwrap();
+        lock.write(150, b"v2").unwrap();
+
+        // Out-of-order: replace real entry at 100
+        lock.write(100, b"v1_updated").unwrap();
+
+        // Query should reflect latest data
+        let entries = lock.query(100, 150, None).unwrap();
+        assert_eq!(entries.len(), 2); // only real entries
+        assert_eq!(entries[0].1, b"v1_updated");
+        assert_eq!(entries[1].1, b"v2");
+    }
+    drop(arc);
+    store.close().unwrap();
+}
+
+#[test]
+fn t18_2_delete_lifecycle() {
+    // Write N records → delete some → query returns N-K → reopen → still N-K.
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset("del_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+
+    let ds = store.open_dataset("del_ds", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+
+    // Write 10 records
+    {
+        let mut lock = arc.lock().unwrap();
+        for i in 1..=10i64 {
+            let data = format!("record_{}", i).into_bytes();
+            lock.write(i * 10, &data).unwrap();
+        }
+        assert_eq!(lock.query(10, 100, None).unwrap().len(), 10);
+    }
+
+    // Delete 2 records
+    {
+        let mut lock = arc.lock().unwrap();
+        lock.delete(30).unwrap();
+        lock.delete(70).unwrap();
+    }
+
+    // Verify 8 records remain
+    {
+        let mut lock = arc.lock().unwrap();
+        let entries = lock.query(10, 100, None).unwrap();
+        assert_eq!(entries.len(), 8);
+        let ts_set: Vec<i64> = entries.iter().map(|(ts, _)| *ts).collect();
+        assert!(!ts_set.contains(&30));
+        assert!(!ts_set.contains(&70));
+        assert!(ts_set.contains(&10));
+        assert!(ts_set.contains(&100));
+
+        // Delete same timestamp again → should fail
+        let r = lock.delete(30);
+        assert!(r.is_err());
+    }
+
+    drop(arc);
+    store.close().unwrap();
+
+    // Reopen and verify persistence
+    let config2 = StoreConfig::default();
+    let mut store2 = Store::open(&dir, config2).unwrap();
+    let ds2 = store2.open_dataset("del_ds", "data").unwrap();
+    let arc2 = store2.get_dataset(&ds2).unwrap();
+    {
+        let mut lock = arc2.lock().unwrap();
+        let entries = lock.query(10, 100, None).unwrap();
+        assert_eq!(entries.len(), 8);
+    }
+    drop(arc2);
+    store2.close().unwrap();
+}
+
+#[test]
+fn t18_3_mixed_operations() {
+    // Mixed: write → correction → delete → out-of-order rewrite at deleted ts.
+    //
+    // Note: correction write requires the target to be the LAST record in
+    // the block. It must be performed BEFORE any out-of-order writes that
+    // would push records to the end of the block and break that invariant.
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset(
+            "mix_ds",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            1, // continuous
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("mix_ds", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    {
+        let mut lock = arc.lock().unwrap();
+
+        // Write ts=1..5 (continuous → fillers for 2, 3, 4)
+        lock.write(1, b"a").unwrap();
+        lock.write(5, b"e").unwrap();
+
+        // Correction write at ts=5 (in-place overwrite — must happen while 5 is still last)
+        lock.write(5, b"E_CORRECTED").unwrap();
+
+        // Delete ts=3 (was a filler; deletion should fail)
+        let r = lock.delete(3);
+        assert!(r.is_err(), "delete on filler should fail");
+
+        // Out-of-order write at ts=3 replaces filler with real data
+        lock.write(3, b"c_new").unwrap();
+
+        // After all operations
+        let entries_final = lock.query(1, 5, None).unwrap();
+        assert_eq!(entries_final.len(), 3);
+        let mut found_5 = false;
+        for (ts, data) in &entries_final {
+            match *ts {
+                1 => assert_eq!(data, b"a"),
+                3 => assert_eq!(data, b"c_new"),
+                5 => {
+                    assert_eq!(data, b"E_CORRECTED");
+                    found_5 = true;
+                }
+                _ => panic!("unexpected ts {}", ts),
+            }
+        }
+        assert!(found_5, "ts=5 should be present with corrected data");
+
+        // Delete ts=1 and verify query returns only ts=3 and ts=5
+        lock.delete(1).unwrap();
+        let entries_after_del = lock.query(1, 5, None).unwrap();
+        assert_eq!(entries_after_del.len(), 2);
+    }
+    drop(arc);
+    store.close().unwrap();
+}

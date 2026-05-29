@@ -315,6 +315,44 @@ impl DataSegmentSet {
         seg.overwrite_in_last_block(block_rel_offset, in_block_offset, new_data)
     }
 
+    /// Increment invalid_record_count on the data segment that contains the given offset.
+    ///
+    /// Routes by `absolute_offset` (same coordinate as index entries' block_offset,
+    /// relative to DATA_HEADER_SIZE across the data stream). Opens the segment lazily
+    /// if it is currently closed, then closes it again after the increment.
+    pub fn increment_invalid_record_count(&mut self, absolute_offset: u64) -> Result<()> {
+        // Check open segments
+        for seg in &mut self.segments {
+            let seg_start = seg.file_offset;
+            let seg_end = seg_start + self.segment_size;
+            if absolute_offset >= seg_start && absolute_offset < seg_end {
+                seg.increment_invalid_record_count()?;
+                return Ok(());
+            }
+        }
+        // Closed segments — open briefly, increment, then idle_close back.
+        // Collect match info first to satisfy borrow checker.
+        let mut target: Option<(std::path::PathBuf, u64)> = None;
+        for meta in &self.closed_segments {
+            let seg_start = meta.file_offset;
+            let seg_end = seg_start + self.segment_size;
+            if absolute_offset >= seg_start && absolute_offset < seg_end {
+                target = Some((meta.path.clone(), meta.file_offset));
+                break;
+            }
+        }
+        if let Some((path, file_offset)) = target {
+            let mut seg = DS::open(&path, file_offset, self.segment_size)?;
+            seg.increment_invalid_record_count()?;
+            seg.idle_close(self.compress_level)?;
+            return Ok(());
+        }
+        Err(TmslError::NotFound(format!(
+            "no segment contains offset {}",
+            absolute_offset
+        )))
+    }
+
     // ─── Read operations ─────────────────────────────────────────────────
 
     /// Find the segment containing the given block_absolute_offset and read the record.

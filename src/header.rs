@@ -64,7 +64,7 @@ const DS_TOTAL_UNCOMP_SIZE: usize = 32;
 const DS_PENDING_BLOCK_OFFSET: usize = 40;
 const DS_PENDING_WROTE_POSITION: usize = 48;
 const DS_PENDING_RECORD_COUNT: usize = 56;
-const DS_RESERVED: usize = 64;
+const DS_INVALID_RECORD_COUNT: usize = 64;
 
 // ─── Index segment state field offsets (relative to STATE_START) ──
 const IS_WROTE_POSITION: usize = 0;
@@ -106,7 +106,7 @@ pub struct DataFileMetadata {
     pub pending_block_offset: u64, // PENDING_NONE = no pending
     pub pending_wrote_position: u64,
     pub pending_record_count: u64,
-    pub reserved: u64,
+    pub invalid_record_count: u64,
     pub state_length: u16,
 }
 
@@ -133,7 +133,7 @@ impl DataFileMetadata {
             pending_block_offset: PENDING_NONE,
             pending_wrote_position: 0,
             pending_record_count: 0,
-            reserved: 0,
+            invalid_record_count: 0,
             state_length: DATA_STATE_LENGTH_V1,
         }
     }
@@ -183,7 +183,11 @@ impl DataFileMetadata {
             STATE_START + DS_PENDING_RECORD_COUNT,
             self.pending_record_count,
         );
-        write_u64_to_mmap(mmap, STATE_START + DS_RESERVED, self.reserved);
+        write_u64_to_mmap(
+            mmap,
+            STATE_START + DS_INVALID_RECORD_COUNT,
+            self.invalid_record_count,
+        );
     }
 
     /// Read DataFileMetadata from the first DATA_HEADER_SIZE bytes of a byte slice.
@@ -202,7 +206,7 @@ impl DataFileMetadata {
         let pending_wrote_position =
             read_u64_from_mmap(mmap, STATE_START + DS_PENDING_WROTE_POSITION);
         let pending_record_count = read_u64_from_mmap(mmap, STATE_START + DS_PENDING_RECORD_COUNT);
-        let reserved = read_u64_from_mmap(mmap, STATE_START + DS_RESERVED);
+        let invalid_record_count = read_u64_from_mmap(mmap, STATE_START + DS_INVALID_RECORD_COUNT);
 
         Ok(Self {
             magic,
@@ -221,7 +225,7 @@ impl DataFileMetadata {
             pending_block_offset,
             pending_wrote_position,
             pending_record_count,
-            reserved,
+            invalid_record_count,
             state_length,
         })
     }

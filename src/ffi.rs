@@ -272,6 +272,30 @@ pub extern "C" fn tmsl_dataset_flush(
     })
 }
 
+/// Delete the record at the given timestamp.
+///
+/// Marks the index entry as sentinel and increments the old data segment's
+/// invalid_record_count. Returns -1 if no real data exists at that timestamp.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_delete(
+    dataset: *mut c_void,
+    timestamp: c_longlong,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() {
+            return Err(TmslError::InvalidData("dataset is null".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
+        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
+        let mut ds = ds_arc.lock().unwrap();
+        ds.delete(timestamp)?;
+        Ok(0)
+    })
+}
+
 /// Close and free the iterator.
 #[no_mangle]
 pub extern "C" fn tmsl_iter_close(iter: *mut c_void) {
