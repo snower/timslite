@@ -45,7 +45,7 @@ impl TimeIndex {
     /// 从磁盘加载已有 index segments
     pub fn load_existing(base_dir: &Path, segment_size: u64) -> io::Result<Self>;
 
-    /// 连续模式: 读取或初始化 base_timestamp
+    /// 连续模式: 从首个数值分段文件名恢复, 或在首次真实写入时初始化内存 base_timestamp
     fn set_or_load_base_timestamp(&mut self, first_ts: i64) -> Result<i64>;
 
     /// 连续模式: 由 base_timestamp + segment capacity 计算逻辑分段起点
@@ -184,7 +184,7 @@ entry_index      = ts - segment_start
 
 **关键约束**:
 - 第一次真实写入只初始化 `base_timestamp` 并写入真实 entry, 不从 0、Unix epoch 或其它固定起点补 filler。
-- `base_timestamp` 必须持久化为 index 级元数据 (例如 `index/base` 小文件), reopen 与 retention 后必须保持同一分段网格。
+- 不新增单独的 `base_timestamp` 文件; 第一次 flush 创建的首个数值 index segment 文件名即为可恢复基准。
 - 跨大 gap 正序写入时, 只物化上一个真实写入所在分段的尾部和当前写入所在分段的前缀; 中间完整分段不创建、不写 filler。
 - 已创建分段内 `entry_index >= wrote_count` 的位置视为逻辑空洞, `read/query/delete` 行为等价于不存在真实数据。
 - 后续回填落在逻辑空洞时, 按需创建目标分段, 只物化该分段起点到目标 timestamp 前一位的 filler, 再写入真实 entry。

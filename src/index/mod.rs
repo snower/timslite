@@ -27,6 +27,7 @@ pub struct TimeIndex {
     pub in_memory_buffer: Vec<IndexEntry>,
     pub in_memory_flush_threshold: usize,
     pub index_continuous: bool, // true = continuous mode (O(1) lookup enabled)
+    pub base_timestamp: Option<i64>,
 }
 
 impl TimeIndex {
@@ -47,6 +48,7 @@ impl TimeIndex {
             in_memory_buffer: Vec::new(),
             in_memory_flush_threshold: 1024,
             index_continuous,
+            base_timestamp: None,
         })
     }
 
@@ -67,12 +69,133 @@ impl TimeIndex {
         block_offset: u64,
         in_block_offset: u16,
     ) -> Result<()> {
+        if self.index_continuous && self.base_timestamp.is_none() {
+            self.ensure_base_timestamp(timestamp)?;
+        }
         self.in_memory_buffer
             .push(IndexEntry::new(timestamp, block_offset, in_block_offset));
         if self.in_memory_buffer.len() >= self.in_memory_flush_threshold {
             self.flush_to_disk()?;
         }
         Ok(())
+    }
+
+    /// Add a real entry in continuous mode without materializing full middle gaps.
+    pub fn add_sparse_continuous_entry(
+        &mut self,
+        previous_latest: i64,
+        timestamp: i64,
+        block_offset: u64,
+        in_block_offset: u16,
+    ) -> Result<()> {
+        if !self.index_continuous {
+            return self.add_entry(timestamp, block_offset, in_block_offset);
+        }
+
+        self.ensure_base_timestamp(timestamp)?;
+        let real_entry = IndexEntry::new(timestamp, block_offset, in_block_offset);
+
+        if previous_latest > 0 {
+            let prev_segment_start = self.segment_start_for(previous_latest)?;
+            let curr_segment_start = self.segment_start_for(timestamp)?;
+            if prev_segment_start == curr_segment_start {
+                self.push_filler_range(previous_latest + 1, timestamp - 1);
+            } else {
+                let segment_capacity = self.segment_capacity()? as i64;
+                let prev_segment_end = prev_segment_start + segment_capacity - 1;
+                self.push_filler_range(previous_latest + 1, prev_segment_end);
+                self.push_filler_range(curr_segment_start, timestamp - 1);
+            }
+        }
+
+        self.in_memory_buffer.push(real_entry);
+        if self.in_memory_buffer.len() >= self.in_memory_flush_threshold {
+            self.flush_to_disk()?;
+        }
+        Ok(())
+    }
+
+    fn ensure_base_timestamp(&mut self, timestamp: i64) -> Result<i64> {
+        if let Some(base) = self.base_timestamp {
+            if timestamp < base {
+                return Err(TmslError::NotFound(format!(
+                    "timestamp {} is before continuous index base {}",
+                    timestamp, base
+                )));
+            }
+            return Ok(base);
+        }
+
+        self.base_timestamp = Some(timestamp);
+        Ok(timestamp)
+    }
+
+    fn segment_capacity(&self) -> Result<usize> {
+        if self.segment_size <= INDEX_HEADER_SIZE {
+            return Err(TmslError::InvalidData(format!(
+                "index segment size {} is too small",
+                self.segment_size
+            )));
+        }
+        let capacity = ((self.segment_size - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+        if capacity == 0 {
+            return Err(TmslError::InvalidData(format!(
+                "index segment size {} cannot hold an index entry",
+                self.segment_size
+            )));
+        }
+        Ok(capacity)
+    }
+
+    pub fn segment_start_for(&self, timestamp: i64) -> Result<i64> {
+        let base = self
+            .base_timestamp
+            .ok_or_else(|| TmslError::NotFound("continuous index base timestamp missing".into()))?;
+        if timestamp < base {
+            return Err(TmslError::NotFound(format!(
+                "timestamp {} is before continuous index base {}",
+                timestamp, base
+            )));
+        }
+        let capacity = self.segment_capacity()? as i64;
+        let ordinal = (timestamp - base) / capacity;
+        Ok(base + ordinal * capacity)
+    }
+
+    fn entry_index_for(&self, timestamp: i64) -> Result<usize> {
+        let segment_start = self.segment_start_for(timestamp)?;
+        Ok((timestamp - segment_start) as usize)
+    }
+
+    fn push_filler_range(&mut self, start: i64, end: i64) {
+        if start > end {
+            return;
+        }
+        for ts in start..=end {
+            self.add_filler_entry(ts);
+        }
+    }
+
+    fn materialized_count_for_segment(&self, segment_start: i64) -> Result<usize> {
+        let mut count = 0usize;
+
+        for seg in &self.index_segments {
+            if seg.start_timestamp == segment_start {
+                count = count.max(seg.wrote_count);
+            }
+        }
+        for meta in &self.closed_index_segments {
+            if meta.start_timestamp == segment_start {
+                count = count.max(meta.wrote_count);
+            }
+        }
+        for entry in &self.in_memory_buffer {
+            if self.segment_start_for(entry.timestamp)? == segment_start {
+                count = count.max(self.entry_index_for(entry.timestamp)? + 1);
+            }
+        }
+
+        Ok(count)
     }
 
     /// Find the IndexEntry at the given timestamp (for correction write).
@@ -165,10 +288,52 @@ impl TimeIndex {
             seg.idle_close()?;
         }
 
+        if ic {
+            return self.upsert_sparse_continuous_entry(
+                timestamp,
+                new_block_offset,
+                new_in_block_offset,
+            );
+        }
+
         Err(TmslError::NotFound(format!(
             "no index entry at timestamp {} (required for out-of-order write)",
             timestamp
         )))
+    }
+
+    fn upsert_sparse_continuous_entry(
+        &mut self,
+        timestamp: i64,
+        new_block_offset: u64,
+        new_in_block_offset: u16,
+    ) -> Result<IndexEntry> {
+        let segment_start = self.segment_start_for(timestamp)?;
+        let entry_index = self.entry_index_for(timestamp)?;
+        let materialized_count = self.materialized_count_for_segment(segment_start)?;
+
+        if materialized_count > entry_index {
+            return Err(TmslError::InvalidData(format!(
+                "continuous index hole invariant violated at timestamp {}",
+                timestamp
+            )));
+        }
+
+        self.push_filler_range(segment_start + materialized_count as i64, timestamp - 1);
+        self.in_memory_buffer.push(IndexEntry::new(
+            timestamp,
+            new_block_offset,
+            new_in_block_offset,
+        ));
+        if self.in_memory_buffer.len() >= self.in_memory_flush_threshold {
+            self.flush_to_disk()?;
+        }
+
+        Ok(IndexEntry::new(
+            timestamp,
+            BLOCK_OFFSET_FILLER,
+            IN_BLOCK_OFFSET_FILLER,
+        ))
     }
 
     /// Find the index entry at `timestamp` and mark it as sentinel (deleted).
@@ -251,58 +416,88 @@ impl TimeIndex {
         // Sort by timestamp
         self.in_memory_buffer.sort_by_key(|e| e.timestamp);
 
-        // Take ownership of entries
         let entries: Vec<IndexEntry> = std::mem::take(&mut self.in_memory_buffer);
-        let mut remaining: &[IndexEntry] = &entries;
 
-        while !remaining.is_empty() {
-            // Get the first entry's timestamp to determine which segment to use
-            let start_ts = remaining[0].timestamp;
-
-            // Get or create the current segment for this timestamp
-            let seg = self.get_or_create_segment_for_ts(start_ts)?;
-
-            // How many entries can we fit?
-            let capacity = seg.entries_capacity;
-            let wrote = seg.wrote_count;
-            let space = capacity.saturating_sub(wrote);
-            if space == 0 {
-                // Current segment is full, mark it and move on
-                seg.seal()?;
-                continue;
+        if self.index_continuous && self.base_timestamp.is_none() {
+            if let Some(first) = entries.iter().find(|entry| !entry.is_filler()) {
+                self.ensure_base_timestamp(first.timestamp)?;
+            } else if let Some(first) = entries.first() {
+                self.ensure_base_timestamp(first.timestamp)?;
             }
-            let to_write = space.min(remaining.len());
+        }
 
-            // Write entries
-            let mut written = 0;
-            for entry in &remaining[..to_write] {
-                if let Err(e) = seg.append_entry(entry) {
-                    if matches!(e, crate::error::TmslError::SegmentFull) {
-                        // Try to expand the segment
-                        if let Err(expand_err) = seg.expand() {
-                            // Expansion failed (already at max), seal and move on
-                            log::debug!("[index] segment expansion failed: {}", expand_err);
-                            seg.seal()?;
-                            break;
+        for entry in &entries {
+            if self.index_continuous {
+                if let Some(base) = self.base_timestamp {
+                    if entry.timestamp < base {
+                        if entry.is_filler() {
+                            continue;
                         }
-                        // Expansion succeeded, retry this entry
-                        seg.append_entry(entry)?;
-                    } else {
-                        return Err(e);
+                        return Err(TmslError::InvalidData(format!(
+                            "real index entry timestamp {} is before continuous index base {}",
+                            entry.timestamp, base
+                        )));
                     }
                 }
-                written += 1;
+                self.append_continuous_entry_to_disk(entry)?;
+            } else {
+                self.append_noncontinuous_entry_to_disk(entry)?;
             }
-
-            remaining = &remaining[written..];
         }
 
         self.in_memory_buffer.clear();
 
-        // After all entries are flushed, check for pure-filler segments
-        self.remove_pure_filler_segments();
+        if self.index_continuous {
+            self.remove_pure_filler_segments();
+        }
 
         Ok(())
+    }
+
+    fn append_with_expansion(seg: &mut IndexSegment, entry: &IndexEntry) -> Result<()> {
+        loop {
+            match seg.append_entry(entry) {
+                Ok(()) => return Ok(()),
+                Err(TmslError::SegmentFull) => {
+                    if seg.current_file_size >= seg.max_file_size {
+                        seg.seal()?;
+                        return Err(TmslError::SegmentFull);
+                    }
+                    seg.expand()?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn append_noncontinuous_entry_to_disk(&mut self, entry: &IndexEntry) -> Result<()> {
+        loop {
+            let seg = self.get_or_create_segment_for_ts(entry.timestamp)?;
+            match Self::append_with_expansion(seg, entry) {
+                Ok(()) => return Ok(()),
+                Err(TmslError::SegmentFull) => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    fn append_continuous_entry_to_disk(&mut self, entry: &IndexEntry) -> Result<()> {
+        let segment_start = self.segment_start_for(entry.timestamp)?;
+        let entry_index = self.entry_index_for(entry.timestamp)?;
+        let seg = self.get_or_create_segment_by_start(segment_start)?;
+        if seg.wrote_count != entry_index {
+            return Err(TmslError::InvalidData(format!(
+                "continuous index append expected entry_index {}, got wrote_count {}",
+                entry_index, seg.wrote_count
+            )));
+        }
+        Self::append_with_expansion(seg, entry).map_err(|e| match e {
+            TmslError::SegmentFull => TmslError::InvalidData(format!(
+                "continuous index segment {} is full before timestamp {}",
+                segment_start, entry.timestamp
+            )),
+            other => other,
+        })
     }
 
     /// Remove segments that contain only filler entries (no real data).
@@ -382,6 +577,37 @@ impl TimeIndex {
         }
 
         let idx: usize = self.index_segments.len() - 1;
+        Ok(&mut self.index_segments[idx])
+    }
+
+    fn get_or_create_segment_by_start(&mut self, segment_start: i64) -> Result<&mut IndexSegment> {
+        if let Some(pos) = self
+            .index_segments
+            .iter()
+            .position(|seg| seg.start_timestamp == segment_start)
+        {
+            return Ok(&mut self.index_segments[pos]);
+        }
+
+        if let Some(pos) = self
+            .closed_index_segments
+            .iter()
+            .position(|meta| meta.start_timestamp == segment_start)
+        {
+            let meta = self.closed_index_segments.remove(pos);
+            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            self.index_segments.push(seg);
+        } else {
+            let seg = IndexSegment::create(
+                &self.base_dir,
+                segment_start,
+                self.initial_segment_size,
+                self.segment_size,
+            )?;
+            self.index_segments.push(seg);
+        }
+
+        let idx = self.index_segments.len() - 1;
         Ok(&mut self.index_segments[idx])
     }
 
@@ -513,6 +739,11 @@ impl TimeIndex {
             }
         }
         metas.sort_by_key(|m| m.start_timestamp);
+        let base_timestamp = if index_continuous {
+            metas.first().map(|meta| meta.start_timestamp)
+        } else {
+            None
+        };
 
         Ok(Self {
             base_dir: base_dir.to_path_buf(),
@@ -523,6 +754,7 @@ impl TimeIndex {
             in_memory_buffer: Vec::new(),
             in_memory_flush_threshold: 1024,
             index_continuous,
+            base_timestamp,
         })
     }
 

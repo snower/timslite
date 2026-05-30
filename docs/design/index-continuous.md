@@ -33,7 +33,7 @@ entry_index(ts)       = (ts - segment_start(ts)) / time_step
 
 约束:
 - `base_timestamp` 只在连续模式下有意义, 由第一次成功真实写入确定。
-- `base_timestamp` 必须持久化在 index 级元数据中 (例如 `index/base` 小文件), 以保证 reopen、retention 后分段网格稳定。
+- 不新增单独的 `base_timestamp` 文件。第一次 flush 生成的首个数值 index segment 文件名就是 `base_timestamp`; reopen 时从现有最小数值分段文件名恢复。
 - `segment_capacity` 基于配置的 `index_segment_size` 最大分段大小计算, 不随懒分配的当前文件大小变化。
 - index segment 文件名仍使用 `segment_start` 的 20 位十进制格式。
 - 每个 index segment 的 `start_timestamp` 表示该 segment 的逻辑起点, 不一定表示第一条真实数据的时间戳。
@@ -63,7 +63,7 @@ DataSet::write(timestamp, data):
   │    │
   │    └─ index_continuous=true:
   │         ├─ if latest_written_timestamp == 0:
-  │         │    ├─ base_timestamp = timestamp
+  │         │    ├─ base_timestamp = timestamp (内存态)
   │         │    ├─ create segment at segment_start = timestamp
   │         │    └─ append real entry at entry_index=0
   │         │
@@ -149,21 +149,20 @@ if entry.block_offset == BLOCK_OFFSET_FILLER {
 
 ```
 DataSet::open():
-  1. 读取连续模式 index base metadata:
-       base_timestamp: Option<i64>
-       time_step = 1
-  2. 扫描现有 index segment 文件:
+  1. 扫描现有数值 index segment 文件:
        - 文件名解析为 segment_start
        - 读取 wrote_count
        - 读取最后一个已物化 entry 的 timestamp
+  2. 连续模式下, base_timestamp = 最小 segment_start
+       (无任何 index segment 时为 None, 数据集为空)
   3. latest_written_timestamp = 所有已物化 entry 中最大的 timestamp
      (包括 delete 后保留的 filler timestamp, 与现有 read(-1) 语义一致)
 ```
 
 恢复约束:
 - 如果 `base_timestamp` 不存在且没有任何 index entry, 数据集为空。
-- 如果 `base_timestamp` 不存在但存在 index segment, 应返回格式错误或执行一次受控迁移; 不能猜测新的 base。
-- retention 删除老 segment 时不得删除 index base metadata, 否则后续分段网格会漂移。
+- 如果存在 index segment, 必须使用最小数值文件名作为 `base_timestamp`, 不能创建额外 base 文件。
+- retention 删除老 segment 后, 已删除时间范围不可回填; reopen 时以剩余最小分段文件名作为可恢复基准。
 
 ## 23.8 连续模式 O(1) 查找
 

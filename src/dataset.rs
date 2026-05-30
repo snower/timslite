@@ -193,13 +193,10 @@ impl DataSet {
     ///   appends data to latest segment, updates index entry, and increments the old
     ///   segment's `invalid_record_count`.
     /// - `timestamp < latest_written_timestamp`: **out-of-order write** — appends data to
-    ///   the latest data segment and updates the existing index entry in place. Requires
-    ///   that an index entry at `timestamp` already exists (always true in continuous mode;
-    ///   true in non-continuous mode only if `timestamp` was previously written). If the
-    ///   old entry referenced real data, the old data segment's `invalid_record_count`
-    ///   is incremented (the previous data becomes an orphan record).
-    /// - `timestamp > latest_written_timestamp`: **normal write** — in continuous mode fills
-    ///   missing timestamps with filler entries first, then appends the real entry.
+    ///   the latest data segment and updates the existing index position in place. In
+    ///   continuous mode, sparse logical holes are materialized on demand.
+    /// - `timestamp > latest_written_timestamp`: **normal write** — in continuous mode only
+    ///   materializes filler entries in the previous and current edge index segments.
     pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
@@ -225,14 +222,14 @@ impl DataSet {
             self.time_index
                 .add_entry(timestamp, seg_offset + block_rel_offset, in_block_offset)?;
         } else {
-            // Continuous mode: fill gaps with filler, then append
-            for ts in (self.latest_written_timestamp + 1)..timestamp {
-                self.time_index.add_filler_entry(ts);
-            }
             let (seg_offset, block_rel_offset, in_block_offset) =
                 self.segments.append(timestamp, data)?;
-            self.time_index
-                .add_entry(timestamp, seg_offset + block_rel_offset, in_block_offset)?;
+            self.time_index.add_sparse_continuous_entry(
+                self.latest_written_timestamp,
+                timestamp,
+                seg_offset + block_rel_offset,
+                in_block_offset,
+            )?;
         }
         self.latest_written_timestamp = timestamp;
         self.last_used_at = Instant::now();
@@ -245,9 +242,9 @@ impl DataSet {
     /// in place with the new data location. If the old entry referenced real data,
     /// the old data segment's `invalid_record_count` is incremented.
     ///
-    /// Requires an existing index entry at `timestamp`:
-    /// - Continuous mode: always has an entry (filler or real data)
-    /// - Non-continuous mode: only if `timestamp` was previously written
+    /// Non-continuous mode requires an existing index entry at `timestamp`.
+    /// Continuous mode may update a real entry, replace a filler, or materialize
+    /// a sparse logical hole on demand.
     fn out_of_order_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
         let (seg_offset, block_rel_offset, in_block_offset) =
             self.segments.append(timestamp, data)?;
@@ -566,6 +563,194 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn numeric_index_files(dir: &std::path::Path) -> Vec<i64> {
+        let mut starts: Vec<i64> = std::fs::read_dir(dir.join("index"))
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.parse::<i64>().ok())
+            })
+            .collect();
+        starts.sort_unstable();
+        starts
+    }
+
+    #[test]
+    fn test_continuous_first_write_does_not_fill_from_zero() {
+        let dir = temp_dir("continuous_first_write_sparse");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            1,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        ds.write(100, b"first").unwrap();
+
+        assert_eq!(ds.time_index.in_memory_buffer.len(), 1);
+        assert_eq!(ds.time_index.in_memory_buffer[0].timestamp, 100);
+        assert!(!ds.time_index.in_memory_buffer[0].is_filler());
+        assert!(!dir.join("index").join("base").exists());
+    }
+
+    #[test]
+    fn test_continuous_large_gap_filler_is_bounded_by_edge_segments() {
+        let dir = temp_dir("continuous_large_gap_sparse");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let index_segment_size = 512;
+        let segment_capacity = ((index_segment_size - crate::INDEX_HEADER_SIZE)
+            / crate::INDEX_ENTRY_SIZE as u64) as usize;
+        let first_ts = 10;
+        let second_ts = first_ts + segment_capacity as i64 * 4 + 5;
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            index_segment_size,
+            6,
+            65536,
+            1,
+            256 * 1024,
+            128,
+            0,
+        )
+        .unwrap();
+
+        ds.write(first_ts, b"first").unwrap();
+        ds.write(second_ts, b"second").unwrap();
+
+        let filler_count = ds
+            .time_index
+            .in_memory_buffer
+            .iter()
+            .filter(|entry| entry.is_filler())
+            .count();
+        assert!(
+            filler_count < 2 * segment_capacity - 2,
+            "filler_count={} segment_capacity={}",
+            filler_count,
+            segment_capacity
+        );
+    }
+
+    #[test]
+    fn test_continuous_large_gap_flush_skips_middle_segments() {
+        let dir = temp_dir("continuous_large_gap_flush");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let index_segment_size = 512;
+        let segment_capacity = ((index_segment_size - crate::INDEX_HEADER_SIZE)
+            / crate::INDEX_ENTRY_SIZE as u64) as i64;
+        let first_ts = 10;
+        let second_ts = first_ts + segment_capacity * 4 + 5;
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            index_segment_size,
+            6,
+            65536,
+            1,
+            256 * 1024,
+            128,
+            0,
+        )
+        .unwrap();
+
+        ds.write(first_ts, b"first").unwrap();
+        ds.write(second_ts, b"second").unwrap();
+        ds.flush().unwrap();
+
+        assert!(!dir.join("index").join("base").exists());
+        assert_eq!(
+            numeric_index_files(&dir),
+            vec![first_ts, first_ts + segment_capacity * 4]
+        );
+        assert!(ds
+            .read(first_ts + segment_capacity * 2, None)
+            .unwrap()
+            .is_none());
+
+        let entries = ds.query(first_ts, second_ts, None).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, first_ts);
+        assert_eq!(entries[1].0, second_ts);
+    }
+
+    #[test]
+    fn test_continuous_backfill_logical_hole_creates_target_segment() {
+        let dir = temp_dir("continuous_backfill_logical_hole");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let index_segment_size = 512;
+        let segment_capacity = ((index_segment_size - crate::INDEX_HEADER_SIZE)
+            / crate::INDEX_ENTRY_SIZE as u64) as i64;
+        let first_ts = 10;
+        let hole_ts = first_ts + segment_capacity * 2;
+        let second_ts = first_ts + segment_capacity * 4 + 5;
+
+        {
+            let mut ds = DataSet::create(
+                id.clone(),
+                dir.clone(),
+                64 * 1024 * 1024,
+                index_segment_size,
+                6,
+                65536,
+                1,
+                256 * 1024,
+                128,
+                0,
+            )
+            .unwrap();
+
+            ds.write(first_ts, b"first").unwrap();
+            ds.write(second_ts, b"second").unwrap();
+            ds.flush().unwrap();
+            ds.write(hole_ts, b"hole").unwrap();
+            ds.flush().unwrap();
+            ds.close().unwrap();
+        }
+
+        assert_eq!(
+            numeric_index_files(&dir),
+            vec![
+                first_ts,
+                first_ts + segment_capacity * 2,
+                first_ts + segment_capacity * 4
+            ]
+        );
+
+        let mut ds = DataSet::open(id, dir.clone(), 65536).unwrap();
+        assert_eq!(ds.latest_written_timestamp(), second_ts);
+        let entries = ds.query(first_ts, second_ts, None).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].0, first_ts);
+        assert_eq!(entries[1].0, hole_ts);
+        assert_eq!(entries[1].1, b"hole");
+        assert_eq!(entries[2].0, second_ts);
     }
 
     #[test]

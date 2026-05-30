@@ -20,7 +20,7 @@
 | 状态 | ID | 事项 | 验收标准 | 处理记录 |
 |------|----|------|----------|----------|
 | [x] | P0-1 | 修正超大 record 与 `data_len: u16` 编码冲突 | 明确选择限制 `data_len <= u16::MAX` 或升级/扩展 record 长度编码; 设计文档、常量、校验规则一致 | 2026-05-29 已完成: 选择升级为 `data_len: u32 LE`, record header 固定 12B; 普通聚合 Block 保持 64KB hard cap, 超大 record 走独占 Block。已更新 `design.md`, `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `docs/design/query-iterator.md`, `docs/design/design-decisions.md`, `docs/design/index-continuous.md`, `docs/design/compression.md`, `docs/plan/phase-23-record-length-u32.md`, `plan.md`; 已修改 `src/segment/data.rs`, `src/cache.rs`, `src/segment/mod.rs`, `src/block.rs`, `src/config.rs`, `src/lib.rs`; 验证: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -- --test-threads=1` 通过。 |
-| [~] | P0-2 | 重设计连续索引 filler 机制 | 连续模式不再按 Unix 秒/毫秒 timestamp 全量物化 filler; 明确 `base_timestamp`、`time_step`、gap 表示和 first write 行为 | 2026-05-30 设计文档已调整为稀疏连续索引: 第一次真实写入设置并持久化 `base_timestamp`, `time_step=1`, 大 gap 只物化上一个写入所在分段尾部和当前写入所在分段前缀, 中间完整分段作为逻辑空洞不创建。已更新 `design.md`, `docs/design/index-continuous.md`, `docs/design/time-index.md`, `docs/design/dataset-operations.md`, `docs/design/query-iterator.md`, `docs/design/architecture.md`, `docs/plan/phase-24-sparse-continuous-index.md`, `docs/plan/overview.md`, `plan.md`; 代码实现和验证待后续处理。 |
+| [x] | P0-2 | 重设计连续索引 filler 机制 | 连续模式不再按 Unix 秒/毫秒 timestamp 全量物化 filler; 明确 `base_timestamp`、`time_step`、gap 表示和 first write 行为 | 2026-05-30 已完成: 设计调整为稀疏连续索引, 第一次真实写入初始化内存态 `base_timestamp`, flush 后首个数值 index segment 文件名承载该基准, 不创建单独 base 文件; `time_step=1`, 大 gap 只物化上一个写入所在分段尾部和当前写入所在分段前缀, 中间完整分段作为逻辑空洞不创建。已更新 `design.md`, `docs/design/index-continuous.md`, `docs/design/time-index.md`, `docs/design/dataset-operations.md`, `docs/design/query-iterator.md`, `docs/design/architecture.md`, `docs/plan/phase-24-sparse-continuous-index.md`, `docs/plan/overview.md`, `plan.md`; 已修改 `src/index/mod.rs`, `src/dataset.rs`; 验证: `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -- --test-threads=1` 通过。 |
 | [ ] | P0-3 | 统一 Header 可扩展性与固定数据区起点 | 明确采用固定 header 或可变 header; `DATA_HEADER_SIZE`/`INDEX_HEADER_SIZE`、TLV/state 扩展和兼容策略无矛盾 | |
 | [ ] | P0-4 | 解决纠正写入与 BlockCache 不可变假设冲突 | 明确 pending/sealed raw/sealed compressed 的可写、可读、可缓存规则; 设计缓存失效或限制纠正写入只作用于 pending block | |
 | [ ] | P0-5 | 补齐 crash safety 事务边界 | 明确数据、索引、header 多字段写入顺序; 设计 commit/recovery/checksum 或一致点恢复策略; 修正“最多损失 flush 间隔”的表述 | |
@@ -50,6 +50,6 @@
 
 1. [ ] 锁定文件格式: record 长度编码、header size 策略、block offset 坐标系。
 2. [ ] 锁定一致性模型: 数据/索引写入顺序、pending recovery、cache invalidation、crash recovery。
-3. [~] 重写连续索引设计: 时间粒度、gap 表示、跳段查找、first write 行为。
+3. [x] 重写连续索引设计: 时间粒度、gap 表示、跳段查找、first write 行为。
 4. [ ] 补齐 FFI 配置和生命周期: `StoreConfigFFI`、子句柄失效规则、通用 free 函数。
 5. [ ] 整理性能设计: 真正惰性的 QueryIterator、retention/compaction、benchmark 文档。

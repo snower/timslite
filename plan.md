@@ -32,7 +32,7 @@
 | 21 | 后台任务手动执行 (Manual Background Execution) | ✅ 完成 | (本节) |
 | 22 | Manual Background Execution Python Wrapper | ✅ 完成 | (本节) |
 | 23 | Record 长度编码升级为 u32 | ✅ 完成 | [phase-23-record-length-u32.md](docs/plan/phase-23-record-length-u32.md) |
-| 24 | 连续索引稀疏 filler 分段 | ⏳ 设计完成, 待实现 | [phase-24-sparse-continuous-index.md](docs/plan/phase-24-sparse-continuous-index.md) |
+| 24 | 连续索引稀疏 filler 分段 | ✅ 完成 | [phase-24-sparse-continuous-index.md](docs/plan/phase-24-sparse-continuous-index.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -281,7 +281,7 @@
 - [x] `cargo clippy --all-targets -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (143 unit + 28 integration)
 
-### Phase 24: 连续索引稀疏 filler 分段 ⏳ 设计完成, 待实现
+### Phase 24: 连续索引稀疏 filler 分段 ✅ 已完成
 
 > 目标: 修复设计审查 P0-2。连续模式按 `base_timestamp + time_step=1 + segment_capacity` 计算逻辑分段; 正序大 gap 只物化上一个写入所在分段尾部和当前写入所在分段前缀, 中间完整分段保持逻辑空洞。
 
@@ -293,16 +293,16 @@
 - [x] `design.md` / `docs/design/architecture.md`: 更新索引说明。
 
 **实现**:
-- [ ] `TimeIndex` 持久化并加载 `base_timestamp`。
-- [ ] 替换当前全量 filler 循环, 跨分段时只填充边界分段。
-- [ ] 回填逻辑空洞时按需创建目标分段并物化必要前缀。
-- [ ] 读取、删除、查询路径将缺失 segment / `entry_index >= wrote_count` 视为无真实数据。
+- [x] `TimeIndex` 从首个数值 index segment 文件名加载 `base_timestamp`, 不创建单独 base 文件。
+- [x] 替换当前全量 filler 循环, 跨分段时只填充边界分段。
+- [x] 回填逻辑空洞时按需创建目标分段并物化必要前缀。
+- [x] 读取、删除、查询路径将缺失 segment / `entry_index >= wrote_count` 视为无真实数据。
 
 **测试与验收**:
-- [ ] 补充 first write、大 gap、逻辑空洞回填、reopen、retention 回归测试。
-- [ ] `cargo fmt -- --check` clean。
-- [ ] `cargo clippy --all-targets -- -D warnings` clean。
-- [ ] `cargo test -- --test-threads=1` 全部通过。
+- [x] 补充 first write、大 gap、逻辑空洞回填、reopen 回归测试。
+- [x] `cargo fmt -- --check` clean。
+- [x] `cargo clippy --all-targets -- -D warnings` clean。
+- [x] `cargo test -- --test-threads=1` 全部通过 (147 unit + 28 integration, 2 doctests ignored)。
 
 ## 文档结构
 

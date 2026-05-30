@@ -30,7 +30,7 @@ entry_index      = ts - segment_start
 
 ## 24.3 写入规则
 
-1. 第一次真实写入: 持久化 `base_timestamp = timestamp`, 写入真实 entry, 不补 filler。
+1. 第一次真实写入: 初始化内存态 `base_timestamp = timestamp`, 写入真实 entry, 不补 filler; flush 后首个 index segment 文件名就是可恢复基准。
 2. 同分段正序写入: 从上一个存在的写入 timestamp + 1 到当前 timestamp - 1 物化 filler。
 3. 跨分段正序写入: 只物化上一个写入所在分段尾部和当前写入所在分段前缀; 中间完整分段保持逻辑空洞。
 4. 回填写入:
@@ -48,32 +48,32 @@ entry_index      = ts - segment_start
 - [x] `docs/design/dataset-operations.md`: 更新正序写、乱序回填、读取、删除的逻辑空洞语义。
 - [x] `docs/design/query-iterator.md`: 明确逻辑空洞不生成查询 source。
 - [x] `design.md` / `docs/design/architecture.md`: 更新索引说明。
-- [x] `docs/review/design-review-todo.md`: 将 P0-2 标记为处理中, 记录文档已调整、代码待实现。
+- [x] `docs/review/design-review-todo.md`: 将 P0-2 标记为已完成, 记录文档、代码与验证结果。
 
 ## 24.5 实现待办
 
-- [ ] `TimeIndex` 持久化并加载 `base_timestamp`。
-- [ ] 新增连续模式 `segment_start_for(timestamp)` 逻辑, 文件名使用逻辑分段起点。
-- [ ] 替换 `DataSet::write` 中全量 `(latest+1)..timestamp` filler 循环。
-- [ ] 实现跨分段写入时只填上段尾部和当前段前缀。
-- [ ] 实现逻辑空洞回填: 按需创建目标 index segment 并物化必要前缀。
-- [ ] 更新 `find_entry` / `find_and_delete_entry` / `query_range_indices` 对缺失 segment 和 `entry_index >= wrote_count` 返回 None/skip。
-- [ ] 调整 reopen 恢复逻辑: 读取 `base_timestamp`, 从已物化 entry 恢复 `latest_written_timestamp`。
-- [ ] 保留 `remove_pure_filler_segments()` 作为兼容清理, 不再依赖它处理大 gap。
+- [x] `TimeIndex` 从首个数值 index segment 文件名加载 `base_timestamp`, 不创建单独 base 文件。
+- [x] 新增连续模式 `segment_start_for(timestamp)` 逻辑, 文件名使用逻辑分段起点。
+- [x] 替换 `DataSet::write` 中全量 `(latest+1)..timestamp` filler 循环。
+- [x] 实现跨分段写入时只填上段尾部和当前段前缀。
+- [x] 实现逻辑空洞回填: 按需创建目标 index segment 并物化必要前缀。
+- [x] 更新 `find_entry` / `find_and_delete_entry` / `query_range_indices` 对缺失 segment 和 `entry_index >= wrote_count` 返回 None/skip。
+- [x] 调整 reopen 恢复逻辑: 从首个数值 index segment 文件名恢复 `base_timestamp`, 从已物化 entry 恢复 `latest_written_timestamp`。
+- [x] 保留 `remove_pure_filler_segments()` 作为兼容清理, 不再依赖它处理大 gap。
 
 ## 24.6 测试计划
 
-- [ ] first write 不填充从 0 或 epoch 到首个 timestamp 的 filler。
-- [ ] 同分段 gap 仍产生必要 filler, `read/query` 跳过 filler。
-- [ ] 跨多个分段的大 gap 只创建前后两个边界分段, 中间分段文件不存在。
-- [ ] 大 gap 单次写入 filler 访问量小于两个 index segment 容量。
-- [ ] 回填中间逻辑空洞时只创建目标分段并返回正确数据。
-- [ ] reopen 后 `base_timestamp`、segment 路由、latest timestamp 恢复一致。
-- [ ] retention 删除老分段后不破坏 `base_timestamp` 与新分段路由。
+- [x] first write 不填充从 0 或 epoch 到首个 timestamp 的 filler。
+- [x] 同分段 gap 仍产生必要 filler, `read/query` 跳过 filler。
+- [x] 跨多个分段的大 gap 只创建前后两个边界分段, 中间分段文件不存在。
+- [x] 大 gap 单次写入 filler 访问量小于两个 index segment 容量。
+- [x] 回填中间逻辑空洞时只创建目标分段并返回正确数据。
+- [x] reopen 后 `base_timestamp`、segment 路由、latest timestamp 恢复一致。
+- [x] retention 无需维护额外 base 文件; reopen 从剩余最小数值分段文件名恢复可用路由。
 
 ## 24.7 验收标准
 
-- [ ] 设计审查 P0-2 对应代码实现完成。
-- [ ] `cargo fmt -- --check` 通过。
-- [ ] `cargo clippy --all-targets -- -D warnings` 通过。
-- [ ] `cargo test -- --test-threads=1` 通过。
+- [x] 设计审查 P0-2 对应代码实现完成。
+- [x] `cargo fmt -- --check` 通过。
+- [x] `cargo clippy --all-targets -- -D warnings` 通过。
+- [x] `cargo test -- --test-threads=1` 通过。

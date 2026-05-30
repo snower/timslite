@@ -166,7 +166,7 @@ DataSet::write(timestamp, data):
 
 **连续模式稀疏 filler 规则**:
 
-1. 第一次真实写入: `TimeIndex` 初始化并持久化 `base_timestamp = timestamp`, 不补任何 filler。
+1. 第一次真实写入: `TimeIndex` 初始化内存态 `base_timestamp = timestamp`, 不补任何 filler; flush 后首个 index segment 文件名承载该基准。
 2. 同一 index segment 内正序写入: 从上一个存在的写入 timestamp + 1 物化 filler 到当前 timestamp - 1。
 3. 跨 index segment 正序写入: 只物化上一个写入所在分段未写满的尾部, 以及当前写入所在分段前面无数据的前缀; 中间完整分段不创建。
 4. 回填逻辑空洞: 只创建目标 timestamp 所属分段, 并物化该分段内必要前缀。
