@@ -34,6 +34,7 @@
 | 23 | Record 长度编码升级为 u32 | ✅ 完成 | [phase-23-record-length-u32.md](docs/plan/phase-23-record-length-u32.md) |
 | 24 | 连续索引稀疏 filler 分段 | ✅ 完成 | [phase-24-sparse-continuous-index.md](docs/plan/phase-24-sparse-continuous-index.md) |
 | 25 | Header 可变长度 | ✅ 完成 | P0-3 修复 |
+| 26 | GitHub Actions CI/CD | ✅ 完成 | (本节) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -323,6 +324,28 @@
 - [x] `cargo fmt -- --check` clean。
 - [x] `cargo clippy --all-targets -- -D warnings` clean。
 - [x] `cargo test -- --test-threads=1` 全部通过 (151 unit + 28 integration, 2 doctests ignored)。
+
+### Phase 26: GitHub Actions CI/CD ✅ 已完成
+
+> 目标: 添加 GitHub Actions 工作流, push 代码自动执行 Rust 单元测试、集成测试、Python 包装测试, 确保每次提交质量。
+
+**设计文档**:
+- [x] `docs/design/cargo-and-config.md`: 新增 §二十 GitHub Actions CI 章节 (触发条件 + 测试矩阵 + Python 构建流程)
+- [x] `design.md`: 构建配置条目更新, 添加 CI 标注
+
+**实现**:
+- [x] `.github/workflows/ci.yml`: 创建 CI 工作流, 包含:
+  - Rust 单元测试 (`cargo test --lib -- --test-threads=1`)
+  - Rust 集成测试 (`cargo test --test integration_test -- --test-threads=1`)
+  - Clippy 检查 (`cargo clippy --all-targets -- -D warnings`)
+  - 格式检查 (`cargo fmt -- --check`)
+  - Python 包装测试 (maturin develop + pytest wrapper/python/tests/ -v)
+- [x] 触发条件: `push` (任意分支) + `pull_request` (master/main)
+
+**验收**:
+- [x] workflow YAML 语法正确 (GitHub Actions schema 合规)
+- [x] 所有测试层覆盖 (Rust lib + Rust integration + Clippy + fmt + Python pytest)
+- [x] Python 测试正确构建 (maturin develop 在 wrapper/python/ 目录)
 
 ## 文档结构
 

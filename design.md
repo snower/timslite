@@ -24,7 +24,7 @@
 | 11 | [设计决策](docs/design/design-decisions.md) | 关键决策对比表、与 TimeStore(Java) 的差异 | 架构评审/迁移 |
 | 12 | [索引连续存储](docs/design/index-continuous.md) | 稀疏 filler 分段、逻辑空洞、base timestamp、O(1) 直接计算优化 | 连续模式需求 |
 | 13 | [懒分配与扩容](docs/design/lazy-allocation.md) | 初始分配、2 倍扩容、header 元数据不随扩容变更、磁盘节省分析 | 空间优化需求 |
-| 14 | [构建配置](docs/design/cargo-and-config.md) | Cargo.toml 依赖、构建/测试/基准命令 | 项目构建 |
+| 14 | [构建配置](docs/design/cargo-and-config.md) | Cargo.toml 依赖、构建/测试/基准命令、GitHub Actions CI | 项目构建 |
 | 15 | [查询迭代器](docs/design/query-iterator.md) | Virtual Iterator 惰性查询、HotBlockCache 读取循环级缓存、FFI 迭代器重构 | 查询性能优化 |
 
 ---
