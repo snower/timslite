@@ -61,12 +61,12 @@ class TestConfig:
             ds.write(1, b"default_compress")
 
     def test_index_continuous_kwarg(self, tmpdir):
-        """index_continuous=True enables continuous mode."""
+        """index_continuous=True enables continuous mode with logical gap."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("seq", "data", index_continuous=True)
             ds = store.open_dataset("seq", "data")
             ds.write(100, b"first")
-            ds.write(50, b"earlier")  # out-of-order allowed in continuous
             ds.write(200, b"last")
+            ds.write(150, b"middle")  # fills gap within segment range
             results = ds.query_all(1, 300)
             assert len(results) == 3

@@ -88,15 +88,24 @@ class TestWriteQuery:
             with pytest.raises(timslite.TmslInvalidDataError):
                 ds.write(-1, b"bad")
 
-    def test_write_out_of_order_rejected(self, tmpdir):
-        """Non-continuous mode: out-of-order write raises TmslInvalidDataError."""
+    def test_write_out_of_order_succeeds(self, tmpdir):
+        """Non-continuous mode: out-of-order write overwrites existing entry (Phase 18)."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("order", "data")
             ds = store.open_dataset("order", "data")
-            ds.write(10, b"first")
-            ds.write(20, b"second")
-            with pytest.raises(timslite.TmslInvalidDataError):
-                ds.write(15, b"out_of_order")
+            ds.write(10, b"v1")
+            ds.write(15, b"v2")
+            ds.write(20, b"v3")
+            ds.write(15, b"updated")  # out-of-order overwrite of existing ts=15
+            results = ds.query_all(1, 30)
+            assert len(results) == 3
+            for ts, data in results:
+                if ts == 15:
+                    assert data == b"updated"
+                if ts == 10:
+                    assert data == b"v1"
+                if ts == 20:
+                    assert data == b"v3"
 
     def test_flush_manual(self, tmpdir):
         """Manual flush after write persists data."""

@@ -6,13 +6,13 @@ import timslite
 
 class TestContinuous:
     def test_continuous_out_of_order_write(self, tmpdir):
-        """Continuous mode allows out-of-order writes."""
+        """Continuous mode allows out-of-order writes within segment range."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("cont", "data", index_continuous=True)
             ds = store.open_dataset("cont", "data")
             ds.write(100, b"first")
             ds.write(200, b"last")
-            ds.write(50, b"earlier")
+            ds.write(120, b"backfill")  # out-of-order within [base, latest]
             ds.write(150, b"middle")
             results = ds.query_all(1, 300)
             assert len(results) == 4
@@ -42,11 +42,13 @@ class TestContinuous:
             ts_list = [r[0] for r in results]
             assert ts_list == sorted(ts_list)
 
-    def test_continuous_duplicate_timestamp_rejected(self, tmpdir):
-        """Continuous mode: duplicate timestamp still raises error."""
+    def test_continuous_duplicate_timestamp_corrected(self, tmpdir):
+        """Continuous mode: same timestamp triggers correction write (overwrite in-place)."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("dup", "data", index_continuous=True)
             ds = store.open_dataset("dup", "data")
             ds.write(100, b"first")
-            with pytest.raises(timslite.TmslInvalidDataError):
-                ds.write(100, b"duplicate")
+            ds.write(100, b"corrected")  # correction write, no error
+            results = ds.query_all(1, 200)
+            assert len(results) == 1
+            assert results[0] == (100, b"corrected")
