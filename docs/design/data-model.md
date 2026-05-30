@@ -79,7 +79,7 @@ Offset  Size  Field                    Description
 ```
 
 - `timestamp`: 秒级时间戳
-- `block_offset`: 对应 Block 在数据段中的**绝对字节偏移** (指向 BlockHeader 起始)
+- `block_offset`: 对应 Block 在数据流中的**逻辑全局偏移** (相对各数据段数据区起点, 指向 BlockHeader 起始)。落到具体段后, 物理文件偏移 = `segment.header_len + (block_offset - segment.file_offset)`。
 - `in_block_offset`: record 在 Block Payload 中的**相对偏移** (从 payload 起始算, 指向该 record 的 data_len 字段)。普通聚合 Block 的 payload 受 64KB 上限约束, 因此真实 record 起始偏移不会达到 `0xFFFF` 哨兵值; 超大独占 Block 只包含一条 record, `in_block_offset` 固定为 0。
 
 ### 3.5 FileMetadata (文件头, meta + state)
@@ -131,7 +131,7 @@ Offset  Size  Field                    Description
 Offset  (相对 state 起始)    Size  Field                       Description
 0       i64(8)  min_timestamp             段内所有 record 的最小时间戳 (i64::MAX=空段)
 8       i64(8)  max_timestamp             段内所有 record 的最大时间戳 (i64::MIN=空段)
-16      u64(8)  wrote_position            当前写入位置(绝对偏移, 含 DATA_HEADER_SIZE)
+16      u64(8)  wrote_position            当前写入位置(文件内绝对偏移, 含动态 header_len)
 24      u64(8)  record_count              已写入记录总数
 32      u64(8)  total_uncompressed_size   文件内所有 record 原始数据总大小
 40      u64(8)  pending_block_offset      当前未完成 block 相对偏移 (u64::MAX=无)
@@ -146,12 +146,27 @@ Offset  (相对 state 起始)    Size  Field                       Description
 
 ```
 Offset  (相对 state 起始)    Size  Field                    Description
-0       u64(8)  wrote_position           当前写入位置(绝对偏移, 含 INDEX_HEADER_SIZE)
+0       u64(8)  wrote_position           当前写入位置(文件内绝对偏移, 含动态 header_len)
 ```
 
-> `wrote_count` 可从 `wrote_position` 计算: `wrote_count = (wrote_position - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE`。不再单独持久化 `record_count`、`total_uncompressed_size` 等数据段相关字段。
+> `wrote_count` 可从 `wrote_position` 计算: `wrote_count = (wrote_position - header_len) / INDEX_ENTRY_SIZE`。不再单独持久化 `record_count`、`total_uncompressed_size` 等数据段相关字段。
 
-#### Header 大小计算
+#### Header 长度与数据区起点
+
+Header 采用可变长度设计。`DATA_HEADER_SIZE=116` 和 `INDEX_HEADER_SIZE=52` 仅表示当前 v1 格式在默认 meta/state 下的最小/默认 header 长度, 不能作为读已有文件时的固定数据区起点。
+
+运行时必须从文件自身读取长度并计算:
+
+```text
+meta_start          = 9
+state_length_offset = meta_start + meta_length
+state_start         = state_length_offset + 2
+header_len          = state_start + state_length
+```
+
+所有 state 字段偏移均以 `state_start` 为基准; 数据段 Block 区和索引段 Entry 区均从 `header_len` 开始。未来新增 meta TLV 或 state 字段时, 旧字段相对 state 起点的顺序保持不变, 但 `state_start` 和 `header_len` 会随 `meta_length/state_length` 变化。
+
+#### v1 默认 Header 长度计算
 
 **数据段 (DataSegment):**
 ```
@@ -176,12 +191,12 @@ INDEX_HEADER_SIZE = 52 bytes
 #### 常量定义
 
 ```rust
-pub const DATA_HEADER_SIZE: u64 = 116;
-pub const INDEX_HEADER_SIZE: u64 = 52;
+pub const DATA_HEADER_SIZE: u64 = 116;   // v1 默认 data header_len
+pub const INDEX_HEADER_SIZE: u64 = 52;   // v1 默认 index header_len
 ```
 
-> **数据段数据区起始位置 = `DATA_HEADER_SIZE = 116` 字节**
-> **索引段数据区起始位置 = `INDEX_HEADER_SIZE = 52` 字节**
+> 新建 v1 文件时数据区起点分别为 116/52。打开已有文件时, 数据区起点必须使用文件 header 中计算出的 `header_len`。
+> `wrote_position` 是文件内绝对偏移, 必须满足 `wrote_position >= header_len`。
 
 #### 兼容性设计
 
@@ -189,10 +204,10 @@ pub const INDEX_HEADER_SIZE: u64 = 52;
 |------|------|
 | v1 reader 读 v1 文件 | 正常读取, 解析已知 meta type, 跳过未知 |
 | v2 reader 读 v1 文件 | 读 `meta_length` 跳过未知 meta; 读 `state_length` 对齐 state |
-| v1 reader 读 v2 文件 | 读固定前缀 (9B) + `meta_length` 跳过 meta + `state_length` 跳过 state, 解析已知 state 位置 |
+| v1 reader 读 v2 文件 | 读固定前缀 (9B) + `meta_length` 定位 state + `state_length` 计算 `header_len`, 解析已知 state 字段 |
 | 未来添加新 meta 字段 | 增加新 TLV type, `meta_length` 增加, 旧版本通过 length 跳过 |
 | 未来添加新 state 字段 | 增加 state 条目, `state_length` 增加, 旧版本只读前 N 个 8B |
-| 数据段 vs 索引段区分 | 通过 `fileType` 字段 (byte 6) 确定使用哪个 HEADER_SIZE 常量 |
+| 数据段 vs 索引段区分 | 通过 `fileType` 字段 (byte 6) 选择已知 state 字段集合, 不用固定 HEADER_SIZE 推导数据区 |
 
 ## 四、核心类型定义
 
@@ -291,7 +306,7 @@ const META_TYPE_FILE_OFFSET:    u8 = 0x02;  // i64 LE
 const META_TYPE_FILE_SIZE:      u8 = 0x03;  // u32 LE
 const META_TYPE_COMPRESS_LEVEL: u8 = 0x04;  // u8
 
-/// 数据段文件元数据头 (DataFileHeader, 116 bytes)
+/// 数据段文件元数据头 (DataFileHeader, v1 默认 116 bytes)
 struct DataFileMetadata {
     // === 固定前缀 (所有版本必须可读, 9 bytes) ===
     magic: [u8; 4],
@@ -302,6 +317,9 @@ struct DataFileMetadata {
     file_offset: i64,
     file_size: u32,
     compress_level: u8,
+    meta_length: u16,
+    state_length: u16,
+    header_len: u64,
     // === State 可变 (每值固定 8 字节, 顺序存储, 9 个字段) ===
     min_timestamp: i64,         // 段内最小时间戳 (i64::MAX 表示空段)
     max_timestamp: i64,         // 段内最大时间戳 (i64::MIN 表示空段)
@@ -314,7 +332,7 @@ struct DataFileMetadata {
     invalid_record_count: u64,  // 段内无效记录数 (乱序写入/delete 导致)
 }
 
-/// 索引段文件元数据头 (IndexFileHeader, 52 bytes)
+/// 索引段文件元数据头 (IndexFileHeader, v1 默认 52 bytes)
 struct IndexFileMetadata {
     // === 固定前缀 (所有版本必须可读, 9 bytes) ===
     magic: [u8; 4],
@@ -325,12 +343,15 @@ struct IndexFileMetadata {
     file_offset: i64,
     file_size: u32,
     compress_level: u8,
+    meta_length: u16,
+    state_length: u16,
+    header_len: u64,
     // === State 可变 (仅 1 个字段) ===
     wrote_position: u64,
 }
 
-const DATA_HEADER_SIZE: u64 = 116;   // 数据段文件头大小
-const INDEX_HEADER_SIZE: u64 = 52;   // 索引段文件头大小
+const DATA_HEADER_SIZE: u64 = 116;   // v1 默认数据段 header_len
+const INDEX_HEADER_SIZE: u64 = 52;   // v1 默认索引段 header_len
 
 /// 索引条目
 #[derive(Clone, Copy, Debug)]

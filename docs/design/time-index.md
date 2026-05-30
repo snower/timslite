@@ -137,7 +137,7 @@ impl IndexSegment {
 
 ```
 ┌──────────────────────────────────────────────┐
-│ IndexFileHeader (52 bytes)                   │
+│ IndexFileHeader (variable, v1 default 52B)   │
 │ - 固定前缀(9B): magic(4)+version(2)+         │
 │   fileType(1)+meta_length(2)                 │
 │ - Meta TLV(33B): created_at, file_offset,    │
@@ -156,7 +156,7 @@ impl IndexSegment {
 └──────────────────────────────────────────────┘
 ```
 
-> **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - INDEX_HEADER_SIZE) / 18`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。
+> **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - header_len) / 18`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。
 
 ### 7.6 查找算法
 
@@ -174,7 +174,7 @@ impl IndexSegment {
 连续模式仍保持 O(1) 定位, 但不再要求所有缺失 timestamp 都落盘为 filler。它使用固定逻辑网格:
 
 ```text
-segment_capacity = floor((index_segment_size - INDEX_HEADER_SIZE) / 18)
+segment_capacity = floor((index_segment_size - index_header_len) / 18)
 time_step        = 1
 base_timestamp   = first real write timestamp
 segment_ordinal  = floor((ts - base_timestamp) / segment_capacity)
@@ -208,7 +208,7 @@ reclaim_expired_segments(expiration_threshold: i64, max_file_size: u64):
 
 **`last_entry_timestamp` 实现**:
 - 仅打开文件一次 (read-only mmap, 不使用 `MmapMut::map_mut` 避免 Windows 锁定)
-- 从 `meta.wrote_count` 推算最后条目位置: `INDEX_HEADER_SIZE + (wrote_count - 1) * 18`
+- 从 `meta.wrote_count` 推算最后条目位置: `header_len + (wrote_count - 1) * 18`
 - 立即 drop(mmap) + drop(file), 检查完成后不保持打开状态
 - 返回 `Ok(last_ts)` 或 `Err` (空段/wrote_count==0 返回 start_timestamp)
 

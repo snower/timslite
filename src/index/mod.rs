@@ -12,9 +12,7 @@ use self::segment::{
     IndexEntry, IndexSegment, IndexSegmentMeta, BLOCK_OFFSET_FILLER, IN_BLOCK_OFFSET_FILLER,
 };
 use crate::error::{Result, TmslError};
-use crate::header::INDEX_HEADER_SIZE;
-use crate::util::read_u64_from_mmap;
-use memmap2::MmapMut;
+use crate::header::{IndexFileMetadata, INDEX_HEADER_SIZE};
 
 // ─── TimeIndex ─────────────────────────────────────────────────────────────
 
@@ -28,6 +26,7 @@ pub struct TimeIndex {
     pub in_memory_flush_threshold: usize,
     pub index_continuous: bool, // true = continuous mode (O(1) lookup enabled)
     pub base_timestamp: Option<i64>,
+    pub index_header_size: u64,
 }
 
 impl TimeIndex {
@@ -49,6 +48,7 @@ impl TimeIndex {
             in_memory_flush_threshold: 1024,
             index_continuous,
             base_timestamp: None,
+            index_header_size: INDEX_HEADER_SIZE,
         })
     }
 
@@ -131,13 +131,14 @@ impl TimeIndex {
     }
 
     fn segment_capacity(&self) -> Result<usize> {
-        if self.segment_size <= INDEX_HEADER_SIZE {
+        if self.segment_size <= self.index_header_size {
             return Err(TmslError::InvalidData(format!(
                 "index segment size {} is too small",
                 self.segment_size
             )));
         }
-        let capacity = ((self.segment_size - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
+        let capacity =
+            ((self.segment_size - self.index_header_size) / INDEX_ENTRY_SIZE as u64) as usize;
         if capacity == 0 {
             return Err(TmslError::InvalidData(format!(
                 "index segment size {} cannot hold an index entry",
@@ -662,6 +663,7 @@ impl TimeIndex {
                 seg.start_timestamp,
                 seg.entries_capacity,
                 seg.wrote_count,
+                seg.header_size,
             ));
             seg.idle_close()?;
         }
@@ -724,15 +726,16 @@ impl TimeIndex {
                 if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
                     if let Ok(start_ts) = stem.parse::<i64>() {
                         let file_size = std::fs::metadata(&p)?.len();
-                        let entries_capacity =
-                            ((file_size - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as usize;
-                        // Read record_count from header (offset 44 + 8 = 52)
-                        let wrote_count = Self::read_record_count_from_file(&p);
+                        let (wrote_count, header_size) = Self::read_record_count_from_file(&p);
+                        let entries_capacity = ((file_size.saturating_sub(header_size))
+                            / INDEX_ENTRY_SIZE as u64)
+                            as usize;
                         metas.push(IndexSegmentMeta::new(
                             p,
                             start_ts,
                             entries_capacity,
                             wrote_count,
+                            header_size,
                         ));
                     }
                 }
@@ -744,6 +747,10 @@ impl TimeIndex {
         } else {
             None
         };
+        let index_header_size = metas
+            .first()
+            .map(|meta| meta.header_size)
+            .unwrap_or(INDEX_HEADER_SIZE);
 
         Ok(Self {
             base_dir: base_dir.to_path_buf(),
@@ -755,20 +762,23 @@ impl TimeIndex {
             in_memory_flush_threshold: 1024,
             index_continuous,
             base_timestamp,
+            index_header_size,
         })
     }
 
     /// Read wrote_count from the file header without fully opening the segment.
-    fn read_record_count_from_file(path: &Path) -> usize {
+    fn read_record_count_from_file(path: &Path) -> (usize, u64) {
         if let Ok(file) = std::fs::OpenOptions::new().read(true).open(path) {
-            if let Ok(mmap) = unsafe { MmapMut::map_mut(&file) } {
-                // wrote_position is at offset 44, derive count from it
-                let wrote_pos = read_u64_from_mmap(&mmap, 44);
-                return ((wrote_pos.saturating_sub(INDEX_HEADER_SIZE)) / INDEX_ENTRY_SIZE as u64)
-                    as usize;
+            if let Ok(mmap) = unsafe { memmap2::MmapOptions::new().map(&file) } {
+                if let Ok(metadata) = IndexFileMetadata::read_from(&mmap) {
+                    let header_size = metadata.header_size;
+                    let count = ((metadata.wrote_position.saturating_sub(header_size))
+                        / INDEX_ENTRY_SIZE as u64) as usize;
+                    return (count, header_size);
+                }
             }
         }
-        0
+        (0, INDEX_HEADER_SIZE)
     }
 }
 

@@ -64,10 +64,10 @@ pub use store::{DataSetHandle, Store};
 
 // ─── Core constants (exported for FFI consumers) ────────────────────────────
 
-/// Size of a data segment file header in bytes (116B).
+/// Data segment v1 default header size in bytes.
 pub const DATA_HEADER_SIZE: u64 = header::DATA_HEADER_SIZE;
 
-/// Size of an index segment file header in bytes (52B).
+/// Index segment v1 default header size in bytes.
 pub const INDEX_HEADER_SIZE: u64 = header::INDEX_HEADER_SIZE;
 
 /// Size of a block header in bytes.

@@ -59,7 +59,8 @@ struct DataSegment {
     max_file_size: u64,          // 扩容上限 (segment_size, 不可变)
     min_timestamp: i64,          // 段内最小时间戳 (i64::MAX=空段)
     max_timestamp: i64,          // 段内最大时间戳 (i64::MIN=空段)
-    wrote_position: u64,         // 从 DATA_HEADER_SIZE(116) 起算
+    header_len: u64,             // 从文件头计算出的数据区起点
+    wrote_position: u64,         // 从 header_len 起算的数据区内已用字节数
     record_count: u64,
     total_uncompressed_size: u64,
     created_at: i64,
@@ -78,14 +79,14 @@ enum SegmentLifecycle {
 }
 
 const BLOCK_HEADER_SIZE: u64 = 16;
-const DATA_HEADER_SIZE: u64 = 116;  // 数据段文件头大小
+const DATA_HEADER_SIZE: u64 = 116;  // v1 默认数据段 header_len
 ```
 
 ### 6.2 文件布局
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ DataFileHeader (116 bytes)                       │
+│ DataFileHeader (variable, v1 default 116 bytes)  │
 │ - 固定前缀: magic(4)+version(2)+fileType(1)+     │
 │   meta_length(2)                                 │
 │ - Meta(TLV, 33B): created_at, file_offset,       │
@@ -186,7 +187,7 @@ fn overwrite_in_last_block(
     //    block_abs_end = block_rel_offset + BLOCK_HEADER_SIZE + block.payload_size
     //    若 block_abs_end < self.wrote_position → 不是最后 block, 返回错误
     //
-    // 2. 读取 block header (16B at DATA_HEADER_SIZE + block_rel_offset)
+    // 2. 读取 block header (16B at header_len + block_rel_offset)
     //    - 检查 flags: 若含 COMPRESSED → 返回错误
     //    - payload_size / uncompressed_size
     //
@@ -197,7 +198,7 @@ fn overwrite_in_last_block(
     // 4. 计算 delta = (new_data.len() + 12) - (old_data_len + 12) = new_data.len() - old_data_len
     //
     // 5. 修改 mmap 中 record 的 data_len (u32) 和 data 字节 (覆盖/扩展)
-    //    record_pos = DATA_HEADER_SIZE + block_rel_offset + BLOCK_HEADER_SIZE + in_block_offset
+    //    record_pos = header_len + block_rel_offset + BLOCK_HEADER_SIZE + in_block_offset
     //
     // 6. 更新 block header:
     //    - payload_size       += delta  (block 内 payload 长度变化)
@@ -232,7 +233,7 @@ impl DataSegment {
         cache: Option<&BlockCache>,
     ) -> io::Result<(i64, Vec<u8>)> {
         let m = self.mmap.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "segment closed"))?;
-        let hdr_pos = DATA_HEADER_SIZE as usize + entry.block_offset as usize;
+        let hdr_pos = self.header_len as usize + entry.block_offset as usize;
         let block_offset = entry.block_offset;
 
         // 读取 block header, 检查 compressed flag
@@ -244,6 +245,8 @@ impl DataSegment {
 ```
 
 > **安全性保证**: 只有已 seal 的 block 才能进入缓存。pending block 数据仍在写入中, 不会被缓存。
+>
+> **Header 起点约束**: `block_offset` 仍表示相对数据区起点的偏移; 物理文件位置必须通过 `header_len + block_offset` 计算。新建 v1 文件的 `header_len` 为 116, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。
 
 ### 6.5 生命周期方法
 

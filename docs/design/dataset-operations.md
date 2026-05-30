@@ -200,7 +200,7 @@ DataSet::write(timestamp, data):
 // DataSegmentSet::overwrite_in_last_block(block_offset, in_block_offset, new_data):
 //   1. 定位到最新数据段 (seg = self.segments.last_mut())
 //      验证 block_offset 落在该段且为段内最后一个 block
-//      block.start = DATA_HEADER_SIZE + (block_offset - seg.file_offset)
+//      block.start = seg.header_len + (block_offset - seg.file_offset)
 //   2. 读取 block header (16B at block.start)
 //      - 检查 flags & COMPRESSED == 0 (若含 COMPRESSED → 返回错误, 由 correct_write 捕获并回退到乱序写入)
 //      - 计算 record 在 payload 中的位置

@@ -1,10 +1,10 @@
 //! File metadata headers for data and index segments.
 //!
-//! Data segment: DataFileMetadata (116 bytes)
-//!   Layout: fixed_prefix(9B) + meta_tlv(33B) + state_length(2B) + state(72B) = 116B
+//! Data segment: DataFileMetadata (v1 default 116 bytes)
+//!   Layout: fixed_prefix(9B) + meta_tlv + state_length(2B) + state
 //!
-//! Index segment: IndexFileMetadata (52 bytes)
-//!   Layout: fixed_prefix(9B) + meta_tlv(33B) + state_length(2B) + state(8B) = 52B
+//! Index segment: IndexFileMetadata (v1 default 52 bytes)
+//!   Layout: fixed_prefix(9B) + meta_tlv + state_length(2B) + state
 //!
 //! Meta is immutable (written once at creation). State is mutable (updated on every write).
 
@@ -14,10 +14,10 @@ use memmap2::MmapMut;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/// Data segment file header size: 9 + 33 + 2 + 72 = 116 bytes
+/// Data segment v1 default header size: 9 + 33 + 2 + 72 = 116 bytes.
 pub const DATA_HEADER_SIZE: u64 = 116;
 
-/// Index segment file header size: 9 + 33 + 2 + 8 = 52 bytes
+/// Index segment v1 default header size: 9 + 33 + 2 + 8 = 52 bytes.
 pub const INDEX_HEADER_SIZE: u64 = 52;
 
 pub const MAGIC: [u8; 4] = *b"TMSL";
@@ -50,12 +50,13 @@ const OFF_FILE_TYPE: usize = 6;
 const OFF_META_LENGTH: usize = 7;
 // Meta TLV starts at offset 9
 const META_START: usize = 9;
-// state_length at offset 42
-const OFF_STATE_LENGTH: usize = 42;
-// State fields start at offset 44
+pub const FIXED_PREFIX_SIZE: usize = META_START;
+const STATE_LENGTH_SIZE: usize = 2;
+// v1 state fields start at offset 44
+#[cfg(test)]
 const STATE_START: usize = 44;
 
-// ─── Data segment state field offsets (relative to STATE_START, each 8 bytes) ──
+// ─── Data segment state field offsets (relative to dynamic state start) ──
 const DS_MIN_TIMESTAMP: usize = 0;
 const DS_MAX_TIMESTAMP: usize = 8;
 const DS_WROTE_POSITION: usize = 16;
@@ -66,7 +67,7 @@ const DS_PENDING_WROTE_POSITION: usize = 48;
 const DS_PENDING_RECORD_COUNT: usize = 56;
 const DS_INVALID_RECORD_COUNT: usize = 64;
 
-// ─── Index segment state field offsets (relative to STATE_START) ──
+// ─── Index segment state field offsets (relative to dynamic state start) ──
 const IS_WROTE_POSITION: usize = 0;
 
 /// Sentinel value meaning "no pending block"
@@ -77,9 +78,143 @@ pub const TIMESTAMP_MIN_SENTINEL: i64 = i64::MAX;
 /// Sentinel value for empty segment max_timestamp
 pub const TIMESTAMP_MAX_SENTINEL: i64 = i64::MIN;
 
+fn state_length_offset(meta_length: u16) -> usize {
+    META_START + meta_length as usize
+}
+
+fn state_start(meta_length: u16) -> usize {
+    state_length_offset(meta_length) + STATE_LENGTH_SIZE
+}
+
+fn header_size(meta_length: u16, state_length: u16) -> u64 {
+    (state_start(meta_length) + state_length as usize) as u64
+}
+
+fn ensure_len(mmap: &[u8], end: usize, what: &str) -> Result<()> {
+    if mmap.len() < end {
+        return Err(TmslError::InvalidData(format!(
+            "truncated {}: need {} bytes, got {}",
+            what,
+            end,
+            mmap.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_state_field(mmap: &[u8], expected_file_type: u8, field_offset: usize) -> Result<usize> {
+    let (_, _, file_type, meta_length) = read_shared_prefix(mmap)?;
+    if file_type != expected_file_type {
+        return Err(TmslError::InvalidData(format!(
+            "unexpected file_type {}",
+            file_type
+        )));
+    }
+    let state_len_off = state_length_offset(meta_length);
+    ensure_len(mmap, state_len_off + STATE_LENGTH_SIZE, "state_length")?;
+    let state_length = read_u16_from_mmap(mmap, state_len_off);
+    let state_start = state_start(meta_length);
+    let end = state_start + state_length as usize;
+    ensure_len(mmap, end, "state")?;
+    if field_offset + 8 > state_length as usize {
+        return Err(TmslError::InvalidData(format!(
+            "state field offset {} exceeds state_length {}",
+            field_offset, state_length
+        )));
+    }
+    Ok(state_start)
+}
+
+pub fn data_header_size_from_mmap(mmap: &[u8]) -> Result<u64> {
+    let (_, _, file_type, meta_length) = read_shared_prefix(mmap)?;
+    if file_type != FILE_TYPE_DATA {
+        return Err(TmslError::InvalidData(format!(
+            "unexpected file_type {}",
+            file_type
+        )));
+    }
+    let state_len_off = state_length_offset(meta_length);
+    ensure_len(mmap, state_len_off + STATE_LENGTH_SIZE, "state_length")?;
+    let state_length = read_u16_from_mmap(mmap, state_len_off);
+    let size = header_size(meta_length, state_length);
+    ensure_len(mmap, size as usize, "data header")?;
+    Ok(size)
+}
+
+pub fn index_header_size_from_mmap(mmap: &[u8]) -> Result<u64> {
+    let (_, _, file_type, meta_length) = read_shared_prefix(mmap)?;
+    if file_type != FILE_TYPE_INDEX {
+        return Err(TmslError::InvalidData(format!(
+            "unexpected file_type {}",
+            file_type
+        )));
+    }
+    let state_len_off = state_length_offset(meta_length);
+    ensure_len(mmap, state_len_off + STATE_LENGTH_SIZE, "state_length")?;
+    let state_length = read_u16_from_mmap(mmap, state_len_off);
+    let size = header_size(meta_length, state_length);
+    ensure_len(mmap, size as usize, "index header")?;
+    Ok(size)
+}
+
+pub fn write_data_core_state_to_mmap(
+    mmap: &mut [u8],
+    min_timestamp: i64,
+    max_timestamp: i64,
+    wrote_position: u64,
+    record_count: u64,
+    total_uncompressed_size: u64,
+) -> Result<()> {
+    let state_start = validate_state_field(mmap, FILE_TYPE_DATA, DS_TOTAL_UNCOMP_SIZE)?;
+    mmap[state_start + DS_MIN_TIMESTAMP..state_start + DS_MIN_TIMESTAMP + 8]
+        .copy_from_slice(&min_timestamp.to_le_bytes());
+    mmap[state_start + DS_MAX_TIMESTAMP..state_start + DS_MAX_TIMESTAMP + 8]
+        .copy_from_slice(&max_timestamp.to_le_bytes());
+    mmap[state_start + DS_WROTE_POSITION..state_start + DS_WROTE_POSITION + 8]
+        .copy_from_slice(&wrote_position.to_le_bytes());
+    mmap[state_start + DS_RECORD_COUNT..state_start + DS_RECORD_COUNT + 8]
+        .copy_from_slice(&record_count.to_le_bytes());
+    mmap[state_start + DS_TOTAL_UNCOMP_SIZE..state_start + DS_TOTAL_UNCOMP_SIZE + 8]
+        .copy_from_slice(&total_uncompressed_size.to_le_bytes());
+    Ok(())
+}
+
+pub fn write_data_pending_state_to_mmap(
+    mmap: &mut [u8],
+    pending_block_offset: u64,
+    pending_wrote_position: u64,
+    pending_record_count: u64,
+) -> Result<()> {
+    let state_start = validate_state_field(mmap, FILE_TYPE_DATA, DS_PENDING_RECORD_COUNT)?;
+    mmap[state_start + DS_PENDING_BLOCK_OFFSET..state_start + DS_PENDING_BLOCK_OFFSET + 8]
+        .copy_from_slice(&pending_block_offset.to_le_bytes());
+    mmap[state_start + DS_PENDING_WROTE_POSITION..state_start + DS_PENDING_WROTE_POSITION + 8]
+        .copy_from_slice(&pending_wrote_position.to_le_bytes());
+    mmap[state_start + DS_PENDING_RECORD_COUNT..state_start + DS_PENDING_RECORD_COUNT + 8]
+        .copy_from_slice(&pending_record_count.to_le_bytes());
+    Ok(())
+}
+
+pub fn write_data_invalid_record_count_to_mmap(
+    mmap: &mut [u8],
+    invalid_record_count: u64,
+) -> Result<()> {
+    let state_start = validate_state_field(mmap, FILE_TYPE_DATA, DS_INVALID_RECORD_COUNT)?;
+    let off = state_start + DS_INVALID_RECORD_COUNT;
+    mmap[off..off + 8].copy_from_slice(&invalid_record_count.to_le_bytes());
+    Ok(())
+}
+
+pub fn write_index_wrote_position_to_mmap(mmap: &mut [u8], wrote_position: u64) -> Result<()> {
+    let state_start = validate_state_field(mmap, FILE_TYPE_INDEX, IS_WROTE_POSITION)?;
+    let off = state_start + IS_WROTE_POSITION;
+    mmap[off..off + 8].copy_from_slice(&wrote_position.to_le_bytes());
+    Ok(())
+}
+
 // ─── DataFileMetadata ────────────────────────────────────────────────────────
 
-/// Data segment file metadata in memory (116 bytes on disk).
+/// Data segment file metadata in memory.
 ///
 /// Meta fields are immutable (written once at creation).
 /// State fields are mutable (updated on every write).
@@ -96,6 +231,7 @@ pub struct DataFileMetadata {
     pub file_size: u32,
     pub compress_level: u8,
     pub meta_length: u16,
+    pub header_size: u64,
 
     // === State (mutable, 9×8B) ===
     pub min_timestamp: i64,
@@ -125,6 +261,7 @@ impl DataFileMetadata {
             file_size,
             compress_level: 6,
             meta_length: META_LENGTH_V1,
+            header_size: DATA_HEADER_SIZE,
             min_timestamp: TIMESTAMP_MIN_SENTINEL,
             max_timestamp: TIMESTAMP_MAX_SENTINEL,
             wrote_position: DATA_HEADER_SIZE,
@@ -138,7 +275,11 @@ impl DataFileMetadata {
         }
     }
 
-    /// Serialize the metadata to the first DATA_HEADER_SIZE bytes of mmap.
+    fn state_start(&self) -> usize {
+        state_start(self.meta_length)
+    }
+
+    /// Serialize the metadata to the header area of mmap.
     pub fn write_to(&self, mmap: &mut MmapMut) {
         write_shared_prefix(
             mmap,
@@ -155,58 +296,74 @@ impl DataFileMetadata {
             self.compress_level,
         );
 
-        // state_length
-        write_u16_to_mmap(mmap, OFF_STATE_LENGTH, self.state_length);
+        let state_length_offset = state_length_offset(self.meta_length);
+        let state_start = self.state_start();
 
-        // State (9×8B, starting at STATE_START=44)
-        write_i64_to_mmap(mmap, STATE_START + DS_MIN_TIMESTAMP, self.min_timestamp);
-        write_i64_to_mmap(mmap, STATE_START + DS_MAX_TIMESTAMP, self.max_timestamp);
-        write_u64_to_mmap(mmap, STATE_START + DS_WROTE_POSITION, self.wrote_position);
-        write_u64_to_mmap(mmap, STATE_START + DS_RECORD_COUNT, self.record_count);
+        write_u16_to_mmap(mmap, state_length_offset, self.state_length);
+
+        write_i64_to_mmap(mmap, state_start + DS_MIN_TIMESTAMP, self.min_timestamp);
+        write_i64_to_mmap(mmap, state_start + DS_MAX_TIMESTAMP, self.max_timestamp);
+        write_u64_to_mmap(mmap, state_start + DS_WROTE_POSITION, self.wrote_position);
+        write_u64_to_mmap(mmap, state_start + DS_RECORD_COUNT, self.record_count);
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_TOTAL_UNCOMP_SIZE,
+            state_start + DS_TOTAL_UNCOMP_SIZE,
             self.total_uncompressed_size,
         );
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_PENDING_BLOCK_OFFSET,
+            state_start + DS_PENDING_BLOCK_OFFSET,
             self.pending_block_offset,
         );
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_PENDING_WROTE_POSITION,
+            state_start + DS_PENDING_WROTE_POSITION,
             self.pending_wrote_position,
         );
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_PENDING_RECORD_COUNT,
+            state_start + DS_PENDING_RECORD_COUNT,
             self.pending_record_count,
         );
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_INVALID_RECORD_COUNT,
+            state_start + DS_INVALID_RECORD_COUNT,
             self.invalid_record_count,
         );
     }
 
-    /// Read DataFileMetadata from the first DATA_HEADER_SIZE bytes of a byte slice.
+    /// Read DataFileMetadata from a byte slice.
     pub fn read_from(mmap: &[u8]) -> Result<Self> {
         let (magic, version, file_type, meta_length) = read_shared_prefix(mmap)?;
         let (created_at, file_offset, file_size, compress_level) =
             parse_meta_tlv(mmap, META_START, meta_length as usize)?;
-        let state_length = read_u16_from_mmap(mmap, OFF_STATE_LENGTH);
+        let state_length_offset = state_length_offset(meta_length);
+        ensure_len(
+            mmap,
+            state_length_offset + STATE_LENGTH_SIZE,
+            "data state_length",
+        )?;
+        let state_length = read_u16_from_mmap(mmap, state_length_offset);
+        if state_length < DATA_STATE_LENGTH_V1 {
+            return Err(TmslError::InvalidData(format!(
+                "data state_length {} is smaller than v1 {}",
+                state_length, DATA_STATE_LENGTH_V1
+            )));
+        }
+        let state_start = state_start(meta_length);
+        let header_size = header_size(meta_length, state_length);
+        ensure_len(mmap, header_size as usize, "data header")?;
 
-        let min_timestamp = read_i64_from_mmap(mmap, STATE_START + DS_MIN_TIMESTAMP);
-        let max_timestamp = read_i64_from_mmap(mmap, STATE_START + DS_MAX_TIMESTAMP);
-        let wrote_position = read_u64_from_mmap(mmap, STATE_START + DS_WROTE_POSITION);
-        let record_count = read_u64_from_mmap(mmap, STATE_START + DS_RECORD_COUNT);
-        let total_uncompressed_size = read_u64_from_mmap(mmap, STATE_START + DS_TOTAL_UNCOMP_SIZE);
-        let pending_block_offset = read_u64_from_mmap(mmap, STATE_START + DS_PENDING_BLOCK_OFFSET);
+        let min_timestamp = read_i64_from_mmap(mmap, state_start + DS_MIN_TIMESTAMP);
+        let max_timestamp = read_i64_from_mmap(mmap, state_start + DS_MAX_TIMESTAMP);
+        let wrote_position = read_u64_from_mmap(mmap, state_start + DS_WROTE_POSITION);
+        let record_count = read_u64_from_mmap(mmap, state_start + DS_RECORD_COUNT);
+        let total_uncompressed_size = read_u64_from_mmap(mmap, state_start + DS_TOTAL_UNCOMP_SIZE);
+        let pending_block_offset = read_u64_from_mmap(mmap, state_start + DS_PENDING_BLOCK_OFFSET);
         let pending_wrote_position =
-            read_u64_from_mmap(mmap, STATE_START + DS_PENDING_WROTE_POSITION);
-        let pending_record_count = read_u64_from_mmap(mmap, STATE_START + DS_PENDING_RECORD_COUNT);
-        let invalid_record_count = read_u64_from_mmap(mmap, STATE_START + DS_INVALID_RECORD_COUNT);
+            read_u64_from_mmap(mmap, state_start + DS_PENDING_WROTE_POSITION);
+        let pending_record_count = read_u64_from_mmap(mmap, state_start + DS_PENDING_RECORD_COUNT);
+        let invalid_record_count = read_u64_from_mmap(mmap, state_start + DS_INVALID_RECORD_COUNT);
 
         Ok(Self {
             magic,
@@ -217,6 +374,7 @@ impl DataFileMetadata {
             file_size,
             compress_level,
             meta_length,
+            header_size,
             min_timestamp,
             max_timestamp,
             wrote_position,
@@ -254,32 +412,34 @@ impl DataFileMetadata {
         self.wrote_position = wrote_pos;
         self.record_count = rec_count;
         self.total_uncompressed_size = uncomp_size;
-        write_i64_to_mmap(mmap, STATE_START + DS_MIN_TIMESTAMP, self.min_timestamp);
-        write_i64_to_mmap(mmap, STATE_START + DS_MAX_TIMESTAMP, self.max_timestamp);
-        write_u64_to_mmap(mmap, STATE_START + DS_WROTE_POSITION, self.wrote_position);
-        write_u64_to_mmap(mmap, STATE_START + DS_RECORD_COUNT, self.record_count);
+        let state_start = self.state_start();
+        write_i64_to_mmap(mmap, state_start + DS_MIN_TIMESTAMP, self.min_timestamp);
+        write_i64_to_mmap(mmap, state_start + DS_MAX_TIMESTAMP, self.max_timestamp);
+        write_u64_to_mmap(mmap, state_start + DS_WROTE_POSITION, self.wrote_position);
+        write_u64_to_mmap(mmap, state_start + DS_RECORD_COUNT, self.record_count);
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_TOTAL_UNCOMP_SIZE,
+            state_start + DS_TOTAL_UNCOMP_SIZE,
             self.total_uncompressed_size,
         );
     }
 
     /// Update all three pending fields in mmap.
     pub fn write_pending(&mut self, mmap: &mut MmapMut) {
+        let state_start = self.state_start();
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_PENDING_BLOCK_OFFSET,
+            state_start + DS_PENDING_BLOCK_OFFSET,
             self.pending_block_offset,
         );
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_PENDING_WROTE_POSITION,
+            state_start + DS_PENDING_WROTE_POSITION,
             self.pending_wrote_position,
         );
         write_u64_to_mmap(
             mmap,
-            STATE_START + DS_PENDING_RECORD_COUNT,
+            state_start + DS_PENDING_RECORD_COUNT,
             self.pending_record_count,
         );
     }
@@ -289,15 +449,16 @@ impl DataFileMetadata {
         self.pending_block_offset = PENDING_NONE;
         self.pending_wrote_position = 0;
         self.pending_record_count = 0;
-        write_u64_to_mmap(mmap, STATE_START + DS_PENDING_BLOCK_OFFSET, PENDING_NONE);
-        write_u64_to_mmap(mmap, STATE_START + DS_PENDING_WROTE_POSITION, 0);
-        write_u64_to_mmap(mmap, STATE_START + DS_PENDING_RECORD_COUNT, 0);
+        let state_start = self.state_start();
+        write_u64_to_mmap(mmap, state_start + DS_PENDING_BLOCK_OFFSET, PENDING_NONE);
+        write_u64_to_mmap(mmap, state_start + DS_PENDING_WROTE_POSITION, 0);
+        write_u64_to_mmap(mmap, state_start + DS_PENDING_RECORD_COUNT, 0);
     }
 }
 
 // ─── IndexFileMetadata ───────────────────────────────────────────────────────
 
-/// Index segment file metadata in memory (52 bytes on disk).
+/// Index segment file metadata in memory.
 ///
 /// Meta fields are immutable (written once at creation).
 /// State has only wrote_position (8 bytes).
@@ -314,6 +475,7 @@ pub struct IndexFileMetadata {
     pub file_size: u32,
     pub compress_level: u8,
     pub meta_length: u16,
+    pub header_size: u64,
 
     // === State (mutable, 1×8B) ===
     pub wrote_position: u64,
@@ -335,12 +497,17 @@ impl IndexFileMetadata {
             file_size,
             compress_level: 6,
             meta_length: META_LENGTH_V1,
+            header_size: INDEX_HEADER_SIZE,
             wrote_position: INDEX_HEADER_SIZE,
             state_length: INDEX_STATE_LENGTH_V1,
         }
     }
 
-    /// Serialize the metadata to the first INDEX_HEADER_SIZE bytes of mmap.
+    fn state_start(&self) -> usize {
+        state_start(self.meta_length)
+    }
+
+    /// Serialize the metadata to the header area of mmap.
     pub fn write_to(&self, mmap: &mut MmapMut) {
         write_shared_prefix(
             mmap,
@@ -357,20 +524,35 @@ impl IndexFileMetadata {
             self.compress_level,
         );
 
-        // state_length
-        write_u16_to_mmap(mmap, OFF_STATE_LENGTH, self.state_length);
+        let state_length_offset = state_length_offset(self.meta_length);
+        let state_start = self.state_start();
 
-        // State (1×8B)
-        write_u64_to_mmap(mmap, STATE_START + IS_WROTE_POSITION, self.wrote_position);
+        write_u16_to_mmap(mmap, state_length_offset, self.state_length);
+        write_u64_to_mmap(mmap, state_start + IS_WROTE_POSITION, self.wrote_position);
     }
 
-    /// Read IndexFileMetadata from the first INDEX_HEADER_SIZE bytes of a byte slice.
+    /// Read IndexFileMetadata from a byte slice.
     pub fn read_from(mmap: &[u8]) -> Result<Self> {
         let (magic, version, file_type, meta_length) = read_shared_prefix(mmap)?;
         let (created_at, file_offset, file_size, compress_level) =
             parse_meta_tlv(mmap, META_START, meta_length as usize)?;
-        let state_length = read_u16_from_mmap(mmap, OFF_STATE_LENGTH);
-        let wrote_position = read_u64_from_mmap(mmap, STATE_START + IS_WROTE_POSITION);
+        let state_length_offset = state_length_offset(meta_length);
+        ensure_len(
+            mmap,
+            state_length_offset + STATE_LENGTH_SIZE,
+            "index state_length",
+        )?;
+        let state_length = read_u16_from_mmap(mmap, state_length_offset);
+        if state_length < INDEX_STATE_LENGTH_V1 {
+            return Err(TmslError::InvalidData(format!(
+                "index state_length {} is smaller than v1 {}",
+                state_length, INDEX_STATE_LENGTH_V1
+            )));
+        }
+        let state_start = state_start(meta_length);
+        let header_size = header_size(meta_length, state_length);
+        ensure_len(mmap, header_size as usize, "index header")?;
+        let wrote_position = read_u64_from_mmap(mmap, state_start + IS_WROTE_POSITION);
 
         Ok(Self {
             magic,
@@ -381,6 +563,7 @@ impl IndexFileMetadata {
             file_size,
             compress_level,
             meta_length,
+            header_size,
             wrote_position,
             state_length,
         })
@@ -395,7 +578,8 @@ impl IndexFileMetadata {
     /// Update wrote_position in mmap.
     pub fn write_wrote_position(&mut self, mmap: &mut MmapMut, wrote_pos: u64) {
         self.wrote_position = wrote_pos;
-        write_u64_to_mmap(mmap, STATE_START + IS_WROTE_POSITION, self.wrote_position);
+        let state_start = self.state_start();
+        write_u64_to_mmap(mmap, state_start + IS_WROTE_POSITION, self.wrote_position);
     }
 }
 
@@ -452,6 +636,7 @@ fn write_meta_tlv(
 }
 
 fn read_shared_prefix(mmap: &[u8]) -> Result<([u8; 4], u16, u8, u16)> {
+    ensure_len(mmap, FIXED_PREFIX_SIZE, "fixed header prefix")?;
     let magic: [u8; 4] = mmap[OFF_MAGIC..OFF_MAGIC + 4]
         .try_into()
         .map_err(|_| TmslError::InvalidData("cannot read magic".into()))?;
@@ -479,7 +664,10 @@ fn parse_meta_tlv(mmap: &[u8], start: usize, total_len: usize) -> Result<(i64, i
     let mut compress_level = 0u8;
 
     let mut off = start;
-    let end = start + total_len;
+    let end = start
+        .checked_add(total_len)
+        .ok_or_else(|| TmslError::InvalidData("meta length overflow".into()))?;
+    ensure_len(mmap, end, "meta tlv")?;
     while off + 3 <= end {
         let t = mmap[off];
         off += 1;
@@ -510,13 +698,8 @@ fn parse_meta_tlv(mmap: &[u8], start: usize, total_len: usize) -> Result<(i64, i
 }
 
 /// Clear pending state directly in an mmap slice (without a struct).
-pub fn clear_pending_from_mmap(mmap: &mut [u8]) {
-    mmap[STATE_START + DS_PENDING_BLOCK_OFFSET..STATE_START + DS_PENDING_BLOCK_OFFSET + 8]
-        .copy_from_slice(&PENDING_NONE.to_le_bytes());
-    mmap[STATE_START + DS_PENDING_WROTE_POSITION..STATE_START + DS_PENDING_WROTE_POSITION + 8]
-        .copy_from_slice(&0u64.to_le_bytes());
-    mmap[STATE_START + DS_PENDING_RECORD_COUNT..STATE_START + DS_PENDING_RECORD_COUNT + 8]
-        .copy_from_slice(&0u64.to_le_bytes());
+pub fn clear_pending_from_mmap(mmap: &mut [u8]) -> Result<()> {
+    write_data_pending_state_to_mmap(mmap, PENDING_NONE, 0, 0)
 }
 
 #[cfg(test)]
@@ -576,6 +759,67 @@ mod tests {
         assert_eq!(read.file_type, FILE_TYPE_INDEX);
         assert_eq!(read.file_offset, 1700000000);
         assert_eq!(read.wrote_position, INDEX_HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_data_header_reads_state_after_extended_meta() {
+        let extra_meta = [0xEE, 4, 0, 1, 2, 3, 4];
+        let meta_length = META_LENGTH_V1 + extra_meta.len() as u16;
+        let state_length_offset = META_START + meta_length as usize;
+        let state_start = state_length_offset + 2;
+        let header_size = state_start as u64 + DATA_STATE_LENGTH_V1 as u64;
+        let (mut mmap, _path) = create_test_mmap(header_size);
+
+        write_shared_prefix(&mut mmap, MAGIC, VERSION, FILE_TYPE_DATA, meta_length);
+        write_meta_tlv(&mut mmap, 1000, 0, 1024, 6);
+        let extra_start = META_START + META_LENGTH_V1 as usize;
+        mmap[extra_start..extra_start + extra_meta.len()].copy_from_slice(&extra_meta);
+        write_u16_to_mmap(&mut mmap, state_length_offset, DATA_STATE_LENGTH_V1);
+        write_i64_to_mmap(&mut mmap, state_start + DS_MIN_TIMESTAMP, 11);
+        write_i64_to_mmap(&mut mmap, state_start + DS_MAX_TIMESTAMP, 22);
+        write_u64_to_mmap(&mut mmap, state_start + DS_WROTE_POSITION, header_size);
+        write_u64_to_mmap(&mut mmap, state_start + DS_RECORD_COUNT, 2);
+        write_u64_to_mmap(&mut mmap, state_start + DS_TOTAL_UNCOMP_SIZE, 44);
+        write_u64_to_mmap(
+            &mut mmap,
+            state_start + DS_PENDING_BLOCK_OFFSET,
+            PENDING_NONE,
+        );
+        write_u64_to_mmap(&mut mmap, state_start + DS_PENDING_WROTE_POSITION, 0);
+        write_u64_to_mmap(&mut mmap, state_start + DS_PENDING_RECORD_COUNT, 0);
+        write_u64_to_mmap(&mut mmap, state_start + DS_INVALID_RECORD_COUNT, 3);
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.meta_length, meta_length);
+        assert_eq!(read.state_length, DATA_STATE_LENGTH_V1);
+        assert_eq!(read.min_timestamp, 11);
+        assert_eq!(read.max_timestamp, 22);
+        assert_eq!(read.wrote_position, header_size);
+        assert_eq!(read.record_count, 2);
+        assert_eq!(read.invalid_record_count, 3);
+    }
+
+    #[test]
+    fn test_index_header_reads_state_after_extended_meta() {
+        let extra_meta = [0xEF, 3, 0, 7, 8, 9];
+        let meta_length = META_LENGTH_V1 + extra_meta.len() as u16;
+        let state_length_offset = META_START + meta_length as usize;
+        let state_start = state_length_offset + 2;
+        let header_size = state_start as u64 + INDEX_STATE_LENGTH_V1 as u64;
+        let (mut mmap, _path) = create_test_mmap(header_size);
+
+        write_shared_prefix(&mut mmap, MAGIC, VERSION, FILE_TYPE_INDEX, meta_length);
+        write_meta_tlv(&mut mmap, 1000, 1700000000, 4096, 6);
+        let extra_start = META_START + META_LENGTH_V1 as usize;
+        mmap[extra_start..extra_start + extra_meta.len()].copy_from_slice(&extra_meta);
+        write_u16_to_mmap(&mut mmap, state_length_offset, INDEX_STATE_LENGTH_V1);
+        write_u64_to_mmap(&mut mmap, state_start + IS_WROTE_POSITION, header_size);
+
+        let read = IndexFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.meta_length, meta_length);
+        assert_eq!(read.state_length, INDEX_STATE_LENGTH_V1);
+        assert_eq!(read.file_offset, 1700000000);
+        assert_eq!(read.wrote_position, header_size);
     }
 
     #[test]

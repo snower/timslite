@@ -13,7 +13,7 @@
 |---|------|---------|---------|
 | 1 | [架构概览](docs/design/architecture.md) | 整体架构、目录结构、命名规则、隔离保证、模块结构 | **入口文档**, 了解全局 |
 | 2 | [元数据格式](docs/design/meta-format.md) | DataSetMeta TLV 格式、字段定义、序列化/反序列化、向前兼容 | 新增 meta 字段时 |
-| 3 | [数据模型](docs/design/data-model.md) | Record(`u32 data_len`)/Block/IndexEntry 结构、DataFileMetadata(116B)/IndexFileMetadata(52B) 布局、类型定义 | 理解存储格式 |
+| 3 | [数据模型](docs/design/data-model.md) | Record(`u32 data_len`)/Block/IndexEntry 结构、可变长度 FileMetadata 布局、类型定义 | 理解存储格式 |
 | 4 | [数据段管理](docs/design/data-segment.md) | DataSegmentSet 路由、DataSegment Block 生命周期、Pending 恢复 | 数据写入/读取相关 |
 | 5 | [时间索引](docs/design/time-index.md) | TimeIndex 生命周期、IndexSegment 二分查找、18 字节序列化 | 索引查询优化 |
 | 6 | [数据集操作](docs/design/dataset-operations.md) | DataSet create/open/close 生命周期、写入/读取/流程详解 | 数据集 API 行为 |
@@ -23,7 +23,7 @@
 | 10 | [压缩策略](docs/design/compression.md) | Block 级延迟压缩、miniz_oxide deflate、flags 设计 | 压缩相关优化 |
 | 11 | [设计决策](docs/design/design-decisions.md) | 关键决策对比表、与 TimeStore(Java) 的差异 | 架构评审/迁移 |
 | 12 | [索引连续存储](docs/design/index-continuous.md) | 稀疏 filler 分段、逻辑空洞、base timestamp、O(1) 直接计算优化 | 连续模式需求 |
-| 13 | [懒分配与扩容](docs/design/lazy-allocation.md) | 初始分配、2 倍扩容、header 不变设计、磁盘节省分析 | 空间优化需求 |
+| 13 | [懒分配与扩容](docs/design/lazy-allocation.md) | 初始分配、2 倍扩容、header 元数据不随扩容变更、磁盘节省分析 | 空间优化需求 |
 | 14 | [构建配置](docs/design/cargo-and-config.md) | Cargo.toml 依赖、构建/测试/基准命令 | 项目构建 |
 | 15 | [查询迭代器](docs/design/query-iterator.md) | Virtual Iterator 惰性查询、HotBlockCache 读取循环级缓存、FFI 迭代器重构 | 查询性能优化 |
 

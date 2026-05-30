@@ -269,8 +269,8 @@ impl DataSegmentSet {
                 Err(e) => return Err(e),
             };
 
-        let seg_wrote_pos = self.segments.last().unwrap().wrote_position;
-        let seg_size = seg_wrote_pos + crate::header::DATA_HEADER_SIZE;
+        let last = self.segments.last().unwrap();
+        let seg_size = last.wrote_position + last.header_size;
         if seg_size >= self.segment_size {
             self.next_offset += self.segment_size;
         }
@@ -292,7 +292,7 @@ impl DataSegmentSet {
     /// or if the segment-level overwrite checks fail.
     pub fn overwrite_in_last_block(
         &mut self,
-        block_offset: u64, // absolute offset (relative to DATA_HEADER_SIZE across segments)
+        block_offset: u64, // logical data-stream offset across segments
         in_block_offset: u16,
         _timestamp: i64,
         new_data: &[u8],
@@ -301,8 +301,8 @@ impl DataSegmentSet {
             TmslError::InvalidData("no segment available for correction write".into())
         })?;
 
-        // The block_offset is relative to DATA_HEADER_SIZE within the whole data segment series.
-        // Each segment starts at seg.file_offset (also relative to DATA_HEADER_SIZE).
+        // The block_offset is relative to each segment's data area start.
+        // Each segment starts at seg.file_offset in the logical data stream.
         let seg_start = seg.file_offset;
         let seg_end_data = seg_start + seg.wrote_position;
         if block_offset < seg_start || block_offset >= seg_end_data {
@@ -319,7 +319,7 @@ impl DataSegmentSet {
     /// Increment invalid_record_count on the data segment that contains the given offset.
     ///
     /// Routes by `absolute_offset` (same coordinate as index entries' block_offset,
-    /// relative to DATA_HEADER_SIZE across the data stream). Opens the segment lazily
+    /// relative to data area starts across the data stream). Opens the segment lazily
     /// if it is currently closed, then closes it again after the increment.
     pub fn increment_invalid_record_count(&mut self, absolute_offset: u64) -> Result<()> {
         // Check open segments
@@ -451,7 +451,7 @@ impl DataSegmentSet {
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 
-use crate::header::DATA_HEADER_SIZE;
+use crate::header::FIXED_PREFIX_SIZE;
 
 /// Read min_timestamp and max_timestamp from a data segment file header.
 /// Opens the file, maps it briefly, reads the header, and unmaps.
@@ -464,7 +464,7 @@ fn read_segment_timestamps_inner(path: &Path) -> Result<(i64, i64)> {
     use std::fs::OpenOptions;
     let file = OpenOptions::new().read(true).open(path)?;
     let file_len = file.metadata()?.len();
-    if file_len < DATA_HEADER_SIZE {
+    if file_len < FIXED_PREFIX_SIZE as u64 {
         return Ok((TIMESTAMP_MIN_SENTINEL, TIMESTAMP_MAX_SENTINEL));
     }
     // Use read-only mmap to avoid write-lock on Windows

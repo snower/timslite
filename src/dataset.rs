@@ -452,7 +452,7 @@ impl DataSet {
                 if seg.wrote_count > 0 {
                     // Read the last entry's timestamp
                     let mmap = seg.mmap.as_ref().unwrap();
-                    let pos = crate::header::INDEX_HEADER_SIZE as usize
+                    let pos = seg.header_size as usize
                         + (seg.wrote_count - 1) * crate::index::INDEX_ENTRY_SIZE;
                     let mmap_bytes = mmap.as_ref();
                     let ts = i64::from_le_bytes(mmap_bytes[pos..pos + 8].try_into().unwrap());
@@ -465,7 +465,7 @@ impl DataSet {
         for seg in &time_index.index_segments {
             if seg.wrote_count > 0 {
                 if let Some(mmap) = seg.mmap.as_ref() {
-                    let pos = crate::header::INDEX_HEADER_SIZE as usize
+                    let pos = seg.header_size as usize
                         + (seg.wrote_count - 1) * crate::index::INDEX_ENTRY_SIZE;
                     let mmap_bytes = mmap.as_ref();
                     let ts = i64::from_le_bytes(mmap_bytes[pos..pos + 8].try_into().unwrap());

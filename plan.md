@@ -33,6 +33,7 @@
 | 22 | Manual Background Execution Python Wrapper | ✅ 完成 | (本节) |
 | 23 | Record 长度编码升级为 u32 | ✅ 完成 | [phase-23-record-length-u32.md](docs/plan/phase-23-record-length-u32.md) |
 | 24 | 连续索引稀疏 filler 分段 | ✅ 完成 | [phase-24-sparse-continuous-index.md](docs/plan/phase-24-sparse-continuous-index.md) |
+| 25 | Header 可变长度 | ✅ 完成 | P0-3 修复 |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -117,8 +118,8 @@
 - [x] `cargo test -- --test-threads=1` 全部通过 (110 tests: 93 unit + 19 integration)
 
 ### Phase 15: Header State 分化 ✅ 已完成
-- [x] `header.rs`: `FileMetadata` → `DataFileMetadata` (9 state, 116B) + `IndexFileMetadata` (1 state, 52B)
-- [x] `DATA_HEADER_SIZE = 116`, `INDEX_HEADER_SIZE = 52` 替代 `HEADER_SIZE = 100`
+- [x] `header.rs`: `FileMetadata` → `DataFileMetadata` (9 state, v1 默认 116B) + `IndexFileMetadata` (1 state, v1 默认 52B)
+- [x] `DATA_HEADER_SIZE = 116`, `INDEX_HEADER_SIZE = 52` 替代 `HEADER_SIZE = 100` (当前 Phase 25 后语义为 v1 默认 header 长度)
 - [x] `DataSegment`: 新增 `min_timestamp`/`max_timestamp`, 每次写入更新 + state 持久化
 - [x] `IndexSegment`: state 仅写入 `wrote_position`, 删除冗余字段
 - [x] `DataSegmentSet`: header 引用更新, closed segment meta 存储 min/max_timestamp 用于查询过滤
@@ -155,7 +156,7 @@
 
 ### Phase 18: 乱序写入与删除 (Out-of-Order Write & Delete) ✅ 已完成
 - [x] `header.rs`: Data Segment State 第 9 个字段 `reserved` → `invalid_record_count` (常量 `DS_INVALID_RECORD_COUNT`、结构体字段、默认值、`write_to`、`read_from` — 6 处)
-- [x] `segment/data.rs`: `DataSegment` 新增 `invalid_record_count: u64` 字段 + `increment_invalid_record_count()` 方法 + mmap 持久化 (offset 108..116); `create`/`open`/`ensure_open` 正确初始化和读取该字段
+- [x] `segment/data.rs`: `DataSegment` 新增 `invalid_record_count: u64` 字段 + `increment_invalid_record_count()` 方法 + mmap 持久化 (Phase 25 后基于动态 state 偏移); `create`/`open`/`ensure_open` 正确初始化和读取该字段
 - [x] `segment/mod.rs`: 新增 `DataSegmentSet::increment_invalid_record_count(absolute_offset)` — 路由到 open segment 或 lazy_open closed segment 后递增并 idle_close 回写
 - [x] `index/mod.rs`: 新增 `TimeIndex::update_entry(timestamp, new_block_offset, new_in_block_offset) -> Result<IndexEntry>` + `TimeIndex::find_and_delete_entry(timestamp) -> Result<IndexEntry>` — 三级搜索 + 原地覆盖; 新增 sentinel 常量导入 (`BLOCK_OFFSET_FILLER`, `IN_BLOCK_OFFSET_FILLER`)
 - [x] `dataset.rs`: 新增 `out_of_order_write(timestamp, data)` 方法 (append + update_entry + 条件递增 invalid_record_count); 重写 `write()` dispatch (correction → out-of-order → normal, 两种索引模式统一); 新增 `delete(timestamp)` 方法; 移除已废弃的 `replace_filler_with_real`
@@ -304,6 +305,25 @@
 - [x] `cargo clippy --all-targets -- -D warnings` clean。
 - [x] `cargo test -- --test-threads=1` 全部通过 (147 unit + 28 integration, 2 doctests ignored)。
 
+### Phase 25: Header 可变长度 ✅ 已完成
+
+> 目标: 修复设计审查 P0-3。文件头保留 v1 默认 `DATA_HEADER_SIZE=116` / `INDEX_HEADER_SIZE=52`, 但打开和读写 segment 时按 `meta_length/state_length` 计算运行时 `header_size`, 消除 TLV/state 扩展与固定数据区起点之间的矛盾。
+
+**设计文档**:
+- [x] `docs/design/data-model.md`: 定义 `header_len = 9 + meta_length + 2 + state_length`, 明确数据/索引区从运行时 `header_len` 开始。
+- [x] `docs/design/data-segment.md`, `docs/design/time-index.md`, `docs/design/index-continuous.md`, `docs/design/lazy-allocation.md`, `docs/design/memory-and-concurrency.md`, `docs/design/dataset-operations.md`: 将固定起点/容量公式调整为运行时 `header_len`。
+
+**实现**:
+- [x] `src/header.rs`: `DataFileMetadata` / `IndexFileMetadata` 读取动态 state 起点和 `header_size`, state 更新 helper 不再硬编码 42/44 偏移。
+- [x] `src/segment/data.rs`: `DataSegment` 运行时保存 `header_size`, Block 物理位置和 header state 更新均基于动态 header。
+- [x] `src/index/segment.rs`, `src/index/mod.rs`, `src/dataset.rs`: `IndexSegment` 与 TimeIndex 已有分段扫描、查询、恢复均基于动态 index header。
+
+**测试与验收**:
+- [x] 增加扩展 meta 后的 header 解析测试、DataSegment/IndexSegment 扩展 header reopen 读取测试。
+- [x] `cargo fmt -- --check` clean。
+- [x] `cargo clippy --all-targets -- -D warnings` clean。
+- [x] `cargo test -- --test-threads=1` 全部通过 (151 unit + 28 integration, 2 doctests ignored)。
+
 ## 文档结构
 
 详细计划内容已拆分到 `docs/plan/` 目录, 每个 Phase 独立文档:
@@ -333,7 +353,8 @@ docs/plan/
 ├── phase-18-out-of-order-write-and-delete.md ← Phase 18: 乱序写入与删除
 ├── phase-21-manual-bg-execution.md ← Phase 21: 后台任务手动执行
 ├── phase-23-record-length-u32.md   ← Phase 23: Record 长度编码升级为 u32
-└── phase-24-sparse-continuous-index.md ← Phase 24: 连续索引稀疏 filler 分段
+├── phase-24-sparse-continuous-index.md ← Phase 24: 连续索引稀疏 filler 分段
+└── Phase 25: Header 可变长度 (P0-3 修复, 记录在 plan.md)
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

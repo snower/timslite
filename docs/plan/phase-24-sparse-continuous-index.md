@@ -20,7 +20,7 @@
 坐标规则:
 
 ```text
-segment_capacity = floor((index_segment_size - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE)
+segment_capacity = floor((index_segment_size - index_header_len) / INDEX_ENTRY_SIZE)
 time_step        = 1
 base_timestamp   = first real write timestamp
 segment_ordinal  = floor((ts - base_timestamp) / segment_capacity)
