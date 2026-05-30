@@ -32,6 +32,7 @@
 | 21 | 后台任务手动执行 (Manual Background Execution) | ✅ 完成 | (本节) |
 | 22 | Manual Background Execution Python Wrapper | ✅ 完成 | (本节) |
 | 23 | Record 长度编码升级为 u32 | ✅ 完成 | [phase-23-record-length-u32.md](docs/plan/phase-23-record-length-u32.md) |
+| 24 | 连续索引稀疏 filler 分段 | ⏳ 设计完成, 待实现 | [phase-24-sparse-continuous-index.md](docs/plan/phase-24-sparse-continuous-index.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ## 待完成事项
@@ -280,6 +281,29 @@
 - [x] `cargo clippy --all-targets -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` 全部通过 (143 unit + 28 integration)
 
+### Phase 24: 连续索引稀疏 filler 分段 ⏳ 设计完成, 待实现
+
+> 目标: 修复设计审查 P0-2。连续模式按 `base_timestamp + time_step=1 + segment_capacity` 计算逻辑分段; 正序大 gap 只物化上一个写入所在分段尾部和当前写入所在分段前缀, 中间完整分段保持逻辑空洞。
+
+**设计文档**:
+- [x] `docs/design/index-continuous.md`: 重写为稀疏连续索引设计。
+- [x] `docs/design/time-index.md`: 补充 `base_timestamp`、`time_step`、逻辑空洞和稀疏分段 API。
+- [x] `docs/design/dataset-operations.md`: 更新正序写、乱序回填、读取、删除的逻辑空洞语义。
+- [x] `docs/design/query-iterator.md`: 明确逻辑空洞不生成查询 source。
+- [x] `design.md` / `docs/design/architecture.md`: 更新索引说明。
+
+**实现**:
+- [ ] `TimeIndex` 持久化并加载 `base_timestamp`。
+- [ ] 替换当前全量 filler 循环, 跨分段时只填充边界分段。
+- [ ] 回填逻辑空洞时按需创建目标分段并物化必要前缀。
+- [ ] 读取、删除、查询路径将缺失 segment / `entry_index >= wrote_count` 视为无真实数据。
+
+**测试与验收**:
+- [ ] 补充 first write、大 gap、逻辑空洞回填、reopen、retention 回归测试。
+- [ ] `cargo fmt -- --check` clean。
+- [ ] `cargo clippy --all-targets -- -D warnings` clean。
+- [ ] `cargo test -- --test-threads=1` 全部通过。
+
 ## 文档结构
 
 详细计划内容已拆分到 `docs/plan/` 目录, 每个 Phase 独立文档:
@@ -308,7 +332,8 @@ docs/plan/
 ├── phase-17-correction-write.md   ← Phase 17: 纠正写入 (Correction Write)
 ├── phase-18-out-of-order-write-and-delete.md ← Phase 18: 乱序写入与删除
 ├── phase-21-manual-bg-execution.md ← Phase 21: 后台任务手动执行
-└── phase-23-record-length-u32.md   ← Phase 23: Record 长度编码升级为 u32
+├── phase-23-record-length-u32.md   ← Phase 23: Record 长度编码升级为 u32
+└── phase-24-sparse-continuous-index.md ← Phase 24: 连续索引稀疏 filler 分段
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

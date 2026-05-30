@@ -2,6 +2,8 @@
 
 **目标**: 索引条目按连续序号增长, 缺失时间戳填充哨兵值条目, 逆序写入统一拒绝
 
+> 历史说明: 本 Phase 记录最初的连续存储实现。设计审查 P0-2 已在 [Phase 24](phase-24-sparse-continuous-index.md) 中重设计大 gap 行为: 连续模式改为稀疏 filler + 逻辑空洞, 不再按真实 timestamp 跨度全量物化 filler。以下涉及全量 filler 的内容仅代表旧实现背景。
+
 ---
 
 ## 10.1 meta.rs 扩展 — 新增 TLV type 0x05

@@ -14,13 +14,15 @@ struct TimeIndex {
     in_memory_buffer: Vec<IndexEntry>,
     in_memory_flush_threshold: usize,               // 默认 1024
     index_continuous: bool,                         // 连续存储模式
+    base_timestamp: Option<i64>,                    // 连续模式第一条真实写入 timestamp
+    time_step: i64,                                 // 连续模式固定为 1 个 timestamp 单位
 }
 
 struct IndexSegmentMeta {
     path: PathBuf,
-    start_timestamp: i64,
+    start_timestamp: i64,   // 连续模式下为逻辑分段起点
     entries_capacity: usize,
-    wrote_count: usize,     // 从 (wrote_position - INDEX_HEADER_SIZE) / 18 计算
+    wrote_count: usize,     // 已物化 entry 数; 后续位置可为逻辑空洞
 }
 ```
 
@@ -42,6 +44,23 @@ impl TimeIndex {
 
     /// 从磁盘加载已有 index segments
     pub fn load_existing(base_dir: &Path, segment_size: u64) -> io::Result<Self>;
+
+    /// 连续模式: 读取或初始化 base_timestamp
+    fn set_or_load_base_timestamp(&mut self, first_ts: i64) -> Result<i64>;
+
+    /// 连续模式: 由 base_timestamp + segment capacity 计算逻辑分段起点
+    fn segment_start_for(&self, timestamp: i64) -> Result<i64>;
+
+    /// 连续模式正序写: 只物化上段尾部与当前段前缀, 中间完整分段保持逻辑空洞
+    fn append_sparse_continuous_entry(
+        &mut self,
+        prev_latest: i64,
+        timestamp: i64,
+        entry: IndexEntry,
+    ) -> Result<()>;
+
+    /// 连续模式回填: 目标可能是真实 entry、filler 或逻辑空洞
+    fn upsert_sparse_continuous_entry(&mut self, timestamp: i64, entry: IndexEntry) -> Result<Option<IndexEntry>>;
 }
 ```
 
@@ -74,9 +93,9 @@ impl IndexEntry {
 ```rust
 struct IndexSegment {
     path: PathBuf,
-    start_timestamp: i64,
+    start_timestamp: i64,       // 连续模式下为逻辑分段起点
     entries_capacity: usize,
-    wrote_count: usize,          // 从 (wrote_position - INDEX_HEADER_SIZE) / 18 计算
+    wrote_count: usize,          // 已物化 entry 数; wrote_count 之后为逻辑空洞
     mmap: Option<MmapMut>,       // None = closed/unmapped
     sealed: bool,
     last_accessed_at: Instant,
@@ -95,6 +114,9 @@ impl IndexSegment {
     fn find_exact_cs(&self, target_ts: i64, index_continuous: bool) -> Option<IndexEntry>;
     fn find_entry_index_cs(&self, target_ts: i64, index_continuous: bool) -> Option<usize>;
     fn direct_lookup(&self, target_ts: i64) -> Option<IndexEntry>;
+
+    /// 连续模式: 物化到 target_ts 之前的位置, 缺失项写入 filler
+    fn materialize_until(&mut self, target_ts: i64) -> Result<()>;
 
     /// 读取段内最后一条索引条目的 timestamp (用于回收判断, 无需完全 open)
     fn last_entry_timestamp(path: &Path, max_file_size: u64) -> Result<i64>;
@@ -147,7 +169,29 @@ impl IndexSegment {
 
 其中 `k` = 查询范围内条目数, `n` = 段内总条目数。
 
-### 7.7 索引保留回收
+### 7.7 连续模式稀疏分段
+
+连续模式仍保持 O(1) 定位, 但不再要求所有缺失 timestamp 都落盘为 filler。它使用固定逻辑网格:
+
+```text
+segment_capacity = floor((index_segment_size - INDEX_HEADER_SIZE) / 18)
+time_step        = 1
+base_timestamp   = first real write timestamp
+segment_ordinal  = floor((ts - base_timestamp) / segment_capacity)
+segment_start    = base_timestamp + segment_ordinal * segment_capacity
+entry_index      = ts - segment_start
+```
+
+**关键约束**:
+- 第一次真实写入只初始化 `base_timestamp` 并写入真实 entry, 不从 0、Unix epoch 或其它固定起点补 filler。
+- `base_timestamp` 必须持久化为 index 级元数据 (例如 `index/base` 小文件), reopen 与 retention 后必须保持同一分段网格。
+- 跨大 gap 正序写入时, 只物化上一个真实写入所在分段的尾部和当前写入所在分段的前缀; 中间完整分段不创建、不写 filler。
+- 已创建分段内 `entry_index >= wrote_count` 的位置视为逻辑空洞, `read/query/delete` 行为等价于不存在真实数据。
+- 后续回填落在逻辑空洞时, 按需创建目标分段, 只物化该分段起点到目标 timestamp 前一位的 filler, 再写入真实 entry。
+
+因此一次正序写入的最坏 filler 访问量小于两个索引分段容量之和减 2, 不随真实 timestamp 跨度增长。
+
+### 7.8 索引保留回收
 
 **职责**: 删除超过数据有效期的索引段文件, 与数据段回收配对进行。
 

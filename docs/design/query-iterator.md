@@ -144,7 +144,7 @@ QueryIterator::next() → Option<Result<(i64, Vec<u8>)>>
     │      ├─ 从当前 source 取 entry (按时间顺序)
     │      ├─ 当前 source 耗尽 → 切换到下一个 source
     │      └─ 所有 source 耗尽 → return None
-    │      跳过 filler entries (block_offset == 0xFFFFFFFFFFFFFFFF)
+    │      跳过 filler entries; 连续模式逻辑空洞不生成 source
     │
     ├─ 2. 检查 Hot Block Cache
     │      ├─ Hit (同 segment + 同 block_offset)
@@ -421,7 +421,7 @@ struct FfiQueryIterator {
 | 场景 | 处理策略 |
 |------|---------|
 | 查询范围为空 (start_ts > end_ts) | `QueryIterator` 立即返回 None |
-| 范围内全是 filler entries | 跳过所有 filler, 返回 None |
+| 范围内全是 filler entries 或逻辑空洞 | 跳过所有 filler, 未创建的空洞分段不生成 source, 返回 None |
 | 查询中途 DataSet 被修改 | 借用检查阻止 (编译错误) |
 | HotBlockCache 溢出 (single record > 64KB) | 正常处理, hot_block 持有超大 buffer |
 | 多线程并发查询同一 DataSet | DataSet 有 Mutex 保护, 串行执行 |

@@ -22,7 +22,7 @@
 | 9 | [内存与并发](docs/design/memory-and-concurrency.md) | mmap 生命周期、并发控制、Crash 安全、Pending 恢复 | 稳定性保障 |
 | 10 | [压缩策略](docs/design/compression.md) | Block 级延迟压缩、miniz_oxide deflate、flags 设计 | 压缩相关优化 |
 | 11 | [设计决策](docs/design/design-decisions.md) | 关键决策对比表、与 TimeStore(Java) 的差异 | 架构评审/迁移 |
-| 12 | [索引连续存储](docs/design/index-continuous.md) | filler 哨兵机制、补数据覆盖写、O(1) 直接计算优化 | 连续模式需求 |
+| 12 | [索引连续存储](docs/design/index-continuous.md) | 稀疏 filler 分段、逻辑空洞、base timestamp、O(1) 直接计算优化 | 连续模式需求 |
 | 13 | [懒分配与扩容](docs/design/lazy-allocation.md) | 初始分配、2 倍扩容、header 不变设计、磁盘节省分析 | 空间优化需求 |
 | 14 | [构建配置](docs/design/cargo-and-config.md) | Cargo.toml 依赖、构建/测试/基准命令 | 项目构建 |
 | 15 | [查询迭代器](docs/design/query-iterator.md) | Virtual Iterator 惰性查询、HotBlockCache 读取循环级缓存、FFI 迭代器重构 | 查询性能优化 |
@@ -34,15 +34,15 @@
 ### 按功能查找
 - **写入数据**: [数据段管理](docs/design/data-segment.md) → [数据集操作·写入流程](docs/design/dataset-operations.md#九写入流程详解) → [压缩策略](docs/design/compression.md)
 - **Record 编码**: [数据模型·Block Payload 内部结构](docs/design/data-model.md#block-payload-内部结构-record-编码)
-- **纠正写入**: [数据集操作·§9.1 时间戳验证与写入分支](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.2](docs/design/index-continuous.md#232-写入行为)
-- **乱序写入**: [数据集操作·§9.1 乱序写入机制](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.2 情况B](docs/design/index-continuous.md#232-写入行为)
-- **删除记录**: [数据集操作·§9.3 删除操作](docs/design/dataset-operations.md#93-删除操作-datasetdelete) → [索引连续存储·§23.4 哨兵值设计](docs/design/index-continuous.md#234-哨兵值设计)
+- **纠正写入**: [数据集操作·§9.1 时间戳验证与写入分支](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.4](docs/design/index-continuous.md#234-写入行为)
+- **乱序写入**: [数据集操作·§9.1 乱序写入机制](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.4 情况B](docs/design/index-continuous.md#234-写入行为)
+- **删除记录**: [数据集操作·§9.3 删除操作](docs/design/dataset-operations.md#93-删除操作-datasetdelete) → [索引连续存储·§23.5 哨兵值设计](docs/design/index-continuous.md#235-哨兵值设计)
 - **读取数据**: [时间索引](docs/design/time-index.md) → [数据集操作·读取流程](docs/design/dataset-operations.md#十读取流程详解) → [查询迭代器](docs/design/query-iterator.md) → [后台任务与缓存](docs/design/background-and-cache.md)
 - **数据保留回收**: [元数据格式·retention_ms](docs/design/meta-format.md) → [数据集操作·§11](docs/design/dataset-operations.md#十一数据保留-retention-与回收) → [后台任务·§17.8](docs/design/background-and-cache.md#178-retention-reclaim-数据保留回收)
 - **FFI 集成**: [Store 与 FFI](docs/design/store-and-ffi.md)
 - **崩溃安全**: [内存与并发](docs/design/memory-and-concurrency.md#崩溃安全)
 - **磁盘优化**: [懒分配与扩容](docs/design/lazy-allocation.md)
-- **连续时间索引**: [索引连续存储](docs/design/index-continuous.md)
+- **连续时间索引**: [索引连续存储](docs/design/index-continuous.md) (稀疏 filler + 逻辑空洞)
 
 ### 按模块查找
 | 模块 | 对应文档 |

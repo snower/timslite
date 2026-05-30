@@ -15,7 +15,7 @@ struct DataSet {
     segments: DataSegmentSet,
     time_index: TimeIndex,
     last_used_at: Instant,
-    latest_written_timestamp: i64,  // 用于连续模式判断正序/补数据, 同时作为回收基准
+    latest_written_timestamp: i64,  // 最近一次成功真实写入的最高 timestamp, 同时作为回收基准
 }
 
 impl DataSet {
@@ -131,10 +131,10 @@ DataSet::write(timestamp, data):
     │    │
     │    ├─ 1. 新数据 append 到最新数据段 → (seg_offset, new_block_offset, new_in_block_offset)
     │    │
-    │    ├─ 2. time_index.update_entry(timestamp, new_block_offset, new_in_block_offset)
-    │    │      → 返回 old_entry (旧索引条目, 用于判断是否需要 invalid_record_count++)
+    │    ├─ 2. time_index.update_entry / upsert_sparse_continuous_entry
+    │    │      → 返回 old_entry: Option<IndexEntry> (用于判断是否需要 invalid_record_count++)
     │    │
-    │    ├─ 3. 根据 old_entry 状态:
+    │    ├─ 3. 根据索引更新结果:
     │    │      ├─ 条目存在且引用数据 (block_offset ≠ FILLER):
     │    │      │    ├─ 原地覆盖索引条目 (block_offset + in_block_offset)
     │    │      │    ├─ 定位旧数据所在数据段 (block_offset → segment)
@@ -143,7 +143,10 @@ DataSet::write(timestamp, data):
     │    │      ├─ 条目存在且为 filler (仅连续模式):
     │    │      │    └─ 原地覆盖为真实条目 (invalid_record_count 不变)
     │    │      │
-    │    │      └─ 条目不存在:
+    │    │      ├─ 连续模式逻辑空洞:
+    │    │      │    └─ 按需创建/扩展目标 index segment, 物化前缀 filler 后写入真实条目
+    │    │      │
+    │    │      └─ 非连续模式条目不存在:
     │    │           └─ Error("out-of-order write requires existing index entry")
     │    │
     │    └─ 成功 → return Ok(())
@@ -152,14 +155,22 @@ DataSet::write(timestamp, data):
     ├─ timestamp > latest (正序写入):
     │    │
     │    ├─ 非连续模式: 正常写入 + 追加索引
-    │    └─ 连续模式: 填充 filler + 正常写入
+    │    └─ 连续模式: 稀疏 filler 写入 + 正常写入
     │
     └─ latest_written_timestamp = timestamp (仅正序写入时更新)
 ```
 
 **纠正写入**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
 
-**乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时查找索引中该时间戳的现有条目并原地更新为新的数据位置。**两种模式均要求索引中存在该时间戳的条目** (连续模式总是存在 filler 条目, 非连续模式仅在曾写入过该时间戳时存在)。若索引中无条目则返回错误。
+**乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
+
+**连续模式稀疏 filler 规则**:
+
+1. 第一次真实写入: `TimeIndex` 初始化并持久化 `base_timestamp = timestamp`, 不补任何 filler。
+2. 同一 index segment 内正序写入: 从上一个存在的写入 timestamp + 1 物化 filler 到当前 timestamp - 1。
+3. 跨 index segment 正序写入: 只物化上一个写入所在分段未写满的尾部, 以及当前写入所在分段前面无数据的前缀; 中间完整分段不创建。
+4. 回填逻辑空洞: 只创建目标 timestamp 所属分段, 并物化该分段内必要前缀。
+5. `time_step` 固定为 1 个 timestamp 单位; 调用方通常以秒为单位写入时, filler 即按秒递增。
 
 **原地覆盖策略 (In-Place Overwrite, 支持变长)**:
 
@@ -213,21 +224,24 @@ DataSet::write(timestamp, data):
 当 `timestamp < latest_written_timestamp` 时, 数据不会写入到其时间戳对应的位置, 而是**追加到最新数据段**的最新位置, 同时原地更新索引中的现有条目:
 
 ```
-// DataSegmentSet::append_record + TimeIndex::update_entry:
+// DataSegmentSet::append_record + TimeIndex::update_entry / upsert_sparse_continuous_entry:
 //   1. 新数据追加到最新数据段 (正常写入到 pending block 或创建新 block)
 //      → (seg_offset, new_block_offset, new_in_block_offset)
-//   2. time_index.update_entry(timestamp, new_block_offset, new_in_block_offset)
-//      → 查找现有索引条目, 原地覆盖 18 字节为新的 (block_offset, in_block_offset)
-//      → 返回 old_entry (旧索引条目)
-//   3. if old_entry.block_offset ≠ FILLER (旧索引引用了实际数据):
+//   2. 更新索引:
+//      → 非连续模式: 查找现有索引条目, 原地覆盖 18 字节为新的 (block_offset, in_block_offset)
+//      → 连续模式: 目标可为真实 entry / filler / 逻辑空洞; 逻辑空洞按需创建 segment
+//      → 返回 old_entry: Option<IndexEntry>
+//   3. if old_entry 存在且 block_offset ≠ FILLER (旧索引引用了实际数据):
 //        old_segment = segments.locate_segment(old_entry.block_offset)
 //        old_segment.invalid_record_count += 1
-//      else (旧索引为 filler, 仅连续模式):
+//      else if old_entry 存在且为 filler (仅连续模式):
 //        // 无实际数据被替代, invalid_record_count 不变
+//      else (连续模式逻辑空洞):
+//        // 无旧索引和旧数据, invalid_record_count 不变
 ```
 
 > **索引原地更新**: 索引条目 18 字节通过 mmap 直接覆盖, 不改变条目总数。
-> - **连续模式**: O(1) 定位 — `pos = INDEX_HEADER_SIZE + (ts - seg_start_ts) × INDEX_ENTRY_SIZE`
+> - **连续模式**: 先用 `base_timestamp` 计算逻辑 `seg_start_ts` 和 `entry_index`; 如果 segment 不存在或 `entry_index >= wrote_count`, 该位置是逻辑空洞
 > - **非连续模式**: 在 in_memory_buffer 中线性搜索, 或在已打开的 IndexSegment 中二分查找; 若目标在 closed segment 中, 临时打开 → 覆盖 → idle_close
 > - **崩溃安全**: 18 字节非原子写入, 与现有 mmap 写入的崩溃容忍度一致 (最坏损失 = flush 间隔内未 sync 的写入)
 >
@@ -272,7 +286,7 @@ DataSet::delete(timestamp):
     │    │    ├─ segment.invalid_record_count += 1
     │    │    └─ 更新段 file header state
     │    │
-    │    └─ 条目不存在 / 条目为 filler:
+    │    └─ 条目不存在 / 条目为 filler / 连续模式逻辑空洞:
     │         └─ Error("not found") — 无可删除的记录
     │
     └─ return Ok(())
@@ -327,7 +341,8 @@ DataSet::delete(timestamp):
     └─ 调用 next() 时:
            ├─ 2. 从当前 source 获取下一个 IndexEntry
            │      ├─ 当前 source 耗尽 → 切换到下一个 source
-           │      └─ 跳过 filler entries (block_offset == 0xFFFFFFFFFFFFFFFF)
+           │      ├─ 跳过 filler entries (block_offset == 0xFFFFFFFFFFFFFFFF)
+           │      └─ 连续模式未创建的逻辑空洞 segment 不产生 source
            │
            ├─ 3. 检查 HotBlockCache (无锁, 查询级局部缓存)
            │      ├─ Hit (同 segment + 同 block_offset)
@@ -370,11 +385,11 @@ read(timestamp) → Option<(i64, Vec<u8>)>
     │
     ├─ 2. TimeIndex.find_entry(effective_ts)
     │      → 三级搜索: in_memory_buffer → open segments → closed segments
-    │      → 返回 None: 时间戳不存在, 直接返回 Ok(None)
+    │      → 返回 None: 时间戳不存在或连续模式逻辑空洞, 直接返回 Ok(None)
     │
     ├─ 3. 检查 entry.block_offset
     │      └─ == BLOCK_OFFSET_FILLER (0xFFFFFFFFFFFFFFFF)
-    │         → 已删除或未写入 (连续模式 filler), 返回 Ok(None)
+    │         → 已删除或未写入 (连续模式已物化 filler), 返回 Ok(None)
     │
     └─ 4. segments.read_at_index(entry, cache)
            → 定位数据段, 读 Block + 解压 (如需), 定位 record, 返回 (ts, data)
@@ -402,7 +417,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 - 用于:
   - `read(-1)` 快捷路径解析最新记录
   - 数据保留阈值计算 (`latest - retention_ms`)
-  - 连续模式 filler 填充的起始时间戳判定
+  - 连续模式稀疏 filler 的上一个真实写入边界判定
 
 ## 十一、数据保留 (Retention) 与回收
 

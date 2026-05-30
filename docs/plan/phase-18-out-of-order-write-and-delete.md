@@ -34,7 +34,7 @@
 2. time_index.update_entry(ts, new_block_offset, new_in_block_offset)
    → 三级搜索: in_memory_buffer → open segments → closed segments
    → 若条目存在: 原地覆盖 18 字节, 返回 old_entry
-   → 若条目不存在: Error("out-of-order write requires existing index entry")
+   → 若条目不存在: 非连续模式返回 Error; 连续模式在 Phase 24 后可视为逻辑空洞并按需创建目标 segment
 
 3. 根据 old_entry 状态:
    - old_entry.block_offset ≠ FILLER (引用真实数据):
@@ -45,7 +45,7 @@
 ```
 
 **约束**:
-- **要求索引中存在该时间戳条目**: 连续模式总是存在 (filler 或真实数据), 非连续模式仅在曾写入过该时间戳时存在
+- **索引存在性要求**: 非连续模式要求该时间戳已有条目; 连续模式在 Phase 24 前通常已有 filler 或真实数据, Phase 24 后还可能是未创建分段代表的逻辑空洞
 - `latest_written_timestamp` 不因乱序写入而改变
 - 新数据始终追加到最新数据段, 永不写入旧段 (避免破坏段内排序)
 

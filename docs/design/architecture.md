@@ -108,6 +108,6 @@ src/
 - [内存与并发](memory-and-concurrency.md) — 内存管理 + 并发控制
 - [压缩策略](compression.md) — Block 级延迟压缩
 - [设计决策](design-decisions.md) — 关键决策 + 与 TimeStore 差异
-- [索引连续存储](index-continuous.md) — 连续模式 + Filler 机制
+- [索引连续存储](index-continuous.md) — 连续模式稀疏 filler + 逻辑空洞
 - [懒分配与扩容](lazy-allocation.md) — 分段文件懒分配 + 倍率扩容
 - [构建配置](cargo-and-config.md) — Cargo.toml 依赖
