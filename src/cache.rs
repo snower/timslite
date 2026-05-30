@@ -136,7 +136,7 @@ impl BlockCache {
             .iter()
             .map(|(k, v)| (k.clone(), v.last_access_at, v.footprint))
             .collect();
-        sorted.sort_by(|a, b| a.1.cmp(&b.1));
+        sorted.sort_by_key(|a| a.1);
         let mut freed = 0usize;
         for (k, _ts, _fp) in sorted.iter() {
             if freed >= need {
