@@ -325,7 +325,7 @@ next_background_delay():
 
 ## 十八、读缓存池 (BlockCache)
 
-> **核心原则**: 只缓存**解压后的 seal block payload**。写入不进入缓存, 只有读取时解压后的数据才加入。
+> **核心原则**: 全局 `BlockCache` 只缓存**已压缩 block 解压后的 payload**。compressed block 一旦写入就视为不可变; pending raw block 与 sealed raw block 均不得进入全局缓存。
 
 ### 18.1 设计目标
 
@@ -366,11 +366,14 @@ impl BlockCache {
     pub fn new(max_memory: usize) -> Self;
     pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>>;
     pub fn put(&self, key: CacheKey, data: Vec<u8>);
+    pub fn invalidate(&self, key: &CacheKey) -> bool;
     pub fn evict_idle(&self, idle_timeout: Duration) -> usize;
     pub fn clear(&self);
     pub fn stats(&self) -> CacheStats;
 }
 ```
+
+`invalidate` 用于纠正写入、删除、乱序覆盖索引等会改变 record 可见位置的路径。即使目标 block 当前不在缓存中也必须允许调用, 返回值仅表示是否实际删除了缓存项。
 
 ### 18.4 LRU 淘汰策略
 
@@ -396,9 +399,32 @@ put 时淘汰流程:
 | 操作 | 是否进入缓存 | 原因 |
 |------|-------------|------|
 | `DataSet::write` | ❌ 不进入 | 写入的是 raw 数据, seal 后才可确定 final 内容 |
-| `DataSet::query` | ✅ 进入 (解压后) | 解压后的 seal block 数据不可变, 安全缓存 |
-| 未压缩 block 读取 | ✅ 进入 | raw payload 直接从 mmap 复制到缓存 |
-| 压缩 block 读取 | ✅ 进入 (解压后) | 解压操作是 CPU 密集型, 缓存价值最高 |
+| `DataSet::query` / `DataSet::read` 读取 compressed block | ✅ 进入 (解压后) | compressed block 不允许再被原地修改, 解压结果具备全局缓存不可变性 |
+| pending raw block 读取 | ❌ 不进入 | 仍可能追加 record 或被 seal, 不具备不可变性 |
+| sealed raw block 读取 | ❌ 不进入 | 纠正写入可能在满足 last-block/last-record 条件时原地修改 |
+| compressed block 读取 | ✅ 进入 (解压后) | 解压操作是 CPU 密集型, 且 block 内容不可变 |
+
+### 18.7 读取与失效协议
+
+全局缓存查询必须在读取 `BlockHeader` 之后进行:
+
+1. 根据索引定位到 data segment 与 block offset。
+2. 读取 `BlockHeader`。
+3. 若 `flags` 包含 `COMPRESSED`, 才使用 `(segment_file_offset, block_offset)` 查询全局 `BlockCache`。
+4. 若全局缓存命中, 从缓存 payload 中复制 record。
+5. 若未命中, 从 mmap 读取 payload; compressed block 先解压再写入全局缓存, raw block 只返回本次读取结果。
+
+`HotBlockCache` 是单次查询迭代器内部的局部缓存, 生命周期不跨越写入操作; 它可以缓存本次查询中读到的 raw 或 compressed payload, 但不得提升为全局缓存规则。
+
+写入路径必须维护以下一致性:
+
+| 写入路径 | 缓存处理 |
+|---------|----------|
+| 正常追加 | 不触碰全局缓存 |
+| correction 原地修改 | 仅允许修改未压缩 block; 目标 key 可防御性 invalidate, 但按新规则不应存在全局缓存 |
+| correction 命中 compressed block | 不允许原地修改, 回退为 out-of-order append, 并 invalidate 旧索引指向的 block key |
+| out-of-order 覆盖已有索引 | append 新 block/record 后, invalidate 旧索引指向的 block key |
+| delete | 将索引置为 filler 前后均可 invalidate 旧索引指向的 block key |
 
 ---
 

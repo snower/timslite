@@ -35,8 +35,8 @@
 | idle-close pending | 密封 (不压缩) | 保证 reopen 后一致 |
 | **创建/打开分离** | `create` (带参数) / `open` (读 meta) | 防止误创建, 参数不可变 |
 | **参数不可变** | 创建后 segment_size/compress_level 不可修改 | 影响文件布局 |
-| **读缓存** | 解压后的 seal block payload | 跳过文件读取+解压, 价值最高 |
-| **缓存规则** | 只缓存读取解压数据, 不缓存写入 | seal 前不可预测, seal 后不可变 |
+| **读缓存** | compressed block 的解压 payload | 跳过重复解压; compressed block 不允许原地修改, 具备全局缓存不可变性 |
+| **缓存规则** | 只缓存读取 compressed block 后的解压数据, 不缓存 raw block 或写入数据 | pending/raw sealed block 可能追加、seal 或被 correction 原地修改 |
 | **LRU 水位** | 降至 max_memory × 0.85 | 留 15% 余量, 减少淘汰频率 |
 | **缓存禁用** | `cache_max_memory=0` | 零额外开销 |
 | **Filler 哨兵** | `block_offset=0xFFFFFFFFFFFFFFFF` | 远超任何合法偏移, 零成本识别 |

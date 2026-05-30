@@ -14,8 +14,7 @@ use crate::header::{DataFileMetadata, TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENT
 pub use self::data::{DataSegment, ReadIndexEntry};
 use self::data::{DataSegment as DS, SegmentLifecycle as SL};
 
-use crate::cache::BlockCache;
-use crate::cache::HotBlockCache;
+use crate::cache::{BlockCache, CacheKey, HotBlockCache};
 
 /// Metadata for a closed data segment.
 pub(crate) struct DataSegmentMeta {
@@ -282,6 +281,12 @@ impl DataSegmentSet {
     /// Get the segment size configuration.
     pub fn segment_size(&self) -> u64 {
         self.segment_size
+    }
+
+    /// Build the global cache key for an index entry block offset.
+    pub fn cache_key_for_absolute_offset(&self, absolute_offset: u64) -> CacheKey {
+        let segment_file_offset = (absolute_offset / self.segment_size) * self.segment_size;
+        CacheKey::new(segment_file_offset, absolute_offset - segment_file_offset)
     }
 
     /// Correction write: route to the latest data segment and overwrite the

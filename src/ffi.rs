@@ -359,6 +359,34 @@ pub extern "C" fn tmsl_dataset_latest_timestamp(
     })
 }
 
+/// Write a record to the dataset.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_write(
+    dataset: *mut c_void,
+    timestamp: c_longlong,
+    data: *const c_uchar,
+    data_len: usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() || (data.is_null() && data_len > 0) {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let data_slice = if data_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(data, data_len) }
+        };
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
+        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
+        let mut ds = ds_arc.lock().unwrap();
+        ds.write_with_cache(timestamp, data_slice, Some(store_inner.block_cache()))?;
+        Ok(0)
+    })
+}
+
 /// Delete the record at the given timestamp.
 ///
 /// Marks the index entry as sentinel and increments the old data segment's
@@ -378,7 +406,7 @@ pub extern "C" fn tmsl_dataset_delete(
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
         let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
         let mut ds = ds_arc.lock().unwrap();
-        ds.delete(timestamp)?;
+        ds.delete_with_cache(timestamp, Some(store_inner.block_cache()))?;
         Ok(0)
     })
 }

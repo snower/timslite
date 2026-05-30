@@ -794,31 +794,33 @@ impl DataSegment {
         // ── Cache check ──
         let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
 
-        // Try cache hit first: extract record directly from cached data
-        if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
-            let pos = entry.in_block_offset as usize;
-            if pos + RECORD_HEADER_SIZE > cached.len() {
-                return Err(TmslError::InvalidData("record index out of bounds".into()));
+        // Only compressed blocks are globally cached; raw blocks may still be mutable.
+        if is_compressed {
+            if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
+                let pos = entry.in_block_offset as usize;
+                if pos + RECORD_HEADER_SIZE > cached.len() {
+                    return Err(TmslError::InvalidData("record index out of bounds".into()));
+                }
+                let data_len = read_u32_le(
+                    cached[pos..pos + 4]
+                        .try_into()
+                        .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+                ) as usize;
+                let timestamp = read_i64_le(
+                    cached[pos + 4..pos + 12]
+                        .try_into()
+                        .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
+                );
+                if pos + RECORD_HEADER_SIZE + data_len > cached.len() {
+                    return Err(TmslError::InvalidData("record data out of bounds".into()));
+                }
+                let data =
+                    cached[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
+                return Ok((timestamp, data));
             }
-            let data_len = read_u32_le(
-                cached[pos..pos + 4]
-                    .try_into()
-                    .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
-            ) as usize;
-            let timestamp = read_i64_le(
-                cached[pos + 4..pos + 12]
-                    .try_into()
-                    .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
-            );
-            if pos + RECORD_HEADER_SIZE + data_len > cached.len() {
-                return Err(TmslError::InvalidData("record data out of bounds".into()));
-            }
-            let data =
-                cached[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
-            return Ok((timestamp, data));
         }
 
-        // Cache miss: read from mmap + decompress
+        // Cache miss or raw block: read from mmap + decode.
         let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
         let payload = &mmap[pay_start..pay_start + payload_size];
 
@@ -828,9 +830,10 @@ impl DataSegment {
             payload.to_vec()
         };
 
-        // Cache the decompressed block for future reads
-        if let Some(c) = cache {
-            c.put(cache_key, block_data.clone());
+        if is_compressed {
+            if let Some(c) = cache {
+                c.put(cache_key, block_data.clone());
+            }
         }
 
         // Locate record: entry.in_block_offset points to [data_len:4]
@@ -878,14 +881,16 @@ impl DataSegment {
             return hot_block.extract_record(entry.in_block_offset);
         }
 
-        if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
-            hot_block.fill(cache_key, block_data.clone());
-            return hot_block.extract_record(entry.in_block_offset);
-        }
-
         let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
         let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
         let is_compressed = flags & crate::block::BLOCK_FLAG_COMPRESSED != 0;
+
+        if is_compressed {
+            if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
+                hot_block.fill(cache_key, block_data.clone());
+                return hot_block.extract_record(entry.in_block_offset);
+            }
+        }
 
         let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
         let payload = &mmap[pay_start..pay_start + payload_size];
@@ -897,8 +902,10 @@ impl DataSegment {
         };
 
         hot_block.fill(cache_key.clone(), block_data.clone());
-        if let Some(c) = cache {
-            c.put(cache_key, block_data);
+        if is_compressed {
+            if let Some(c) = cache {
+                c.put(cache_key, block_data);
+            }
         }
 
         let pos = entry.in_block_offset as usize;
@@ -1066,6 +1073,65 @@ mod tests {
         let (ts, data) = seg.read_at_index(&entry, None).unwrap();
         assert_eq!(ts, 9999);
         assert_eq!(data, test_data);
+    }
+
+    #[test]
+    fn test_raw_block_read_does_not_enter_global_cache() {
+        let (mut seg, _path) = make_segment("test_raw_no_global_cache");
+        let (block_off, in_block_off) = seg.append_record(7000, b"raw", 65536, 6).unwrap();
+        let cache = BlockCache::new(1024 * 1024);
+        let entry = ReadIndexEntry {
+            timestamp: 7000,
+            block_offset: block_off,
+            in_block_offset: in_block_off,
+        };
+
+        let (ts, data) = seg.read_at_index(&entry, Some(&cache)).unwrap();
+
+        assert_eq!(ts, 7000);
+        assert_eq!(data, b"raw");
+        assert_eq!(cache.stats().entry_count, 0);
+    }
+
+    #[test]
+    fn test_raw_block_hot_read_does_not_enter_global_cache() {
+        let (mut seg, _path) = make_segment("test_raw_hot_no_global_cache");
+        let (block_off, in_block_off) = seg.append_record(7001, b"raw-hot", 65536, 6).unwrap();
+        let cache = BlockCache::new(1024 * 1024);
+        let mut hot = HotBlockCache::new();
+        let entry = ReadIndexEntry {
+            timestamp: 7001,
+            block_offset: block_off,
+            in_block_offset: in_block_off,
+        };
+
+        let (ts, data) = seg
+            .read_at_index_with_hot_cache(&entry, Some(&cache), &mut hot)
+            .unwrap();
+
+        assert_eq!(ts, 7001);
+        assert_eq!(data, b"raw-hot");
+        assert!(hot.is_hit(0, block_off));
+        assert_eq!(cache.stats().entry_count, 0);
+    }
+
+    #[test]
+    fn test_compressed_block_read_enters_global_cache() {
+        let (mut seg, _path) = make_segment("test_compressed_global_cache");
+        let data = vec![0u8; 70_000];
+        let (block_off, in_block_off) = seg.append_record(7002, &data, 65536, 6).unwrap();
+        let cache = BlockCache::new(1024 * 1024);
+        let entry = ReadIndexEntry {
+            timestamp: 7002,
+            block_offset: block_off,
+            in_block_offset: in_block_off,
+        };
+
+        let (ts, recovered) = seg.read_at_index(&entry, Some(&cache)).unwrap();
+
+        assert_eq!(ts, 7002);
+        assert_eq!(recovered, data);
+        assert_eq!(cache.stats().entry_count, 1);
     }
 
     #[test]

@@ -18,9 +18,9 @@ DataSet::query(start_ts, end_ts)
     │      └─ sort + dedup
     │
     ├─ 2. 对每个 entry 调用 read_at_index()
-    │      ├─ 检查全局 BlockCache (RwLock<HashMap>)
-    │      ├─ hit → 从缓存取解压 block → 定位 record
-    │      └─ miss → mmap 读取 → 解压 → 放回缓存 → 定位 record
+    │      ├─ mmap 读取 BlockHeader, 判断是否 compressed
+    │      ├─ compressed → 检查全局 BlockCache; miss 时 mmap 读取 + 解压 + 放回缓存
+    │      └─ raw → mmap 读取 payload, 不进入全局 BlockCache
     │
     └─ 3. 排序返回 Vec<(i64, Vec<u8>)>
 ```
@@ -155,8 +155,8 @@ QueryIterator::next() → Option<Result<(i64, Vec<u8>)>>
     ├─ 3. Block 读取 + 解压
     │      ├─ 通过 block_offset 找到对应 DataSegment
     │      ├─ 读 BlockHeader, 检查 compressed flag
-    │      ├─ compressed → deflate_decompress()
-    │      └─ uncompressed → payload.to_vec()
+    │      ├─ compressed → 先查全局 BlockCache; miss 时 deflate_decompress() 并写入全局缓存
+    │      └─ uncompressed → payload.to_vec(), 只进入 HotBlockCache
     │
     ├─ 4. 更新 Hot Block Cache
     │      └─ hot_block = HotBlockCache::new(key, decoded_payload)
@@ -372,16 +372,18 @@ read_record(block_offset):
     1. 检查 HotBlockCache.is_hit(block_offset)
        ├─ Yes → 直接提取 record, return
        └─ No  → 继续
-    2. 检查全局 BlockCache.get(block_offset)
+    2. mmap 读取 BlockHeader, 判断 flags
+    3. 若为 compressed, 检查全局 BlockCache.get(block_offset)
        ├─ Hit → 存入 HotBlockCache, 提取 record, return
        └─ Miss → 继续
-    3. mmap 读取 + 解压
+    4. mmap 读取 payload + 解码
        → 存入 HotBlockCache
-       → 存入全局 BlockCache (可选, 取决于 cache 容量)
+       → compressed block 存入全局 BlockCache (可选, 取决于 cache 容量)
+       → raw block 不进入全局 BlockCache
        → 提取 record, return
 ```
 
-> **注意**: HotBlockCache 是**缓存之上的一层**, 不影响全局 BlockCache 的统计。
+> **注意**: HotBlockCache 是单次查询内部的局部热点缓存, 不影响全局 BlockCache 的统计。全局 BlockCache 只保存 compressed block 的解压 payload, 因为 compressed block 不允许再被原地修改。
 
 ---
 

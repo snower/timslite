@@ -153,7 +153,7 @@ int tmsl_dataset_latest_timestamp(void* dataset, int64_t* out_ts,
  *   - correction: timestamp == latest → overwrite data in place (index unchanged)
  *   - out-of-order: timestamp < latest → append to latest segment + update index
  *     entry in place; the old data segment's invalid_record_count is incremented
- *     if the previous entry referenced real data
+ *     if the previous entry referenced real data; its global cache entry is invalidated
  *   - in-order: timestamp > latest → append; continuous mode fills gaps with filler
  *
  * @param dataset      Opaque dataset pointer.
@@ -173,7 +173,7 @@ int tmsl_dataset_write(void* dataset, int64_t timestamp,
  *
  * Marks the index entry as sentinel (block_offset = 0xFFFFFFFFFFFFFFFF,
  * in_block_offset = 0xFFFF) and increments the old data segment's
- * invalid_record_count. The physical data is preserved on disk until
+ * invalid_record_count and invalidates the old global cache entry. The physical data is preserved on disk until
  * retention-based reclamation or future compaction.
  *
  * @param dataset      Opaque dataset pointer.

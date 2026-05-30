@@ -112,6 +112,20 @@ impl BlockCache {
         self.used_memory.fetch_add(footprint, Ordering::Relaxed);
     }
 
+    pub fn invalidate(&self, key: &CacheKey) -> bool {
+        if !self.is_enabled() {
+            return false;
+        }
+        let mut guard = self.entries.write().unwrap();
+        if let Some(entry) = guard.remove(key) {
+            self.used_memory
+                .fetch_sub(entry.footprint, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
     fn evict_lru(guard: &mut HashMap<CacheKey, CacheEntry>, target_used: usize) -> usize {
         let current: usize = guard.values().map(|v| v.footprint).sum();
         if current <= target_used {
@@ -245,6 +259,21 @@ mod tests {
         assert_eq!(c.stats().entry_count, 0);
         assert_eq!(c.stats().used_memory, 0);
     }
+
+    #[test]
+    fn test_invalidate_removes_entry_and_updates_memory() {
+        let c = BlockCache::new(10240);
+        let k = CacheKey::new(12, 34);
+        c.put(k.clone(), vec![1u8; 100]);
+        assert_eq!(c.stats().entry_count, 1);
+        assert!(c.stats().used_memory > 0);
+
+        assert!(c.invalidate(&k));
+        assert_eq!(c.stats().entry_count, 0);
+        assert_eq!(c.stats().used_memory, 0);
+        assert!(!c.invalidate(&k));
+    }
+
     #[test]
     fn test_skip_duplicate_insertion() {
         let c = BlockCache::new(10240);

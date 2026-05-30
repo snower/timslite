@@ -8,7 +8,7 @@
 > - `create_dataset`: 显式创建新数据集, 需传入 `data_segment_size`, `index_segment_size`, `compress_level`; 已存在返回错误
 > - `open_dataset`: 仅打开已有数据集, 参数从 meta 文件读取
 > - `drop_dataset`: 删除数据集并清除所有关联文件
-> - Store 持有 `BlockCache` (全局共享, 所有 DataSet 查询自动使用缓存)
+> - Store 持有 `BlockCache` (全局共享; 读取 compressed block 时自动使用缓存, correction/delete/out-of-order 写入负责失效旧 key)
 
 ```rust
 /// FFI 数据集句柄 (不透明指针)
@@ -204,10 +204,10 @@ loop {
 // 数据集状态 — 最新写入时间戳 (0 = 空数据集)
 #[no_mangle] pub extern "C" fn tmsl_dataset_latest_timestamp(dataset: *mut c_void, out_ts: *mut c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-// 数据写入
+// 数据写入 (correction/out-of-order 会通过 Store 的 BlockCache invalidate 旧索引 key)
 #[no_mangle] pub extern "C" fn tmsl_dataset_write(dataset: *mut c_void, timestamp: c_longlong, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-// 数据删除 (索引标记为哨兵, 数据段 invalid_record_count++)
+// 数据删除 (索引标记为哨兵, invalidate 旧缓存 key, 数据段 invalid_record_count++)
 #[no_mangle] pub extern "C" fn tmsl_dataset_delete(dataset: *mut c_void, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // 单时间戳读取 (timestamp=-1 读最新记录; malloc'd out_data, 0=成功/1=未找到/-1=错误)

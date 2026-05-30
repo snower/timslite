@@ -198,6 +198,17 @@ impl DataSet {
     /// - `timestamp > latest_written_timestamp`: **normal write** — in continuous mode only
     ///   materializes filler entries in the previous and current edge index segments.
     pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+        self.write_with_cache(timestamp, data, None)
+    }
+
+    /// Write a record and invalidate global cache entries affected by
+    /// correction/out-of-order index rewrites.
+    pub fn write_with_cache(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        cache: Option<&BlockCache>,
+    ) -> Result<()> {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
         }
@@ -205,14 +216,14 @@ impl DataSet {
         // Correction write: same timestamp as latest → in-place overwrite in
         // the last uncompressed block of the latest data segment. Index unchanged.
         if self.latest_written_timestamp > 0 && timestamp == self.latest_written_timestamp {
-            return self.correct_write(timestamp, data);
+            return self.correct_write(timestamp, data, cache);
         }
 
         // Out-of-order write: timestamp < latest → append to latest segment,
         // update existing index entry in place. May increment invalid_record_count
         // on the old data segment.
         if timestamp < self.latest_written_timestamp {
-            return self.out_of_order_write(timestamp, data);
+            return self.out_of_order_write(timestamp, data, cache);
         }
 
         // Normal write: timestamp > latest
@@ -245,7 +256,12 @@ impl DataSet {
     /// Non-continuous mode requires an existing index entry at `timestamp`.
     /// Continuous mode may update a real entry, replace a filler, or materialize
     /// a sparse logical hole on demand.
-    fn out_of_order_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+    fn out_of_order_write(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        cache: Option<&BlockCache>,
+    ) -> Result<()> {
         let (seg_offset, block_rel_offset, in_block_offset) =
             self.segments.append(timestamp, data)?;
         let new_block_offset = seg_offset + block_rel_offset;
@@ -255,6 +271,7 @@ impl DataSet {
                 .update_entry(timestamp, new_block_offset, in_block_offset)?;
 
         if old_entry.block_offset != BLOCK_OFFSET_FILLER {
+            self.invalidate_cache_for_entry(&old_entry, cache);
             self.segments
                 .increment_invalid_record_count(old_entry.block_offset)?;
         }
@@ -273,7 +290,12 @@ impl DataSet {
     /// If the target block has been sealed and compressed (COMPRESSED flag set),
     /// falls back to out-of-order write: appends data to latest segment, updates
     /// the index entry, and increments `invalid_record_count` on the old segment.
-    fn correct_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+    fn correct_write(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        cache: Option<&BlockCache>,
+    ) -> Result<()> {
         match self.time_index.find_entry(timestamp)? {
             Some(entry) => {
                 match self.segments.overwrite_in_last_block(
@@ -284,14 +306,15 @@ impl DataSet {
                 ) {
                     Ok(()) => {
                         // latest_written_timestamp unchanged; index unchanged.
+                        self.invalidate_cache_for_entry(&entry, cache);
                         self.last_used_at = Instant::now();
                         Ok(())
                     }
                     Err(_) => {
-                        // Target block cannot be modified in place (compressed, sealed, or
+                        // Target block cannot be modified in place (compressed or
                         // not the last block/record) → fall back to out-of-order write:
                         // append to latest segment, update index, increment invalid_record_count
-                        self.out_of_order_write(timestamp, data)
+                        self.out_of_order_write(timestamp, data, cache)
                     }
                 }
             }
@@ -313,6 +336,11 @@ impl DataSet {
     /// - no entry exists at `timestamp`
     /// - the entry is already a filler (no real data)
     pub fn delete(&mut self, timestamp: i64) -> Result<()> {
+        self.delete_with_cache(timestamp, None)
+    }
+
+    /// Delete a record and invalidate any global cache entry for the old block.
+    pub fn delete_with_cache(&mut self, timestamp: i64, cache: Option<&BlockCache>) -> Result<()> {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
         }
@@ -324,12 +352,25 @@ impl DataSet {
         }
 
         let old_entry = self.time_index.find_and_delete_entry(timestamp)?;
+        self.invalidate_cache_for_entry(&old_entry, cache);
         // Old entry references real data → increment invalid_record_count on its segment
         self.segments
             .increment_invalid_record_count(old_entry.block_offset)?;
 
         self.last_used_at = Instant::now();
         Ok(())
+    }
+
+    fn invalidate_cache_for_entry(&self, entry: &IndexEntry, cache: Option<&BlockCache>) {
+        if entry.block_offset == BLOCK_OFFSET_FILLER {
+            return;
+        }
+        if let Some(cache) = cache {
+            let key = self
+                .segments
+                .cache_key_for_absolute_offset(entry.block_offset);
+            cache.invalidate(&key);
+        }
     }
 
     /// Read a single record by exact timestamp.
@@ -577,6 +618,27 @@ mod tests {
             .collect();
         starts.sort_unstable();
         starts
+    }
+
+    fn make_cache_dataset(name: &str) -> DataSet {
+        let dir = temp_dir(name);
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        DataSet::create(
+            id,
+            dir,
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1853,6 +1915,57 @@ mod tests {
         // invalid_record_count should be 1 (old data orphaned)
         let seg = ds.segments.segments.last().unwrap();
         assert_eq!(seg.invalid_record_count, 1);
+    }
+
+    #[test]
+    fn test_correction_fallback_invalidates_cached_compressed_block() {
+        let mut ds = make_cache_dataset("cache_correction_fallback");
+        let cache = BlockCache::new(1024 * 1024);
+        let original = vec![0xAB_u8; 500];
+        let corrected = vec![0xCD_u8; 300];
+
+        ds.write(100, &original).unwrap();
+        assert_eq!(ds.read(100, Some(&cache)).unwrap().unwrap().1, original);
+        assert_eq!(cache.stats().entry_count, 1);
+
+        ds.write_with_cache(100, &corrected, Some(&cache)).unwrap();
+
+        assert_eq!(cache.stats().entry_count, 0);
+        assert_eq!(ds.read(100, None).unwrap().unwrap().1, corrected);
+    }
+
+    #[test]
+    fn test_out_of_order_invalidates_cached_compressed_block() {
+        let mut ds = make_cache_dataset("cache_out_of_order");
+        let cache = BlockCache::new(1024 * 1024);
+        let original = vec![0xAB_u8; 500];
+        let updated = vec![0xEF_u8; 250];
+
+        ds.write(100, &original).unwrap();
+        ds.write(200, b"latest").unwrap();
+        assert_eq!(ds.read(100, Some(&cache)).unwrap().unwrap().1, original);
+        assert_eq!(cache.stats().entry_count, 1);
+
+        ds.write_with_cache(100, &updated, Some(&cache)).unwrap();
+
+        assert_eq!(cache.stats().entry_count, 0);
+        assert_eq!(ds.read(100, None).unwrap().unwrap().1, updated);
+    }
+
+    #[test]
+    fn test_delete_invalidates_cached_compressed_block() {
+        let mut ds = make_cache_dataset("cache_delete");
+        let cache = BlockCache::new(1024 * 1024);
+        let original = vec![0xAB_u8; 500];
+
+        ds.write(100, &original).unwrap();
+        assert_eq!(ds.read(100, Some(&cache)).unwrap().unwrap().1, original);
+        assert_eq!(cache.stats().entry_count, 1);
+
+        ds.delete_with_cache(100, Some(&cache)).unwrap();
+
+        assert_eq!(cache.stats().entry_count, 0);
+        assert!(ds.read(100, None).unwrap().is_none());
     }
 
     #[test]

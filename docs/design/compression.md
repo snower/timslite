@@ -42,11 +42,13 @@ const BLOCK_FLAG_SINGLE_RECORD: u16  = 0x0004;  // 独占 record 的超大 block
 读取 sealed block:
   1. 读取 BlockHeader, 检查 flags
   2. 如果 COMPRESSED flag 设置:
-     → miniz_oxide::inflate::decompress_to_vec(payload)
+     → 先查询全局 BlockCache; 未命中则 miniz_oxide::inflate::decompress_to_vec(payload)
   3. 如果未设置 COMPRESSED:
      → 直接使用 raw payload
-  4. 解压后的数据存入 BlockCache (供后续查询复用)
+  4. 仅 COMPRESSED block 的解压数据存入全局 BlockCache (供后续查询复用)
 ```
+
+全局缓存建立在 compressed block 不可变的前提上: 一旦 block 带有 `COMPRESSED` flag, correction 写入不得原地修改该 block, 只能回退为乱序追加并更新索引。未压缩 block 即使已 sealed, 也可能在满足 last-block/last-record 条件时被 correction 原地修改, 因此不得进入全局缓存。
 
 ### 压缩配置
 

@@ -237,14 +237,15 @@ impl DataSegment {
         let block_offset = entry.block_offset;
 
         // 读取 block header, 检查 compressed flag
-        // 缓存检查 → 命中则跳过读取+解压
-        // 未命中 → 从 mmap 读取 + 解压 → 存入缓存
+        // 仅 compressed block 允许查询全局缓存
+        // compressed 未命中 → 从 mmap 读取 + 解压 → 存入全局缓存
+        // raw block → 直接从 mmap 复制 payload, 不进入全局缓存
         // 定位 record → 返回 (timestamp, data)
     }
 }
 ```
 
-> **安全性保证**: 只有已 seal 的 block 才能进入缓存。pending block 数据仍在写入中, 不会被缓存。
+> **安全性保证**: 只有 `COMPRESSED` block 的解压 payload 才能进入全局 `BlockCache`。pending raw block 仍在写入中, sealed raw block 仍可能被 correction 原地修改, 二者都不能进入全局缓存。compressed block 一旦写入后不允许原地修改。
 >
 > **Header 起点约束**: `block_offset` 仍表示相对数据区起点的偏移; 物理文件位置必须通过 `header_len + block_offset` 计算。新建 v1 文件的 `header_len` 为 116, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。
 
