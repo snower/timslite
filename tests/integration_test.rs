@@ -1027,12 +1027,12 @@ fn t21_3_manual_bg_concurrent_with_thread() {
     // Give time for the 1ms flush_interval to pass
     std::thread::sleep(Duration::from_millis(10));
 
-    // External tick while background thread is sleeping
+    // External tick while background thread is running — must not panic
+    // (bg thread may have already executed flush, so executed_tasks can be 0)
     let result = store.tick_background_tasks().unwrap();
-    // Should have executed at least flush (datasets exist)
-    assert!(result.executed_tasks >= 1);
+    let _ = result.executed_tasks; // just verify no panic on concurrent access
 
-    // next_delay should also work
+    // next_delay should also work without panic
     let _delay = store.next_background_delay().unwrap();
 
     // Verify data is still intact
