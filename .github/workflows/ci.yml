@@ -70,13 +70,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-py${{ matrix.python-version }}-
 
-      - name: Install Python dependencies
-        run: pip install maturin pytest
+      - name: Create virtualenv and install dependencies
+        working-directory: wrapper/python
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install maturin pytest
 
       - name: Build and install Python wrapper
         working-directory: wrapper/python
-        run: maturin develop --release
+        run: .venv/bin/maturin develop --release
 
       - name: Run Python tests
         working-directory: wrapper/python
-        run: pytest tests/ -v --tb=short
+        run: .venv/bin/python -m pytest tests/ -v --tb=short
