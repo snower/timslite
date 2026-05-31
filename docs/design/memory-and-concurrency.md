@@ -50,19 +50,51 @@ reopen 时 pending block 恢复流程:
       f. 返回 OpenReady
 ```
 
-> **Crash 安全分析**:
-> idle-close 时 msync 已确保 header 和 block payload 同步到磁盘。
-> Reopen 时如果 pending 数据已写入但 header 未 seal → 恢复流程可以安全密封。
-> 如果 crash 发生在 msync 前 → 部分数据丢失 (但 header 记录的是 msync 前的状态)。
-> 这 10min flush 间隔内的 crash 损失可接受 (mmap 本身已有 OS page cache 保护)。
+> **恢复边界说明**:
+> idle-close 时 msync 会尽力同步 header 和 block payload; reopen 时如果 pending 状态完整, 可将 pending block 安全密封为 raw sealed block。
+> 但本库不提供事务、WAL、checksum 或跨 data/index 文件的持久化顺序保证。crash 后允许丢失最近写入, 不再表述为"最多损失 flush 间隔内的数据"。
 
 ## 崩溃安全
 
-- mmap 写入已有 OS page cache 保护, crash 时最多损失 10 分钟 (flush 间隔) 内未 sync 的数据
-- reopen 时检测 pending block 并安全密封 (FLAGS=SEALED, 不压缩), 不会损坏已有数据
-- meta 文件创建时一次性写入, 不存在部分写入问题
-- 索引和数据段独立文件, 单个文件损坏不影响其他段
-- Header `file_size` 不随扩容更新, 打开时以磁盘实际大小为准 — 消除扩容 crash 风险
+### 设计取舍
+
+timslite 面向高读写性能、可容忍最近数据丢失的场景, 不引入二阶段提交、WAL、commit marker、checksum 或额外事务状态。崩溃后的目标不是恢复每一次成功返回的写入, 而是:
+
+1. 正常运行期间, 查询不会读取到尚未发布的 append 数据。
+2. crash/reopen 后, 已损坏或不完整的 append 不能被当成另一条旧数据或错误数据返回。
+3. 最近写入可以丢失; 可见性以索引条目为边界。
+
+### append 发布顺序
+
+append record 的逻辑发布顺序必须是:
+
+1. 写入 record payload: `[data_len:u32][timestamp:i64][data]`。
+2. 写入/更新 `BlockHeader` 和 data segment state: `payload_size`, `record_count`, `wrote_position`, pending state 等。
+3. 最后写入或更新 `IndexEntry(timestamp, block_offset, in_block_offset)`。
+
+索引是唯一的查询入口。只要 index 在最后发布:
+
+- crash 或错误发生在 index 写入前: payload/header 可能遗留在 data segment 中, 但没有索引指向它, 查询不可见, 按数据丢失处理。
+- 正常运行期间 index 写入后: 同一 `DataSet` 由 mutex 串行保护, payload/header 已先写入内存映射, 查询不会看到未初始化的新 offset。
+- crash 发生在 index 写入后: 不保证 data/index 两个 mmap 文件的落盘顺序。reopen 后如果 index 已持久化但 data payload/header 未完整持久化, 读取路径必须通过边界和 timestamp 校验识别异常, 将其视为缺失或损坏, 不能返回旧 timestamp 或错误 payload。
+
+### 读取校验要求
+
+通过索引读取 record 时, 不能只信任 `IndexEntry`。读取路径应至少校验:
+
+- `block_offset` 落在对应 data segment 已写入范围内。
+- `BlockHeader.payload_size` 与 `in_block_offset + record_header + data_len` 不越界。
+- record 内嵌 `timestamp` 必须等于 `IndexEntry.timestamp`。
+- filler/delete sentinel 必须在进入 data segment 前被跳过。
+
+这些校验不恢复丢失写入, 只保证不会把部分写入或错位偏移解释成另一条有效数据。
+
+### 其它边界
+
+- reopen 时检测 pending block 并在状态完整时安全密封 (FLAGS=SEALED, 不压缩)。
+- meta 文件创建时一次性写入; 若创建中断, 由 open/create 的 magic/version/TLV 校验处理。
+- 索引和数据段独立文件; 单个文件损坏不应扩散到其他段。
+- Header `file_size` 不随扩容更新, 打开时以磁盘实际大小为准, 消除扩容时 header/file_size 不一致的风险。
 
 ---
 

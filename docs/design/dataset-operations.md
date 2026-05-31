@@ -104,6 +104,16 @@ impl DataSet {
        返回
 ```
 
+**append 可见性边界**:
+
+append record 必须遵守“payload → block header/state → index”的发布顺序。原因是查询只能从 `TimeIndex` 获得 `(block_offset, in_block_offset)` 后才会访问 data segment:
+
+1. 若 payload 或 block header/state 写入失败, 不写 index, 该 record 对查询不可见。
+2. 若 index 已写入, 正常运行期间同一 `DataSet` 的 mutex 保证查询只能在 append 完成后看到该 entry。
+3. crash/reopen 后不保证 data/index mmap 文件的落盘顺序; 因此通过 index 读取时必须校验 block 边界和 record 内嵌 timestamp, 校验失败时按缺失/损坏处理, 不能返回旧数据或错误数据。
+
+本设计不引入事务、WAL 或二次提交状态。最近写入可以丢失, 但索引不得先于 payload/header 发布。
+
 ### 9.1 时间戳验证与写入分支
 
 ```
@@ -247,7 +257,7 @@ DataSet::write(timestamp, data):
 > **索引原地更新**: 索引条目 18 字节通过 mmap 直接覆盖, 不改变条目总数。
 > - **连续模式**: 先用 `base_timestamp` 计算逻辑 `seg_start_ts` 和 `entry_index`; 如果 segment 不存在或 `entry_index >= wrote_count`, 该位置是逻辑空洞
 > - **非连续模式**: 在 in_memory_buffer 中线性搜索, 或在已打开的 IndexSegment 中二分查找; 若目标在 closed segment 中, 临时打开 → 覆盖 → idle_close
-> - **崩溃安全**: 18 字节非原子写入, 与现有 mmap 写入的崩溃容忍度一致 (最坏损失 = flush 间隔内未 sync 的写入)
+> - **崩溃边界**: 18 字节索引条目不是原子事务写入。本库不保证 crash 后保留该次更新; reopen/query 必须依靠 entry 边界、filler sentinel 和 record timestamp 校验避免返回错位数据。
 >
 > **invalid_record_count 更新**: 通过 `block_offset` 计算旧数据所在数据段 (段路由: `file_offset = (block_offset / segment_size) × segment_size`), 再对该段 `invalid_record_count` 字段 +1。段可能已关闭, 需通过 `lazy_open` 临时打开以更新 mmap state 字段。
 >
@@ -305,7 +315,7 @@ DataSet::delete(timestamp):
 >
 > **缓存一致性**: delete 使旧 record 对查询不可见, 必须 invalidate 旧索引指向的全局缓存 key。若旧 block 未压缩或未进入缓存, invalidate 为无副作用 no-op。
 >
-> **崩溃安全**: 与写入操作一致 — 索引覆盖 + `invalid_record_count` 递增均为 mmap 写入, 最坏损失 = flush 间隔内未 sync 的操作。
+> **崩溃边界**: 与写入操作一致, delete 的索引覆盖和 `invalid_record_count` 递增不是事务。crash 后可能丢失本次 delete 或只持久化部分状态; 查询路径以索引 sentinel 为可见性边界, 不承诺事务级删除持久性。
 >
 > **与 `invalid_record_count` 的关系**: 每次 delete 操作使旧数据段的 `invalid_record_count += 1`。该计数器可用于:
 > - 诊断: 监控段内无效记录占比 (`invalid_record_count / record_count`)

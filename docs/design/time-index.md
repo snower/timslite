@@ -158,6 +158,8 @@ impl IndexSegment {
 
 > **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - header_len) / 18`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。
 
+> **发布边界**: `IndexEntry` 是 record 对查询可见的发布点。Data segment append 必须先写 payload 与 block/header state, 最后才追加或覆盖 index entry。若 crash 发生在 index 写入前, data segment 中的孤儿 payload 不可见并按丢失处理。若 crash/reopen 后出现已持久化 index 指向不完整 data 的情况, 读取路径必须通过 block 边界和 record timestamp 校验拒绝返回错误数据; 本库不通过索引事务恢复该写入。
+
 ### 7.6 查找算法
 
 | 操作 | 非连续模式 | 连续模式 |

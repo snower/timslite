@@ -172,6 +172,16 @@ impl DataSegment {
 }
 ```
 
+**append 发布顺序约束**:
+
+`DataSegment::append_record` 返回的 `(block_rel_offset, in_block_offset)` 会被 `DataSet` 写入 `TimeIndex`, 因此 data segment 侧必须先完成 record payload 和 block/header state 更新, 再让上层发布 index entry。对于新 pending block、追加 pending block、超大独占 block 三类路径, 设计上的可见性顺序都是:
+
+1. 写入 record payload。
+2. 写入或更新 `BlockHeader` 与 data segment state。
+3. 返回 offset 给 `DataSet`, 由 `DataSet` 最后写 index。
+
+如果 crash 发生在第 3 步之前, 已写入 data segment 但未被 index 引用的数据视为丢失; 查询不会扫描 data segment 来发现它。如果 crash 发生在 index 发布之后但 data/index 落盘顺序不完整, 读取路径必须通过 block 边界和 record timestamp 校验避免返回错位数据。
+
 #### overwrite_in_last_block: 纠正写入 (In-Place Overwrite, 支持变 size)
 
 纠正写入场景下 (`timestamp == latest_written_timestamp`), 最新记录位于 **本数据段最后一个未压缩 block** (可以是 pending block 或 SEALED 无 COMPRESSED 的 block) 的 **最末位置**, 可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化:
