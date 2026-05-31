@@ -21,7 +21,7 @@ libtimslite (CDylib)
 └── FFI                (extern "C" API)
 ```
 
-**核心设计思想**: 多条 record 聚合成 Block → Block 级压缩 → 时间索引指向 (block_offset, in_block_offset)
+**核心设计思想**: 多条 record 聚合成 Block → Block 级压缩 → 时间索引指向 (block_offset, in_block_offset)。`block_offset` 是跨所有数据段的数据区逻辑全局 offset; 读文件时需先定位 `segment`, 再使用 `segment.header_len + (block_offset - segment.file_offset)` 得到物理文件偏移。
 
 ## 二、目录结构
 

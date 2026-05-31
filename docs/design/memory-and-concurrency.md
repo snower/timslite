@@ -70,7 +70,7 @@ append record 的逻辑发布顺序必须是:
 
 1. 写入 record payload: `[data_len:u32][timestamp:i64][data]`。
 2. 写入/更新 `BlockHeader` 和 data segment state: `payload_size`, `record_count`, `wrote_position`, pending state 等。
-3. 最后写入或更新 `IndexEntry(timestamp, block_offset, in_block_offset)`。
+3. 最后写入或更新 `IndexEntry(timestamp, block_offset, in_block_offset)`, 其中 `block_offset` 是数据区逻辑全局偏移, 不含 header。
 
 索引是唯一的查询入口。只要 index 在最后发布:
 
@@ -82,7 +82,8 @@ append record 的逻辑发布顺序必须是:
 
 通过索引读取 record 时, 不能只信任 `IndexEntry`。读取路径应至少校验:
 
-- `block_offset` 落在对应 data segment 已写入范围内。
+- `block_offset` 能正确路由到对应 data segment, 且 `block_offset - segment.file_offset` 落在该段已写入范围内。
+- 实际文件读取位置必须是 `segment.header_len + (block_offset - segment.file_offset)`, 不能把 `block_offset` 直接当作文件内物理 offset。
 - `BlockHeader.payload_size` 与 `in_block_offset + record_header + data_len` 不越界。
 - record 内嵌 `timestamp` 必须等于 `IndexEntry.timestamp`。
 - filler/delete sentinel 必须在进入 data segment 前被跳过。

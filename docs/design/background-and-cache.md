@@ -347,8 +347,8 @@ pub struct BlockCache {
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct CacheKey {
-    segment_file_offset: u64,
-    block_offset: u64,
+    segment_file_offset: u64,      // equals segment.file_offset
+    block_segment_offset: u64,
 }
 
 struct CacheEntry {
@@ -408,9 +408,9 @@ put 时淘汰流程:
 
 全局缓存查询必须在读取 `BlockHeader` 之后进行:
 
-1. 根据索引定位到 data segment 与 block offset。
-2. 读取 `BlockHeader`。
-3. 若 `flags` 包含 `COMPRESSED`, 才使用 `(segment_file_offset, block_offset)` 查询全局 `BlockCache`。
+1. 根据索引中的 `block_offset` 定位 data segment, 并计算 `block_segment_offset = block_offset - segment.file_offset`。
+2. 使用 `segment.header_len + block_segment_offset` 读取 `BlockHeader`。
+3. 若 `flags` 包含 `COMPRESSED`, 才使用 `(segment.file_offset, block_segment_offset)` 查询全局 `BlockCache`。
 4. 若全局缓存命中, 从缓存 payload 中复制 record。
 5. 若未命中, 从 mmap 读取 payload; compressed block 先解压再写入全局缓存, raw block 只返回本次读取结果。
 

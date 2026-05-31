@@ -5,7 +5,7 @@
 ### 5.1 职责
 
 - 管理同一数据集下的多个 DataSegment 文件
-- 按 offset 路由到正确的数据段
+- 按索引中的 `block_offset` 路由到正确的数据段
 - 自动创建新文件 (当前文件满或 sealed 时)
 - 数据读取时跨段迭代
 
@@ -54,7 +54,7 @@ impl DataSegmentSet {
 ```rust
 struct DataSegment {
     path: PathBuf,
-    file_offset: u64,
+    file_offset: u64,             // 数据区逻辑全局起点, 等于数据段文件名
     file_size: u64,              // 运行时当前文件大小 (随扩容增长)
     max_file_size: u64,          // 扩容上限 (segment_size, 不可变)
     min_timestamp: i64,          // 段内最小时间戳 (i64::MAX=空段)
@@ -68,7 +68,7 @@ struct DataSegment {
     lifecycle: SegmentLifecycle,
     last_accessed_at: Instant,
     // Pending Block 状态
-    pending_block_offset: Option<u64>,
+    pending_block_offset: Option<u64>, // block_segment_offset
     pending_wrote_position: u64,
     pending_record_count: u64,
 }
@@ -81,6 +81,16 @@ enum SegmentLifecycle {
 const BLOCK_HEADER_SIZE: u64 = 16;
 const DATA_HEADER_SIZE: u64 = 116;  // v1 默认数据段 header_len
 ```
+
+`DataSegmentSet` 接收索引中的 `block_offset`, 通过 `segment_size` 计算所属数据段:
+
+```text
+segment.file_offset = (block_offset / segment_size) * segment_size
+block_segment_offset = block_offset - segment.file_offset
+physical_file_offset = segment.header_len + block_segment_offset
+```
+
+`DataSegment` 内部只使用 `block_segment_offset`; 任何 mmap/seek 位置都必须再加 `header_len`。
 
 ### 6.2 文件布局
 
@@ -154,7 +164,7 @@ impl DataSegment {
     }
 
     /// 密封 pending block: 压缩+写回
-    fn seal_pending_block(&mut self, block_rel_offset: u64, compress_level: u8) -> io::Result<()>;
+    fn seal_pending_block(&mut self, block_segment_offset: u64, compress_level: u8) -> io::Result<()>;
     fn write_raw_record_to_pending(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
     fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> io::Result<(u64, u16)>;
     fn create_single_record_block(&mut self, timestamp: i64, data: &[u8], compress_level: u8) -> io::Result<(u64, u16)>;
@@ -165,7 +175,7 @@ impl DataSegment {
     /// 修改后需更新: block.payload_size/uncompressed_size + 段 wrote_position/total_uncompressed_size/pending_wrote_position(仅 pending)
     fn overwrite_in_last_block(
         &mut self,
-        block_rel_offset: u64,
+        block_segment_offset: u64,
         in_block_offset: u16,
         new_data: &[u8],
     ) -> io::Result<()>;
@@ -174,7 +184,7 @@ impl DataSegment {
 
 **append 发布顺序约束**:
 
-`DataSegment::append_record` 返回的 `(block_rel_offset, in_block_offset)` 会被 `DataSet` 写入 `TimeIndex`, 因此 data segment 侧必须先完成 record payload 和 block/header state 更新, 再让上层发布 index entry。对于新 pending block、追加 pending block、超大独占 block 三类路径, 设计上的可见性顺序都是:
+`DataSegment::append_record` 返回的 `(block_segment_offset, in_block_offset)` 会被 `DataSet` 与当前 `segment.file_offset` 合成为 `block_offset`, 再写入 `TimeIndex`。因此 data segment 侧必须先完成 record payload 和 block/header state 更新, 再让上层发布 index entry。对于新 pending block、追加 pending block、超大独占 block 三类路径, 设计上的可见性顺序都是:
 
 1. 写入 record payload。
 2. 写入或更新 `BlockHeader` 与 data segment state。
@@ -189,15 +199,15 @@ impl DataSegment {
 ```rust
 fn overwrite_in_last_block(
     &mut self,
-    block_rel_offset: u64,
+    block_segment_offset: u64,
     in_block_offset: u16,
     new_data: &[u8],
 ) -> io::Result<()> {
     // 1. 验证这是段内最后一个 block:
-    //    block_abs_end = block_rel_offset + BLOCK_HEADER_SIZE + block.payload_size
+    //    block_abs_end = block_segment_offset + BLOCK_HEADER_SIZE + block.payload_size
     //    若 block_abs_end < self.wrote_position → 不是最后 block, 返回错误
     //
-    // 2. 读取 block header (16B at header_len + block_rel_offset)
+    // 2. 读取 block header (16B at header_len + block_segment_offset)
     //    - 检查 flags: 若含 COMPRESSED → 返回错误
     //    - payload_size / uncompressed_size
     //
@@ -208,7 +218,7 @@ fn overwrite_in_last_block(
     // 4. 计算 delta = (new_data.len() + 12) - (old_data_len + 12) = new_data.len() - old_data_len
     //
     // 5. 修改 mmap 中 record 的 data_len (u32) 和 data 字节 (覆盖/扩展)
-    //    record_pos = header_len + block_rel_offset + BLOCK_HEADER_SIZE + in_block_offset
+    //    record_pos = header_len + block_segment_offset + BLOCK_HEADER_SIZE + in_block_offset
     //
     // 6. 更新 block header:
     //    - payload_size       += delta  (block 内 payload 长度变化)
@@ -225,7 +235,7 @@ fn overwrite_in_last_block(
 ```
 
 > **前置条件**:
-> - 调用方已通过 `time_index.find_entry(timestamp)` 获取 `(block_offset, in_block_offset)`
+> - 调用方已通过 `time_index.find_entry(timestamp)` 获取 `(block_offset, in_block_offset)`, 并在 `DataSegmentSet` 层转换为当前段的 `block_segment_offset`
 > - 调用方已验证该 record 位于最新数据段
 > - block.flags 无 COMPRESSED flag
 > - record 是 block 内最末 record
@@ -236,15 +246,21 @@ fn overwrite_in_last_block(
 ### 6.4 读取: 通过索引定位 Block 内 record (含缓存)
 
 ```rust
+struct SegmentReadEntry {
+    timestamp: i64,
+    block_segment_offset: u64,
+    in_block_offset: u16,
+}
+
 impl DataSegment {
     fn read_at_index(
         &self,
-        entry: &IndexEntry,
+        entry: &SegmentReadEntry,
         cache: Option<&BlockCache>,
     ) -> io::Result<(i64, Vec<u8>)> {
         let m = self.mmap.as_ref().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "segment closed"))?;
-        let hdr_pos = self.header_len as usize + entry.block_offset as usize;
-        let block_offset = entry.block_offset;
+        let hdr_pos = self.header_len as usize + entry.block_segment_offset as usize;
+        let block_segment_offset = entry.block_segment_offset;
 
         // 读取 block header, 检查 compressed flag
         // 仅 compressed block 允许查询全局缓存
@@ -257,7 +273,7 @@ impl DataSegment {
 
 > **安全性保证**: 只有 `COMPRESSED` block 的解压 payload 才能进入全局 `BlockCache`。pending raw block 仍在写入中, sealed raw block 仍可能被 correction 原地修改, 二者都不能进入全局缓存。compressed block 一旦写入后不允许原地修改。
 >
-> **Header 起点约束**: `block_offset` 仍表示相对数据区起点的偏移; 物理文件位置必须通过 `header_len + block_offset` 计算。新建 v1 文件的 `header_len` 为 116, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。
+> **Header 起点约束**: 进入 `DataSegment` 后的 `block_segment_offset` 表示相对数据区起点的偏移, 即 `block_offset - segment.file_offset`; 物理文件位置必须通过 `segment.header_len + block_segment_offset` 计算。新建 v1 文件的 `header_len` 为 116, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。索引中的 `block_offset` 是数据区逻辑全局偏移, 不可直接作为文件内 seek 位置。
 
 ### 6.5 生命周期方法
 

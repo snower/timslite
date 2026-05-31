@@ -41,7 +41,7 @@
 | **缓存规则** | 只缓存读取 compressed block 后的解压数据, 不缓存 raw block 或写入数据 | pending/raw sealed block 可能追加、seal 或被 correction 原地修改 |
 | **LRU 水位** | 降至 max_memory × 0.85 | 留 15% 余量, 减少淘汰频率 |
 | **缓存禁用** | `cache_max_memory=0` | 零额外开销 |
-| **Filler 哨兵** | `block_offset=0xFFFFFFFFFFFFFFFF` | 远超任何合法偏移, 零成本识别 |
+| **Filler 哨兵** | `block_offset=0xFFFFFFFFFFFFFFFF` | `block_offset` 语义为数据区逻辑全局 offset, 合法全局偏移远低于该值, 零成本识别 |
 
 ---
 

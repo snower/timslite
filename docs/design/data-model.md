@@ -19,7 +19,7 @@
 
 **Block 大小限制**: 普通聚合 Block 的 payload 最大 64KB (65536 字节)。如果单条 record 的编码后大小超过 64KB, 则该 record **独占一个 Block**, Block 实际大小可超过 64KB。
 
-**纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时触发纠正写入。最新记录必然位于 **最新数据段的最后一个未压缩 block** (可以是 pending block 或 SEALED 但未压缩的 block) 的最末位置, 因此可通过 mmap 直接修改该 record 的 data 字节, **支持改变 data 长度** (增长或缩小)。索引条目保持不变 (block_offset/in_block_offset 不变)。修改时 delta = new_data.len() - old_data_len, 需同步更新 5 个字段: block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position (仅 pending) / total_uncompressed_size / wrote_position。**回退行为**: 若目标 block 已压缩或不是可原地修改位置, 则自动回退为更新写入: 数据追加到最新数据段、更新索引值, 同时旧数据所在段的 `invalid_record_count` 加一, 并 invalidate 旧索引对应的全局缓存 key。compressed block 一旦写入后不允许再被修改, 这是全局 BlockCache 只缓存 compressed block 解压结果的前提。
+**纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时触发纠正写入。最新记录必然位于 **最新数据段的最后一个未压缩 block** (可以是 pending block 或 SEALED 但未压缩的 block) 的最末位置, 因此可通过 mmap 直接修改该 record 的 data 字节, **支持改变 data 长度** (增长或缩小)。索引条目保持不变 (`block_offset`/`in_block_offset` 不变, 其中 `block_offset` 是数据区逻辑全局偏移, 不含 header)。修改时 delta = new_data.len() - old_data_len, 需同步更新 5 个字段: block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position (仅 pending) / total_uncompressed_size / wrote_position。**回退行为**: 若目标 block 已压缩或不是可原地修改位置, 则自动回退为更新写入: 数据追加到最新数据段、更新索引值, 同时旧数据所在段的 `invalid_record_count` 加一, 并 invalidate 旧索引对应的全局缓存 key。compressed block 一旦写入后不允许再被修改, 这是全局 BlockCache 只缓存 compressed block 解压结果的前提。
 
 ### 3.3 Block Layout (磁盘上的 Block 结构)
 
@@ -79,8 +79,30 @@ Offset  Size  Field                    Description
 ```
 
 - `timestamp`: 秒级时间戳
-- `block_offset`: 对应 Block 在数据流中的**逻辑全局偏移** (相对各数据段数据区起点, 指向 BlockHeader 起始)。落到具体段后, 物理文件偏移 = `segment.header_len + (block_offset - segment.file_offset)`。
+- `block_offset`: 对应 Block 在数据流中的**逻辑全局偏移** (相对各数据段数据区起点, 指向 BlockHeader 起始), 不包含任何数据段文件 header 长度。落到具体段后, 物理文件偏移 = `segment.header_len + (block_offset - segment.file_offset)`。
 - `in_block_offset`: record 在 Block Payload 中的**相对偏移** (从 payload 起始算, 指向该 record 的 data_len 字段)。普通聚合 Block 的 payload 受 64KB 上限约束, 因此真实 record 起始偏移不会达到 `0xFFFF` 哨兵值; 超大独占 Block 只包含一条 record, `in_block_offset` 固定为 0。
+
+#### Block Offset 坐标系
+
+为避免和物理文件偏移混淆, 文档统一使用 `block_offset` 表达索引中保存的值。它不是文件内物理 offset, 而是所有数据段的数据区串联后的逻辑 offset。
+
+| 名称 | 含义 | 是否包含 header |
+|------|------|----------------|
+| `segment.file_offset` | 数据段在同一数据流坐标系中的起始 offset, 也是数据段文件名和 `DataSegment.file_offset` | 否 |
+| `block_offset` | `IndexEntry.block_offset` 存储的值, 指向 BlockHeader 起始位置 | 否 |
+| `block_offset - segment.file_offset` | BlockHeader 在所属数据段**数据区内**的相对 offset | 否 |
+| `segment.header_len + (block_offset - segment.file_offset)` | 实际 mmap/seek 读取 BlockHeader 的文件内物理字节位置 | 是 |
+
+转换公式:
+
+```text
+segment.file_offset   = (block_offset / data_segment_size) * data_segment_size
+block_segment_offset  = block_offset - segment.file_offset
+                      = block_offset % data_segment_size
+physical_file_offset  = segment.header_len + block_segment_offset
+```
+
+因此 `block_offset / data_segment_size` 可定位第几个数据段, `block_offset % data_segment_size` 可定位该段数据区内的 block 起点; 真正读写文件时必须再加运行时解析出的 `segment.header_len`。可变 header 设计要求 index 中的 `block_offset` 永远不包含 header, 否则文件格式扩展会改变历史索引含义。
 
 ### 3.5 FileMetadata (文件头, meta + state)
 
@@ -119,7 +141,7 @@ Offset  Size  Field                    Description
 | Meta Type (hex) | 名称 | 长度 | 数据类型 | 说明 |
 |-----------------|------|------|---------|------|
 | 0x01 | created_at | 8 | i64 LE | 创建时间(unix ms) |
-| 0x02 | file_offset | 8 | i64 LE | data segment: 起始字节offset; index segment: 起始秒级timestamp |
+| 0x02 | file_offset | 8 | i64 LE | data segment: `segment.file_offset` (数据区逻辑全局起点, 不含 header); index segment: 起始 timestamp |
 | 0x03 | file_size | 4 | u32 LE | 文件总大小(字节) — 始终记录 max segment_size |
 | 0x04 | compress_level | 1 | u8 | 压缩级别 |
 
@@ -357,7 +379,7 @@ const INDEX_HEADER_SIZE: u64 = 52;   // v1 默认索引段 header_len
 #[derive(Clone, Copy, Debug)]
 struct IndexEntry {
     timestamp: i64,
-    block_offset: u64,
+    block_offset: u64,    // 数据区逻辑全局 offset
     in_block_offset: u16,
 }
 ```

@@ -116,8 +116,8 @@ struct HotBlockCache {
 
 impl HotBlockCache {
     /// 判断给定的 entry 是否在已缓存的 block 中
-    fn is_hit(&self, seg_offset: u64, block_offset: u64) -> bool {
-        self.current_key.as_ref() == Some(&CacheKey::new(seg_offset, block_offset))
+    fn is_hit(&self, segment_file_offset: u64, block_segment_offset: u64) -> bool {
+        self.current_key.as_ref() == Some(&CacheKey::new(segment_file_offset, block_segment_offset))
     }
 
     /// 从热点缓存中提取单条 record
@@ -147,13 +147,13 @@ QueryIterator::next() → Option<Result<(i64, Vec<u8>)>>
     │      跳过 filler entries; 连续模式逻辑空洞不生成 source
     │
     ├─ 2. 检查 Hot Block Cache
-    │      ├─ Hit (同 segment + 同 block_offset)
+    │      ├─ Hit (同一个 data segment 且同一个段内 block offset)
     │      │   └─ 直接从 hot_block.extract_record() 返回
     │      │
     │      └─ Miss → 继续 ↓
     │
     ├─ 3. Block 读取 + 解压
-    │      ├─ 通过 block_offset 找到对应 DataSegment
+    │      ├─ 通过 block_offset 找到对应 DataSegment, 并转换为 block_segment_offset
     │      ├─ 读 BlockHeader, 检查 compressed flag
     │      ├─ compressed → 先查全局 BlockCache; miss 时 deflate_decompress() 并写入全局缓存
     │      └─ uncompressed → payload.to_vec(), 只进入 HotBlockCache
@@ -369,14 +369,15 @@ DataSegment::mmap (文件读取)
 
 ```
 read_record(block_offset):
-    1. 检查 HotBlockCache.is_hit(block_offset)
+    1. 计算 segment.file_offset 和 block_segment_offset = block_offset - segment.file_offset
+    2. 检查 HotBlockCache.is_hit(segment.file_offset, block_segment_offset)
        ├─ Yes → 直接提取 record, return
        └─ No  → 继续
-    2. mmap 读取 BlockHeader, 判断 flags
-    3. 若为 compressed, 检查全局 BlockCache.get(block_offset)
+    3. mmap 从 segment.header_len + block_segment_offset 读取 BlockHeader, 判断 flags
+    4. 若为 compressed, 检查全局 BlockCache.get(segment.file_offset, block_segment_offset)
        ├─ Hit → 存入 HotBlockCache, 提取 record, return
        └─ Miss → 继续
-    4. mmap 读取 payload + 解码
+    5. mmap 读取 payload + 解码
        → 存入 HotBlockCache
        → compressed block 存入全局 BlockCache (可选, 取决于 cache 容量)
        → raw block 不进入全局 BlockCache

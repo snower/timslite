@@ -66,6 +66,8 @@ impl TimeIndex {
 
 ### 7.3 IndexEntry 序列化 (18 字节)
 
+`IndexEntry.block_offset` 字段存储 Block 在数据流中的逻辑全局偏移: 相对各数据段数据区起点, 指向 BlockHeader 起始, 不包含任何数据段 header。读取 data segment 时必须先定位所属 `segment`, 再以 `segment.header_len + (block_offset - segment.file_offset)` 定位 BlockHeader。
+
 ```rust
 const INDEX_ENTRY_SIZE: usize = 18;
 

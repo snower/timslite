@@ -112,7 +112,7 @@ DataSet::write(timestamp, data):
 
 | 字段 | 哨兵值 | 含义 | 合法性保证 |
 |------|--------|------|-----------|
-| `block_offset: u64` | `0xFFFFFFFFFFFFFFFF` | 此位置无真实数据 (filler 或已删除) | 合法全局偏移远低于 u64::MAX |
+| `block_offset: u64` | `0xFFFFFFFFFFFFFFFF` | 此位置无真实数据 (filler 或已删除) | 字段语义为数据区逻辑全局 offset; 合法全局偏移远低于 u64::MAX |
 | `in_block_offset: u16` | `0xFFFF` | 此位置无真实数据 (filler 或已删除) | 普通聚合 Block 的 payload 硬上限为 64KB, 真实 record 起始偏移不会达到 `0xFFFF`; 超大独占 Block 只含一条 record, offset 固定为 0 |
 
 **哨兵值使用场景**:
@@ -191,8 +191,8 @@ validate entry.timestamp == ts
 需要新增或调整的设计接口:
 - `TimeIndex::set_or_load_base_timestamp(first_ts)`
 - `TimeIndex::segment_start_for(timestamp) -> Option<i64>`
-- `TimeIndex::append_sparse_continuous_entry(prev_latest, timestamp, block_offset, in_block_offset)`
-- `TimeIndex::upsert_sparse_continuous_entry(timestamp, block_offset, in_block_offset) -> Option<old_entry>`
+- `TimeIndex::append_sparse_continuous_entry(prev_latest, timestamp, block_offset, in_block_offset)` (`block_offset` 为数据区逻辑全局 offset)
+- `TimeIndex::upsert_sparse_continuous_entry(timestamp, block_offset, in_block_offset) -> Option<old_entry>` (`block_offset` 为数据区逻辑全局 offset)
 - `IndexSegment::materialize_until(timestamp, real_entry)`
 
 现有 `remove_pure_filler_segments()` 只能作为兼容清理, 不能作为大 gap 的主要策略。新设计必须在写入前跳过中间完整空 segment。

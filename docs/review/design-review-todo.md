@@ -29,7 +29,7 @@
 
 | 状态 | ID | 事项 | 验收标准 | 处理记录 |
 |------|----|------|----------|----------|
-| [ ] | P1-1 | 统一 `block_offset` 坐标系 | 文档中区分 `segment_file_offset`、`block_global_offset`、`block_segment_offset`、`file_byte_offset`; 给出转换公式 | |
+| [x] | P1-1 | 统一 `block_offset` 坐标系 | 明确 `block_offset` 是数据区逻辑全局偏移, 落到具体段后物理偏移为 `segment.header_len + (block_offset - segment.file_offset)` | 2026-05-31 已完成并按重新确认逻辑二次调整: `IndexEntry.block_offset` 对应 Block 在数据流中的逻辑全局偏移, 相对各数据段数据区起点, 指向 BlockHeader 起始, 不包含任何 header; 数据段文件名和 `DataSegment.file_offset` 使用同一数据区坐标系; 读取时先定位 segment, 再以 `segment.header_len + (block_offset - segment.file_offset)` 做 mmap/seek。已更新 `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `docs/design/background-and-cache.md`, `docs/design/query-iterator.md`, `docs/design/time-index.md`, `docs/design/memory-and-concurrency.md`, `docs/design/architecture.md`, `docs/design/index-continuous.md`, `docs/design/design-decisions.md`; 本项仅调整文档, 未修改代码。 |
 | [ ] | P1-2 | 完整定义 retention 对 read/delete/write/query 的影响 | `read`、`query`、`delete`、乱序写入和过期数据的行为一致; 混合过期/未过期 index segment 有处理策略 | |
 | [ ] | P1-3 | 修正后台任务锁顺序设计 | 文档中只有一种锁顺序; 明确 tick/后台线程/Store 操作是否允许交叉调用, 并补充无死锁约束 | |
 | [ ] | P1-4 | 补齐 FFI 配置与句柄生命周期设计 | 定义 `StoreConfigFFI`、`tmsl_store_open_with_config`、子句柄失效规则、通用数据释放函数; 同步头文件和设计文档 | |
@@ -48,7 +48,7 @@
 
 ## 建议处理顺序
 
-1. [ ] 锁定文件格式: record 长度编码、header size 策略、block offset 坐标系。
+1. [x] 锁定文件格式: record 长度编码、header size 策略、block offset 坐标系。
 2. [x] 锁定一致性模型: 数据/索引写入顺序、pending recovery、cache invalidation、crash recovery。
 3. [x] 重写连续索引设计: 时间粒度、gap 表示、跳段查找、first write 行为。
 4. [ ] 补齐 FFI 配置和生命周期: `StoreConfigFFI`、子句柄失效规则、通用 free 函数。
