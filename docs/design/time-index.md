@@ -39,8 +39,11 @@ impl TimeIndex {
     /// 按需打开已关闭的 index segment
     fn ensure_segment_open(&mut self, start_ts: i64) -> Result<&mut IndexSegment>;
 
-    /// 查询时间范围 [start_ts, end_ts] 内的所有 entries
+    /// 兼容查询: 收集时间范围 [start_ts, end_ts] 内的所有 entries
     pub fn query(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<IndexEntry>>;
+
+    /// 惰性查询准备: 返回 source cursor, segment 文件不全量加载 IndexEntry
+    pub fn prepare_query_sources(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<QuerySource>>;
 
     /// 从磁盘加载已有 index segments
     pub fn load_existing(base_dir: &Path, segment_size: u64) -> io::Result<Self>;

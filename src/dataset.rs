@@ -13,7 +13,7 @@ use crate::error::{Result, TmslError};
 use crate::index::segment::{IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
-use crate::query::iter::QueryIterator;
+use crate::query::iter::{QueryIterator, QuerySource};
 use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
 
@@ -434,8 +434,12 @@ impl DataSet {
         if start_ts > end_ts {
             return Ok(QueryIterator::new(vec![], &mut self.segments, cache));
         }
-        let entries = self.time_index.query(start_ts, end_ts)?;
-        Ok(QueryIterator::new(entries, &mut self.segments, cache))
+        let sources = self.time_index.prepare_query_sources(start_ts, end_ts)?;
+        Ok(QueryIterator::new_with_sources(
+            sources,
+            &mut self.segments,
+            cache,
+        ))
     }
 
     /// Query records in the time range [start_ts, end_ts].
@@ -457,6 +461,14 @@ impl DataSet {
             return Ok(vec![]);
         }
         self.time_index.query(start_ts, end_ts)
+    }
+
+    pub fn query_sources(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<QuerySource>> {
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
+        if start_ts > end_ts {
+            return Ok(Vec::new());
+        }
+        self.time_index.prepare_query_sources(start_ts, end_ts)
     }
 
     pub fn read_entry_at_index(

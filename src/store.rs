@@ -232,6 +232,9 @@ impl Store {
     /// Close a dataset by handle.
     pub fn close_dataset(&mut self, handle: DataSetHandle) -> Result<()> {
         if let Some(key) = self.handles.remove(&handle.0) {
+            if self.handles.values().any(|existing| *existing == key) {
+                return Ok(());
+            }
             let mut guard = self.datasets.write().unwrap();
             if let Some(ds_arc) = guard.remove(&key) {
                 let mut ds = ds_arc.lock().unwrap();

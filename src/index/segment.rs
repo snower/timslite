@@ -464,6 +464,25 @@ impl IndexSegment {
         }
     }
 
+    /// Read one entry by zero-based entry index.
+    pub fn read_entry_at_index(&mut self, entry_index: usize) -> Result<IndexEntry> {
+        self.ensure_open()?;
+        if entry_index >= self.wrote_count {
+            return Err(TmslError::InvalidData(format!(
+                "entry index {} out of range [0, {})",
+                entry_index, self.wrote_count
+            )));
+        }
+        let mmap = self
+            .mmap
+            .as_ref()
+            .ok_or_else(|| TmslError::MmapError("index segment closed".into()))?;
+        let pos = self.header_size as usize + entry_index * INDEX_ENTRY_SIZE;
+        let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
+        self.last_accessed_at = Instant::now();
+        Ok(IndexEntry::from_bytes(&buf))
+    }
+
     /// Range query: all entries with timestamp in [start_ts, end_ts].
     pub fn query_range(&self, start_ts: i64, end_ts: i64) -> Vec<IndexEntry> {
         let mmap = self.mmap.as_ref().expect("index segment must be open");

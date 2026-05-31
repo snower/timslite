@@ -13,6 +13,7 @@ use self::segment::{
 };
 use crate::error::{Result, TmslError};
 use crate::header::{IndexFileMetadata, INDEX_HEADER_SIZE};
+use crate::query::iter::QuerySource;
 
 // ─── TimeIndex ─────────────────────────────────────────────────────────────
 
@@ -646,6 +647,67 @@ impl TimeIndex {
         Ok(results)
     }
 
+    /// Prepare lazy query sources for [start_ts, end_ts].
+    pub fn prepare_query_sources(
+        &mut self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Vec<QuerySource>> {
+        let mut sources = Vec::new();
+        let ic = self.index_continuous;
+
+        let mut memory_entries: Vec<IndexEntry> = self
+            .in_memory_buffer
+            .iter()
+            .copied()
+            .filter(|entry| entry.timestamp >= start_ts && entry.timestamp <= end_ts)
+            .collect();
+        memory_entries.sort_by_key(|entry| entry.timestamp);
+        memory_entries.dedup_by_key(|entry| entry.timestamp);
+        if !memory_entries.is_empty() {
+            sources.push(QuerySource::InMemory {
+                entries: memory_entries,
+                position: 0,
+            });
+        }
+
+        for seg in &mut self.index_segments {
+            seg.ensure_open()?;
+            if let Some((start_idx, end_idx)) = seg.query_range_indices(start_ts, end_ts, ic) {
+                let first_timestamp = seg.read_entry_at_index(start_idx)?.timestamp;
+                sources.push(QuerySource::segment_file(
+                    seg.path.clone(),
+                    seg.start_timestamp,
+                    self.segment_size,
+                    ic,
+                    start_idx,
+                    end_idx,
+                    first_timestamp,
+                ));
+            }
+        }
+
+        for meta in &self.closed_index_segments {
+            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            if let Some((start_idx, end_idx)) = seg.query_range_indices(start_ts, end_ts, ic) {
+                let first_timestamp = seg.read_entry_at_index(start_idx)?.timestamp;
+                sources.push(QuerySource::segment_file(
+                    meta.path.clone(),
+                    meta.start_timestamp,
+                    self.segment_size,
+                    ic,
+                    start_idx,
+                    end_idx,
+                    first_timestamp,
+                ));
+            }
+            seg.idle_close().ok();
+        }
+
+        sources.sort_by_key(|source| source.first_timestamp().unwrap_or(i64::MAX));
+        Ok(sources)
+    }
+
     // ─── Lifecycle management ────────────────────────────────────────────
 
     pub fn sync_all(&mut self) -> Result<()> {
@@ -1031,6 +1093,40 @@ mod tests {
         // Query all
         let entries = idx2.query(2000, 2099).unwrap();
         assert_eq!(entries.len(), 100);
+    }
+
+    #[test]
+    fn test_prepare_query_sources_uses_segment_file_cursor() {
+        let dir = temp_dir();
+        let sub = dir.join("prepare_query_sources");
+        let _ = fs::remove_dir_all(&sub);
+        fs::create_dir_all(&sub).unwrap();
+
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+        idx.in_memory_flush_threshold = 2;
+        for i in 0..5 {
+            idx.add_entry(3000 + i, i as u64 * 10, i as u16).unwrap();
+        }
+        idx.flush_to_disk().unwrap();
+
+        let mut sources = idx.prepare_query_sources(3001, 3003).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert!(
+            matches!(
+                sources[0],
+                crate::query::iter::QuerySource::SegmentFile { .. }
+            ),
+            "flushed index range should be represented by a segment cursor, not a Vec"
+        );
+
+        let source = sources.get_mut(0).unwrap();
+        let first = source.next_entry().unwrap().unwrap();
+        assert_eq!(first.timestamp, 3001);
+        let second = source.next_entry().unwrap().unwrap();
+        assert_eq!(second.timestamp, 3002);
+        let third = source.next_entry().unwrap().unwrap();
+        assert_eq!(third.timestamp, 3003);
+        assert!(source.next_entry().unwrap().is_none());
     }
 
     #[test]

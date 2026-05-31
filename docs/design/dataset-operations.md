@@ -370,14 +370,15 @@ DataSet::delete(timestamp):
     └─ 3. 按 timestamp 排序返回
 ```
 
-### 10.2 新版流程 (QueryIterator 惰性查询 + HotBlockCache)
+### 10.2 当前实现流程 (QueryIterator: 数据惰性 + 索引 source cursor)
 
 ```
 查询 [start_ts, end_ts] → QueryIterator (惰性)
     │
-    ├─ 1. TimeIndex.prepare_query()
-    │      → 返回按时间顺序排列的 QueryDataSource 列表
-    │      (不加载实际数据, 只建立 source 映射)
+    ├─ 1. TimeIndex.prepare_query_sources()
+    │      → 返回按时间顺序排列的 QuerySource 列表
+    │      → 内存 buffer 只复制命中范围内的未 flush entry
+    │      → index segment 只记录 path + [start_idx, end_idx), 不全量收集 entries
     │
     └─ 调用 next() 时:
            ├─ 2. 从当前 source 获取下一个 IndexEntry
@@ -407,11 +408,12 @@ DataSet::delete(timestamp):
 ```
 
 > **关键改进**:
-> - **惰性化**: 索引条目按需从 source 取出, 不再全量收集到 Vec
+> - **索引 source cursor**: 已落盘的 index segment 只在迭代时逐条读取, 不再把整个查询范围一次性收集到 `Vec<IndexEntry>`
+> - **数据惰性化**: `DataSet::query_iter()` 与 FFI iterator 按需读取 record; `DataSet::query()` 作为兼容便利方法仍会 collect 成 `Vec`
 > - **HotBlockCache**: 读取循环中保持最后解压的 Block, 同 Block 内连续读取跳过 mmap+解压
 > - **无锁热点**: HotBlockCache 属于单个 QueryIterator 实例, 不涉及全局锁竞争
 > - **全局缓存不可变性**: 只有 compressed block 的解压 payload 可进入全局 BlockCache; HotBlockCache 为查询局部缓存, 可持有本次读取的 raw payload, 但不跨越写入操作
-> - **内存节省**: 查询 100 万条记录仅需 ~64KB (1 Block) 内存, 而非 ~100MB
+> - **内存边界**: 当前 Rust QueryIterator 主要持有 source 元数据、未 flush 命中 entry、当前 hot block 和当前 record; FFI `tmsl_iter_next` 仍按条 `malloc` 返回数据。严格 64KB 级常量内存属于后续零拷贝/buffer API 目标, 不能作为当前 FFI 性能承诺
 >
 > **旧 API 兼容**: `DataSet::query()` 方法保留, 内部改为 `query_iter().collect()`
 
@@ -446,7 +448,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - `read` 返回 `Option`, 未找到时不报错 (区别于 `delete` 的 `NotFound` 错误)
 > - `read` 复用 `TimeIndex.find_entry()` (三级搜索), 与 correction-write 路径一致
 > - FFI 层 `tmsl_dataset_read` 返回码: 0=成功, 1=未找到, -1=错误
-> - `out_data` 由 `libc::malloc` 分配, C 侧通过 `tmsl_iter_free_data` 释放 (与迭代器共享分配/释放路径)
+> - `out_data` 由 `libc::malloc` 分配, C 侧通过 `tmsl_data_free` 释放; `tmsl_iter_free_data` 仅作为兼容别名保留
 >
 > **`timestamp = -1` 快捷路径**:
 > - 直接复用内存中的 `latest_written_timestamp` (open 时从索引恢复), 省去一次索引查找

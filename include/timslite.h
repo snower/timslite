@@ -18,7 +18,47 @@
 extern "C" {
 #endif
 
+#define TMSL_STORE_CONFIG_FFI_VERSION 1u
+#define TMSL_DATASET_CONFIG_FFI_VERSION 1u
+
+typedef struct TmslStoreConfigFFI {
+    uint32_t version;
+    uint64_t flush_interval_ms;
+    uint64_t idle_timeout_ms;
+    uint64_t data_segment_size;
+    uint64_t index_segment_size;
+    uint64_t initial_data_segment_size;
+    uint64_t initial_index_segment_size;
+    uint64_t cache_max_memory;
+    uint64_t cache_idle_timeout_ms;
+    uint32_t block_max_size;
+    uint8_t compress_level;
+    uint8_t retention_check_hour;
+    uint8_t enable_background_thread;
+} TmslStoreConfigFFI;
+
+typedef struct TmslDatasetConfigFFI {
+    uint32_t version;
+    uint64_t data_segment_size;
+    uint64_t index_segment_size;
+    uint64_t initial_data_segment_size;
+    uint64_t initial_index_segment_size;
+    uint64_t retention_ms;
+    uint8_t compress_level;
+    uint8_t index_continuous;
+} TmslDatasetConfigFFI;
+
 /* ─── Store Management ──────────────────────────────────────────────────── */
+
+/**
+ * Fill a store config struct with default values.
+ * @param out_config   Output config pointer.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_store_config_default(TmslStoreConfigFFI* out_config,
+                              char* err_buf, size_t err_buf_len);
 
 /**
  * Open a store at the given directory.
@@ -30,7 +70,21 @@ extern "C" {
 void* tmsl_store_open(const char* data_dir, char* err_buf, size_t err_buf_len);
 
 /**
+ * Open a store at the given directory with explicit config.
+ * Passing config = NULL is equivalent to tmsl_store_open.
+ * @param data_dir     Path to data directory.
+ * @param config       Versioned config pointer, or NULL for defaults.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque store pointer, or NULL on error.
+ */
+void* tmsl_store_open_with_config(const char* data_dir,
+                                  const TmslStoreConfigFFI* config,
+                                  char* err_buf, size_t err_buf_len);
+
+/**
  * Close a store and release all resources.
+ * Fails if any dataset or iterator handle created from this store is still open.
  * @param store        Opaque store pointer.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
@@ -89,6 +143,22 @@ void* tmsl_dataset_create(void* store, const char* name, const char* dataset_typ
                           unsigned char compress_level, unsigned char index_continuous,
                           uint64_t retention_ms,
                           char* err_buf, size_t err_buf_len);
+
+/**
+ * Create a new dataset with explicit config, including initial segment sizes.
+ * @param store        Opaque store pointer.
+ * @param name         Dataset name.
+ * @param dataset_type Dataset type.
+ * @param config       Versioned dataset config pointer (must not be NULL).
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque dataset pointer, or NULL on error.
+ */
+void* tmsl_dataset_create_with_config(void* store,
+                                      const char* name,
+                                      const char* dataset_type,
+                                      const TmslDatasetConfigFFI* config,
+                                      char* err_buf, size_t err_buf_len);
 
 /**
  * Drop (delete) an entire dataset.
@@ -192,7 +262,7 @@ int tmsl_dataset_delete(void* dataset, int64_t timestamp,
  *
  * On success (record found): allocates `out_data` via malloc, sets `out_ts`
  * (the actual timestamp of the record) and `out_data_len`. Caller must free
- * `out_data` via `tmsl_iter_free_data`.
+ * `out_data` via `tmsl_data_free`.
  *
  * Shortcut: passing `timestamp = -1` resolves to the latest written timestamp
  * and returns the newest record. If the dataset is empty or the latest entry
@@ -201,7 +271,7 @@ int tmsl_dataset_delete(void* dataset, int64_t timestamp,
  * @param dataset      Opaque dataset pointer.
  * @param timestamp    Timestamp of the record to read, or -1 for the latest record.
  * @param out_ts       Output: actual timestamp of the record returned.
- * @param out_data     Output: pointer to data (malloc'd, must be freed via tmsl_iter_free_data).
+ * @param out_data     Output: pointer to data (malloc'd, must be freed via tmsl_data_free).
  * @param out_data_len Output: data length in bytes.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
@@ -239,7 +309,14 @@ int tmsl_iter_next(void* iter, int64_t* out_ts, unsigned char** out_data,
                    size_t* out_data_len, char* err_buf, size_t err_buf_len);
 
 /**
+ * Free data returned by tmsl_dataset_read or tmsl_iter_next.
+ * @param data         Pointer returned by a timslite FFI read/query API.
+ */
+void tmsl_data_free(void* data);
+
+/**
  * Free data returned by tmsl_iter_next.
+ * Compatibility alias for tmsl_data_free.
  * @param data         Pointer from tmsl_iter_next.
  */
 void tmsl_iter_free_data(unsigned char* data);

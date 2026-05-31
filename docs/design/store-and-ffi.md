@@ -112,7 +112,7 @@ impl StoreConfigBuilder {
 **与 `tmsl_store_open` 的兼容性**:
 - `tmsl_store_open(data_dir)` 使用全部默认配置 (含 `enable_background_thread=true`)
 - 需要禁用线程时, 调用方应使用 `tmsl_store_open_with_config(data_dir, config_ptr, ...)`
-- `tmsl_store_open_with_config` 当前已作为 FFI 声明存在, 实现待 Phase 21 补齐
+- `tmsl_store_open_with_config` 使用版本化 `TmslStoreConfigFFI`; `config_ptr == NULL` 时等价于默认配置
 
 ### 11.5 Store: 后台任务手动执行与查询
 
@@ -165,9 +165,39 @@ loop {
 ## 十二、FFI API
 
 ```rust
+#[repr(C)]
+pub struct TmslStoreConfigFFI {
+    pub version: u32,                    // 必须为 TMSL_STORE_CONFIG_FFI_VERSION
+    pub flush_interval_ms: u64,
+    pub idle_timeout_ms: u64,
+    pub data_segment_size: u64,
+    pub index_segment_size: u64,
+    pub initial_data_segment_size: u64,
+    pub initial_index_segment_size: u64,
+    pub cache_max_memory: u64,
+    pub cache_idle_timeout_ms: u64,
+    pub block_max_size: u32,
+    pub compress_level: u8,
+    pub retention_check_hour: u8,
+    pub enable_background_thread: u8,    // 0=false, non-zero=true
+}
+
+#[repr(C)]
+pub struct TmslDatasetConfigFFI {
+    pub version: u32,                    // 必须为 TMSL_DATASET_CONFIG_FFI_VERSION
+    pub data_segment_size: u64,
+    pub index_segment_size: u64,
+    pub initial_data_segment_size: u64,
+    pub initial_index_segment_size: u64,
+    pub retention_ms: u64,
+    pub compress_level: u8,
+    pub index_continuous: u8,            // 0=false, non-zero=true
+}
+
 // Store 管理
+#[no_mangle] pub extern "C" fn tmsl_store_config_default(out_config: *mut TmslStoreConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_store_open(data_dir: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
-#[no_mangle] pub extern "C" fn tmsl_store_open_with_config(data_dir: *const c_char, config_ptr: *const StoreConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_store_open_with_config(data_dir: *const c_char, config_ptr: *const TmslStoreConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_store_close(store: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // Store 后台任务控制 (手动模式 / 与后台线程共存; 详见 §11.5)
@@ -191,6 +221,10 @@ loop {
     name: *const c_char, dataset_type: *const c_char,
     data_segment_size: u64, index_segment_size: u64,
     compress_level: u8, index_continuous: u8, retention_ms: u64,
+    err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_dataset_create_with_config(store: *mut c_void,
+    name: *const c_char, dataset_type: *const c_char,
+    config_ptr: *const TmslDatasetConfigFFI,
     err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_dataset_open(store: *mut c_void,
     name: *const c_char, dataset_type: *const c_char,
@@ -218,15 +252,23 @@ loop {
 // 查询迭代器
 #[no_mangle] pub extern "C" fn tmsl_dataset_query(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_iter_next(iter: *mut c_void, out_ts: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_data_free(data: *mut c_void);
 #[no_mangle] pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar);
 #[no_mangle] pub extern "C" fn tmsl_iter_close(iter: *mut c_void);
 ```
 
 > **内存所有权**:
-> - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_iter_free_data` 释放
-> - `tmsl_dataset_read` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_iter_free_data` 释放
+> - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
+> - `tmsl_dataset_read` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
+> - `tmsl_iter_free_data` 保留为兼容别名, 内部等价于 `tmsl_data_free`
 > - `tmsl_iter_close` 释放迭代器本身 (Rust `Box::from_raw` + drop)
 > - 所有 FFI 函数用 `catch_unwind` 包裹, panic 时返回 -1/null + err_buf 写错误信息
+
+> **句柄生命周期**:
+> - `store` 是父句柄; `dataset` 和 `iterator` 是子句柄。`tmsl_store_close` 在存在任一未关闭子句柄时返回 -1, 不释放 store。
+> - `iterator` 必须先于创建它的 `dataset` 关闭; `tmsl_dataset_close` 在该 dataset 仍有活动 iterator 时返回 -1。
+> - `tmsl_dataset_drop` 通过 FFI 调用时要求该 store 下没有活动 dataset/iterator 子句柄, 避免删除仍被 C 侧持有的对象。
+> - `tmsl_dataset_close` / `tmsl_iter_close` 成功后对应指针立即失效, 之后不得再次传入任何 FFI 函数。
 
 ## 十三、C 侧调用示例
 
@@ -257,7 +299,7 @@ void* iter = tmsl_dataset_query(ds, 1700000000, 1700000060, err_buf, sizeof(err_
 long ts; unsigned char* buf; size_t len;
 while (tmsl_iter_next(iter, &ts, &buf, &len, err_buf, sizeof(err_buf)) == 0) {
     // 处理 buf[0..len]
-    tmsl_iter_free_data(buf);
+    tmsl_data_free(buf);
 }
 tmsl_iter_close(iter);
 

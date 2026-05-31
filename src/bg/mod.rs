@@ -25,6 +25,10 @@ pub struct ExecutorState {
     pub last_idle_check: Instant,
     pub last_cache_eviction: Instant,
     pub next_retention: Instant,
+    pub flush_running: bool,
+    pub idle_running: bool,
+    pub cache_running: bool,
+    pub retention_running: bool,
 }
 
 /// Result returned by a single `tick()` call.
@@ -47,6 +51,23 @@ pub struct BackgroundTasks {
     retention_check_hour: u8,
     handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
+}
+
+#[derive(Default)]
+struct DueTasks {
+    flush: bool,
+    idle_check: bool,
+    cache_eviction: bool,
+    retention_reclaim: bool,
+}
+
+impl DueTasks {
+    fn count(&self) -> usize {
+        self.flush as usize
+            + self.idle_check as usize
+            + self.cache_eviction as usize
+            + self.retention_reclaim as usize
+    }
 }
 
 /// Compute the next wall-clock Instant at which retention reclaim should run.
@@ -92,6 +113,10 @@ impl BackgroundTasks {
                 last_idle_check: now,
                 last_cache_eviction: now,
                 next_retention: next_retention_time(retention_check_hour),
+                flush_running: false,
+                idle_running: false,
+                cache_running: false,
+                retention_running: false,
             })),
             datasets,
             block_cache,
@@ -121,6 +146,10 @@ impl BackgroundTasks {
             last_idle_check: now,
             last_cache_eviction: now,
             next_retention: next_retention_time(retention_check_hour),
+            flush_running: false,
+            idle_running: false,
+            cache_running: false,
+            retention_running: false,
         }));
 
         // Clone Arcs for the thread
@@ -159,9 +188,10 @@ impl BackgroundTasks {
     /// Execute a single tick: check which tasks are due, run them, return
     /// how many tasks were executed plus the delay until the next is due.
     pub fn tick(&self) -> TickResult {
-        let mut state = self.state.lock().unwrap();
-        let executed = self.execute_due_tasks(&mut state);
-        let next_delay = self.compute_next_delay(&state);
+        let (due_tasks, next_delay) = self.reserve_due_tasks();
+        let executed = due_tasks.count();
+        self.execute_reserved_tasks(&due_tasks);
+        self.finish_reserved_tasks(&due_tasks);
         TickResult {
             executed_tasks: executed,
             next_delay,
@@ -188,164 +218,222 @@ impl BackgroundTasks {
 
     fn compute_next_delay(&self, state: &ExecutorState) -> Duration {
         let now = Instant::now();
-        let next_flush = state.last_flush + self.flush_interval;
-        let next_idle = state.last_idle_check + IDLE_CHECK_INTERVAL;
-        let next_cache = state.last_cache_eviction + CACHE_EVICTION_INTERVAL;
-        next_flush
-            .min(next_idle)
-            .min(next_cache)
-            .min(state.next_retention)
-            .saturating_duration_since(now)
+        let next_flush = if state.flush_running {
+            now + self.flush_interval
+        } else {
+            state.last_flush + self.flush_interval
+        };
+        let next_idle = if state.idle_running {
+            now + IDLE_CHECK_INTERVAL
+        } else {
+            state.last_idle_check + IDLE_CHECK_INTERVAL
+        };
+        let next_retention = if state.retention_running {
+            now + Duration::from_secs(1)
+        } else {
+            state.next_retention
+        };
+        let mut next = next_flush.min(next_idle).min(next_retention);
+        if self.block_cache.is_enabled() {
+            let next_cache = if state.cache_running {
+                now + CACHE_EVICTION_INTERVAL
+            } else {
+                state.last_cache_eviction + CACHE_EVICTION_INTERVAL
+            };
+            next = next.min(next_cache);
+        }
+        next.saturating_duration_since(now)
     }
 
-    fn execute_due_tasks(&self, state: &mut ExecutorState) -> usize {
+    fn reserve_due_tasks(&self) -> (DueTasks, Duration) {
+        let mut state = self.state.lock().unwrap();
         let now = Instant::now();
-        let mut executed = 0usize;
+        let mut due = DueTasks::default();
 
-        // Flush
-        if now >= state.last_flush + self.flush_interval {
-            if let Ok(guard) = self.datasets.read() {
-                for (_key, ds_arc) in guard.iter() {
-                    let mut ds = match ds_arc.lock() {
-                        Ok(ds) => ds,
-                        Err(_) => continue,
-                    };
-                    if let Err(e) = ds.flush() {
-                        log::error!("[bg flush] failed: {}", e);
-                    }
-                }
-            }
+        if now >= state.last_flush + self.flush_interval && !state.flush_running {
             state.last_flush = now;
-            executed += 1;
+            state.flush_running = true;
+            due.flush = true;
         }
 
-        // Idle Check
-        if now >= state.last_idle_check + IDLE_CHECK_INTERVAL {
-            let idle_keys = {
-                let guard = match self.datasets.read() {
-                    Ok(g) => g,
-                    Err(_) => {
-                        state.last_idle_check = now;
-                        return executed + 1;
-                    }
-                };
-                guard
-                    .iter()
-                    .filter(|(_k, ds_arc)| {
-                        let ds = match ds_arc.lock() {
-                            Ok(ds) => ds,
-                            Err(_) => return false,
-                        };
-                        ds.last_used_at().elapsed() >= self.idle_timeout
-                    })
-                    .map(|(k, _)| k.clone())
-                    .collect::<Vec<_>>()
-            };
-
-            for key in idle_keys {
-                let ds_arc = {
-                    let guard = match self.datasets.read() {
-                        Ok(g) => g,
-                        Err(_) => continue,
-                    };
-                    match guard.get(&key) {
-                        Some(ds) => Arc::clone(ds),
-                        None => continue,
-                    }
-                };
-                {
-                    let mut ds = match ds_arc.lock() {
-                        Ok(ds) => ds,
-                        Err(_) => continue,
-                    };
-                    if ds.last_used_at().elapsed() >= self.idle_timeout {
-                        if let Err(e) = ds.close() {
-                            log::error!("[bg idle] close failed for {:?}: {}", key, e);
-                        } else {
-                            log::info!("[bg idle] closed dataset {:?}", key);
-                        }
-                    }
-                }
-            }
+        if now >= state.last_idle_check + IDLE_CHECK_INTERVAL && !state.idle_running {
             state.last_idle_check = now;
-            executed += 1;
+            state.idle_running = true;
+            due.idle_check = true;
         }
 
-        let now = Instant::now();
-
-        // Cache Eviction
-        if now >= state.last_cache_eviction + CACHE_EVICTION_INTERVAL
-            && self.block_cache.is_enabled()
+        if self.block_cache.is_enabled()
+            && now >= state.last_cache_eviction + CACHE_EVICTION_INTERVAL
+            && !state.cache_running
         {
-            let evicted = self.block_cache.evict_idle(self.cache_idle_timeout);
-            if evicted > 0 {
-                log::info!("[bg cache] evicted {} idle entries", evicted);
-            }
             state.last_cache_eviction = now;
-            executed += 1;
+            state.cache_running = true;
+            due.cache_eviction = true;
         }
 
-        // Retention Reclaim
-        if now >= state.next_retention {
-            let enabled: Vec<(DataSetKey, u64)> = {
-                let guard = match self.datasets.read() {
-                    Ok(g) => g,
-                    Err(_) => {
-                        state.next_retention = next_retention_time(self.retention_check_hour);
-                        return executed + 1;
-                    }
-                };
-                guard
-                    .iter()
-                    .filter_map(|(k, ds_arc)| {
-                        let ds = ds_arc.lock().ok()?;
-                        if ds.retention_ms() > 0 {
-                            Some((k.clone(), ds.retention_ms()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            };
+        if now >= state.next_retention && !state.retention_running {
+            state.next_retention = next_retention_time(self.retention_check_hour);
+            state.retention_running = true;
+            due.retention_reclaim = true;
+        }
 
-            let mut total_reclaimed = 0usize;
-            for (key, _ret_ms) in enabled {
-                let ds_arc = {
-                    let guard = match self.datasets.read() {
-                        Ok(g) => g,
-                        Err(_) => continue,
-                    };
-                    match guard.get(&key) {
-                        Some(ds) => Arc::clone(ds),
-                        None => continue,
-                    }
-                };
+        let next_delay = self.compute_next_delay(&state);
+        (due, next_delay)
+    }
+
+    fn execute_reserved_tasks(&self, due: &DueTasks) {
+        if due.flush {
+            self.run_flush();
+        }
+        if due.idle_check {
+            self.run_idle_check();
+        }
+        if due.cache_eviction {
+            self.run_cache_eviction();
+        }
+        if due.retention_reclaim {
+            self.run_retention_reclaim();
+        }
+    }
+
+    fn finish_reserved_tasks(&self, due: &DueTasks) {
+        if due.count() == 0 {
+            return;
+        }
+        let mut state = self.state.lock().unwrap();
+        if due.flush {
+            state.flush_running = false;
+        }
+        if due.idle_check {
+            state.idle_running = false;
+        }
+        if due.cache_eviction {
+            state.cache_running = false;
+        }
+        if due.retention_reclaim {
+            state.retention_running = false;
+        }
+    }
+
+    fn run_flush(&self) {
+        if let Ok(guard) = self.datasets.read() {
+            for (_key, ds_arc) in guard.iter() {
                 let mut ds = match ds_arc.lock() {
                     Ok(ds) => ds,
                     Err(_) => continue,
                 };
-                match ds.reclaim_expired_segments() {
-                    Ok(n) if n > 0 => {
-                        log::info!("[bg retention] {:?}: reclaimed {} segments", key, n);
-                        total_reclaimed += n;
-                    }
-                    Err(e) => {
-                        log::error!("[bg retention] {:?}: reclaim failed: {}", key, e)
-                    }
-                    _ => {}
+                if let Err(e) = ds.flush() {
+                    log::error!("[bg flush] failed: {}", e);
                 }
             }
-            if total_reclaimed > 0 {
-                log::info!(
-                    "[bg retention] reclaimed {} segment files total",
-                    total_reclaimed
-                );
-            }
-            state.next_retention = next_retention_time(self.retention_check_hour);
-            executed += 1;
         }
+    }
 
-        executed
+    fn run_idle_check(&self) {
+        let idle_keys = {
+            let guard = match self.datasets.read() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            guard
+                .iter()
+                .filter(|(_k, ds_arc)| {
+                    let ds = match ds_arc.lock() {
+                        Ok(ds) => ds,
+                        Err(_) => return false,
+                    };
+                    ds.last_used_at().elapsed() >= self.idle_timeout
+                })
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>()
+        };
+
+        for key in idle_keys {
+            let ds_arc = {
+                let guard = match self.datasets.read() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                match guard.get(&key) {
+                    Some(ds) => Arc::clone(ds),
+                    None => continue,
+                }
+            };
+            let mut ds = match ds_arc.lock() {
+                Ok(ds) => ds,
+                Err(_) => continue,
+            };
+            if ds.last_used_at().elapsed() >= self.idle_timeout {
+                if let Err(e) = ds.close() {
+                    log::error!("[bg idle] close failed for {:?}: {}", key, e);
+                } else {
+                    log::info!("[bg idle] closed dataset {:?}", key);
+                }
+            }
+        }
+    }
+
+    fn run_cache_eviction(&self) {
+        if self.block_cache.is_enabled() {
+            let evicted = self.block_cache.evict_idle(self.cache_idle_timeout);
+            if evicted > 0 {
+                log::info!("[bg cache] evicted {} idle entries", evicted);
+            }
+        }
+    }
+
+    fn run_retention_reclaim(&self) {
+        let enabled: Vec<(DataSetKey, u64)> = {
+            let guard = match self.datasets.read() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            guard
+                .iter()
+                .filter_map(|(k, ds_arc)| {
+                    let ds = ds_arc.lock().ok()?;
+                    if ds.retention_ms() > 0 {
+                        Some((k.clone(), ds.retention_ms()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+
+        let mut total_reclaimed = 0usize;
+        for (key, _ret_ms) in enabled {
+            let ds_arc = {
+                let guard = match self.datasets.read() {
+                    Ok(g) => g,
+                    Err(_) => continue,
+                };
+                match guard.get(&key) {
+                    Some(ds) => Arc::clone(ds),
+                    None => continue,
+                }
+            };
+            let mut ds = match ds_arc.lock() {
+                Ok(ds) => ds,
+                Err(_) => continue,
+            };
+            match ds.reclaim_expired_segments() {
+                Ok(n) if n > 0 => {
+                    log::info!("[bg retention] {:?}: reclaimed {} segments", key, n);
+                    total_reclaimed += n;
+                }
+                Err(e) => {
+                    log::error!("[bg retention] {:?}: reclaim failed: {}", key, e)
+                }
+                _ => {}
+            }
+        }
+        if total_reclaimed > 0 {
+            log::info!(
+                "[bg retention] reclaimed {} segment files total",
+                total_reclaimed
+            );
+        }
     }
 
     fn thread_loop(&self, shutdown_rx: mpsc::Receiver<()>) {
@@ -371,6 +459,31 @@ impl BackgroundTasks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn make_test_dataset(base: &str) -> (DataSetKey, Arc<std::sync::Mutex<DataSet>>) {
+        let dir = std::env::temp_dir().join(base);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = DataSetKey {
+            name: base.to_string(),
+            dataset_type: "test".to_string(),
+        };
+        let ds = DataSet::create(
+            key.clone(),
+            dir,
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+        (key, Arc::new(std::sync::Mutex::new(ds)))
+    }
 
     fn make_empty_test_bg(thread_enabled: bool) -> BackgroundTasks {
         let datasets = Arc::new(RwLock::new(HashMap::new()));
@@ -554,5 +667,57 @@ mod tests {
         assert!(delay.as_secs_f64() > 0.0 || delay.as_secs_f64() == 0.0);
 
         let _ = tick_handle.join();
+    }
+
+    #[test]
+    fn test_next_delay_does_not_wait_for_dataset_lock_during_tick() {
+        let datasets = Arc::new(RwLock::new(HashMap::new()));
+        let (key, ds_arc) = make_test_dataset("timslite_bg_next_delay_nonblocking");
+        datasets.write().unwrap().insert(key, Arc::clone(&ds_arc));
+
+        let bg = Arc::new(BackgroundTasks::new(
+            datasets,
+            Arc::new(BlockCache::new(0)),
+            Duration::from_millis(1),
+            Duration::from_secs(1800),
+            Duration::from_secs(1800),
+            0,
+        ));
+
+        {
+            let mut state = bg.state.lock().unwrap();
+            state.last_flush = Instant::now() - Duration::from_secs(10);
+        }
+
+        let ds_guard = ds_arc.lock().unwrap();
+        let bg_tick = Arc::clone(&bg);
+        let tick_started = Arc::new(AtomicBool::new(false));
+        let tick_started_thread = Arc::clone(&tick_started);
+        let tick_handle = std::thread::spawn(move || {
+            tick_started_thread.store(true, Ordering::SeqCst);
+            bg_tick.tick()
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            let state = bg.state.lock().unwrap();
+            if state.flush_running {
+                break;
+            }
+            drop(state);
+            std::thread::yield_now();
+        }
+        assert!(tick_started.load(Ordering::SeqCst));
+
+        let started = Instant::now();
+        let _ = bg.next_delay();
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "next_delay waited for dataset lock instead of only the state lock"
+        );
+
+        drop(ds_guard);
+        let result = tick_handle.join().unwrap();
+        assert_eq!(result.executed_tasks, 1);
     }
 }

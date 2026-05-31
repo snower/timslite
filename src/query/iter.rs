@@ -2,7 +2,9 @@
 
 use crate::cache::BlockCache;
 use crate::error::Result;
-use crate::index::segment::{IndexEntry, BLOCK_OFFSET_FILLER};
+use std::path::PathBuf;
+
+use crate::index::segment::{IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::segment::data::ReadIndexEntry;
 use crate::segment::DataSegmentSet;
 
@@ -14,6 +16,98 @@ pub enum QuerySource {
         entries: Vec<IndexEntry>,
         position: usize,
     },
+    SegmentFile {
+        path: PathBuf,
+        start_timestamp: i64,
+        segment_size: u64,
+        index_continuous: bool,
+        start_idx: usize,
+        end_idx: usize,
+        position: usize,
+        first_timestamp: i64,
+        segment: Option<IndexSegment>,
+    },
+}
+
+impl QuerySource {
+    pub fn segment_file(
+        path: PathBuf,
+        start_timestamp: i64,
+        segment_size: u64,
+        index_continuous: bool,
+        start_idx: usize,
+        end_idx: usize,
+        first_timestamp: i64,
+    ) -> Self {
+        Self::SegmentFile {
+            path,
+            start_timestamp,
+            segment_size,
+            index_continuous,
+            start_idx,
+            end_idx,
+            position: start_idx,
+            first_timestamp,
+            segment: None,
+        }
+    }
+
+    pub fn first_timestamp(&self) -> Option<i64> {
+        match self {
+            QuerySource::InMemory { entries, .. } => entries.first().map(|e| e.timestamp),
+            QuerySource::SegmentFile {
+                first_timestamp, ..
+            } => Some(*first_timestamp),
+        }
+    }
+
+    pub fn next_entry(&mut self) -> Result<Option<IndexEntry>> {
+        match self {
+            QuerySource::InMemory { entries, position } => {
+                if *position < entries.len() {
+                    let entry = entries[*position];
+                    *position += 1;
+                    Ok(Some(entry))
+                } else {
+                    Ok(None)
+                }
+            }
+            QuerySource::SegmentFile {
+                path,
+                start_timestamp,
+                segment_size,
+                position,
+                end_idx,
+                segment,
+                ..
+            } => {
+                if *position >= *end_idx {
+                    if let Some(mut seg) = segment.take() {
+                        let _ = seg.idle_close();
+                    }
+                    return Ok(None);
+                }
+                if segment.is_none() {
+                    *segment = Some(IndexSegment::open(path, *start_timestamp, *segment_size)?);
+                }
+                let seg = segment
+                    .as_mut()
+                    .expect("segment is opened before reading query source");
+                let entry = seg.read_entry_at_index(*position)?;
+                *position += 1;
+                Ok(Some(entry))
+            }
+        }
+    }
+
+    pub fn entries_remaining(&self) -> usize {
+        match self {
+            QuerySource::InMemory { entries, position } => entries.len().saturating_sub(*position),
+            QuerySource::SegmentFile {
+                position, end_idx, ..
+            } => end_idx.saturating_sub(*position),
+        }
+    }
 }
 
 /// Iterator position state
@@ -37,11 +131,23 @@ impl<'a, 'b> QueryIterator<'a, 'b> {
         segments: &'a mut DataSegmentSet,
         cache: Option<&'b BlockCache>,
     ) -> Self {
-        Self {
-            sources: vec![QuerySource::InMemory {
+        Self::new_with_sources(
+            vec![QuerySource::InMemory {
                 entries,
                 position: 0,
             }],
+            segments,
+            cache,
+        )
+    }
+
+    pub fn new_with_sources(
+        sources: Vec<QuerySource>,
+        segments: &'a mut DataSegmentSet,
+        cache: Option<&'b BlockCache>,
+    ) -> Self {
+        Self {
+            sources,
             current_source: 0,
             segments,
             cache,
@@ -69,15 +175,7 @@ impl<'a, 'b> QueryIterator<'a, 'b> {
 
     fn next_entry_from_current_source(&mut self) -> Result<Option<IndexEntry>> {
         match self.sources.get_mut(self.current_source) {
-            Some(QuerySource::InMemory { entries, position }) => {
-                if *position < entries.len() {
-                    let e = entries[*position];
-                    *position += 1;
-                    Ok(Some(e))
-                } else {
-                    Ok(None)
-                }
-            }
+            Some(source) => source.next_entry(),
             None => Ok(None),
         }
     }
@@ -105,9 +203,7 @@ impl<'a, 'b> QueryIterator<'a, 'b> {
     pub fn entries_remaining(&self) -> usize {
         self.sources
             .get(self.current_source)
-            .map(|s| match s {
-                QuerySource::InMemory { entries, position } => entries.len() - *position,
-            })
+            .map(QuerySource::entries_remaining)
             .unwrap_or(0)
     }
 

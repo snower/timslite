@@ -2,11 +2,15 @@
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_longlong, c_uchar, c_void};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use crate::bg::TickResult;
-use crate::config::StoreConfig;
+use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
+use crate::query::iter::QuerySource;
 use crate::store::{DataSetHandle, Store};
 
 // ─── FFI error handling helpers ─────────────────────────────────────────────
@@ -63,13 +67,70 @@ macro_rules! ffi_catch_ptr {
 
 // ─── Opaque handle types ────────────────────────────────────────────────────
 
-struct FfiStore(*mut Store);
+pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 1;
+pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 1;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslStoreConfigFFI {
+    pub version: u32,
+    pub flush_interval_ms: u64,
+    pub idle_timeout_ms: u64,
+    pub data_segment_size: u64,
+    pub index_segment_size: u64,
+    pub initial_data_segment_size: u64,
+    pub initial_index_segment_size: u64,
+    pub cache_max_memory: u64,
+    pub cache_idle_timeout_ms: u64,
+    pub block_max_size: u32,
+    pub compress_level: u8,
+    pub retention_check_hour: u8,
+    pub enable_background_thread: u8,
+}
+
+impl Default for TmslStoreConfigFFI {
+    fn default() -> Self {
+        store_config_to_ffi(&StoreConfig::default())
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslDatasetConfigFFI {
+    pub version: u32,
+    pub data_segment_size: u64,
+    pub index_segment_size: u64,
+    pub initial_data_segment_size: u64,
+    pub initial_index_segment_size: u64,
+    pub retention_ms: u64,
+    pub compress_level: u8,
+    pub index_continuous: u8,
+}
+
+struct FfiStoreState {
+    child_handles: AtomicUsize,
+}
+
+impl FfiStoreState {
+    fn new() -> Self {
+        Self {
+            child_handles: AtomicUsize::new(0),
+        }
+    }
+}
+
+struct FfiStore {
+    inner: *mut Store,
+    state: Arc<FfiStoreState>,
+}
 unsafe impl Send for FfiStore {}
 unsafe impl Sync for FfiStore {}
 
 struct FfiDataset {
     store_ptr: *mut Store,
     handle: DataSetHandle,
+    state: Arc<FfiStoreState>,
+    iterator_count: Arc<AtomicUsize>,
 }
 unsafe impl Send for FfiDataset {}
 unsafe impl Sync for FfiDataset {}
@@ -77,20 +138,145 @@ unsafe impl Sync for FfiDataset {}
 struct FfiIterator {
     store_ptr: *mut Store,
     handle: DataSetHandle,
-    /// Index entries for the time range (18B each, small)
-    entries: Vec<IndexEntry>,
-    /// Current position in entries
-    index: usize,
+    state: Arc<FfiStoreState>,
+    dataset_iterator_count: Arc<AtomicUsize>,
+    sources: Vec<QuerySource>,
+    current_source: usize,
 }
 unsafe impl Send for FfiIterator {}
 unsafe impl Sync for FfiIterator {}
 
+fn store_config_to_ffi(config: &StoreConfig) -> TmslStoreConfigFFI {
+    TmslStoreConfigFFI {
+        version: TMSL_STORE_CONFIG_FFI_VERSION,
+        flush_interval_ms: config.flush_interval.as_millis() as u64,
+        idle_timeout_ms: config.idle_timeout.as_millis() as u64,
+        data_segment_size: config.data_segment_size,
+        index_segment_size: config.index_segment_size,
+        initial_data_segment_size: config.initial_data_segment_size,
+        initial_index_segment_size: config.initial_index_segment_size,
+        cache_max_memory: config.cache_max_memory as u64,
+        cache_idle_timeout_ms: config.cache_idle_timeout.as_millis() as u64,
+        block_max_size: config.block_max_size,
+        compress_level: config.compress_level,
+        retention_check_hour: config.retention_check_hour,
+        enable_background_thread: u8::from(config.enable_background_thread),
+    }
+}
+
+fn store_config_from_ffi(
+    config_ptr: *const TmslStoreConfigFFI,
+) -> crate::error::Result<StoreConfig> {
+    if config_ptr.is_null() {
+        return Ok(StoreConfig::default());
+    }
+    let raw = unsafe { *config_ptr };
+    if raw.version != TMSL_STORE_CONFIG_FFI_VERSION {
+        return Err(TmslError::InvalidData(format!(
+            "unsupported store config version {}",
+            raw.version
+        )));
+    }
+    let cache_max_memory = usize::try_from(raw.cache_max_memory)
+        .map_err(|_| TmslError::InvalidData("cache_max_memory is too large".into()))?;
+    Ok(StoreConfig::builder()
+        .flush_interval(Duration::from_millis(raw.flush_interval_ms))
+        .idle_timeout(Duration::from_millis(raw.idle_timeout_ms))
+        .data_segment_size(raw.data_segment_size)
+        .index_segment_size(raw.index_segment_size)
+        .initial_data_segment_size(raw.initial_data_segment_size)
+        .initial_index_segment_size(raw.initial_index_segment_size)
+        .block_max_size(raw.block_max_size)
+        .compress_level(raw.compress_level)
+        .cache_max_memory(cache_max_memory)
+        .cache_idle_timeout(Duration::from_millis(raw.cache_idle_timeout_ms))
+        .retention_check_hour(raw.retention_check_hour)
+        .enable_background_thread(raw.enable_background_thread != 0)
+        .build())
+}
+
+fn dataset_config_from_ffi(
+    store_config: &StoreConfig,
+    config_ptr: *const TmslDatasetConfigFFI,
+) -> crate::error::Result<DataSetConfigBuilder> {
+    if config_ptr.is_null() {
+        return Err(TmslError::InvalidData("dataset config is null".into()));
+    }
+    let raw = unsafe { *config_ptr };
+    if raw.version != TMSL_DATASET_CONFIG_FFI_VERSION {
+        return Err(TmslError::InvalidData(format!(
+            "unsupported dataset config version {}",
+            raw.version
+        )));
+    }
+    Ok(DataSetConfigBuilder::from_store(store_config)
+        .data_segment_size(raw.data_segment_size)
+        .index_segment_size(raw.index_segment_size)
+        .initial_data_segment_size(raw.initial_data_segment_size)
+        .initial_index_segment_size(raw.initial_index_segment_size)
+        .compress_level(raw.compress_level)
+        .index_continuous(raw.index_continuous)
+        .retention_ms(raw.retention_ms))
+}
+
+fn register_dataset_child(ffi_store: &FfiStore, handle: DataSetHandle) -> Box<FfiDataset> {
+    ffi_store.state.child_handles.fetch_add(1, Ordering::SeqCst);
+    Box::new(FfiDataset {
+        store_ptr: ffi_store.inner,
+        handle,
+        state: Arc::clone(&ffi_store.state),
+        iterator_count: Arc::new(AtomicUsize::new(0)),
+    })
+}
+
+fn next_iter_index_entry(iter: &mut FfiIterator) -> crate::error::Result<Option<IndexEntry>> {
+    while iter.current_source < iter.sources.len() {
+        match iter.sources[iter.current_source].next_entry()? {
+            Some(entry) if entry.block_offset == crate::index::segment::BLOCK_OFFSET_FILLER => {
+                continue;
+            }
+            Some(entry) => return Ok(Some(entry)),
+            None => iter.current_source += 1,
+        }
+    }
+    Ok(None)
+}
+
 // ─── Store Management ───────────────────────────────────────────────────────
+
+/// Write default store config to `out_config`.
+#[no_mangle]
+pub extern "C" fn tmsl_store_config_default(
+    out_config: *mut TmslStoreConfigFFI,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if out_config.is_null() {
+            return Err(TmslError::InvalidData("out_config is null".into()));
+        }
+        unsafe {
+            *out_config = TmslStoreConfigFFI::default();
+        }
+        Ok(0)
+    })
+}
 
 /// Open a store. Returns opaque pointer or NULL on error.
 #[no_mangle]
 pub extern "C" fn tmsl_store_open(
     data_dir: *const c_char,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> *mut c_void {
+    tmsl_store_open_with_config(data_dir, std::ptr::null(), err_buf, err_buf_len)
+}
+
+/// Open a store with explicit FFI config.
+#[no_mangle]
+pub extern "C" fn tmsl_store_open_with_config(
+    data_dir: *const c_char,
+    config_ptr: *const TmslStoreConfigFFI,
     err_buf: *mut c_char,
     err_buf_len: usize,
 ) -> *mut c_void {
@@ -101,10 +287,13 @@ pub extern "C" fn tmsl_store_open(
         let dir = unsafe { CStr::from_ptr(data_dir) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid UTF-8: {}", e)))?;
-        let config = StoreConfig::default();
+        let config = store_config_from_ffi(config_ptr)?;
         let store = Store::open(dir, config)
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
-        let boxed = Box::new(FfiStore(Box::into_raw(Box::new(store))));
+        let boxed = Box::new(FfiStore {
+            inner: Box::into_raw(Box::new(store)),
+            state: Arc::new(FfiStoreState::new()),
+        });
         Ok(Box::into_raw(boxed) as *mut c_void)
     })
 }
@@ -120,8 +309,16 @@ pub extern "C" fn tmsl_store_close(
         if store.is_null() {
             return Err(TmslError::InvalidData("store is null".into()));
         }
+        let ffi_store_ref = unsafe { &*(store as *const FfiStore) };
+        let child_handles = ffi_store_ref.state.child_handles.load(Ordering::SeqCst);
+        if child_handles != 0 {
+            return Err(TmslError::InvalidData(format!(
+                "store has {} outstanding child handle(s)",
+                child_handles
+            )));
+        }
         let ffi_store = unsafe { Box::from_raw(store as *mut FfiStore) };
-        let inner = unsafe { Box::from_raw(ffi_store.0) };
+        let inner = unsafe { Box::from_raw(ffi_store.inner) };
         inner
             .close()
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
@@ -149,7 +346,7 @@ pub extern "C" fn tmsl_store_tick_background_tasks(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_store = unsafe { &*(store as *const FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let store_inner = unsafe { &mut *(ffi_store.inner) };
         let TickResult {
             executed_tasks,
             next_delay,
@@ -180,7 +377,7 @@ pub extern "C" fn tmsl_store_next_background_delay(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_store = unsafe { &*(store as *const FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let store_inner = unsafe { &mut *(ffi_store.inner) };
         let delay = store_inner
             .next_background_delay()
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
@@ -212,7 +409,7 @@ pub extern "C" fn tmsl_dataset_create(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let store_inner = unsafe { &mut *(ffi_store.inner) };
         let name_str = unsafe { CStr::from_ptr(name) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
@@ -229,10 +426,38 @@ pub extern "C" fn tmsl_dataset_create(
             index_continuous,
             retention_ms,
         )?;
-        let boxed = Box::new(FfiDataset {
-            store_ptr: ffi_store.0,
-            handle,
-        });
+        let boxed = register_dataset_child(ffi_store, handle);
+        Ok(Box::into_raw(boxed) as *mut c_void)
+    })
+}
+
+/// Create a new dataset with explicit FFI dataset config.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_create_with_config(
+    store: *mut c_void,
+    name: *const c_char,
+    dataset_type: *const c_char,
+    config_ptr: *const TmslDatasetConfigFFI,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> *mut c_void {
+    ffi_catch_ptr!(err_buf, err_buf_len, {
+        if store.is_null() || name.is_null() || dataset_type.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
+        let store_inner = unsafe { &mut *(ffi_store.inner) };
+        let name_str = unsafe { CStr::from_ptr(name) }
+            .to_str()
+            .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
+        let type_str = unsafe { CStr::from_ptr(dataset_type) }
+            .to_str()
+            .map_err(|e| TmslError::InvalidData(format!("invalid type: {}", e)))?;
+        let dataset_config = dataset_config_from_ffi(store_inner.config(), config_ptr)?;
+
+        let handle =
+            store_inner.create_dataset_with_config(name_str, type_str, Some(dataset_config))?;
+        let boxed = register_dataset_child(ffi_store, handle);
         Ok(Box::into_raw(boxed) as *mut c_void)
     })
 }
@@ -251,7 +476,7 @@ pub extern "C" fn tmsl_dataset_open(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let store_inner = unsafe { &mut *(ffi_store.inner) };
         let name_str = unsafe { CStr::from_ptr(name) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
@@ -260,10 +485,7 @@ pub extern "C" fn tmsl_dataset_open(
             .map_err(|e| TmslError::InvalidData(format!("invalid type: {}", e)))?;
 
         let handle = store_inner.open_dataset(name_str, type_str)?;
-        let boxed = Box::new(FfiDataset {
-            store_ptr: ffi_store.0,
-            handle,
-        });
+        let boxed = register_dataset_child(ffi_store, handle);
         Ok(Box::into_raw(boxed) as *mut c_void)
     })
 }
@@ -279,11 +501,20 @@ pub extern "C" fn tmsl_dataset_close(
         if dataset.is_null() {
             return Err(TmslError::InvalidData("dataset is null".into()));
         }
-        let ffi_ds = unsafe { Box::from_raw(dataset as *mut FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
+        let ffi_ds_ref = unsafe { &*(dataset as *const FfiDataset) };
+        let iterator_count = ffi_ds_ref.iterator_count.load(Ordering::SeqCst);
+        if iterator_count != 0 {
+            return Err(TmslError::InvalidData(format!(
+                "dataset has {} outstanding iterator handle(s)",
+                iterator_count
+            )));
+        }
+        let store_inner = unsafe { &mut *(ffi_ds_ref.store_ptr) };
         store_inner
-            .close_dataset(ffi_ds.handle)
+            .close_dataset(ffi_ds_ref.handle)
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
+        let ffi_ds = unsafe { Box::from_raw(dataset as *mut FfiDataset) };
+        ffi_ds.state.child_handles.fetch_sub(1, Ordering::SeqCst);
         Ok(0)
     })
 }
@@ -302,7 +533,14 @@ pub extern "C" fn tmsl_dataset_drop(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.0) };
+        let child_handles = ffi_store.state.child_handles.load(Ordering::SeqCst);
+        if child_handles != 0 {
+            return Err(TmslError::InvalidData(format!(
+                "cannot drop dataset with {} outstanding child handle(s)",
+                child_handles
+            )));
+        }
+        let store_inner = unsafe { &mut *(ffi_store.inner) };
         let name_str = unsafe { CStr::from_ptr(name) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
@@ -414,7 +652,7 @@ pub extern "C" fn tmsl_dataset_delete(
 /// Read a single record by exact timestamp.
 ///
 /// On success (record found): allocates `out_data` via `libc::malloc`, sets
-/// `out_ts` and `out_data_len`, returns 0. Caller must free via `tmsl_iter_free_data`.
+/// `out_ts` and `out_data_len`, returns 0. Caller must free via `tmsl_data_free`.
 ///
 /// Returns: 0 = success, 1 = not found (or filler/deleted), -1 = error.
 #[no_mangle]
@@ -458,7 +696,11 @@ pub extern "C" fn tmsl_dataset_read(
 #[no_mangle]
 pub extern "C" fn tmsl_iter_close(iter: *mut c_void) {
     if !iter.is_null() {
-        let _ = unsafe { Box::from_raw(iter as *mut FfiIterator) };
+        let ffi_iter = unsafe { Box::from_raw(iter as *mut FfiIterator) };
+        ffi_iter
+            .dataset_iterator_count
+            .fetch_sub(1, Ordering::SeqCst);
+        ffi_iter.state.child_handles.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -481,14 +723,18 @@ pub extern "C" fn tmsl_dataset_query(
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
         let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
         let mut ds = ds_arc.lock().unwrap();
-        // Collect index entries only (18B each); data is read lazily
-        let entries = ds.query_index_entries(start_ts, end_ts)?;
+        let sources = ds.query_sources(start_ts, end_ts)?;
+
+        ffi_ds.iterator_count.fetch_add(1, Ordering::SeqCst);
+        ffi_ds.state.child_handles.fetch_add(1, Ordering::SeqCst);
 
         let iter = Box::new(FfiIterator {
             store_ptr: ffi_ds.store_ptr,
             handle: ffi_ds.handle,
-            entries,
-            index: 0,
+            state: Arc::clone(&ffi_ds.state),
+            dataset_iterator_count: Arc::clone(&ffi_ds.iterator_count),
+            sources,
+            current_source: 0,
         });
         Ok(Box::into_raw(iter) as *mut c_void)
     })
@@ -510,18 +756,9 @@ pub extern "C" fn tmsl_iter_next(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_iter = unsafe { &mut *(iter as *mut FfiIterator) };
-
-        // Skip filler entries and find the next real entry
-        let entry = loop {
-            if ffi_iter.index >= ffi_iter.entries.len() {
-                return Ok(1); // exhausted
-            }
-            let e = ffi_iter.entries[ffi_iter.index];
-            ffi_iter.index += 1;
-            if e.block_offset == crate::index::segment::BLOCK_OFFSET_FILLER {
-                continue;
-            }
-            break e;
+        let entry = match next_iter_index_entry(ffi_iter)? {
+            Some(entry) => entry,
+            None => return Ok(1),
         };
 
         // Lazy read: get dataset, read single entry
@@ -546,10 +783,148 @@ pub extern "C" fn tmsl_iter_next(
     })
 }
 
+/// Free data allocated by FFI read/query APIs.
+#[no_mangle]
+pub extern "C" fn tmsl_data_free(data: *mut c_void) {
+    if !data.is_null() {
+        unsafe { libc::free(data) };
+    }
+}
+
 /// Free data allocated by tmsl_iter_next.
 #[no_mangle]
 pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar) {
-    if !data.is_null() {
-        unsafe { libc::free(data as *mut _) };
+    tmsl_data_free(data as *mut c_void);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    fn temp_store_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn err_buf() -> ([c_char; 256], usize) {
+        ([0; 256], 256)
+    }
+
+    #[test]
+    fn test_store_open_with_config_and_child_lifecycle() {
+        let dir = temp_store_dir("timslite_ffi_store_config_lifecycle");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("sensor").unwrap();
+        let ty = CString::new("wave").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        assert_eq!(
+            tmsl_store_close(store, err.as_mut_ptr(), err_len),
+            -1,
+            "store close must reject outstanding dataset handles"
+        );
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+    }
+
+    #[test]
+    fn test_dataset_create_with_config_and_data_free() {
+        let dir = temp_store_dir("timslite_ffi_dataset_config");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut store_config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut store_config, err.as_mut_ptr(), err_len),
+            0
+        );
+        store_config.enable_background_thread = 0;
+
+        let store =
+            tmsl_store_open_with_config(dir_c.as_ptr(), &store_config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let dataset_config = TmslDatasetConfigFFI {
+            version: TMSL_DATASET_CONFIG_FFI_VERSION,
+            data_segment_size: 1024 * 1024,
+            index_segment_size: 64 * 1024,
+            initial_data_segment_size: 8 * 1024,
+            initial_index_segment_size: 4 * 1024,
+            retention_ms: 0,
+            compress_level: 6,
+            index_continuous: 0,
+        };
+        let name = CString::new("sensor").unwrap();
+        let ty = CString::new("wave").unwrap();
+        let dataset = tmsl_dataset_create_with_config(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            &dataset_config,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        let payload = [1u8, 2, 3, 4];
+        assert_eq!(
+            tmsl_dataset_write(
+                dataset,
+                100,
+                payload.as_ptr(),
+                payload.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+
+        let mut out_ts: c_longlong = 0;
+        let mut out_data: *mut c_uchar = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        assert_eq!(
+            tmsl_dataset_read(
+                dataset,
+                100,
+                &mut out_ts,
+                &mut out_data,
+                &mut out_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(out_ts, 100);
+        assert_eq!(out_len, payload.len());
+        assert!(!out_data.is_null());
+        tmsl_data_free(out_data as *mut c_void);
+
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
     }
 }

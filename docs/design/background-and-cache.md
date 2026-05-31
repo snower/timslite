@@ -195,7 +195,7 @@ pub struct BackgroundTasks {
   1. 获取 state 锁, 读取所有 last_* 值, 计算 wait_time = min(next_*) - now, 释放锁
   2. recv_timeout(wait_time) — 等待信号或超时
   3. 收到 shutdown → break; 超时 → 继续
-  4. 获取 state 锁, 执行到期任务, 更新 last_*, 释放锁
+  4. 调用 tick(): 在 state 锁内预约到期任务, 释放 state 锁后执行 IO/缓存/回收
   5. 回到 1
 ```
 
@@ -204,10 +204,11 @@ pub struct BackgroundTasks {
 - 由外部调用 `Store::tick_background_tasks()` 主动驱动, 调度逻辑同上
 - `next_background_delay()` 仍可正常工作 (读取惰性状态, 无副作用)
 
-**关键一致性保证**: 状态锁 `state: Mutex<ExecutorState>` 在任务执行**期间全程持有**, 确保:
-1. 后台线程与外部 tick 互斥, 不会有两个 flush 同时运行
-2. `last_*` 更新原子化 — 不会出现 "已执行 flush 但 last_flush 尚未更新" 的中间态
-3. `next_background_delay()` 返回值始终与当前执行状态一致 (执行期间等待锁释放, 返回最新快照)
+**关键一致性保证**: 状态锁 `state: Mutex<ExecutorState>` 只保护调度状态, 不包住长耗时 IO:
+1. `tick` 先在 state 锁内把到期任务标记为 running, 并更新对应 `last_*`/`next_retention` 作为调度预约点。
+2. 释放 state 锁后执行 flush / idle-close / cache eviction / retention reclaim, 执行体内部再获取 `datasets`/`DataSet`/`BlockCache` 锁。
+3. 任务完成后短暂获取 state 锁清除 running 标记; 同一任务 running 期间, 其它 tick 不会重复执行该任务。
+4. `next_background_delay()` 只读取 state 快照, 不等待后台 IO 完成。
 
 ### 17.10 外部手动执行 (External Manual Execution)
 
@@ -246,19 +247,21 @@ tick_background_tasks():
        next_flush      = last_flush + flush_interval
        next_idle       = last_idle_check + 60s
        next_cache      = last_cache_eviction + 60s
-  5. 按到期情况依次执行 (每个执行成功后更新对应 last_*)
-  6. 再次计算 next_delay = min(next_flush, next_idle, next_cache, next_retention) - now
+  5. 对到期且未 running 的任务设置 running=true, 并更新对应 last_* 或 next_retention
+  6. 计算 next_delay = min(next_flush, next_idle, next_cache, next_retention) - now
   7. 释放 state 锁
-  8. 返回 TickResult { executed_tasks, next_delay }
+  8. 在锁外按固定顺序执行被预约的任务
+  9. 重新短暂获取 state 锁, 清除对应 running 标记
+ 10. 返回 TickResult { executed_tasks, next_delay }
 ```
 
 **任务执行顺序与更新**:
 | 任务 | 到期判断 | 执行体 | 状态更新 |
 |------|---------|--------|---------|
-| Flush | `now >= last_flush + flush_interval` | `ds.flush()` (per dataset) | `last_flush = now` |
-| Idle Check | `now >= last_idle_check + 60s` | 收集 idle keys → 写锁 + double-check close | `last_idle_check = now` |
-| Cache Eviction | `now >= last_cache_eviction + 60s` | `block_cache.evict_idle(idle_timeout)` | `last_cache_eviction = now` |
-| Retention Reclaim | `now >= next_retention` | `ds.reclaim_expired_segments()` | `next_retention = next_retention_time(hour)` |
+| Flush | `now >= last_flush + flush_interval && !flush_running` | `ds.flush()` (per dataset) | 预约时 `last_flush = now`, `flush_running = true`; 完成后 `flush_running = false` |
+| Idle Check | `now >= last_idle_check + 60s && !idle_running` | 收集 idle keys → `ds.lock()` + double-check close | 预约时 `last_idle_check = now`, `idle_running = true`; 完成后 `idle_running = false` |
+| Cache Eviction | `cache enabled && now >= last_cache_eviction + 60s && !cache_running` | `block_cache.evict_idle(idle_timeout)` | 预约时 `last_cache_eviction = now`, `cache_running = true`; 完成后 `cache_running = false` |
+| Retention Reclaim | `now >= next_retention && !retention_running` | `ds.reclaim_expired_segments()` | 预约时 `next_retention = next_retention_time(hour)`, `retention_running = true`; 完成后 `retention_running = false` |
 
 #### 17.10.2 `Store::next_background_delay() -> Duration`
 
@@ -266,7 +269,8 @@ tick_background_tasks():
 impl Store {
     /// 返回距离下一次后台任务执行应等待的时间。
     ///
-    /// 仅计算, 不执行任何任务。后台线程或外部 tick 正在执行时会短暂阻塞 (等待状态锁释放)。
+    /// 仅计算, 不执行任何任务。只在读取调度快照时短暂获取 state 锁,
+    /// 不等待后台任务的 IO/segment/cache 操作完成。
     /// 若后台线程未启用, 调用方应以此值调度下一次 tick_background_tasks() 调用。
     pub fn next_background_delay(&self) -> Duration;
 }
@@ -289,6 +293,7 @@ next_background_delay():
 - 返回值为 "距离下一次任一任务到期" 的剩余时间, 不代表一定会执行 (需等到该时刻)
 - 若上次 tick 执行了多个任务, 各 last_* 已同时更新, 下一次到期时间由各任务的间隔独立决定
 - 若后台线程未启用且从未调用 tick, 返回值 = `min(flush_interval, 60s, retention_until)`
+- 正在 running 的任务已被预约, `next_background_delay()` 不会为了等待其完成而持有或等待 data/index/cache 锁
 
 ### 17.11 并发安全模型 (Concurrency Safety)
 
@@ -296,32 +301,28 @@ next_background_delay():
 
 | 调用方 A (持有锁) | 调用方 B (请求锁) | 行为 |
 |------------------|------------------|------|
-| 后台线程 flush (state 锁) | 外部 `tick_background_tasks` | **阻塞** — B 等待 A 释放 state 锁, 完成后执行 |
-| 外部 `tick_background_tasks` (state 锁) | 后台线程 wake-up 后 tick | **阻塞** — 线程本轮 tick 等待 A 完成 |
-| 多个外部调用者同时 tick | 彼此 | **串行** — `Mutex` 保证一次仅一个 tick 执行 |
-| `next_background_delay()` (读快照) | 正在执行的 tick | **短暂阻塞** — 等待 state 锁释放即可, 不等待任务完成 |
+| 后台线程正在 flush/idle/retention IO | 外部 `tick_background_tasks` | **不重复同一任务** — state 中 running 标记会跳过已预约任务 |
+| 外部 `tick_background_tasks` 正在执行任务 | 后台线程 wake-up 后 tick | **短暂串行调度** — 仅竞争 state 快照; 执行体不持有 state |
+| 多个外部调用者同时 tick | 彼此 | **调度阶段互斥** — `Mutex` 保护 running/last_*; 执行体可在锁外运行 |
+| `next_background_delay()` (读快照) | 正在执行的 tick | **短暂阻塞** — 只等待 state 锁释放, 不等待任务完成 |
 
 **锁顺序 (Lock Ordering)**:
 ```
 外层 → 内层:
 
-1. `Store::datasets` (RwLock)  ← 数据集注册表
-2. `BackgroundTasks::state` (Mutex) ← 后台任务状态
-3. `DataSet` 内部 (Mutex/字段锁) ← 单个数据集
+1. `BackgroundTasks::state` (Mutex) ← 仅用于调度预约/快照, 不与其它锁嵌套
+2. `Store::datasets` (RwLock)       ← 数据集注册表
+3. `DataSet` 内部 (Mutex/字段锁)     ← 单个数据集
 ```
 
 **顺序约束**:
-- `tick`/后台线程: 先获取 `state` 锁 → 读取 → 释放 → 获取 `datasets.read()` → 逐个获取 `ds.lock()`
+- `tick`/后台线程: 获取 `state` 锁预约任务 → 释放 `state` → 获取 `datasets.read()` → 逐个获取 `ds.lock()`
 - `Store::create/open/close/drop_dataset`: 获取 `datasets.write()` → **不触及** `state` 锁 (不会触发 tick)
 - `next_background_delay()`: 仅获取 `state` 锁 → 快速读快照 → 释放
 
-**无死锁保证**: 不存在 "datasets.write() 持有下等待 state 锁" 的代码路径, 因此不存在循环等待。
+**无死锁保证**: `state` 锁不在持有 `datasets` 或 `DataSet` 锁时获取, `datasets.write()` 路径也不调用 tick/next_delay, 因此不存在 `state ↔ datasets` 或 `state ↔ DataSet` 的循环等待。
 
 **前台操作与 idle close 的 race**: 沿用现有机制 — foreground 写操作更新 `last_used_at`, idle close double-check 验证 idle 超时。tick 调用方 (无论前台/外部) 均遵守此协议。
-
-**关键约束**: tick 执行期间 `state` 锁全程持有, `next_background_delay()` 可能短暂阻塞 (典型场景下 < 1ms, 锁内仅有状态读写, 但 flush/idle 任务内部锁释放后才更新状态 — 实际锁持有时间 = 任务执行时间)。对于 flush 操作可能达几百 ms 的场景, 调用方可选择:
-1. 接受短暂阻塞 (简单, 一致性最好)
-2. 使用 `try_lock` 模式 + 重试 (未实现; 复杂且收益有限, 因为 next_delay 的精确值仅用于调度, 毫秒级延迟可接受)
 
 ## 十八、读缓存池 (BlockCache)
 
