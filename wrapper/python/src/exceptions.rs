@@ -61,6 +61,12 @@ create_exception!(
     TmslError,
     "Decompression failure."
 );
+create_exception!(
+    timslite,
+    TmslExpiredError,
+    TmslError,
+    "Timestamp is outside the retention window."
+);
 
 /// Register all exception types on the Python module.
 ///
@@ -91,6 +97,7 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
         "TmslDecompressionError",
         TmslDecompressionError::type_object(m.py()),
     )?;
+    m.add("TmslExpiredError", TmslExpiredError::type_object(m.py()))?;
     Ok(())
 }
 
@@ -109,6 +116,7 @@ pub fn map_error(err: timslite::TmslError) -> pyo3::PyErr {
         E::MmapError(_) => TmslMmapError::new_err(msg),
         E::CompressionError(_) => TmslCompressionError::new_err(msg),
         E::DecompressionError(_) => TmslDecompressionError::new_err(msg),
+        E::Expired(_) => TmslExpiredError::new_err(msg),
     }
 }
 
