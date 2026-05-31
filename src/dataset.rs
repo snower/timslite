@@ -642,6 +642,43 @@ mod tests {
     }
 
     #[test]
+    fn test_block_offset_routes_to_next_data_segment_after_rollover() {
+        let dir = temp_dir("block_offset_segment_rollover");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let data_segment_size = 180;
+        let mut ds = DataSet::create(
+            id,
+            dir,
+            data_segment_size,
+            4 * 1024,
+            6,
+            64,
+            0,
+            data_segment_size,
+            4 * 1024,
+            0,
+        )
+        .unwrap();
+
+        let first = vec![0x11; 32];
+        let second = vec![0x22; 32];
+
+        ds.write(10, &first).unwrap();
+        ds.write(20, &second).unwrap();
+
+        let index_entries = ds.query_index_entries(10, 20).unwrap();
+        assert_eq!(index_entries.len(), 2);
+        assert_eq!(index_entries[0].block_offset, 0);
+        assert_eq!(index_entries[1].block_offset, data_segment_size);
+
+        let rows = ds.query(10, 20, None).unwrap();
+        assert_eq!(rows, vec![(10, first), (20, second)]);
+    }
+
+    #[test]
     fn test_continuous_first_write_does_not_fill_from_zero() {
         let dir = temp_dir("continuous_first_write_sparse");
         let id = DataSetKey {

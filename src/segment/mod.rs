@@ -225,7 +225,8 @@ impl DataSegmentSet {
             seg.ensure_open(compress_level)?;
         }
 
-        // Try to append; if SegmentFull, expand and retry, or seal + create new
+        // Try to append; if SegmentFull, expand and retry, or seal + create new.
+        let mut written_segment_offset = current_offset;
         let (block_rel_off, in_block_off) =
             match seg.append_record(timestamp, data, block_max_size, compress_level) {
                 Ok(result) => result,
@@ -238,17 +239,19 @@ impl DataSegmentSet {
                         // Already at max_file_size → seal current, create new segment
                         // Mark this segment as needing seal
                         let seg_offset_to_seal = seg.file_offset;
-                        self.next_offset += self.segment_size;
 
-                        let file_name = format!("{:020}", self.next_offset);
+                        let new_offset = self.next_offset;
+                        let file_name = format!("{:020}", new_offset);
                         let path = self.base_dir.join(&file_name);
                         let new_seg = DataSegment::create(
                             &path,
-                            self.next_offset,
+                            new_offset,
                             self.initial_segment_size,
                             self.segment_size,
                         )?;
                         self.segments.push(new_seg);
+                        self.next_offset = new_offset + self.segment_size;
+                        written_segment_offset = new_offset;
 
                         // Seal the old segment (lazy approach: set lifecycle to Closed)
                         // It will be properly sealed on idle-close
@@ -268,14 +271,8 @@ impl DataSegmentSet {
                 Err(e) => return Err(e),
             };
 
-        let last = self.segments.last().unwrap();
-        let seg_size = last.wrote_position + last.header_size;
-        if seg_size >= self.segment_size {
-            self.next_offset += self.segment_size;
-        }
-
         self.last_used_at = Instant::now();
-        Ok((current_offset, block_rel_off, in_block_off))
+        Ok((written_segment_offset, block_rel_off, in_block_off))
     }
 
     /// Get the segment size configuration.
