@@ -212,6 +212,9 @@ impl DataSet {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
         }
+        if self.is_timestamp_expired(timestamp) {
+            return Err(self.expired_error(timestamp));
+        }
 
         // Correction write: same timestamp as latest → in-place overwrite in
         // the last uncompressed block of the latest data segment. Index unchanged.
@@ -350,6 +353,9 @@ impl DataSet {
                 timestamp
             )));
         }
+        if self.is_timestamp_expired(timestamp) {
+            return Err(self.expired_error(timestamp));
+        }
 
         let old_entry = self.time_index.find_and_delete_entry(timestamp)?;
         self.invalidate_cache_for_entry(&old_entry, cache);
@@ -394,6 +400,10 @@ impl DataSet {
         } else {
             timestamp
         };
+
+        if self.is_timestamp_expired(effective_ts) {
+            return Ok(None);
+        }
 
         let entry = match self.time_index.find_entry(effective_ts)? {
             Some(e) => e,
@@ -454,6 +464,9 @@ impl DataSet {
         entry: &IndexEntry,
         cache: Option<&BlockCache>,
     ) -> Result<(i64, Vec<u8>)> {
+        if self.is_timestamp_expired(entry.timestamp) {
+            return Err(self.expired_error(entry.timestamp));
+        }
         let re = ReadIndexEntry {
             timestamp: entry.timestamp,
             block_offset: entry.block_offset,
@@ -567,6 +580,19 @@ impl DataSet {
         }
         self.latest_written_timestamp
             .saturating_sub(self.retention_ms as i64)
+    }
+
+    fn is_timestamp_expired(&self, timestamp: i64) -> bool {
+        let threshold = self.retention_threshold();
+        threshold >= 0 && timestamp < threshold
+    }
+
+    fn expired_error(&self, timestamp: i64) -> TmslError {
+        TmslError::Expired(format!(
+            "timestamp {} is older than retention threshold {}",
+            timestamp,
+            self.retention_threshold()
+        ))
     }
 
     /// Reclaim expired data & index segments whose entries fall entirely before the
@@ -1609,6 +1635,121 @@ mod tests {
         // Query fully within valid range
         let valid = ds.query(180, 200, None).unwrap();
         assert_eq!(valid.len(), 1);
+    }
+
+    #[test]
+    fn test_retention_read_expired_returns_none() {
+        let dir = temp_dir("retention_read_expired");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir,
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            50,
+        )
+        .unwrap();
+
+        ds.write(100, b"old").unwrap();
+        ds.write(200, b"new").unwrap();
+
+        assert!(ds.read(100, None).unwrap().is_none());
+        assert_eq!(ds.read(200, None).unwrap().unwrap().1, b"new");
+    }
+
+    #[test]
+    fn test_retention_read_entry_at_index_rejects_expired_entry() {
+        let dir = temp_dir("retention_read_entry_expired");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir,
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            50,
+        )
+        .unwrap();
+
+        ds.write(100, b"old").unwrap();
+        let old_entry = ds.time_index.find_entry(100).unwrap().unwrap();
+        ds.write(200, b"new").unwrap();
+
+        let err = ds.read_entry_at_index(&old_entry, None).unwrap_err();
+        assert!(matches!(err, TmslError::Expired(_)));
+    }
+
+    #[test]
+    fn test_retention_delete_expired_rejected() {
+        let dir = temp_dir("retention_delete_expired");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir,
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            50,
+        )
+        .unwrap();
+
+        ds.write(100, b"old").unwrap();
+        ds.write(200, b"new").unwrap();
+
+        let err = ds.delete(100).unwrap_err();
+        assert!(matches!(err, TmslError::Expired(_)));
+        assert!(ds.read(100, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_retention_out_of_order_rewrite_expired_rejected() {
+        let dir = temp_dir("retention_ooo_expired");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir,
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            65536,
+            0,
+            256 * 1024,
+            4 * 1024,
+            50,
+        )
+        .unwrap();
+
+        ds.write(100, b"old").unwrap();
+        ds.write(200, b"new").unwrap();
+
+        let err = ds.write(100, b"rewrite").unwrap_err();
+        assert!(matches!(err, TmslError::Expired(_)));
+        assert!(ds.read(100, None).unwrap().is_none());
     }
 
     // ─── Delete tests ──────────────────────────────────────────────────────

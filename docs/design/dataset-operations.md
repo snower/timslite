@@ -133,6 +133,10 @@ DataSet::write(timestamp, data):
     │
     ├─ if timestamp <= 0 → Error("timestamp must be > 0")
     │
+    ├─ if retention_ms > 0 && timestamp < retention_threshold:
+    │      ├─ timestamp < latest_written_timestamp → Error("timestamp expired")
+    │      └─ 其它情况不可达 (threshold 基于 latest 计算, 正序写入不会小于 threshold)
+    │
     ├─ if timestamp == latest_written_timestamp 且 latest > 0 (纠正写入, 两种模式通用):
     │    │
     │    ├─ 1. time_index.find_entry(timestamp)
@@ -188,6 +192,8 @@ DataSet::write(timestamp, data):
 **纠正写入**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
 
 **乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
+
+**retention 写入约束**: 当 `retention_ms > 0` 时, `timestamp < latest_written_timestamp.saturating_sub(retention_ms)` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。正序写入仍允许推进 `latest_written_timestamp`, 并可能使更多旧数据进入过期窗口。
 
 **连续模式稀疏 filler 规则**:
 
@@ -302,6 +308,9 @@ DataSet::delete(timestamp):
     │
     ├─ if latest_written_timestamp == 0 → Error("no data")
     │
+    ├─ if retention_ms > 0 && timestamp < retention_threshold
+    │      └─ Error("timestamp expired")
+    │
     ├─ time_index.find_and_delete_entry(timestamp)
     │    │
     │    ├─ 查找索引条目 (三级搜索: in_memory_buffer → open segments → closed segments):
@@ -323,6 +332,8 @@ DataSet::delete(timestamp):
 ```
 
 > **查询影响**: 删除后, 查询路径自动跳过 `block_offset == 0xFFFFFFFFFFFFFFFF` 的哨兵条目, 被删除的记录不会出现在查询结果中。无需修改查询逻辑。
+>
+> **retention 约束**: 过期 timestamp 不允许 delete, 即使旧索引条目或旧数据段尚未被物理回收。调用方应将该错误视为“已超出可操作窗口”, 而不是继续打开旧 segment 查找。
 >
 > **物理数据保留**: 被删除的 record 物理上仍存在于数据段 block 中, 不影响后续 block 的读写。仅在数据段回收时 (retention reclaim 或 `invalid_record_count` 达到阈值触发 compaction) 才会物理清除。
 >
@@ -415,15 +426,18 @@ read(timestamp) → Option<(i64, Vec<u8>)>
     │      └─ 其它情况
     │         → effective_ts = timestamp
     │
-    ├─ 2. TimeIndex.find_entry(effective_ts)
+    ├─ 2. if retention_ms > 0 && effective_ts < retention_threshold
+    │      → return Ok(None)
+    │
+    ├─ 3. TimeIndex.find_entry(effective_ts)
     │      → 三级搜索: in_memory_buffer → open segments → closed segments
     │      → 返回 None: 时间戳不存在或连续模式逻辑空洞, 直接返回 Ok(None)
     │
-    ├─ 3. 检查 entry.block_offset
+    ├─ 4. 检查 entry.block_offset
     │      └─ == BLOCK_OFFSET_FILLER (0xFFFFFFFFFFFFFFFF)
     │         → 已删除或未写入 (连续模式已物化 filler), 返回 Ok(None)
     │
-    └─ 4. segments.read_at_index(entry, cache)
+    └─ 5. segments.read_at_index(entry, cache)
            → 定位数据段, 读 Block + 解压 (如需), 定位 record, 返回 (ts, data)
 ```
 
@@ -438,6 +452,8 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - 直接复用内存中的 `latest_written_timestamp` (open 时从索引恢复), 省去一次索引查找
 > - 如果最新时间戳对应的 index entry 已被 delete 标记为 filler, 仍返回 `None` (不会回退到更早的有效记录)
 > - 适合流式消费场景: 每次 "拉最新一条" 而不需要提前知道具体时间戳
+>
+> **retention 语义**: 所有读取路径以 `retention_threshold = latest_written_timestamp.saturating_sub(retention_ms)` 为可见性下界。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
 
 ### 10.4 `latest_written_timestamp`
 
@@ -492,32 +508,36 @@ DataSet::reclaim_expired_segments():
   8. return Ok(已删除总数)
 ```
 
-### 11.4 查询约束
+### 11.4 读取与写入约束
 
-当 `retention_ms > 0` 时, 查询范围被自动钳制到数据有效期内:
+当 `retention_ms > 0` 时, 所有读路径共享同一个过期阈值:
 
 ```rust
-fn query_iter(...):
-    if retention_ms > 0 && latest_written_timestamp > 0 {
-        let expiration_threshold =
-            latest_written_timestamp.saturating_sub(retention_ms);
-        let effective_start = start_ts.max(expiration_threshold);
-        if effective_start > end_ts {
-            return empty iterator;  // 查询范围完全在过期区内
-        }
-        start_ts = effective_start;
-    }
+retention_threshold = latest_written_timestamp.saturating_sub(retention_ms)
 ```
 
-**效果**: 查询不会返回超出有效期的数据, 即使该数据物理上尚未被回收。
+| 操作 | `timestamp < retention_threshold` 行为 |
+|------|----------------------------------------|
+| `read(ts)` | 直接返回 `Ok(None)` |
+| `read(-1)` | 解析为 latest, 不回退到更早有效记录 |
+| `query/query_iter` | `start_ts = max(start_ts, threshold)`; 若范围完全过期则返回空 |
+| `query_index_entries` | 与 query 使用相同钳制, 不暴露过期 entry |
+| `read_entry_at_index(entry)` | 返回 `Expired` 错误, 防止绕过 timestamp 入口 |
+| `delete(ts)` | 返回 `Expired` 错误, 不打开旧索引/旧数据段 |
+| `write(ts)` 且 `ts < latest` | 作为过期乱序写入返回 `Expired` 错误 |
+| `write(ts)` 且 `ts > latest` | 正序写入允许, 并推进 latest/threshold |
+
+**效果**: 过期数据即使索引或数据物理文件尚未回收, 也不再通过读路径可见, 且不能被 delete 或 out-of-order rewrite 修改。
 
 ### 11.5 约束
 
 - 回收前必须先 `flush()` + `idle_close_all()` 使所有分段进入 closed 集合
 - 回收操作是**破坏性**的 (物理删除文件), 不可恢复
 - 回收过程中打开的文件必须**检查完成后立即释放**, 不依赖 idle-close
-- 连续模式下, 回收老分段不会破坏新数据 (回收从最老端开始)
-- 同一数据集的索引与数据分段必须**成对回收** (相同时间窗口)
+- 数据段和索引段分别按各自分段的时间范围独立回收: 数据段要求 `max_timestamp < threshold`, 索引段要求最后 entry timestamp `< threshold`
+- 混合分段 (分段内同时包含过期和未过期 timestamp) 必须保留, 不做部分删除
+- 回收不追踪“已回收数据是否仍被索引引用”或“已回收索引是否仍关联数据”; 只保证整个分段全部过期才删除, 查询路径通过 retention 钳制和边界校验避免异常
+- 连续模式下, 回收老 index segment 后, 已删除时间范围不可回填; reopen 时以剩余最小分段文件名作为可恢复基准
 
 ---
 

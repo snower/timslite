@@ -162,7 +162,7 @@ DataSet::open():
 恢复约束:
 - 如果 `base_timestamp` 不存在且没有任何 index entry, 数据集为空。
 - 如果存在 index segment, 必须使用最小数值文件名作为 `base_timestamp`, 不能创建额外 base 文件。
-- retention 删除老 segment 后, 已删除时间范围不可回填; reopen 时以剩余最小分段文件名作为可恢复基准。
+- retention 删除老 index segment 后, 已删除时间范围不可回填; reopen 时以剩余最小分段文件名作为可恢复基准。混合 index segment 必须保留, 只有整个分段最后一个已物化 timestamp 也早于 retention threshold 时才删除。
 
 ## 23.8 连续模式 O(1) 查找
 

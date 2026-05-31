@@ -22,6 +22,8 @@ pub enum TmslError {
     InvalidData(String),
     /// Requested resource not found.
     NotFound(String),
+    /// Requested timestamp is outside the retention window.
+    Expired(String),
     /// Resource already exists (e.g., creating an existing dataset).
     AlreadyExists(String),
     /// Segment file is full (no more space for data, expansion needed or seal+new).
@@ -39,6 +41,7 @@ impl fmt::Display for TmslError {
             TmslError::DecompressionError(msg) => write!(f, "decompression error: {msg}"),
             TmslError::InvalidData(msg) => write!(f, "invalid data: {msg}"),
             TmslError::NotFound(msg) => write!(f, "not found: {msg}"),
+            TmslError::Expired(msg) => write!(f, "expired: {msg}"),
             TmslError::AlreadyExists(msg) => write!(f, "already exists: {msg}"),
             TmslError::SegmentFull => write!(f, "segment full (expansion needed)"),
         }
@@ -101,6 +104,14 @@ mod tests {
     fn test_not_found() {
         let err = TmslError::NotFound("/data/foo".to_string());
         assert!(err.to_string().contains("/data/foo"));
+    }
+
+    #[test]
+    fn test_expired() {
+        let err = TmslError::Expired("timestamp 100 is expired".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("expired"));
+        assert!(msg.contains("100"));
     }
 
     #[test]

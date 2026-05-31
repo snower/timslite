@@ -218,8 +218,9 @@ reclaim_expired_segments(expiration_threshold: i64, max_file_size: u64):
 
 **关键约束**:
 - 回收期间打开的索引段文件必须**检查完成后立即释放** (不用 idle-close)
-- 数据段与索引段**必须成对回收**: 回收同一时间窗口内的索引和数据段
-- 回收顺序: TimeIndex 回收 → DataSegmentSet 回收 (先清索引, 后清数据)
+- 如果 index segment 同时包含过期和未过期 timestamp, 该混合分段必须保留, 不做部分裁剪
+- 索引回收不检查 entry 指向的数据段是否仍存在; 查询入口会先按 retention threshold 钳制, 再通过 data segment 边界校验避免读取异常
+- 数据段和索引段按各自分段时间范围独立回收, 不要求成对删除同一时间窗口
 
 ---
 

@@ -352,6 +352,8 @@ reclaim_expired_segments(expiration_threshold: i64):
 - 使用段文件 header 中的 `max_timestamp` (已在 `DataSegmentMeta` 中缓存)
 - 无需打开文件, closed_segments 在 idle_close_all (DataSet::close) 时已读取 header 中的 min/max_timestamp
 - 过期判断: `max_timestamp < expiration_threshold` (整个段的最大时间戳早于过期阈值)
+- 如果一个 data segment 同时包含过期和未过期 timestamp, 该混合分段必须保留, 不做部分裁剪
+- 数据段回收不检查其数据是否仍被 index entry 引用; 可见性由 `DataSet` 的 retention 读写约束保证
 
 **触发时机**:
 - 由 `DataSet::reclaim_expired_segments()` 调用 (见 [数据集操作 §6.8](dataset-operations.md))
