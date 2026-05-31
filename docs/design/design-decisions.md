@@ -6,7 +6,7 @@
 |--------|------------------|-----------------|
 | 存储单元 | 单条 record | Block (多条聚合, ≤64KB) |
 | 压缩粒度 | record | Block |
-| 压缩时机 | 立即 | 延迟 (pending→sealed, 溢出或 idle-close 时) |
+| 压缩时机 | 立即 | 延迟 (pending overflow 或超大独占 block 创建时) |
 | 内存映射 | MappedByteBuffer | memmap2::MmapMut, 懒加载/超时关闭(30min) |
 | 元数据 | Protobuf | 100字节 header (meta/state 分离) |
 | 索引目录 | 同级子目录 | `data/` + `index/` 独立子目录 |
@@ -21,7 +21,7 @@
 |------|------|------|
 | 存储单元 | Block 聚合 | 提高压缩率, 减少 overhead |
 | Block 上限 | 64KB | 适配 L1/L2 缓存 |
-| 压缩时机 | 延迟 (pending→sealed) | 写入时零 CPU, 避免重复压缩 |
+| 压缩时机 | 延迟 (pending→sealed, 仅 next write overflow 或超大独占 block) | 写入时零 CPU, 避免重复压缩 |
 | 超大 record | 独占 block | 不截断数据 |
 | Record 编码 | data_len(4)+ts(8)+data | 支持 block 内随机定位, `u32` 长度可表达超大独占 record |
 | 索引条目 | 18 字节 | 精确定位到 block 内 record |
@@ -34,11 +34,11 @@
 | crash 模型 | 高性能、允许最近写入丢失, 不做事务恢复 | 目标场景对数据损失不敏感, 避免 WAL/二阶段提交带来的写放大 |
 | append 可见性 | payload → block header/state → index | index 是查询发布点; index 前失败则不可见, index 后读取需校验 timestamp/边界 |
 | segment 生命周期 | 懒打开/超时关闭 (30min) | 控制内存占用 |
-| idle-close pending | 密封 (不压缩) | 保证 reopen 后一致 |
+| idle-close pending | 保持 pending raw | idle-close 只 sync+unmap, reopen 从 header 恢复 pending, 不引入 sealed raw 中间态 |
 | **创建/打开分离** | `create` (带参数) / `open` (读 meta) | 防止误创建, 参数不可变 |
 | **参数不可变** | 创建后 segment_size/compress_level 不可修改 | 影响文件布局 |
 | **读缓存** | compressed block 的解压 payload | 跳过重复解压; compressed block 不允许原地修改, 具备全局缓存不可变性 |
-| **缓存规则** | 只缓存读取 compressed block 后的解压数据, 不缓存 raw block 或写入数据 | pending/raw sealed block 可能追加、seal 或被 correction 原地修改 |
+| **缓存规则** | 只缓存读取 compressed block 后的解压数据, 不缓存 raw block 或写入数据 | pending raw block 可能追加、seal 或被 correction 原地修改; sealed raw 为非法状态 |
 | **LRU 水位** | 降至 max_memory × 0.85 | 留 15% 余量, 减少淘汰频率 |
 | **缓存禁用** | `cache_max_memory=0` | 零额外开销 |
 | **Filler 哨兵** | `block_offset=0xFFFFFFFFFFFFFFFF` | `block_offset` 语义为数据区逻辑全局 offset, 合法全局偏移远低于该值, 零成本识别 |

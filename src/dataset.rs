@@ -187,9 +187,9 @@ impl DataSet {
     ///
     /// - `timestamp <= 0`: error.
     /// - `timestamp == latest_written_timestamp` (and latest > 0): **correction write** —
-    ///   in-place overwrite of the data bytes in the last uncompressed block of the latest
+    ///   in-place overwrite of the data bytes in the last pending raw block of the latest
     ///   data segment. The index entry is unchanged. If the target block has already been
-    ///   sealed and compressed (COMPRESSED flag set), falls back to out-of-order write:
+    ///   sealed and compressed, falls back to out-of-order write:
     ///   appends data to latest segment, updates index entry, and increments the old
     ///   segment's `invalid_record_count`.
     /// - `timestamp < latest_written_timestamp`: **out-of-order write** — appends data to
@@ -217,7 +217,7 @@ impl DataSet {
         }
 
         // Correction write: same timestamp as latest → in-place overwrite in
-        // the last uncompressed block of the latest data segment. Index unchanged.
+        // the last pending raw block of the latest data segment. Index unchanged.
         if self.latest_written_timestamp > 0 && timestamp == self.latest_written_timestamp {
             return self.correct_write(timestamp, data, cache);
         }
@@ -287,10 +287,10 @@ impl DataSet {
     /// Correction write: overwrite the data of an existing record in place.
     ///
     /// The record is located via the existing index entry, then its data bytes
-    /// in the last uncompressed block of the latest data segment are replaced.
+    /// in the last pending raw block of the latest data segment are replaced.
     /// Supports variable data length — updates block + segment counters accordingly.
     ///
-    /// If the target block has been sealed and compressed (COMPRESSED flag set),
+    /// If the target block has been sealed and compressed,
     /// falls back to out-of-order write: appends data to latest segment, updates
     /// the index entry, and increments `invalid_record_count` on the old segment.
     fn correct_write(
@@ -314,7 +314,7 @@ impl DataSet {
                         Ok(())
                     }
                     Err(_) => {
-                        // Target block cannot be modified in place (compressed or
+                        // Target block cannot be modified in place (sealed/compressed or
                         // not the last block/record) → fall back to out-of-order write:
                         // append to latest segment, update index, increment invalid_record_count
                         self.out_of_order_write(timestamp, data, cache)
@@ -2014,15 +2014,13 @@ mod tests {
         assert_eq!(seg2.invalid_record_count, 1);
     }
 
-    // ─── Correction write fallback on sealed/compressed block ────────────
+    // ─── Correction write across pending/compressed states ───────────────
 
     #[test]
-    fn test_correction_write_falls_back_after_reopen() {
-        // When a correction write targets a sealed block (sealed by close → reopen),
-        // in-place overwrite fails → falls back to out-of-order write:
-        // data is appended to a new pending block, the index entry is updated in place,
-        // and the old data segment's invalid_record_count is incremented.
-        let dir = temp_dir("correction_fallback_reopen");
+    fn test_correction_write_preserves_pending_after_reopen() {
+        // close/open preserves pending raw state, so same-timestamp correction can
+        // still overwrite in place after reopen.
+        let dir = temp_dir("correction_pending_reopen");
         let id = DataSetKey {
             name: "test".into(),
             dataset_type: "data".into(),
@@ -2047,7 +2045,6 @@ mod tests {
         }
         {
             let mut ds = DataSet::open(id, dir.clone(), 65536).unwrap();
-            // Block is now SEALED → in-place correction fails → falls back to out-of-order
             ds.write(100, b"corrected").unwrap();
 
             // Query should return the corrected data
@@ -2058,6 +2055,9 @@ mod tests {
 
             // latest_written_timestamp unchanged
             assert_eq!(ds.latest_written_timestamp, 100);
+
+            let seg = ds.segments.segments.last().unwrap();
+            assert_eq!(seg.invalid_record_count, 0);
         }
     }
 
@@ -2186,7 +2186,7 @@ mod tests {
             ds.flush().unwrap();
             ds.close().unwrap();
         }
-        // Phase 2: reopen and correct ts=100 (block was sealed → fallback)
+        // Phase 2: reopen and rewrite ts=100. This is out-of-order because latest is 200.
         {
             let mut ds = DataSet::open(id.clone(), dir.clone(), 65536).unwrap();
             ds.write(100, b"corrected_100").unwrap();

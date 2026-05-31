@@ -76,7 +76,7 @@ expand(current_file_size, max_size, mmap, path):
 ### 扩容上限处理
 
 当 `target == max_file_size` (已达上限) 时:
-1. 密封当前段 (seal pending block)
+1. 若当前段仍有 pending block 且需要结束写入该段, 在 next write overflow 路径强制压缩并密封 pending block
 2. 创建新段 (以 `initial_size` 创建)
 3. 写入到新段
 

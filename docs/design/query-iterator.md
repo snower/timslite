@@ -97,7 +97,7 @@ struct HotBlockCache {
 
 - 命中同一个 `(segment_file_offset, block_segment_offset)` 时, 直接从 `current_data` 提取 record。
 - miss 时通过 `DataSegmentSet::read_at_index_with_hot_cache()` 读取 block。
-- compressed block 可查询全局 `BlockCache`; raw block 只允许进入本次查询的 HotBlockCache, 不进入全局缓存。
+- compressed block 可查询全局 `BlockCache`; pending raw block 只允许进入本次查询的 HotBlockCache, 不进入全局缓存。
 - HotBlockCache 生命周期不跨越写入操作, 不参与 correction/delete/out-of-order 的全局缓存一致性。
 
 ---

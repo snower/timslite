@@ -169,8 +169,8 @@ impl DataSegment {
     fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> io::Result<(u64, u16)>;
     fn create_single_record_block(&mut self, timestamp: i64, data: &[u8], compress_level: u8) -> io::Result<(u64, u16)>;
 
-    /// 纠正写入: 在该段最后一个 block 的最末 record 位置原地覆盖 data 字节, 支持变 size
-    /// 若最后一个 block 含 COMPRESSED flag → 返回错误 (压缩数据无法原地修改)
+    /// 纠正写入: 在该段最后一个 pending raw block 的最末 record 位置原地覆盖 data 字节, 支持变 size
+    /// 若最后一个 block 含 SEALED 或 COMPRESSED flag → 返回错误 (不可原地修改)
     /// 若该 record 不是 block 最末 record → 返回错误
     /// 修改后需更新: block.payload_size/uncompressed_size + 段 wrote_position/total_uncompressed_size/pending_wrote_position(仅 pending)
     fn overwrite_in_last_block(
@@ -194,7 +194,7 @@ impl DataSegment {
 
 #### overwrite_in_last_block: 纠正写入 (In-Place Overwrite, 支持变 size)
 
-纠正写入场景下 (`timestamp == latest_written_timestamp`), 最新记录位于 **本数据段最后一个未压缩 block** (可以是 pending block 或 SEALED 无 COMPRESSED 的 block) 的 **最末位置**, 可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化:
+纠正写入场景下 (`timestamp == latest_written_timestamp`), 最新记录只有在仍位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置** 时, 才可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化。只要 block 已经 sealed/compressed, 就不能再原地修改, 由 `DataSet::correct_write` 回退为乱序追加并更新索引:
 
 ```rust
 fn overwrite_in_last_block(
@@ -208,7 +208,7 @@ fn overwrite_in_last_block(
     //    若 block_abs_end < self.wrote_position → 不是最后 block, 返回错误
     //
     // 2. 读取 block header (16B at header_len + block_segment_offset)
-    //    - 检查 flags: 若含 COMPRESSED → 返回错误
+    //    - 检查 flags: 必须等于 0; 若含 SEALED 或 COMPRESSED → 返回错误
     //    - payload_size / uncompressed_size
     //
     // 3. 验证 record 是块内最末 record:
@@ -237,7 +237,7 @@ fn overwrite_in_last_block(
 > **前置条件**:
 > - 调用方已通过 `time_index.find_entry(timestamp)` 获取 `(block_offset, in_block_offset)`, 并在 `DataSegmentSet` 层转换为当前段的 `block_segment_offset`
 > - 调用方已验证该 record 位于最新数据段
-> - block.flags 无 COMPRESSED flag
+> - block.flags = 0 (pending raw)
 > - record 是 block 内最末 record
 >
 > **不支持缩小的情况**: 若新 data 长度更小, 后续 block 需前移 (本段内只此 block 时无影响, 但通用场景复杂)。实现中允许缩小, 只需移动本 block 后的字节 (如果有) 并调整 wrote_position。
@@ -262,16 +262,16 @@ impl DataSegment {
         let hdr_pos = self.header_len as usize + entry.block_segment_offset as usize;
         let block_segment_offset = entry.block_segment_offset;
 
-        // 读取 block header, 检查 compressed flag
-        // 仅 compressed block 允许查询全局缓存
+        // 读取 block header, 校验 SEALED/COMPRESSED 必须同时存在或同时不存在
+        // 仅 sealed+compressed block 允许查询全局缓存
         // compressed 未命中 → 从 mmap 读取 + 解压 → 存入全局缓存
-        // raw block → 直接从 mmap 复制 payload, 不进入全局缓存
+        // pending raw block → 直接从 mmap 复制 payload, 不进入全局缓存
         // 定位 record → 返回 (timestamp, data)
     }
 }
 ```
 
-> **安全性保证**: 只有 `COMPRESSED` block 的解压 payload 才能进入全局 `BlockCache`。pending raw block 仍在写入中, sealed raw block 仍可能被 correction 原地修改, 二者都不能进入全局缓存。compressed block 一旦写入后不允许原地修改。
+> **安全性保证**: 只有 `SEALED|COMPRESSED` block 的解压 payload 才能进入全局 `BlockCache`。pending raw block 仍在写入中, 不能进入全局缓存。sealed raw block 为非法状态。compressed block 一旦写入后不允许原地修改。
 >
 > **Header 起点约束**: 进入 `DataSegment` 后的 `block_segment_offset` 表示相对数据区起点的偏移, 即 `block_offset - segment.file_offset`; 物理文件位置必须通过 `segment.header_len + block_segment_offset` 计算。新建 v1 文件的 `header_len` 为 116, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。索引中的 `block_offset` 是数据区逻辑全局偏移, 不可直接作为文件内 seek 位置。
 
@@ -282,14 +282,11 @@ impl DataSegment {
     /// 确保 mmap 有效 (closed → open + mmap + pending恢复)
     pub fn ensure_open(&mut self, compress_level: u8) -> Result<()>;
 
-    /// sync → unmmap → close
+    /// sync → unmmap → close, 不 seal、不压缩、不清 pending
     pub fn idle_close(&mut self, compress_level: u8) -> Result<()>;
 
     /// 仅 msync (不 seal/不压缩)
     pub fn sync(&mut self) -> Result<()>;
-
-    /// 密封 pending 但不压缩 (用于 idle-close 和 reopen recovery)
-    fn seal_pending_block_no_compress(&mut self, _compress_level: u8) -> Result<()>;
 
     /// 创建新 segment (初始分配 initial_size)
     pub fn create(path: &Path, file_offset: u64, initial_size: u64, max_size: u64) -> Result<Self>;

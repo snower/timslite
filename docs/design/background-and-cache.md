@@ -9,7 +9,7 @@
 | 任务 | 间隔 | 行为 |
 |------|------|------|
 | Flush | 可配置, 默认 10min | 遍历所有打开的 segment, mmap.flush() (MS_SYNC) |
-| Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + 密封 pending + unmmap + close |
+| Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + unmmap + close |
 | Cache Eviction | 60s | 扫描缓存池, last_access_at ≥30min → 回收 + 释放内存 → LRU 检查 |
 | Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_ms > 0 的 dataset, 回收过期分段 |
 
@@ -56,9 +56,8 @@ idle-check (每 60s):
      ⚠️ Double-check: 获取写锁后再次检查 last_used_at.elapsed() >= idle_timeout
   3. 对每个打开的 segment:
      a. mmap.flush() (MS_SYNC)
-     b. 如果 data segment 有 pending block → 密封 (不压缩)
-     c. 清除 header pending state
-     d. munmap + close file
+     b. 不改变 block header, 不密封 pending, 不清除 header pending state
+     c. munmap + close file
 ```
 
 > **Race Condition 防护**: 后台线程读锁收集 idle datasets → 在获取写锁前, 前台写操作可能命中该 dataset → 更新 `last_used_at` → 写锁获取后必须重新检查。
@@ -93,10 +92,9 @@ reopen 时 pending block 恢复流程:
    3. 恢复流程:
       a. 从 header 恢复 pending 状态
       b. 验证偏移有效性
-      c. 密封 pending block (FLAGS=SEALED, 不压缩)
-      d. 清除 header pending state
-      e. wrote_position = sealed block 末尾
-      f. 返回 OpenReady
+      c. 保持 block.flags = 0, 恢复为 pending raw block
+      d. wrote_position 保持 header 中的已写位置
+      e. 返回 OpenReady
 ```
 
 ### 17.8 Retention Reclaim (数据保留回收)
@@ -326,7 +324,7 @@ next_background_delay():
 
 ## 十八、读缓存池 (BlockCache)
 
-> **核心原则**: 全局 `BlockCache` 只缓存**已压缩 block 解压后的 payload**。compressed block 一旦写入就视为不可变; pending raw block 与 sealed raw block 均不得进入全局缓存。
+> **核心原则**: 全局 `BlockCache` 只缓存**已压缩 block 解压后的 payload**。compressed block 一旦写入就视为不可变; pending raw block 不得进入全局缓存。新格式不允许 sealed raw block 存在。
 
 ### 18.1 设计目标
 
@@ -402,7 +400,6 @@ put 时淘汰流程:
 | `DataSet::write` | ❌ 不进入 | 写入的是 raw 数据, seal 后才可确定 final 内容 |
 | `DataSet::query` / `DataSet::read` 读取 compressed block | ✅ 进入 (解压后) | compressed block 不允许再被原地修改, 解压结果具备全局缓存不可变性 |
 | pending raw block 读取 | ❌ 不进入 | 仍可能追加 record 或被 seal, 不具备不可变性 |
-| sealed raw block 读取 | ❌ 不进入 | 纠正写入可能在满足 last-block/last-record 条件时原地修改 |
 | compressed block 读取 | ✅ 进入 (解压后) | 解压操作是 CPU 密集型, 且 block 内容不可变 |
 
 ### 18.7 读取与失效协议
@@ -413,7 +410,7 @@ put 时淘汰流程:
 2. 使用 `segment.header_len + block_segment_offset` 读取 `BlockHeader`。
 3. 若 `flags` 包含 `COMPRESSED`, 才使用 `(segment.file_offset, block_segment_offset)` 查询全局 `BlockCache`。
 4. 若全局缓存命中, 从缓存 payload 中复制 record。
-5. 若未命中, 从 mmap 读取 payload; compressed block 先解压再写入全局缓存, raw block 只返回本次读取结果。
+5. 若未命中, 从 mmap 读取 payload; compressed block 先解压再写入全局缓存, pending raw block 只返回本次读取结果。
 
 `HotBlockCache` 是单次查询迭代器内部的局部缓存, 生命周期不跨越写入操作; 它可以缓存本次查询中读到的 raw 或 compressed payload, 但不得提升为全局缓存规则。
 
@@ -422,7 +419,7 @@ put 时淘汰流程:
 | 写入路径 | 缓存处理 |
 |---------|----------|
 | 正常追加 | 不触碰全局缓存 |
-| correction 原地修改 | 仅允许修改未压缩 block; 目标 key 可防御性 invalidate, 但按新规则不应存在全局缓存 |
+| correction 原地修改 | 仅允许修改 pending raw block; 目标 key 可防御性 invalidate, 但按新规则不应存在全局缓存 |
 | correction 命中 compressed block | 不允许原地修改, 回退为 out-of-order append, 并 invalidate 旧索引指向的 block key |
 | out-of-order 覆盖已有索引 | append 新 block/record 后, invalidate 旧索引指向的 block key |
 | delete | 将索引置为 filler 前后均可 invalidate 旧索引指向的 block key |

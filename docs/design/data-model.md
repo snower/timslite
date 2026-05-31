@@ -19,7 +19,7 @@
 
 **Block 大小限制**: 普通聚合 Block 的 payload 最大 64KB (65536 字节)。如果单条 record 的编码后大小超过 64KB, 则该 record **独占一个 Block**, Block 实际大小可超过 64KB。
 
-**纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时触发纠正写入。最新记录必然位于 **最新数据段的最后一个未压缩 block** (可以是 pending block 或 SEALED 但未压缩的 block) 的最末位置, 因此可通过 mmap 直接修改该 record 的 data 字节, **支持改变 data 长度** (增长或缩小)。索引条目保持不变 (`block_offset`/`in_block_offset` 不变, 其中 `block_offset` 是数据区逻辑全局偏移, 不含 header)。修改时 delta = new_data.len() - old_data_len, 需同步更新 5 个字段: block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position (仅 pending) / total_uncompressed_size / wrote_position。**回退行为**: 若目标 block 已压缩或不是可原地修改位置, 则自动回退为更新写入: 数据追加到最新数据段、更新索引值, 同时旧数据所在段的 `invalid_record_count` 加一, 并 invalidate 旧索引对应的全局缓存 key。compressed block 一旦写入后不允许再被修改, 这是全局 BlockCache 只缓存 compressed block 解压结果的前提。
+**纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时触发纠正写入。最新记录只有在仍位于 **最新数据段最后一个 pending raw block (`flags=0`)** 的最末位置时, 才可通过 mmap 直接修改该 record 的 data 字节, **支持改变 data 长度** (增长或缩小)。索引条目保持不变 (`block_offset`/`in_block_offset` 不变, 其中 `block_offset` 是数据区逻辑全局偏移, 不含 header)。修改时 delta = new_data.len() - old_data_len, 需同步更新 5 个字段: block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position / total_uncompressed_size / wrote_position。**回退行为**: 若目标 block 已经 `SEALED|COMPRESSED` 或不是可原地修改位置, 则自动回退为更新写入: 数据追加到最新数据段、更新索引值, 同时旧数据所在段的 `invalid_record_count` 加一, 并 invalidate 旧索引对应的全局缓存 key。compressed block 一旦写入后不允许再被修改, 这是全局 BlockCache 只缓存 compressed block 解压结果的前提。
 
 ### 3.3 Block Layout (磁盘上的 Block 结构)
 
@@ -49,6 +49,12 @@ Offset  Size  Field                    Description
 8-11    u32   uncompressed_size        Block 内所有 record 的原始数据总大小 (含 data_len+timestamp)
 12-15   u32   reserved                 保留
 ```
+
+合法状态只有两类:
+- `flags = 0`: pending raw block, 可继续追加、可纠正写、可读取, 不进入全局缓存。
+- `flags` 同时包含 `SEALED | COMPRESSED`: sealed compressed block, 不再修改, 可进入全局缓存。
+
+`SEALED && !COMPRESSED` 与 `COMPRESSED && !SEALED` 均为非法状态。
 
 #### Block Payload 内部结构 (Record 编码)
 
@@ -267,7 +273,7 @@ struct DataSet {
 /// 存储全局配置 (Store 级别, 所有 DataSet 共享)
 pub struct StoreConfig {
     pub flush_interval: Duration,    // 默认 10 分钟 (mmap sync, 不密封/不压缩)
-    pub idle_timeout: Duration,      // 默认 30 分钟 (sync + 密封 pending + unmmap + close)
+    pub idle_timeout: Duration,      // 默认 30 分钟 (sync + unmmap + close, 不改变 pending)
     pub data_segment_size: u64,      // 默认 64MB
     pub index_segment_size: u64,     // 默认 4MB
     pub initial_data_segment_size: u64,  // 默认 256KB

@@ -2,31 +2,51 @@
 
 ## 十六、压缩
 
-- `miniz_oxide`: 纯 Rust deflate
-- Block 级压缩, 不是 record 级
-- 延迟压缩: pending 时 raw, 溢出时 seal+压缩
-- 如果压缩后不缩小, 保留 raw (不设 COMPRESSED flag)
-- **idle-close 仅密封 pending, 不压缩** — 压缩延迟至 next write overflow
-- 超大 record (独占 block) → 立即 seal+压缩 (因为不存在 pending); record payload 仍使用统一的 `data_len: u32 + timestamp: i64 + data` 编码
+- `miniz_oxide`: 纯 Rust deflate。
+- Block 级压缩, 不是 record 级。
+- 延迟压缩: pending 时保持 raw, 仅在 pending overflow 或超大独占 block 创建时压缩。
+- **强制压缩**: 一旦 block 从 pending 转为 sealed, 必须写入 deflate 后的 payload, 并同时设置 `SEALED | COMPRESSED`。不再根据压缩后是否缩小决定保留 raw。
+- **idle-close 不改变 block 状态**: 只执行 sync + unmap/close, 不 seal、不 compress、不清 pending state。重新打开后最后一个 block 仍按 header 中的 pending state 恢复为 pending。
+- 超大 record (独占 block) 不进入 pending, 创建时立即 deflate 并写为 `SEALED | COMPRESSED | SINGLE_RECORD`。
 
-### 压缩数据流
+### 状态机
 
 ```
-写入 record → 追加到 pending block (raw 格式)
+flags = 0
+pending raw block
     │
-    ├─ pending block 满了 (≥64KB) → 触发 seal
-    │     1. 读取 raw payload
-    │     2. deflate 压缩
-    │     3. 比较: compressed.len() < raw.len()?
-    │        ├─ Yes → 写入压缩数据 + set COMPRESSED flag
-    │        └─ No  → 保留 raw 数据 + set SEALED flag (无 COMPRESSED)
+    ├─ append 且未超过 block_max_size
+    │     └─ 继续保持 pending raw, 更新 pending_wrote_position / pending_record_count
     │
-    ├─ idle-close → 密封 pending (不压缩)
-    │     flags = SEALED (无 COMPRESSED)
+    ├─ next write 导致 pending overflow
+    │     ├─ 读取 raw payload
+    │     ├─ deflate 压缩
+    │     ├─ 写入 compressed payload
+    │     ├─ header.flags = SEALED | COMPRESSED
+    │     └─ 清除 file header pending state
     │
-    └─ 超大 record (独占 block) → 立即 seal + 压缩
-          flags = SEALED | COMPRESSED | SINGLE_RECORD
+    └─ idle-close / reopen
+          └─ 不改变 block header 或 pending state
+
+超大 record
+    └─ 构造单条 record raw payload → deflate → SEALED | COMPRESSED | SINGLE_RECORD
 ```
+
+**核心 invariant**:
+
+- 新格式中 `SEALED` 与 `COMPRESSED` 必须同时存在或同时不存在。
+- `SEALED && !COMPRESSED` 为非法状态。
+- `COMPRESSED && !SEALED` 为非法状态。
+- `flags = 0` 表示 pending raw block, 可追加、可纠正写、可读取, 但不得进入全局 BlockCache。
+
+### 空间约束
+
+deflate payload 可能略大于 raw payload, 实现不能依赖“压缩后一定更小”:
+
+1. pending overflow seal 前, 需要按 `compressed.len()` 检查当前 segment 剩余空间。
+2. 若当前 segment 初始分配不足但仍小于最大 segment size, 先扩容后再写 compressed payload。
+3. 若扩容到最大 segment size 后仍无法容纳 compressed payload, 返回 `SegmentFull`/错误, 由上层创建新 segment 或调整写入策略。
+4. 超大独占 block 创建时, 也以 `compressed.len()` 作为实际 payload 长度做空间检查与 `wrote_position` 更新。
 
 ### Block Flags
 
@@ -39,16 +59,17 @@ const BLOCK_FLAG_SINGLE_RECORD: u16  = 0x0004;  // 独占 record 的超大 block
 ### 读取时解压
 
 ```
-读取 sealed block:
+读取 block:
   1. 读取 BlockHeader, 检查 flags
-  2. 如果 COMPRESSED flag 设置:
-     → 先查询全局 BlockCache; 未命中则 miniz_oxide::inflate::decompress_to_vec(payload)
-  3. 如果未设置 COMPRESSED:
-     → 直接使用 raw payload
-  4. 仅 COMPRESSED block 的解压数据存入全局 BlockCache (供后续查询复用)
+  2. 若 flags = 0:
+       → pending raw payload, 直接读取, 不进入全局 BlockCache
+  3. 若 flags 同时包含 SEALED | COMPRESSED:
+       → 先查询全局 BlockCache; 未命中则 inflate(payload), 再写入全局 BlockCache
+  4. 若 flags 只包含 SEALED 或只包含 COMPRESSED:
+       → 格式错误
 ```
 
-全局缓存建立在 compressed block 不可变的前提上: 一旦 block 带有 `COMPRESSED` flag, correction 写入不得原地修改该 block, 只能回退为乱序追加并更新索引。未压缩 block 即使已 sealed, 也可能在满足 last-block/last-record 条件时被 correction 原地修改, 因此不得进入全局缓存。
+全局缓存建立在 compressed block 不可变的前提上: 一旦 block 带有 `SEALED | COMPRESSED`, correction 写入不得原地修改该 block, 只能回退为乱序追加并更新索引。pending raw block 可读、可追加、可纠正写, 但不得进入全局缓存。
 
 ### 压缩配置
 

@@ -6,8 +6,8 @@
 - `madvise`: SEQUENTIAL (写), WILLNEED (读)
 - `flush`: mmap.flush() (MS_SYNC) — 仅同步到磁盘, **不改变任何 block 状态**
 - 数据/索引 segment 均使用 mmap, 生命周期相同
-- 空闲 30min → msync → 密封 pending (不压缩) → munmap → close file
-- 下次访问 → on-demand open + mmap → 检测/恢复 pending block
+- 空闲 30min → msync → munmap → close file (不改变 pending/block 状态)
+- 下次访问 → on-demand open + mmap → 从 header 恢复 pending block
 - 任意时刻只有活跃 segment 持有 mmap 文件句柄
 
 ## 十五、并发控制
@@ -44,14 +44,13 @@ reopen 时 pending block 恢复流程:
    3. 恢复流程:
       a. 从 header 恢复 pending 状态
       b. 验证: pending_block_offset + header_len + pending_wrote_position <= file_size
-      c. 密封 pending block (FLAGS=SEALED, 不压缩)
-      d. 清除 header pending state
-      e. wrote_position = sealed block 末尾
-      f. 返回 OpenReady
+      c. 保持 block.flags = 0, 仍作为 pending raw block 可继续追加或纠正写
+      d. wrote_position 保持 header 中的已写位置
+      e. 返回 OpenReady
 ```
 
 > **恢复边界说明**:
-> idle-close 时 msync 会尽力同步 header 和 block payload; reopen 时如果 pending 状态完整, 可将 pending block 安全密封为 raw sealed block。
+> idle-close 时 msync 会尽力同步 header 和 block payload; reopen 时如果 pending 状态完整, 直接恢复为 pending raw block。
 > 但本库不提供事务、WAL、checksum 或跨 data/index 文件的持久化顺序保证。crash 后允许丢失最近写入, 不再表述为"最多损失 flush 间隔内的数据"。
 
 ## 崩溃安全
@@ -92,7 +91,7 @@ append record 的逻辑发布顺序必须是:
 
 ### 其它边界
 
-- reopen 时检测 pending block 并在状态完整时安全密封 (FLAGS=SEALED, 不压缩)。
+- reopen 时检测 pending block 并在状态完整时恢复为 pending raw block, 不做 seal/压缩。
 - meta 文件创建时一次性写入; 若创建中断, 由 open/create 的 magic/version/TLV 校验处理。
 - 索引和数据段独立文件; 单个文件损坏不应扩散到其他段。
 - Header `file_size` 不随扩容更新, 打开时以磁盘实际大小为准, 消除扩容时 header/file_size 不一致的风险。

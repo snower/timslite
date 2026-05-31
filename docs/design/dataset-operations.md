@@ -88,11 +88,11 @@ impl DataSet {
     │
     Yes
     │
-    ├─ pending_size + record_size > 64KB? ──Yes──→ 密封 pending Block
+    ├─ pending_size + record_size > 64KB? ──Yes──→ 强制压缩并密封 pending Block
     │    │                                             1. 读取 raw payload
-    │    │                                             2. 压缩 → 比较大小
-    │    │                                             3. 写回: compressed 或 raw
-    │    │                                             4. flags = SEALED[|COMPRESSED]
+    │    │                                             2. deflate 压缩
+    │    │                                             3. 写回 compressed payload
+    │    │                                             4. flags = SEALED|COMPRESSED
     │    │                                             5. 清除 pending
     │    │                                             6. 创建新 pending, 追加 record
     │    │                                             7. 返回
@@ -142,15 +142,15 @@ DataSet::write(timestamp, data):
     │    ├─ 1. time_index.find_entry(timestamp)
     │    │      → 获取 (block_offset, in_block_offset)
     │    │
-    │    ├─ 2. 尝试验证该 record 是"最新数据段的最后一个未压缩 block 的最后一条 record"
+    │    ├─ 2. 尝试验证该 record 是"最新数据段的最后一个 pending raw block 的最后一条 record"
     │    │      ├─ 必须是最后一段 + block 为该段最后一个 block
-    │    │      ├─ block.flags 不能含 COMPRESSED flag
+    │    │      ├─ block.flags 必须等于 0 (不能含 SEALED 或 COMPRESSED)
     │    │      └─ record 必须是 block 内最后一条 (in_block_offset + RECORD_HEADER_SIZE + old_data_len == payload_size)
     │    │
     │    ├─ 3. segments.overwrite_in_last_block(block_offset, in_block_offset, timestamp, new_data)
     │    │      ├─ 成功 → 返回 Ok(())
     │    │      │        (支持改变 data 长度, 更新 5 个字段, 索引条目不变)
-    │    │      └─ 失败 → 目标 block 无法原地修改 (已压缩或非法位置)
+    │    │      └─ 失败 → 目标 block 无法原地修改 (已 sealed/compressed 或非法位置)
     │    │           └─ **回退到乱序写入**: append 到最新段 + update_entry + invalid_record_count++ + invalidate 旧缓存 key
     │    │
     │    └─ 索引条目不变 (仅当原地覆盖成功时), latest_written_timestamp 不变
@@ -205,10 +205,8 @@ DataSet::write(timestamp, data):
 
 **原地覆盖策略 (In-Place Overwrite, 支持变长)**:
 
-1. **前提**: 最新写入的记录必然位于 **最新数据段** 的 **最后一个未压缩 block** 的最后一条位置。可能形态:
-   - **Pending block** (flags = 0): 尚未密封, 未压缩
-   - **Sealed block** (flags = SEALED): 已密封但未压缩 (压缩未受益, seal 时保留原始格式)
-2. **回退 (非错误)**: 如果最后一个 block 的 flags 含 `COMPRESSED` (数据已被压缩)、record 不是最后一条, 或最新数据段无打开的映射 — 无法原地修改时, 自动回退为**乱序写入**: 新数据追加到最新数据段 (新的 pending block), 索引条目原地更新为新的 (block_offset, in_block_offset), 同时旧数据所在段的 `invalid_record_count += 1`, 并 invalidate 旧索引对应的全局缓存 key
+1. **前提**: 最新写入的记录必须仍位于 **最新数据段** 的 **最后一个 pending raw block (`flags=0`)** 的最后一条位置。
+2. **回退 (非错误)**: 如果最后一个 block 已经 `SEALED|COMPRESSED`、record 不是最后一条, 或最新数据段无打开的映射 — 无法原地修改时, 自动回退为**乱序写入**: 新数据追加到最新数据段 (新的 pending block), 索引条目原地更新为新的 (block_offset, in_block_offset), 同时旧数据所在段的 `invalid_record_count += 1`, 并 invalidate 旧索引对应的全局缓存 key
 3. **支持变 size**: 新 data 可以比原 data 大或小, 只需移动后续字节并更新相关计数字段
 4. **索引不变**: block_offset + in_block_offset 仍指向同一 record 起始位置, data_len (u32) 更新为新长度
 5. **索引条目不变**: 索引中的 block_offset/in_block_offset 字段无需修改
@@ -220,7 +218,7 @@ DataSet::write(timestamp, data):
 |------|------|--------|
 | BlockHeader.payload_size (u32) | block header | `+ delta` (block 内 payload 长度变化) |
 | BlockHeader.uncompressed_size (u32) | block header | `+ delta` (block 内原始数据长度变化) |
-| DataSegment.pending_wrote_position (u64) | 段状态 | `+ delta` (仅 pending block 场景, sealed 不更新) |
+| DataSegment.pending_wrote_position (u64) | 段状态 | `+ delta` |
 | DataSegment.total_uncompressed_size (u64) | 段状态 | `+ delta` |
 | DataSegment.wrote_position (u64) | 段状态 | `+ delta` |
 
@@ -234,7 +232,7 @@ DataSet::write(timestamp, data):
 //      block_segment_offset = block_offset - seg.file_offset
 //      block.start = seg.header_len + block_segment_offset
 //   2. 读取 block header (16B at block.start)
-//      - 检查 flags & COMPRESSED == 0 (若含 COMPRESSED → 返回错误, 由 correct_write 捕获并回退到乱序写入)
+//      - 检查 flags == 0 (若含 SEALED 或 COMPRESSED → 返回错误, 由 correct_write 捕获并回退到乱序写入)
 //      - 计算 record 在 payload 中的位置
 //      - 验证 record 是 block 内最后一条:
 //        in_block_offset + 12 + old_data_len == payload_size
@@ -245,9 +243,7 @@ DataSet::write(timestamp, data):
 //   6. 更新段内计数字段:
 //      - wrote_position += delta
 //      - total_uncompressed_size += delta
-//      - if block is pending (pending_block_offset matches):
-//          pending_wrote_position += delta; 更新 file header 中 pending_wrote_position
-//      - else (sealed+uncompressed): 仅更新 file header 中 wrote_position
+//      - pending_wrote_position += delta; 更新 file header 中 pending_wrote_position
 //   7. 更新 file header 中 wrote_position (update_file_wrote_position)
 ```
 
@@ -280,7 +276,7 @@ DataSet::write(timestamp, data):
 >
 > **invalid_record_count 更新**: 通过 `block_offset` 计算旧数据所在数据段 (段路由: `segment.file_offset = (block_offset / segment_size) × segment_size`), 再对该段 `invalid_record_count` 字段 +1。段可能已关闭, 需通过 `lazy_open` 临时打开以更新 mmap state 字段。
 >
-> **缓存一致性**: 全局 `BlockCache` 只允许缓存 compressed block 的解压结果。乱序写入覆盖旧索引、纠正写回退到乱序写入、删除记录时, 都必须根据旧 `block_offset` 换算出 `(segment.file_offset, block_offset - segment.file_offset)` 后调用 `BlockCache::invalidate`。pending/raw sealed block 正常不会存在于全局缓存, 但 invalidate 是幂等操作, 可作为防御性清理。
+> **缓存一致性**: 全局 `BlockCache` 只允许缓存 `SEALED|COMPRESSED` block 的解压结果。乱序写入覆盖旧索引、纠正写回退到乱序写入、删除记录时, 都必须根据旧 `block_offset` 换算出 `(segment.file_offset, block_offset - segment.file_offset)` 后调用 `BlockCache::invalidate`。pending raw block 正常不会存在于全局缓存, 但 invalidate 是幂等操作, 可作为防御性清理。
 
 ### 9.2 Flush 行为 (mmap sync only)
 
@@ -295,7 +291,7 @@ flush (配置化，默认10分钟):
       pending block 继续保持 raw 状态留在 mmap 中
 ```
 
-> **关键区别**: flush ≠ seal。flush 只 msync，密封/压缩只发生在 block 溢出或 idle-close 时。
+> **关键区别**: flush ≠ seal。flush 和 idle-close 都不改变 block 状态；密封/压缩只发生在 next write 导致 pending overflow 或超大独占 block 创建时。
 
 ### 9.3 删除操作 (DataSet::delete)
 
@@ -362,7 +358,7 @@ DataSet::delete(timestamp):
     │      │   ├─ 计算 cache_key = (segment.file_offset, block_offset - segment.file_offset)
     │      │   ├─ 检查全局缓存池
     │      │   └─ Miss → 解压 entire block payload → 存入缓存池
-    │      ├─ uncompressed → 读取 raw block payload, 不进入全局缓存
+    │      ├─ pending raw → 读取 raw block payload, 不进入全局缓存
     │      ├─ in_block_offset → 定位到 [data_len:4]
     │      ├─ 读 data_len, timestamp, data
     │      └─ 返回
@@ -391,15 +387,15 @@ DataSet::delete(timestamp):
            │      │   └─ 直接从 hot_block.extract_record() → return
            │      └─ Miss → 继续 ↓
            │
-           ├─ 4. mmap 读取 BlockHeader, 检查 compressed flag
+           ├─ 4. mmap 读取 BlockHeader, 校验 SEALED/COMPRESSED 状态
            │
-           ├─ 5. compressed block 才检查全局 BlockCache (RwLock<HashMap>)
+           ├─ 5. SEALED|COMPRESSED block 才检查全局 BlockCache (RwLock<HashMap>)
            │      ├─ Hit → 放入 HotBlockCache → extract_record → return
            │      └─ Miss → 继续 ↓
            │
            ├─ 6. mmap 读取 payload + 解码
            │      ├─ compressed → deflate_decompress() → 写入全局 BlockCache
-           │      └─ uncompressed → payload.to_vec(), 不进入全局 BlockCache
+           │      └─ pending raw → payload.to_vec(), 不进入全局 BlockCache
            │
            ├─ 7. 更新 HotBlockCache
            │      └─ hot_block = HotBlockCache::new(key, decoded_payload)

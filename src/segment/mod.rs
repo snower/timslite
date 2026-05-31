@@ -287,7 +287,7 @@ impl DataSegmentSet {
     }
 
     /// Correction write: route to the latest data segment and overwrite the
-    /// data bytes of the target record in its last uncompressed block.
+    /// data bytes of the target record in its last pending raw block.
     ///
     /// The record must be the last record in the last block of the latest segment.
     /// Returns `Err` if the block_offset does not lie within the open last segment
@@ -299,9 +299,22 @@ impl DataSegmentSet {
         _timestamp: i64,
         new_data: &[u8],
     ) -> Result<()> {
-        let seg = self.segments.last_mut().ok_or_else(|| {
-            TmslError::InvalidData("no segment available for correction write".into())
-        })?;
+        if self.next_offset == 0 {
+            return Err(TmslError::InvalidData(
+                "no segment available for correction write".into(),
+            ));
+        }
+
+        let target_segment_offset = (block_offset / self.segment_size) * self.segment_size;
+        let latest_segment_offset = self.next_offset.saturating_sub(self.segment_size);
+        if target_segment_offset != latest_segment_offset {
+            return Err(TmslError::InvalidData(format!(
+                "correction write: block_offset {} is not in the latest segment {}",
+                block_offset, latest_segment_offset
+            )));
+        }
+
+        let seg = self.lazy_open(target_segment_offset)?;
 
         // The block_offset is relative to each segment's data area start.
         // Each segment starts at seg.file_offset in the logical data stream.
