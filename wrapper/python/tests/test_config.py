@@ -14,7 +14,6 @@ class TestConfig:
         assert config.index_segment_size == 4194304
         assert config.initial_data_segment_size == 262144
         assert config.initial_index_segment_size == 4096
-        assert config.block_max_size == 65536
         assert config.compress_level == 6
         assert config.cache_max_memory == 268435456
         assert config.cache_idle_timeout == 1800
@@ -28,7 +27,6 @@ class TestConfig:
             index_segment_size=8 * 1024 * 1024,
             initial_data_segment_size=512 * 1024,
             initial_index_segment_size=8192,
-            block_max_size=32768,
             compress_level=9,
             cache_max_memory=512 * 1024 * 1024,
             cache_idle_timeout=600,
@@ -39,7 +37,6 @@ class TestConfig:
         assert config.index_segment_size == 8 * 1024 * 1024
         assert config.initial_data_segment_size == 512 * 1024
         assert config.initial_index_segment_size == 8192
-        assert config.block_max_size == 32768
         assert config.compress_level == 9
         assert config.cache_max_memory == 512 * 1024 * 1024
         assert config.cache_idle_timeout == 600
