@@ -110,6 +110,29 @@ physical_file_offset  = segment.header_len + block_segment_offset
 
 因此 `block_offset / data_segment_size` 可定位第几个数据段, `block_offset % data_segment_size` 可定位该段数据区内的 block 起点; 真正读写文件时必须再加运行时解析出的 `segment.header_len`。可变 header 设计要求 index 中的 `block_offset` 永远不包含 header, 否则文件格式扩展会改变历史索引含义。
 
+#### On-Disk Integer 编码与校验约束
+
+所有 on-disk 多字节整数均使用 **Little Endian (LE)**, 不使用 native endian。signed/unsigned 按字段语义区分:
+
+| 字段类别 | 磁盘类型 | 说明 |
+|----------|----------|------|
+| 时间戳、时间范围、创建时间 | `i64 LE` | `timestamp`, `min_timestamp`, `max_timestamp`, `created_at/create_time`。允许业务使用负 timestamp; 空数据段使用 `i64::MAX` / `i64::MIN` 作为 sentinel。 |
+| segment header 的 `file_offset` | `i64 LE` | 复用字段: data segment 中必须为非负数据区逻辑起点; index segment 中表示 `start_timestamp`, 因此保持 signed。 |
+| 数据长度、payload 长度、压缩前长度 | `u32 LE` | `data_len`, `block_payload_size`, `uncompressed_size`, `file_size`。写入时必须拒绝超过 `u32::MAX` 的值; 读取时必须校验不会越过 block/file 边界。 |
+| 逻辑 offset、写入位置、计数、retention、segment size | `u64 LE` | `block_offset`, `wrote_position`, `record_count`, `pending_*`, `invalid_record_count`, `*_segment_size`, `retention_ms`。所有加法/乘法必须使用 checked/saturating 语义并校验上界。 |
+| block 内 offset、flags、version、length | `u16 LE` | `in_block_offset`, `flags`, `version`, `meta_length`, `state_length`, TLV length。`0xFFFF` 是 `in_block_offset` filler sentinel, 真实 record offset 不得使用该值。 |
+| type、fileType、compress_level、boolean flag | `u8` | 单字节字段不涉及端序。 |
+
+读取已有文件时必须执行以下校验:
+
+- `meta_length + state_length` 计算 `header_len` 时不得溢出, 且 `header_len <= file_len`; v1 已知 state 长度不得短于对应最小值。
+- data/index segment 的 `wrote_position` 必须满足 `header_len <= wrote_position <= file_len`, 且 index `wrote_position - header_len` 必须是 `INDEX_ENTRY_SIZE` 的整数倍。
+- `block_payload_size` 必须完全落在所属 segment 文件内; compressed block 解压后的长度必须等于 `uncompressed_size`。
+- 遍历 record 时, 每个 `data_len` 必须满足 `record_pos + 12 + data_len <= block_payload_len`; `timestamp` 直接按 `i64 LE` 读取。
+- real `IndexEntry` 不得使用 filler sentinel: `block_offset != u64::MAX` 且 `in_block_offset != 0xFFFF`; filler 必须同时使用 `block_offset = u64::MAX` 与 `in_block_offset = 0xFFFF`。
+- data segment header 中的 `file_offset` 必须可转换为非负 `u64`; index segment header 中的 `file_offset` 作为 signed `start_timestamp` 使用。
+- 写入路径中所有 size/offset/count 累加必须使用 `checked_add`/`try_from` 或等价校验, 溢出时返回 `InvalidData` 或对应参数错误。
+
 ### 3.5 FileMetadata (文件头, meta + state)
 
 每个数据段和索引段的头部元数据。**数据段和索引段的 state 字段已分化**, 各自维护不同的可变状态。

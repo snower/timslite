@@ -54,6 +54,8 @@ const META_TYPE_RETENTION_MS: u8       = 0x08;  // u64 LE (data validity period)
 | 0x08 | retention_ms | 8 | u64 LE | 数据有效期 (毫秒, 0=不限) |
 
 > `block_max_size` 无 TLV type。普通聚合 Block 上限由 `BLOCK_MAX_SIZE=65536` 固定定义, 不是 dataset 创建参数。
+>
+> 所有多字节 TLV length/value 均为 Little Endian。时间类字段使用 signed `i64 LE` (`create_time`), size/count/duration 类字段使用 unsigned LE。解析时必须校验 TLV length 与字段类型长度一致; 未知 type 仅按 length 跳过, 但 length 不得越过 `meta_data_length` 边界。
 
 ### Rust 类型
 

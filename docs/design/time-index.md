@@ -93,6 +93,8 @@ impl IndexEntry {
 }
 ```
 
+`IndexEntry` 的三个多字节字段均为 Little Endian: `timestamp: i64 LE`, `block_offset: u64 LE`, `in_block_offset: u16 LE`。`timestamp` 保持 signed 以兼容业务自定义时间和连续索引基准; `block_offset` 是非负数据区逻辑全局 offset; `in_block_offset=0xFFFF` 仅能与 `block_offset=u64::MAX` 共同表示 filler/deleted sentinel, 真实记录不得使用该组合或单独使用其中一个 sentinel 值。
+
 ### 7.4 IndexSegment
 
 ```rust
