@@ -2,8 +2,12 @@
 
 ## 二点五、DataSetMeta: 数据集元数据文件
 
-每个数据集目录 (`{name}/{type}/meta`) 存在唯一的 `meta` 文件, 记录数据集的**不可变**配置参数。
+每个数据集目录 (`{name}/{type}/meta`) 存在唯一的 `meta` 文件, 记录数据集的**不可变**创建参数。
 该文件在数据集**首次创建时写入一次**, 之后**永不更新**。
+
+`DataSetMeta` 是打开已有数据集时的唯一持久化真源。`StoreConfig` 和 FFI config 只提供创建新数据集时的默认值以及后台任务、缓存等运行时配置; `DataSet::open()` 不拿当前 `StoreConfig` 默认值与 meta 做“不一致”比较。
+
+`block_max_size` 不属于 `DataSetMeta`: 普通聚合 Block 的 payload 上限固定为代码/文件格式常量 `BLOCK_MAX_SIZE = 65536`。该值与 `IndexEntry.in_block_offset: u16` 的哨兵空间绑定, 不可按数据集配置修改; 未来若要改变必须升级文件格式版本。
 
 ### 文件格式
 
@@ -49,6 +53,8 @@ const META_TYPE_RETENTION_MS: u8       = 0x08;  // u64 LE (data validity period)
 | 0x07 | initial_index_segment_size | 8 | u64 LE | 索引分段初始大小 |
 | 0x08 | retention_ms | 8 | u64 LE | 数据有效期 (毫秒, 0=不限) |
 
+> `block_max_size` 无 TLV type。普通聚合 Block 上限由 `BLOCK_MAX_SIZE=65536` 固定定义, 不是 dataset 创建参数。
+
 ### Rust 类型
 
 ```rust
@@ -92,18 +98,21 @@ impl DataSetMeta {
 | 首次创建数据集 | `DataSetMeta::new()` + `write_to_file()` — **仅此一次** |
 | 数据集已存在 | **不写入, 不更新** |
 
-### 打开时校验
+### 打开时读取与校验
 
 `DataSet::open()` 流程:
 1. 检查 `{base_dir}/meta` 是否存在
 2. 不存在 → **返回错误 `DatasetNotFound`**
-3. 存在 → `DataSetMeta::read_from_file()` → 校验不可变参数
-   - `data_segment_size` 不一致 → **返回错误** (影响文件布局, 不可兼容)
-   - `index_segment_size` 不一致 → **返回错误** (影响索引文件布局, 不可兼容)
-   - `compress_level` 不一致 → **仅读取使用** (meta 值为准, 不可修改)
-   - `index_continuous` 不一致 → **仅日志警告** (不影响已有数据)
-   - `initial_*` 不一致 → **仅日志警告** (仅影响新分段创建, 不破坏已有数据)
-   - `retention_ms` 不一致 → **仅日志警告** (仅影响回收策略, 不破坏已有数据)
+3. 存在 → `DataSetMeta::read_from_file()` → 解析并校验 meta 自身
+   - `magic` 不匹配、TLV 越界或文件截断 → 返回错误
+   - 缺失或为 0 的 `data_segment_size` / `index_segment_size` → 返回错误
+   - `compress_level > 9` → 返回错误
+   - `index_continuous` 不为 0/1 → 返回错误
+   - `initial_data_segment_size == 0` 的旧 meta → 兼容为 `data_segment_size`
+   - `initial_index_segment_size == 0` 的旧 meta → 兼容为 `index_segment_size`
+   - `initial_* > segment_size` → 返回错误
+
+读取成功后, `DataSet` 的 layout/压缩/索引/retention 配置全部来自 meta。当前 `StoreConfig` 中的 data/index segment 默认值、压缩默认值或 retention 默认值不会覆盖已存在数据集, 也不会触发“不一致”错误。
 
 ### 向前兼容
 

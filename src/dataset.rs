@@ -1,8 +1,8 @@
 //! DataSet: aggregates DataSegmentSet + TimeIndex for a (name, type) pair.
 //!
 //! Lifecycle: `create` (explicit, with parameters) / `open` (reads from meta) / `close` / `drop_dataset`.
-//! Parameters (`data_segment_size`, `index_segment_size`, `compress_level`) are set **only at creation time**
-//! and written to the meta file. They are **immutable** — subsequent opens read from meta.
+//! Dataset creation parameters are written to the meta file and are immutable.
+//! Subsequent opens read those values from meta.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -24,7 +24,7 @@ pub struct DataSetKey {
     pub dataset_type: String,
 }
 
-// ─── DataSet ─────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ DataSet 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 pub struct DataSet {
     pub id: DataSetKey,
@@ -40,7 +40,7 @@ pub struct DataSet {
 impl DataSet {
     /// Create a new dataset (explicit creation, errors if already exists).
     ///
-    /// Parameters are written to the meta file and are **immutable** — cannot be changed
+    /// Parameters are written to the meta file and are **immutable** 鈥?cannot be changed
     /// after creation.
     pub fn create(
         id: DataSetKey,
@@ -48,7 +48,6 @@ impl DataSet {
         data_segment_size: u64,
         index_segment_size: u64,
         compress_level: u8,
-        block_max_size: u32,
         index_continuous: u8,
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
@@ -85,7 +84,6 @@ impl DataSet {
             &base_dir,
             data_segment_size,
             initial_data_segment_size,
-            block_max_size,
             compress_level,
         )?;
         let time_index = TimeIndex::new(
@@ -101,7 +99,6 @@ impl DataSet {
             config: DataSetConfig {
                 data_segment_size,
                 index_segment_size,
-                block_max_size,
                 compress_level,
                 index_continuous,
                 initial_data_segment_size,
@@ -120,7 +117,7 @@ impl DataSet {
     ///
     /// Fails if the dataset does not exist (no meta file).
     /// Segment sizes and compress_level are read from meta and cannot be overridden.
-    pub fn open(id: DataSetKey, base_dir: PathBuf, block_max_size: u32) -> Result<Self> {
+    pub fn open(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
         let meta_path = base_dir.join("meta");
         if !meta_path.exists() {
             return Err(TmslError::NotFound(format!(
@@ -135,7 +132,6 @@ impl DataSet {
         let config = DataSetConfig {
             data_segment_size: meta.data_segment_size,
             index_segment_size: meta.index_segment_size,
-            block_max_size,
             compress_level: meta.compress_level,
             index_continuous: meta.index_continuous,
             initial_data_segment_size: meta.initial_data_segment_size,
@@ -148,7 +144,6 @@ impl DataSet {
             &base_dir,
             config.data_segment_size,
             meta.initial_data_segment_size,
-            config.block_max_size,
             config.compress_level,
         )?;
         let index_dir = base_dir.join("index");
@@ -186,16 +181,15 @@ impl DataSet {
     /// # Timestamp dispatch (both indexing modes)
     ///
     /// - `timestamp <= 0`: error.
-    /// - `timestamp == latest_written_timestamp` (and latest > 0): **correction write** —
-    ///   in-place overwrite of the data bytes in the last pending raw block of the latest
+    /// - `timestamp == latest_written_timestamp` (and latest > 0): **correction write** 鈥?    ///   in-place overwrite of the data bytes in the last pending raw block of the latest
     ///   data segment. The index entry is unchanged. If the target block has already been
     ///   sealed and compressed, falls back to out-of-order write:
     ///   appends data to latest segment, updates index entry, and increments the old
     ///   segment's `invalid_record_count`.
-    /// - `timestamp < latest_written_timestamp`: **out-of-order write** — appends data to
+    /// - `timestamp < latest_written_timestamp`: **out-of-order write** 鈥?appends data to
     ///   the latest data segment and updates the existing index position in place. In
     ///   continuous mode, sparse logical holes are materialized on demand.
-    /// - `timestamp > latest_written_timestamp`: **normal write** — in continuous mode only
+    /// - `timestamp > latest_written_timestamp`: **normal write** 鈥?in continuous mode only
     ///   materializes filler entries in the previous and current edge index segments.
     pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
         self.write_with_cache(timestamp, data, None)
@@ -216,13 +210,13 @@ impl DataSet {
             return Err(self.expired_error(timestamp));
         }
 
-        // Correction write: same timestamp as latest → in-place overwrite in
+        // Correction write: same timestamp as latest 鈫?in-place overwrite in
         // the last pending raw block of the latest data segment. Index unchanged.
         if self.latest_written_timestamp > 0 && timestamp == self.latest_written_timestamp {
             return self.correct_write(timestamp, data, cache);
         }
 
-        // Out-of-order write: timestamp < latest → append to latest segment,
+        // Out-of-order write: timestamp < latest 鈫?append to latest segment,
         // update existing index entry in place. May increment invalid_record_count
         // on the old data segment.
         if timestamp < self.latest_written_timestamp {
@@ -288,7 +282,7 @@ impl DataSet {
     ///
     /// The record is located via the existing index entry, then its data bytes
     /// in the last pending raw block of the latest data segment are replaced.
-    /// Supports variable data length — updates block + segment counters accordingly.
+    /// Supports variable data length 鈥?updates block + segment counters accordingly.
     ///
     /// If the target block has been sealed and compressed,
     /// falls back to out-of-order write: appends data to latest segment, updates
@@ -315,7 +309,7 @@ impl DataSet {
                     }
                     Err(_) => {
                         // Target block cannot be modified in place (sealed/compressed or
-                        // not the last block/record) → fall back to out-of-order write:
+                        // not the last block/record) 鈫?fall back to out-of-order write:
                         // append to latest segment, update index, increment invalid_record_count
                         self.out_of_order_write(timestamp, data, cache)
                     }
@@ -334,7 +328,7 @@ impl DataSet {
     /// and increments the data segment's `invalid_record_count` by 1.
     ///
     /// Returns `TmslError::NotFound` if:
-    /// - `timestamp` is invalid (≤ 0)
+    /// - `timestamp` is invalid (鈮?0)
     /// - the dataset is empty
     /// - no entry exists at `timestamp`
     /// - the entry is already a filler (no real data)
@@ -359,7 +353,7 @@ impl DataSet {
 
         let old_entry = self.time_index.find_and_delete_entry(timestamp)?;
         self.invalidate_cache_for_entry(&old_entry, cache);
-        // Old entry references real data → increment invalid_record_count on its segment
+        // Old entry references real data 鈫?increment invalid_record_count on its segment
         self.segments
             .increment_invalid_record_count(old_entry.block_offset)?;
 
@@ -671,7 +665,6 @@ mod tests {
             4 * 1024 * 1024,
             6,
             0,
-            0,
             256 * 1024,
             4 * 1024,
             0,
@@ -693,7 +686,6 @@ mod tests {
             data_segment_size,
             4 * 1024,
             6,
-            64,
             0,
             data_segment_size,
             4 * 1024,
@@ -729,7 +721,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1,
             256 * 1024,
             4 * 1024,
@@ -763,7 +754,6 @@ mod tests {
             64 * 1024 * 1024,
             index_segment_size,
             6,
-            65536,
             1,
             256 * 1024,
             128,
@@ -806,7 +796,6 @@ mod tests {
             64 * 1024 * 1024,
             index_segment_size,
             6,
-            65536,
             1,
             256 * 1024,
             128,
@@ -855,7 +844,6 @@ mod tests {
                 64 * 1024 * 1024,
                 index_segment_size,
                 6,
-                65536,
                 1,
                 256 * 1024,
                 128,
@@ -880,7 +868,7 @@ mod tests {
             ]
         );
 
-        let mut ds = DataSet::open(id, dir.clone(), 65536).unwrap();
+        let mut ds = DataSet::open(id, dir.clone()).unwrap();
         assert_eq!(ds.latest_written_timestamp(), second_ts);
         let entries = ds.query(first_ts, second_ts, None).unwrap();
         assert_eq!(entries.len(), 3);
@@ -903,7 +891,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1,          // continuous
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
@@ -942,7 +929,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1,          // continuous
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
@@ -979,7 +965,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1, // continuous mode
             256 * 1024,
             4 * 1024,
@@ -990,7 +975,7 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.write(150, b"second").unwrap();
 
-        // Same ts=150 → correction write (in-place overwrite)
+        // Same ts=150 鈫?correction write (in-place overwrite)
         ds.write(150, b"corrected").unwrap();
 
         let entries = ds.query(100, 150, None).unwrap();
@@ -1014,7 +999,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0, // non-continuous mode
             256 * 1024,
             4 * 1024,
@@ -1025,7 +1009,7 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.write(150, b"second").unwrap();
 
-        // Same ts=150 → correction write
+        // Same ts=150 鈫?correction write
         ds.write(150, b"corrected").unwrap();
 
         let entries = ds.query(100, 150, None).unwrap();
@@ -1048,7 +1032,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1081,7 +1064,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1113,7 +1095,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1143,7 +1124,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1177,7 +1157,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 0,
                 256 * 1024,
                 4 * 1024,
@@ -1191,7 +1170,7 @@ mod tests {
             ds.close().unwrap();
         }
         // Reopen and verify
-        let mut ds = DataSet::open(id, dir.clone(), 65536).unwrap();
+        let mut ds = DataSet::open(id, dir.clone()).unwrap();
         let entries = ds.query(100, 100, None).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1, b"corrected");
@@ -1212,7 +1191,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0, // non-continuous
             256 * 1024,
             4 * 1024,
@@ -1223,7 +1201,7 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.write(150, b"second").unwrap();
 
-        // ts=120 was never written → no index entry → out-of-order write rejected
+        // ts=120 was never written 鈫?no index entry 鈫?out-of-order write rejected
         let result = ds.write(120, b"middle");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -1249,7 +1227,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0, // non-continuous
             256 * 1024,
             4 * 1024,
@@ -1283,7 +1260,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1,
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
@@ -1319,7 +1295,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1, // continuous
             256 * 1024,
             4 * 1024,
@@ -1330,7 +1305,7 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.write(150, b"last").unwrap();
 
-        // Out-of-order at ts=100 (real entry) → succeeds via out_of_order_write
+        // Out-of-order at ts=100 (real entry) 鈫?succeeds via out_of_order_write
         ds.write(100, b"updated_first").unwrap();
         assert_eq!(ds.latest_written_timestamp, 150); // unchanged
 
@@ -1358,7 +1333,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 1,
                 256 * 1024,
                 4 * 1024,
@@ -1369,7 +1343,7 @@ mod tests {
             ds.write(100, b"v1").unwrap();
             ds.write(200, b"latest").unwrap();
 
-            // Two out-of-order writes at ts=100 — each increments invalid_record_count
+            // Two out-of-order writes at ts=100 鈥?each increments invalid_record_count
             ds.write(100, b"v2").unwrap();
             ds.write(100, b"v3").unwrap();
 
@@ -1386,7 +1360,7 @@ mod tests {
             ds.close().unwrap();
         }
         // Reopen and verify the count persists. Trigger segment open via query.
-        let mut ds2 = DataSet::open(id, dir, 65536).unwrap();
+        let mut ds2 = DataSet::open(id, dir).unwrap();
         // Query forces segment open; after open, invalid_record_count is read from file header.
         let entries = ds2.query(100, 200, None).unwrap();
         assert_eq!(entries.len(), 2); // ts=100 ("v3") and ts=200 ("latest")
@@ -1407,7 +1381,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1,
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
@@ -1445,7 +1418,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 1,
                 256 * 1024, // initial_data_segment_size
                 4 * 1024,   // initial_index_segment_size
@@ -1458,11 +1430,11 @@ mod tests {
         }
 
         // Open and check latest_written_timestamp recovered
-        let ds2 = DataSet::open(id, dir, 65536).unwrap();
+        let ds2 = DataSet::open(id, dir).unwrap();
         assert_eq!(ds2.latest_written_timestamp, 150);
     }
 
-    // ─── Retention tests ──────────────────────────────────────────────────
+    // 鈹€鈹€鈹€ Retention tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn test_retention_ms_no_reclaim_when_zero() {
@@ -1477,7 +1449,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1514,7 +1485,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1524,7 +1494,7 @@ mod tests {
         assert_eq!(ds.retention_ms(), ret);
 
         // Reopen and verify
-        let ds2 = DataSet::open(id, dir, 65536).unwrap();
+        let ds2 = DataSet::open(id, dir).unwrap();
         assert_eq!(ds2.retention_ms(), ret);
     }
 
@@ -1542,7 +1512,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1558,15 +1527,15 @@ mod tests {
 
         assert_eq!(ds.latest_written_timestamp, 200);
 
-        // Query [150, 200] → clamp to [max(150,150)=150, 200] → 3 records
+        // Query [150, 200] 鈫?clamp to [max(150,150)=150, 200] 鈫?3 records
         let entries = ds.query(150, 200, None).unwrap();
         assert_eq!(entries.len(), 3);
 
-        // Query [100, 200] → clamp to [max(100,150)=150, 200] → 3 records
+        // Query [100, 200] 鈫?clamp to [max(100,150)=150, 200] 鈫?3 records
         let entries_before = ds.query(100, 200, None).unwrap();
         assert_eq!(entries_before.len(), 3);
 
-        // Single data segment with max_ts=200 >= threshold → no reclaim
+        // Single data segment with max_ts=200 >= threshold 鈫?no reclaim
         let reclaimed = ds.reclaim_expired_segments().unwrap();
         assert_eq!(reclaimed, 0);
 
@@ -1590,7 +1559,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1622,7 +1590,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1640,7 +1607,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, 200);
 
-        // Query entirely within expired range → empty
+        // Query entirely within expired range 鈫?empty
         let empty = ds.query(50, 130, None).unwrap();
         assert!(empty.is_empty());
 
@@ -1662,7 +1629,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1690,7 +1656,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1719,7 +1684,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1748,7 +1712,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1764,7 +1727,7 @@ mod tests {
         assert!(ds.read(100, None).unwrap().is_none());
     }
 
-    // ─── Delete tests ──────────────────────────────────────────────────────
+    // 鈹€鈹€鈹€ Delete tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn test_delete_existing_entry() {
@@ -1779,7 +1742,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1814,7 +1776,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1, // continuous
             256 * 1024,
             4 * 1024,
@@ -1846,7 +1807,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1863,7 +1823,7 @@ mod tests {
 
     #[test]
     fn test_delete_idempotent_error() {
-        // Deleting the same timestamp twice → second delete errors.
+        // Deleting the same timestamp twice 鈫?second delete errors.
         let dir = temp_dir("delete_idempotent");
         let id = DataSetKey {
             name: "test".into(),
@@ -1875,7 +1835,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1904,7 +1863,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -1919,7 +1877,7 @@ mod tests {
         ds.delete(100).unwrap();
         ds.delete(200).unwrap();
 
-        // Both deletes target the same segment → count = 2
+        // Both deletes target the same segment 鈫?count = 2
         let seg = ds.segments.segments.last().unwrap();
         assert_eq!(seg.invalid_record_count, 2);
 
@@ -1931,8 +1889,8 @@ mod tests {
 
     #[test]
     fn test_delete_then_out_of_order_rewrite() {
-        // After delete(ts), rewrite at ts becomes out-of-order → replaces filler.
-        // invalid_record_count should NOT increase on the rewrite (filler → real).
+        // After delete(ts), rewrite at ts becomes out-of-order 鈫?replaces filler.
+        // invalid_record_count should NOT increase on the rewrite (filler 鈫?real).
         let dir = temp_dir("delete_then_ooo");
         let id = DataSetKey {
             name: "test".into(),
@@ -1944,7 +1902,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1,
             256 * 1024,
             4 * 1024,
@@ -1959,7 +1916,7 @@ mod tests {
         ds.delete(100).unwrap();
         // After delete: entry at 100 is filler, invalid_record_count=1
 
-        // Rewrite at ts=100 → out-of-order, replaces filler (FILLER → real):
+        // Rewrite at ts=100 鈫?out-of-order, replaces filler (FILLER 鈫?real):
         // invalid_record_count unchanged
         ds.write(100, b"replaced").unwrap();
 
@@ -1990,7 +1947,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 0,
                 256 * 1024,
                 4 * 1024,
@@ -2004,7 +1960,7 @@ mod tests {
             ds.close().unwrap();
         }
         // Reopen
-        let mut ds2 = DataSet::open(id, dir, 65536).unwrap();
+        let mut ds2 = DataSet::open(id, dir).unwrap();
         let entries = ds2.query(100, 200, None).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, 200);
@@ -2014,7 +1970,7 @@ mod tests {
         assert_eq!(seg2.invalid_record_count, 1);
     }
 
-    // ─── Correction write across pending/compressed states ───────────────
+    // 鈹€鈹€鈹€ Correction write across pending/compressed states 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn test_correction_write_preserves_pending_after_reopen() {
@@ -2032,7 +1988,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 0,
                 256 * 1024,
                 4 * 1024,
@@ -2044,7 +1999,7 @@ mod tests {
             ds.close().unwrap();
         }
         {
-            let mut ds = DataSet::open(id, dir.clone(), 65536).unwrap();
+            let mut ds = DataSet::open(id, dir.clone()).unwrap();
             ds.write(100, b"corrected").unwrap();
 
             // Query should return the corrected data
@@ -2063,10 +2018,8 @@ mod tests {
 
     #[test]
     fn test_correction_write_falls_back_on_compressed_block() {
-        // When a correction write targets a SEALED+COMPRESSED block (single-record
-        // compression), in-place overwrite fails → falls back to out-of-order write.
-        // Triggers compressed block via block_max_size=0 (forces any record > 0 bytes
-        // to be written as an exclusive sealed block, which is compressed if effective).
+        // When a correction write targets a SEALED+COMPRESSED single-record block,
+        // in-place overwrite fails and falls back to an out-of-order write.
         let dir = temp_dir("correction_fallback_compressed");
         let id = DataSetKey {
             name: "test".into(),
@@ -2078,7 +2031,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            0, // block_max_size=0 → every record is an exclusive block
             0,
             256 * 1024,
             4 * 1024,
@@ -2086,12 +2038,12 @@ mod tests {
         )
         .unwrap();
 
-        // Use highly compressible data to ensure compression is effective → COMPRESSED flag
-        let compressible = vec![0xAB_u8; 500];
+        // Exceed the fixed block payload limit to force a compressed single-record block.
+        let compressible = vec![0xAB_u8; 70_000];
         ds.write(100, &compressible).unwrap();
 
-        // Correction write at ts=100 → target block is SEALED+COMPRESSED → falls back
-        let corrected = vec![0xCD_u8; 300];
+        // Correction write at ts=100 targets a SEALED+COMPRESSED block and falls back.
+        let corrected = vec![0xCD_u8; 70_100];
         ds.write(100, &corrected).unwrap();
 
         // Query should return the corrected data
@@ -2111,8 +2063,8 @@ mod tests {
     fn test_correction_fallback_invalidates_cached_compressed_block() {
         let mut ds = make_cache_dataset("cache_correction_fallback");
         let cache = BlockCache::new(1024 * 1024);
-        let original = vec![0xAB_u8; 500];
-        let corrected = vec![0xCD_u8; 300];
+        let original = vec![0xAB_u8; 70_000];
+        let corrected = vec![0xCD_u8; 70_100];
 
         ds.write(100, &original).unwrap();
         assert_eq!(ds.read(100, Some(&cache)).unwrap().unwrap().1, original);
@@ -2128,8 +2080,8 @@ mod tests {
     fn test_out_of_order_invalidates_cached_compressed_block() {
         let mut ds = make_cache_dataset("cache_out_of_order");
         let cache = BlockCache::new(1024 * 1024);
-        let original = vec![0xAB_u8; 500];
-        let updated = vec![0xEF_u8; 250];
+        let original = vec![0xAB_u8; 70_000];
+        let updated = vec![0xEF_u8; 70_100];
 
         ds.write(100, &original).unwrap();
         ds.write(200, b"latest").unwrap();
@@ -2146,7 +2098,7 @@ mod tests {
     fn test_delete_invalidates_cached_compressed_block() {
         let mut ds = make_cache_dataset("cache_delete");
         let cache = BlockCache::new(1024 * 1024);
-        let original = vec![0xAB_u8; 500];
+        let original = vec![0xAB_u8; 70_000];
 
         ds.write(100, &original).unwrap();
         assert_eq!(ds.read(100, Some(&cache)).unwrap().unwrap().1, original);
@@ -2174,7 +2126,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 0,
                 256 * 1024,
                 4 * 1024,
@@ -2188,14 +2139,14 @@ mod tests {
         }
         // Phase 2: reopen and rewrite ts=100. This is out-of-order because latest is 200.
         {
-            let mut ds = DataSet::open(id.clone(), dir.clone(), 65536).unwrap();
+            let mut ds = DataSet::open(id.clone(), dir.clone()).unwrap();
             ds.write(100, b"corrected_100").unwrap();
             ds.flush().unwrap();
             ds.close().unwrap();
         }
         // Phase 3: reopen and verify
         {
-            let mut ds = DataSet::open(id, dir, 65536).unwrap();
+            let mut ds = DataSet::open(id, dir).unwrap();
             let entries = ds.query(100, 200, None).unwrap();
             assert_eq!(entries.len(), 2);
             assert_eq!(entries[0].0, 100);
@@ -2208,7 +2159,7 @@ mod tests {
         }
     }
 
-    // ─── read() tests ────────────────────────────────────────────────────
+    // 鈹€鈹€鈹€ read() tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn test_read_found() {
@@ -2223,7 +2174,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -2262,7 +2212,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -2272,7 +2221,7 @@ mod tests {
 
         ds.write(100, b"hello").unwrap();
 
-        // Read non-existent timestamp → None
+        // Read non-existent timestamp 鈫?None
         let result = ds.read(999, None).unwrap();
         assert!(result.is_none());
     }
@@ -2290,7 +2239,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -2304,7 +2252,7 @@ mod tests {
         // Delete ts=100
         ds.delete(100).unwrap();
 
-        // Read deleted timestamp → None (filler)
+        // Read deleted timestamp 鈫?None (filler)
         let result = ds.read(100, None).unwrap();
         assert!(result.is_none());
 
@@ -2327,7 +2275,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             1, // continuous mode
             256 * 1024,
             4 * 1024,
@@ -2339,11 +2286,11 @@ mod tests {
         ds.write(110, b"world").unwrap();
         ds.flush().unwrap();
 
-        // Filler positions (101..109) → None
+        // Filler positions (101..109) 鈫?None
         let result = ds.read(105, None).unwrap();
         assert!(result.is_none());
 
-        // Real positions (100, 110) → Some
+        // Real positions (100, 110) 鈫?Some
         let result = ds.read(100, None).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"hello");
@@ -2369,7 +2316,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 0,
                 256 * 1024,
                 4 * 1024,
@@ -2384,7 +2330,7 @@ mod tests {
 
         // Phase 2: reopen and read
         {
-            let mut ds = DataSet::open(id, dir, 65536).unwrap();
+            let mut ds = DataSet::open(id, dir).unwrap();
 
             let result = ds.read(100, None).unwrap();
             assert!(result.is_some());
@@ -2399,7 +2345,7 @@ mod tests {
         }
     }
 
-    // ─── latest_written_timestamp() + read(-1) tests ────────────────────
+    // 鈹€鈹€鈹€ latest_written_timestamp() + read(-1) tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn test_latest_written_timestamp_after_writes() {
@@ -2414,7 +2360,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -2456,7 +2401,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 0,
                 256 * 1024,
                 4 * 1024,
@@ -2469,9 +2413,9 @@ mod tests {
             ds.close().unwrap();
         }
 
-        // Reopen → latest_written_timestamp recovered from index
+        // Reopen 鈫?latest_written_timestamp recovered from index
         {
-            let ds = DataSet::open(id, dir, 65536).unwrap();
+            let ds = DataSet::open(id, dir).unwrap();
             assert_eq!(ds.latest_written_timestamp(), 250);
         }
     }
@@ -2489,7 +2433,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -2513,7 +2456,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -2547,7 +2489,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -2581,7 +2522,6 @@ mod tests {
                 64 * 1024 * 1024,
                 4 * 1024 * 1024,
                 6,
-                65536,
                 0,
                 256 * 1024,
                 4 * 1024,
@@ -2595,7 +2535,7 @@ mod tests {
         }
 
         {
-            let mut ds = DataSet::open(id, dir, 65536).unwrap();
+            let mut ds = DataSet::open(id, dir).unwrap();
             assert_eq!(ds.latest_written_timestamp(), 500);
 
             let r = ds.read(-1, None).unwrap().unwrap();

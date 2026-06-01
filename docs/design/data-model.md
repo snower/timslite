@@ -270,16 +270,15 @@ struct DataSet {
     last_used_at: Instant,
 }
 
-/// 存储全局配置 (Store 级别, 所有 DataSet 共享)
+/// Store 配置: 后台/缓存等运行时设置 + 新建 DataSet 默认值
 pub struct StoreConfig {
     pub flush_interval: Duration,    // 默认 10 分钟 (mmap sync, 不密封/不压缩)
     pub idle_timeout: Duration,      // 默认 30 分钟 (sync + unmmap + close, 不改变 pending)
-    pub data_segment_size: u64,      // 默认 64MB
-    pub index_segment_size: u64,     // 默认 4MB
-    pub initial_data_segment_size: u64,  // 默认 256KB
-    pub initial_index_segment_size: u64, // 默认 4KB
-    pub block_max_size: u32,         // 默认 65536 (64KB)
-    pub compress_level: u8,          // 默认 6
+    pub data_segment_size: u64,      // 新建 DataSet 默认 64MB
+    pub index_segment_size: u64,     // 新建 DataSet 默认 4MB
+    pub initial_data_segment_size: u64,  // 新建 DataSet 默认 256KB
+    pub initial_index_segment_size: u64, // 新建 DataSet 默认 4KB
+    pub compress_level: u8,          // 新建 DataSet 默认 6
     pub cache_max_memory: usize,     // 读缓存池上限 (字节, 0=禁用, 默认 256MB)
     pub cache_idle_timeout: Duration, // 缓存块空闲超时 (默认 30 分钟)
 }
@@ -293,7 +292,6 @@ impl Default for StoreConfig {
             index_segment_size: 4 * 1024 * 1024,         // 4MB
             initial_data_segment_size: 256 * 1024,       // 256KB
             initial_index_segment_size: 4 * 1024,        // 4KB
-            block_max_size: 65536,                       // 64KB
             compress_level: 6,
             cache_max_memory: 256 * 1024 * 1024,         // 256MB
             cache_idle_timeout: Duration::from_secs(1800), // 30 分钟
@@ -301,13 +299,12 @@ impl Default for StoreConfig {
     }
 }
 
-/// 数据集内部配置 (从 StoreConfig 派生)
+/// 数据集内部配置 (创建时来自 StoreConfig/DataSetConfigBuilder; 打开时来自 meta)
 struct DataSetConfig {
     data_segment_size: u64,
     index_segment_size: u64,
     initial_data_segment_size: u64,
     initial_index_segment_size: u64,
-    block_max_size: u32,
     compress_level: u8,
 }
 
@@ -323,6 +320,7 @@ struct BlockHeader {
 const BLOCK_FLAG_COMPRESSED: u16     = 0x0001;
 const BLOCK_FLAG_SEALED: u16         = 0x0002;
 const BLOCK_FLAG_SINGLE_RECORD: u16  = 0x0004;
+const BLOCK_MAX_SIZE: u32            = 65536;  // 普通聚合 Block payload 固定上限
 
 /// File type constants
 const FILE_TYPE_INDEX: u8  = 1;

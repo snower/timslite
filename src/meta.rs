@@ -1,7 +1,7 @@
 //! DataSetMeta: immutable dataset configuration stored as TLV in a `meta` file.
 //!
-//! Written once at dataset creation, never updated. Used for validation when reopening
-//! to detect configuration mismatches.
+//! Written once at dataset creation, never updated. It is the sole persistent
+//! source of dataset layout/configuration when reopening.
 
 use std::path::Path;
 
@@ -157,7 +157,7 @@ impl DataSetMeta {
             let len = u16::from_le_bytes([buf[off], buf[off + 1]]) as usize;
             off += 2;
             if off + len > end {
-                break;
+                return Err(TmslError::InvalidData("meta TLV entry truncated".into()));
             }
             match t {
                 META_DATA_SEGMENT_SIZE if len == 8 => {
@@ -187,6 +187,48 @@ impl DataSetMeta {
                 _ => {} // Skip unknown
             }
             off += len;
+        }
+        if off != end {
+            return Err(TmslError::InvalidData(
+                "meta TLV data has trailing partial entry".into(),
+            ));
+        }
+
+        if data_segment_size == 0 {
+            return Err(TmslError::InvalidData(
+                "meta missing data_segment_size".into(),
+            ));
+        }
+        if index_segment_size == 0 {
+            return Err(TmslError::InvalidData(
+                "meta missing index_segment_size".into(),
+            ));
+        }
+        if compress_level > 9 {
+            return Err(TmslError::InvalidData(
+                "meta compress_level must be <= 9".into(),
+            ));
+        }
+        if index_continuous > 1 {
+            return Err(TmslError::InvalidData(
+                "meta index_continuous must be 0 or 1".into(),
+            ));
+        }
+        if initial_data_segment_size == 0 {
+            initial_data_segment_size = data_segment_size;
+        }
+        if initial_index_segment_size == 0 {
+            initial_index_segment_size = index_segment_size;
+        }
+        if initial_data_segment_size > data_segment_size {
+            return Err(TmslError::InvalidData(
+                "meta initial_data_segment_size exceeds data_segment_size".into(),
+            ));
+        }
+        if initial_index_segment_size > index_segment_size {
+            return Err(TmslError::InvalidData(
+                "meta initial_index_segment_size exceeds index_segment_size".into(),
+            ));
         }
 
         Ok(Self {
@@ -257,10 +299,54 @@ mod tests {
         assert_eq!(parsed.data_segment_size, 1024);
         assert_eq!(parsed.index_segment_size, 512);
         assert_eq!(parsed.compress_level, 6);
-        // initial_* and retention_ms should be 0 (not present in old format)
-        assert_eq!(parsed.initial_data_segment_size, 0);
-        assert_eq!(parsed.initial_index_segment_size, 0);
+        // Missing initial_* means old full-allocation format; use segment sizes.
+        assert_eq!(parsed.initial_data_segment_size, 1024);
+        assert_eq!(parsed.initial_index_segment_size, 512);
         assert_eq!(parsed.retention_ms, 0);
+    }
+
+    #[test]
+    fn test_meta_rejects_missing_required_segment_size() {
+        let meta = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 0);
+        let mut bytes = meta.to_bytes();
+        let mut off = 8;
+        while off + 3 <= bytes.len() {
+            let t = bytes[off];
+            let len = u16::from_le_bytes([bytes[off + 1], bytes[off + 2]]) as usize;
+            let entry_len = 3 + len;
+            if t == META_DATA_SEGMENT_SIZE {
+                bytes.drain(off..off + entry_len);
+                let meta_len = (bytes.len() - 8) as u16;
+                bytes[6..8].copy_from_slice(&meta_len.to_le_bytes());
+                break;
+            }
+            off += entry_len;
+        }
+
+        let result = DataSetMeta::from_bytes(&bytes);
+
+        assert!(matches!(result, Err(TmslError::InvalidData(_))));
+    }
+
+    #[test]
+    fn test_meta_rejects_invalid_create_parameters() {
+        let invalid_compress = DataSetMeta::new(1024, 512, 10, 0, 256, 128, 0);
+        assert!(matches!(
+            DataSetMeta::from_bytes(&invalid_compress.to_bytes()),
+            Err(TmslError::InvalidData(_))
+        ));
+
+        let invalid_continuous = DataSetMeta::new(1024, 512, 6, 2, 256, 128, 0);
+        assert!(matches!(
+            DataSetMeta::from_bytes(&invalid_continuous.to_bytes()),
+            Err(TmslError::InvalidData(_))
+        ));
+
+        let invalid_initial = DataSetMeta::new(1024, 512, 6, 0, 2048, 128, 0);
+        assert!(matches!(
+            DataSetMeta::from_bytes(&invalid_initial.to_bytes()),
+            Err(TmslError::InvalidData(_))
+        ));
     }
 
     #[test]

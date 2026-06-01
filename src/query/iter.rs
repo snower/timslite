@@ -224,8 +224,7 @@ mod tests {
         let dir = std::env::temp_dir().join("timslite_query_empty");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut segments =
-            DataSegmentSet::new(&dir, 64 * 1024 * 1024, 256 * 1024, 65536, 6).unwrap();
+        let mut segments = DataSegmentSet::new(&dir, 64 * 1024 * 1024, 256 * 1024, 6).unwrap();
 
         let iter = QueryIterator::new(vec![], &mut segments, None);
         let results = iter.collect_all().unwrap();
@@ -237,8 +236,7 @@ mod tests {
         let dir = std::env::temp_dir().join("ts_qi");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut segments =
-            DataSegmentSet::new(&dir, 64 * 1024 * 1024, 256 * 1024, 65536, 6).unwrap();
+        let mut segments = DataSegmentSet::new(&dir, 64 * 1024 * 1024, 256 * 1024, 6).unwrap();
 
         let (_seg_off, _blk_rel, in_block_0) = segments.append(100, b"hello").unwrap();
         let _ = segments.append(200, b"world2").unwrap();

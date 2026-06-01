@@ -84,7 +84,7 @@ fn next_retention_time(check_hour: u8) -> Instant {
     let wait_secs = if target_secs_into_day > secs_into_day {
         target_secs_into_day - secs_into_day
     } else {
-        // Already past today's target — schedule for tomorrow
+        // Already past today's target 鈥?schedule for tomorrow
         86400 - (secs_into_day - target_secs_into_day)
     };
     // Add wait_secs + at least 1s to avoid tight loop near the boundary
@@ -214,7 +214,7 @@ impl BackgroundTasks {
         }
     }
 
-    // ─── private helpers ────────────────────────────────────────────────
+    // 鈹€鈹€鈹€ private helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     fn compute_next_delay(&self, state: &ExecutorState) -> Duration {
         let now = Instant::now();
@@ -475,7 +475,6 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
-            65536,
             0,
             256 * 1024,
             4 * 1024,
@@ -559,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_tick_bg_disabled_mode() {
-        // Create with no thread — should not panic on tick/next_delay
+        // Create with no thread 鈥?should not panic on tick/next_delay
         let bg = make_empty_test_bg(false);
         // tick should succeed
         let result = bg.tick();
@@ -576,7 +575,7 @@ mod tests {
         let bg = BackgroundTasks::new(
             datasets,
             block_cache,
-            flush_interval, // 1ms — very short
+            flush_interval, // 1ms 鈥?very short
             Duration::from_secs(1800),
             Duration::from_secs(1800),
             0,
@@ -599,10 +598,10 @@ mod tests {
     #[test]
     fn test_tick_bg_respects_interval() {
         let bg = make_empty_test_bg(false);
-        // First tick — 0 tasks (nothing due)
+        // First tick 鈥?0 tasks (nothing due)
         let r1 = bg.tick();
         assert_eq!(r1.executed_tasks, 0);
-        // Second tick immediately after — still 0 tasks (interval not passed)
+        // Second tick immediately after 鈥?still 0 tasks (interval not passed)
         let r2 = bg.tick();
         assert_eq!(r2.executed_tasks, 0);
     }

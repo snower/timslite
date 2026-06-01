@@ -67,7 +67,7 @@ macro_rules! ffi_catch_ptr {
 
 // ─── Opaque handle types ────────────────────────────────────────────────────
 
-pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 1;
+pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 2;
 pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 1;
 
 #[repr(C)]
@@ -82,7 +82,6 @@ pub struct TmslStoreConfigFFI {
     pub initial_index_segment_size: u64,
     pub cache_max_memory: u64,
     pub cache_idle_timeout_ms: u64,
-    pub block_max_size: u32,
     pub compress_level: u8,
     pub retention_check_hour: u8,
     pub enable_background_thread: u8,
@@ -157,7 +156,6 @@ fn store_config_to_ffi(config: &StoreConfig) -> TmslStoreConfigFFI {
         initial_index_segment_size: config.initial_index_segment_size,
         cache_max_memory: config.cache_max_memory as u64,
         cache_idle_timeout_ms: config.cache_idle_timeout.as_millis() as u64,
-        block_max_size: config.block_max_size,
         compress_level: config.compress_level,
         retention_check_hour: config.retention_check_hour,
         enable_background_thread: u8::from(config.enable_background_thread),
@@ -186,7 +184,6 @@ fn store_config_from_ffi(
         .index_segment_size(raw.index_segment_size)
         .initial_data_segment_size(raw.initial_data_segment_size)
         .initial_index_segment_size(raw.initial_index_segment_size)
-        .block_max_size(raw.block_max_size)
         .compress_level(raw.compress_level)
         .cache_max_memory(cache_max_memory)
         .cache_idle_timeout(Duration::from_millis(raw.cache_idle_timeout_ms))

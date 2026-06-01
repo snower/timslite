@@ -40,7 +40,7 @@
 
 | 状态 | ID | 事项 | 验收标准 | 处理记录 |
 |------|----|------|----------|----------|
-| [ ] | P2-1 | 明确 DataSetMeta open 校验语义 | 明确 meta 是唯一真源还是与 StoreConfig 比较; 说明 `block_max_size` 是否持久化 | |
+| [x] | P2-1 | 明确 DataSetMeta open 校验语义 | 明确 meta 是唯一真源还是与 StoreConfig 比较; 说明 `block_max_size` 是否持久化 | 2026-06-01 已完成: 明确 `DataSetMeta` 是已有数据集打开时的唯一持久化真源, `DataSet::open()` 不与当前 `StoreConfig` 默认值做“不一致”比较; `block_max_size` 不再作为 Store/DataSet/FFI 配置或 meta 字段持久化, 普通聚合 Block payload 上限固定为 `BLOCK_MAX_SIZE=65536` 文件格式常量。已更新 `docs/design/meta-format.md`, `docs/design/architecture.md`, `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `docs/design/compression.md`, `docs/design/store-and-ffi.md`; 已修改 `src/config.rs`, `src/meta.rs`, `src/dataset.rs`, `src/store.rs`, `src/segment/mod.rs`, `src/segment/data.rs`, `src/ffi.rs`, `include/timslite.h`, `src/query/iter.rs`, `tests/integration_test.rs`; 新增 meta 必填字段/非法参数校验测试并调整固定 64KB block 相关测试。验证: `cargo test meta_ -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings` 通过。 |
 | [ ] | P2-2 | 明确 retention 调度时区 | `retention_check_hour` 标明 UTC 或 local hour; 若是 local, 给出跨平台实现/降级策略 | |
 | [ ] | P2-3 | 增加 dataset name/type 合法性和转义规则 | 明确字符集、长度、路径穿越防护、Windows 保留名处理或编码方案 | |
 | [ ] | P2-4 | 补充 compaction 设计或明确不支持 | 若支持, 定义触发阈值、索引重写、并发隔离和 crash recovery; 若不支持, 文档明确 `invalid_record_count` 只统计 | |

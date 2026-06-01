@@ -1,13 +1,13 @@
 //! Configuration types for timslite.
 //!
-//! `StoreConfig` is the primary configuration at the Store level.
-//! `DataSetConfig` is derived internally from `StoreConfig`.
+//! `StoreConfig` combines Store runtime settings with defaults for newly
+//! created datasets. Existing datasets reopen from their own meta files.
 
 use std::time::Duration;
 
 /// Store-level configuration.
 ///
-/// All datasets under a store share this configuration.
+/// Existing datasets do not compare against these defaults when reopened.
 ///
 /// # Defaults
 /// - `flush_interval`: 10 minutes (600s)
@@ -16,7 +16,6 @@ use std::time::Duration;
 /// - `index_segment_size`: 4 MiB
 /// - `initial_data_segment_size`: 256 KiB
 /// - `initial_index_segment_size`: 4 KiB
-/// - `block_max_size`: 65536 bytes (64 KiB)
 /// - `compress_level`: 6
 /// - `cache_max_memory`: 256 MiB (0 = disabled)
 /// - `cache_idle_timeout`: 30 minutes (1800s)
@@ -28,17 +27,15 @@ pub struct StoreConfig {
     pub flush_interval: Duration,
     /// Time of inactivity before segments are idle-closed.
     pub idle_timeout: Duration,
-    /// Size of each data segment file (max/expansion limit).
+    /// Default data segment file size for newly created datasets.
     pub data_segment_size: u64,
-    /// Size of each index segment file (max/expansion limit).
+    /// Default index segment file size for newly created datasets.
     pub index_segment_size: u64,
-    /// Initial size of a data segment file when created (expanded up to data_segment_size).
+    /// Default initial data segment file size for newly created datasets.
     pub initial_data_segment_size: u64,
-    /// Initial size of an index segment file when created (expanded up to index_segment_size).
+    /// Default initial index segment file size for newly created datasets.
     pub initial_index_segment_size: u64,
-    /// Maximum normal block payload size (excluding block header), capped at 64 KiB.
-    pub block_max_size: u32,
-    /// Deflate compression level (0-9).
+    /// Default deflate compression level for newly created datasets (0-9).
     pub compress_level: u8,
     /// Maximum memory for the read block cache (bytes, 0 = disabled).
     pub cache_max_memory: usize,
@@ -60,7 +57,6 @@ impl Default for StoreConfig {
             index_segment_size: 4 * 1024 * 1024,      // 4 MiB
             initial_data_segment_size: 256 * 1024,    // 256 KiB
             initial_index_segment_size: 4 * 1024,     // 4 KiB
-            block_max_size: 65536,                    // 64 KiB
             compress_level: 6,
             cache_max_memory: 256 * 1024 * 1024, // 256 MiB
             cache_idle_timeout: Duration::from_secs(1800), // 30 min
@@ -86,7 +82,6 @@ pub struct StoreConfigBuilder {
     index_segment_size: Option<u64>,
     initial_data_segment_size: Option<u64>,
     initial_index_segment_size: Option<u64>,
-    block_max_size: Option<u32>,
     compress_level: Option<u8>,
     cache_max_memory: Option<usize>,
     cache_idle_timeout: Option<Duration>,
@@ -128,12 +123,6 @@ impl StoreConfigBuilder {
     /// Set the initial index segment file size (expanded up to index_segment_size).
     pub fn initial_index_segment_size(mut self, size: u64) -> Self {
         self.initial_index_segment_size = Some(size);
-        self
-    }
-
-    /// Set the maximum normal block payload size. Values above 64 KiB are capped.
-    pub fn block_max_size(mut self, size: u32) -> Self {
-        self.block_max_size = Some(size.min(crate::block::BLOCK_MAX_SIZE));
         self
     }
 
@@ -186,7 +175,6 @@ impl StoreConfigBuilder {
             initial_index_segment_size: self
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
-            block_max_size: self.block_max_size.unwrap_or(defaults.block_max_size),
             compress_level: self.compress_level.unwrap_or(defaults.compress_level),
             cache_max_memory: self.cache_max_memory.unwrap_or(defaults.cache_max_memory),
             cache_idle_timeout: self
@@ -202,12 +190,11 @@ impl StoreConfigBuilder {
     }
 }
 
-/// Dataset-level configuration (derived from `StoreConfig`).
+/// Dataset-level creation/open configuration.
 #[derive(Clone, Debug)]
 pub struct DataSetConfig {
     pub data_segment_size: u64,
     pub index_segment_size: u64,
-    pub block_max_size: u32,
     pub compress_level: u8,
     pub index_continuous: u8,
     pub initial_data_segment_size: u64,
@@ -222,7 +209,6 @@ impl DataSetConfig {
         Self {
             data_segment_size: config.data_segment_size,
             index_segment_size: config.index_segment_size,
-            block_max_size: config.block_max_size,
             compress_level: config.compress_level,
             index_continuous: 0,
             initial_data_segment_size: config.initial_data_segment_size,
@@ -261,7 +247,6 @@ impl DataSetConfig {
 pub struct DataSetConfigBuilder {
     data_segment_size: Option<u64>,
     index_segment_size: Option<u64>,
-    block_max_size: Option<u32>,
     compress_level: Option<u8>,
     index_continuous: Option<u8>,
     initial_data_segment_size: Option<u64>,
@@ -276,7 +261,6 @@ impl DataSetConfigBuilder {
         Self {
             data_segment_size: Some(store.data_segment_size),
             index_segment_size: Some(store.index_segment_size),
-            block_max_size: Some(store.block_max_size),
             compress_level: Some(store.compress_level),
             index_continuous: Some(0),
             initial_data_segment_size: Some(store.initial_data_segment_size),
@@ -294,12 +278,6 @@ impl DataSetConfigBuilder {
     /// Set the index segment file size.
     pub fn index_segment_size(mut self, size: u64) -> Self {
         self.index_segment_size = Some(size);
-        self
-    }
-
-    /// Set the maximum normal block payload size. Values above 64 KiB are capped.
-    pub fn block_max_size(mut self, size: u32) -> Self {
-        self.block_max_size = Some(size.min(crate::block::BLOCK_MAX_SIZE));
         self
     }
 
@@ -341,7 +319,6 @@ impl DataSetConfigBuilder {
             index_segment_size: self
                 .index_segment_size
                 .unwrap_or(defaults.index_segment_size),
-            block_max_size: self.block_max_size.unwrap_or(defaults.block_max_size),
             compress_level: self.compress_level.unwrap_or(defaults.compress_level),
             index_continuous: self.index_continuous.unwrap_or(0),
             initial_data_segment_size: self
@@ -368,7 +345,6 @@ mod tests {
         assert_eq!(cfg.index_segment_size, 4 * 1024 * 1024);
         assert_eq!(cfg.initial_data_segment_size, 256 * 1024);
         assert_eq!(cfg.initial_index_segment_size, 4 * 1024);
-        assert_eq!(cfg.block_max_size, 65536);
         assert_eq!(cfg.compress_level, 6);
         assert_eq!(cfg.cache_max_memory, 256 * 1024 * 1024);
         assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(1800));
@@ -385,7 +361,6 @@ mod tests {
             .index_segment_size(8 * 1024 * 1024)
             .initial_data_segment_size(512 * 1024)
             .initial_index_segment_size(8 * 1024)
-            .block_max_size(32768)
             .compress_level(9)
             .cache_max_memory(128 * 1024 * 1024)
             .cache_idle_timeout(Duration::from_secs(600))
@@ -398,7 +373,6 @@ mod tests {
         assert_eq!(cfg.index_segment_size, 8 * 1024 * 1024);
         assert_eq!(cfg.initial_data_segment_size, 512 * 1024);
         assert_eq!(cfg.initial_index_segment_size, 8 * 1024);
-        assert_eq!(cfg.block_max_size, 32768);
         assert_eq!(cfg.compress_level, 9);
         assert_eq!(cfg.cache_max_memory, 128 * 1024 * 1024);
         assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(600));
@@ -414,7 +388,6 @@ mod tests {
         let defaults = StoreConfig::default();
         assert_eq!(cfg.flush_interval, Duration::from_secs(300));
         assert_eq!(cfg.idle_timeout, defaults.idle_timeout);
-        assert_eq!(cfg.block_max_size, defaults.block_max_size);
         assert_eq!(cfg.retention_check_hour, defaults.retention_check_hour);
     }
 
@@ -422,17 +395,6 @@ mod tests {
     fn test_builder_compress_level_cap() {
         let cfg = StoreConfig::builder().compress_level(15).build();
         assert_eq!(cfg.compress_level, 9); // capped at 9
-    }
-
-    #[test]
-    fn test_builder_block_max_size_cap() {
-        let cfg = StoreConfig::builder().block_max_size(128 * 1024).build();
-        assert_eq!(cfg.block_max_size, crate::block::BLOCK_MAX_SIZE);
-
-        let dataset = DataSetConfigBuilder::from_store(&StoreConfig::default())
-            .block_max_size(128 * 1024)
-            .build();
-        assert_eq!(dataset.block_max_size, crate::block::BLOCK_MAX_SIZE);
     }
 
     #[test]
@@ -463,7 +425,6 @@ mod tests {
         let dataset = DataSetConfig::from_store(&store);
         assert_eq!(dataset.data_segment_size, 32 * 1024 * 1024);
         assert_eq!(dataset.compress_level, 3);
-        assert_eq!(dataset.block_max_size, 65536); // default
         assert_eq!(dataset.retention_ms, 0);
     }
 

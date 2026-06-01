@@ -2,7 +2,7 @@
 //!
 //! A high-performance, mmap-backed time-series data store with:
 //! - Block-level aggregation (max 64KB per block)
-//! - Delayed compression (seal on overflow or idle-close)
+//! - Delayed compression (seal on overflow)
 //! - Lazy segment lifecycle (on-demand open, idle-close after 30min)
 //! - Time-indexed queries with binary search
 //! - C ABI FFI interface
@@ -26,6 +26,8 @@
 //!     64 * 1024 * 1024,   // data_segment_size = 64MB
 //!     4 * 1024 * 1024,    // index_segment_size = 4MB
 //!     6,                  // compress_level
+//!     0,                  // index_continuous
+//!     0,                  // retention_ms
 //! ).unwrap();
 //!
 //! // Open an existing dataset (parameters read from meta file)

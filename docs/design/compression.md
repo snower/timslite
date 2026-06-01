@@ -15,7 +15,7 @@
 flags = 0
 pending raw block
     │
-    ├─ append 且未超过 block_max_size
+    ├─ append 且未超过 BLOCK_MAX_SIZE(65536)
     │     └─ 继续保持 pending raw, 更新 pending_wrote_position / pending_record_count
     │
     ├─ next write 导致 pending overflow

@@ -176,7 +176,6 @@ pub struct TmslStoreConfigFFI {
     pub initial_index_segment_size: u64,
     pub cache_max_memory: u64,
     pub cache_idle_timeout_ms: u64,
-    pub block_max_size: u32,
     pub compress_level: u8,
     pub retention_check_hour: u8,
     pub enable_background_thread: u8,    // 0=false, non-zero=true
@@ -256,6 +255,8 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar);
 #[no_mangle] pub extern "C" fn tmsl_iter_close(iter: *mut c_void);
 ```
+
+`block_max_size` 不在 Store/Dataset/FFI 配置中暴露。普通聚合 Block 的 payload 上限固定为 `BLOCK_MAX_SIZE=65536`, 是文件格式常量。
 
 > **内存所有权**:
 > - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放

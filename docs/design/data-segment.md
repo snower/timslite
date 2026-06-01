@@ -16,7 +16,6 @@ struct DataSegmentSet {
     base_dir: PathBuf,
     segment_size: u64,
     initial_segment_size: u64,    // 初始分配大小
-    block_max_size: u32,
     compress_level: u8,
     segments: Vec<DataSegment>,           // 打开中的 data segment
     closed_segments: Vec<DataSegmentMeta>, // 已关闭的 data segment
@@ -40,7 +39,7 @@ impl DataSegmentSet {
 
     /// 加载已有的 data segment 元数据 (Store open 时)
     pub fn load_existing(base_dir: &Path, segment_size: u64,
-                         block_max_size: u32, compress_level: u8) -> Result<Self>;
+                         compress_level: u8) -> Result<Self>;
 }
 ```
 
@@ -128,13 +127,12 @@ impl DataSegment {
         &mut self,
         timestamp: i64,
         data: &[u8],
-        block_max_size: u32,
         compress_level: u8,
     ) -> io::Result<(u64, u16)> {
         let record_size = 4 + 8 + data.len();
 
-        // 情况1: 单条 record 超过 block_max_size → 独占 Block
-        if record_size > block_max_size as usize {
+        // 情况1: 单条 record 超过 BLOCK_MAX_SIZE(65536) → 独占 Block
+        if record_size > BLOCK_MAX_SIZE as usize {
             if let Some(off) = self.pending_block_offset {
                 self.seal_pending_block(off, compress_level)?;
                 self.clear_pending();
@@ -146,7 +144,7 @@ impl DataSegment {
         if let Some(pending_off) = self.pending_block_offset {
             let new_total = self.pending_block_uncomp_size + record_size as u32;
 
-            if new_total > block_max_size {
+            if new_total > BLOCK_MAX_SIZE {
                 self.seal_pending_block(pending_off, compress_level)?;
                 self.clear_pending();
                 return self.create_pending_and_append(timestamp, data);

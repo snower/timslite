@@ -44,7 +44,6 @@ pub struct DataSegmentSet {
     pub base_dir: std::path::PathBuf,
     pub segment_size: u64,
     pub initial_segment_size: u64,
-    pub block_max_size: u32,
     pub compress_level: u8,
     pub segments: Vec<DataSegment>,
     #[allow(private_interfaces)]
@@ -59,7 +58,6 @@ impl DataSegmentSet {
         base_dir: &Path,
         segment_size: u64,
         initial_segment_size: u64,
-        block_max_size: u32,
         compress_level: u8,
     ) -> Result<Self> {
         let data_dir = base_dir.join("data");
@@ -68,7 +66,6 @@ impl DataSegmentSet {
             base_dir: data_dir,
             segment_size,
             initial_segment_size,
-            block_max_size,
             compress_level,
             segments: Vec::new(),
             closed_segments: Vec::new(),
@@ -132,7 +129,6 @@ impl DataSegmentSet {
         base_dir: &Path,
         segment_size: u64,
         initial_segment_size: u64,
-        block_max_size: u32,
         compress_level: u8,
     ) -> Result<Self> {
         let mut metas: Vec<DataSegmentMeta> = Vec::new();
@@ -171,7 +167,6 @@ impl DataSegmentSet {
             base_dir: base_dir.to_path_buf().join("data"),
             segment_size,
             initial_segment_size,
-            block_max_size,
             compress_level,
             segments: Vec::new(),
             closed_segments: metas,
@@ -200,7 +195,6 @@ impl DataSegmentSet {
         };
 
         // Extract config values
-        let block_max_size = self.block_max_size;
         let compress_level = self.compress_level;
 
         // Try to open existing segment, or create a new one
@@ -227,49 +221,49 @@ impl DataSegmentSet {
 
         // Try to append; if SegmentFull, expand and retry, or seal + create new.
         let mut written_segment_offset = current_offset;
-        let (block_rel_off, in_block_off) =
-            match seg.append_record(timestamp, data, block_max_size, compress_level) {
-                Ok(result) => result,
-                Err(crate::error::TmslError::SegmentFull) => {
-                    // Try to expand the current segment
-                    if seg.expand().is_ok() {
-                        // Expansion succeeded, retry append
-                        seg.append_record(timestamp, data, block_max_size, compress_level)?
-                    } else {
-                        // Already at max_file_size → seal current, create new segment
-                        // Mark this segment as needing seal
-                        let seg_offset_to_seal = seg.file_offset;
+        let (block_rel_off, in_block_off) = match seg.append_record(timestamp, data, compress_level)
+        {
+            Ok(result) => result,
+            Err(crate::error::TmslError::SegmentFull) => {
+                // Try to expand the current segment
+                if seg.expand().is_ok() {
+                    // Expansion succeeded, retry append
+                    seg.append_record(timestamp, data, compress_level)?
+                } else {
+                    // Already at max_file_size → seal current, create new segment
+                    // Mark this segment as needing seal
+                    let seg_offset_to_seal = seg.file_offset;
 
-                        let new_offset = self.next_offset;
-                        let file_name = format!("{:020}", new_offset);
-                        let path = self.base_dir.join(&file_name);
-                        let new_seg = DataSegment::create(
-                            &path,
-                            new_offset,
-                            self.initial_segment_size,
-                            self.segment_size,
-                        )?;
-                        self.segments.push(new_seg);
-                        self.next_offset = new_offset + self.segment_size;
-                        written_segment_offset = new_offset;
+                    let new_offset = self.next_offset;
+                    let file_name = format!("{:020}", new_offset);
+                    let path = self.base_dir.join(&file_name);
+                    let new_seg = DataSegment::create(
+                        &path,
+                        new_offset,
+                        self.initial_segment_size,
+                        self.segment_size,
+                    )?;
+                    self.segments.push(new_seg);
+                    self.next_offset = new_offset + self.segment_size;
+                    written_segment_offset = new_offset;
 
-                        // Seal the old segment (lazy approach: set lifecycle to Closed)
-                        // It will be properly sealed on idle-close
-                        {
-                            let idx = self
-                                .segments
-                                .iter()
-                                .position(|s| s.file_offset == seg_offset_to_seal)
-                                .unwrap();
-                            self.segments[idx].lifecycle = SL::Closed;
-                        }
-
-                        let new_seg = self.segments.last_mut().unwrap();
-                        new_seg.append_record(timestamp, data, block_max_size, compress_level)?
+                    // Seal the old segment (lazy approach: set lifecycle to Closed)
+                    // It will be properly sealed on idle-close
+                    {
+                        let idx = self
+                            .segments
+                            .iter()
+                            .position(|s| s.file_offset == seg_offset_to_seal)
+                            .unwrap();
+                        self.segments[idx].lifecycle = SL::Closed;
                     }
+
+                    let new_seg = self.segments.last_mut().unwrap();
+                    new_seg.append_record(timestamp, data, compress_level)?
                 }
-                Err(e) => return Err(e),
-            };
+            }
+            Err(e) => return Err(e),
+        };
 
         self.last_used_at = Instant::now();
         Ok((written_segment_offset, block_rel_off, in_block_off))

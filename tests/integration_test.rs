@@ -142,7 +142,7 @@ fn t8_1_3_block_aggregation() {
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
-    let config = StoreConfig::builder().block_max_size(256).build();
+    let config = StoreConfig::default();
     let mut store = Store::open(&dir, config).unwrap();
 
     store
@@ -469,7 +469,7 @@ fn t12_2_lazy_write_until_max_then_new_segment() {
         .unwrap();
 
     let ds = store.open_dataset("lazy_max", "data").unwrap();
-    // Write enough data to fill first block (block_max_size default 64KB)
+    // Write enough data to fill first block (fixed block limit 64KB)
     // Each record: overhead ~10 + 500 bytes = ~510 bytes
     for i in 0..200i64 {
         let data = vec![i as u8; 500];

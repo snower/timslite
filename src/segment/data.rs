@@ -341,15 +341,13 @@ impl DataSegment {
         &mut self,
         timestamp: i64,
         data: &[u8],
-        block_max_size: u32,
         compress_level: u8,
     ) -> Result<(u64, u16)> {
-        let block_max_size = block_max_size.min(crate::block::BLOCK_MAX_SIZE);
         let record_size = checked_record_size(data.len())?;
         let total_needed = crate::block::BLOCK_HEADER_SIZE + record_size as u64;
 
-        // Case 1: Single record exceeds block_max_size → exclusive block
-        if record_size > block_max_size as usize {
+        // Case 1: single record exceeds the fixed block payload limit.
+        if record_size > crate::block::BLOCK_MAX_SIZE as usize {
             // Seal any existing pending first
             if self.pending_block_offset.is_some() {
                 self.seal_pending_block(compress_level)?;
@@ -362,7 +360,7 @@ impl DataSegment {
         if let Some(_pending_off) = self.pending_block_offset {
             let new_total = self.pending_wrote_position + record_size as u64;
 
-            if new_total > block_max_size as u64 {
+            if new_total > crate::block::BLOCK_MAX_SIZE as u64 {
                 // Pending block is full → seal + compress
                 self.seal_pending_block(compress_level)?;
                 self.clear_pending();
@@ -1018,7 +1016,7 @@ mod tests {
     #[test]
     fn test_create_and_append_single_record() {
         let (mut seg, _path) = make_segment("test_single_rec");
-        let (block_off, in_block_off) = seg.append_record(1700000000, b"hello", 65536, 6).unwrap();
+        let (block_off, in_block_off) = seg.append_record(1700000000, b"hello", 6).unwrap();
         assert_eq!(block_off, 0);
         assert_eq!(in_block_off, 0);
         assert_eq!(seg.pending_record_count, 1);
@@ -1027,8 +1025,8 @@ mod tests {
     #[test]
     fn test_append_multiple_records_same_block() {
         let (mut seg, _path) = make_segment("test_multi_rec");
-        seg.append_record(1000, b"aaa", 65536, 6).unwrap();
-        let (off1, ib1) = seg.append_record(2000, b"bbb", 65536, 6).unwrap();
+        seg.append_record(1000, b"aaa", 6).unwrap();
+        let (off1, ib1) = seg.append_record(2000, b"bbb", 6).unwrap();
         assert_eq!(off1, 0); // same block
         assert!(ib1 > 0); // different position within block
         assert_eq!(seg.pending_record_count, 2);
@@ -1037,13 +1035,10 @@ mod tests {
     #[test]
     fn test_block_overflow_triggers_seal() {
         let (mut seg, _path) = make_segment("test_overflow");
-        // With block_max_size=40, first record (12+20=32) fits,
-        // second record (12+12=24) would overflow 32+24=56>40
-        let max = 40u32;
-        let data1 = vec![0xAAu8; 20]; // record_size = 12+20 = 32
-        let data2 = vec![0xBBu8; 12]; // record_size = 12+12 = 24, total would be 56>40
-        let (off0, _) = seg.append_record(1000, &data1, max, 6).unwrap();
-        let (off1, ib1) = seg.append_record(2000, &data2, max, 6).unwrap();
+        let data1 = vec![0xAAu8; 65_520]; // record_size = 12 + 65520 = 65532
+        let data2 = vec![0xBBu8; 4]; // adding this record crosses BLOCK_MAX_SIZE
+        let (off0, _) = seg.append_record(1000, &data1, 6).unwrap();
+        let (off1, ib1) = seg.append_record(2000, &data2, 6).unwrap();
         // Second record should be in a NEW block
         assert!(off1 > off0);
         assert_eq!(ib1, 0);
@@ -1056,12 +1051,8 @@ mod tests {
     #[test]
     fn test_large_record_exclusive_block() {
         let (mut seg, _path) = make_segment("test_large");
-        // Use 60KB data - within u16::MAX. It still fits the default
-        // 64KB block_max_size, so use a smaller max to force exclusivity.
-        let data = vec![0xABu8; 60_000];
-        // block_max_size = 65536, record_size = 12 + 60000 = 60012 < 65536
-        // This won't trigger single-record path! Let's use smaller max:
-        let (off, ib) = seg.append_record(5000, &data, 50_000, 6).unwrap();
+        let data = vec![0xABu8; 70_000];
+        let (off, ib) = seg.append_record(5000, &data, 6).unwrap();
         assert_eq!(ib, 0);
         // Single record, in its own block (compressed because all 0xAB)
         let entry = ReadIndexEntry {
@@ -1079,7 +1070,7 @@ mod tests {
         let (mut seg, _path) = make_segment("test_large_above_u16");
         let data: Vec<u8> = (0..70_000).map(|i| (i % 251) as u8).collect();
 
-        let (off, ib) = seg.append_record(6000, &data, 65_536, 6).unwrap();
+        let (off, ib) = seg.append_record(6000, &data, 6).unwrap();
         assert_eq!(ib, 0);
 
         let entry = ReadIndexEntry {
@@ -1096,7 +1087,8 @@ mod tests {
     #[test]
     fn test_single_record_block_is_always_compressed() {
         let (mut seg, _path) = make_segment("test_single_record_always_compressed");
-        let (off, ib) = seg.append_record(6001, b"x", 0, 6).unwrap();
+        let data: Vec<u8> = (0..70_000).map(|i| (i % 251) as u8).collect();
+        let (off, ib) = seg.append_record(6001, &data, 6).unwrap();
         assert_eq!(ib, 0);
         assert_eq!(
             block_flags(&seg, off),
@@ -1110,7 +1102,7 @@ mod tests {
         };
         let (ts, recovered) = seg.read_at_index(&entry, None).unwrap();
         assert_eq!(ts, 6001);
-        assert_eq!(recovered, b"x");
+        assert_eq!(recovered, data);
     }
 
     #[test]
@@ -1118,14 +1110,14 @@ mod tests {
         let dir = temp_dir();
         let path = dir.join("test_single_record_compressed_capacity");
         let _ = fs::remove_file(&path);
-        let file_size = DATA_HEADER_SIZE + 96;
+        let file_size = DATA_HEADER_SIZE + 1024;
         let mut seg = DataSegment::create(&path, 0, file_size, file_size).unwrap();
-        let data = vec![0u8; 512];
+        let data = vec![0u8; 70_000];
 
-        let (off, ib) = seg.append_record(6002, &data, 0, 6).unwrap();
+        let (off, ib) = seg.append_record(6002, &data, 6).unwrap();
 
         assert_eq!(ib, 0);
-        assert!(seg.wrote_position <= 96);
+        assert!(seg.wrote_position <= file_size - DATA_HEADER_SIZE);
         assert_eq!(
             block_flags(&seg, off),
             BLOCK_FLAG_SEALED | BLOCK_FLAG_COMPRESSED | BLOCK_FLAG_SINGLE_RECORD
@@ -1145,7 +1137,7 @@ mod tests {
         let (mut seg, _path) = make_segment("test_roundtrip");
         let test_data: Vec<u8> = (0..200).map(|i| (i * 7 + 13) as u8).collect();
 
-        let (block_off, in_block_off) = seg.append_record(9999, &test_data, 65536, 6).unwrap();
+        let (block_off, in_block_off) = seg.append_record(9999, &test_data, 6).unwrap();
 
         // Seal the block to make it readable
         seg.seal_pending_block(6).unwrap();
@@ -1164,7 +1156,7 @@ mod tests {
     #[test]
     fn test_raw_block_read_does_not_enter_global_cache() {
         let (mut seg, _path) = make_segment("test_raw_no_global_cache");
-        let (block_off, in_block_off) = seg.append_record(7000, b"raw", 65536, 6).unwrap();
+        let (block_off, in_block_off) = seg.append_record(7000, b"raw", 6).unwrap();
         let cache = BlockCache::new(1024 * 1024);
         let entry = ReadIndexEntry {
             timestamp: 7000,
@@ -1182,7 +1174,7 @@ mod tests {
     #[test]
     fn test_raw_block_hot_read_does_not_enter_global_cache() {
         let (mut seg, _path) = make_segment("test_raw_hot_no_global_cache");
-        let (block_off, in_block_off) = seg.append_record(7001, b"raw-hot", 65536, 6).unwrap();
+        let (block_off, in_block_off) = seg.append_record(7001, b"raw-hot", 6).unwrap();
         let cache = BlockCache::new(1024 * 1024);
         let mut hot = HotBlockCache::new();
         let entry = ReadIndexEntry {
@@ -1205,7 +1197,7 @@ mod tests {
     fn test_compressed_block_read_enters_global_cache() {
         let (mut seg, _path) = make_segment("test_compressed_global_cache");
         let data = vec![0u8; 70_000];
-        let (block_off, in_block_off) = seg.append_record(7002, &data, 65536, 6).unwrap();
+        let (block_off, in_block_off) = seg.append_record(7002, &data, 6).unwrap();
         let cache = BlockCache::new(1024 * 1024);
         let entry = ReadIndexEntry {
             timestamp: 7002,
@@ -1224,7 +1216,7 @@ mod tests {
     fn test_open_reads_data_after_extended_header() {
         let (mut seg, path) = make_segment("test_extended_header_data");
         let data = b"extended_header_record".to_vec();
-        let (block_off, in_block_off) = seg.append_record(12345, &data, 65536, 6).unwrap();
+        let (block_off, in_block_off) = seg.append_record(12345, &data, 6).unwrap();
         assert_eq!(block_off, 0);
         rewrite_segment_with_extended_header(&mut seg);
         drop(seg);
@@ -1244,7 +1236,7 @@ mod tests {
     #[test]
     fn test_idle_close_reopen_recovery() {
         let (mut seg, path) = make_segment("test_idle");
-        let (block_off, in_block_off) = seg.append_record(7777, b"idle_test", 65536, 6).unwrap();
+        let (block_off, in_block_off) = seg.append_record(7777, b"idle_test", 6).unwrap();
         assert!(seg.pending_block_offset.is_some());
         assert_eq!(block_flags(&seg, block_off), 0);
 
@@ -1273,8 +1265,8 @@ mod tests {
     #[test]
     fn test_reopen_preserves_multi_record_pending_state() {
         let (mut seg, path) = make_segment("test_multi_pending_reopen");
-        let (block_off, first_in_block) = seg.append_record(8000, b"first", 65536, 6).unwrap();
-        let (same_block, second_in_block) = seg.append_record(8001, b"second", 65536, 6).unwrap();
+        let (block_off, first_in_block) = seg.append_record(8000, b"first", 6).unwrap();
+        let (same_block, second_in_block) = seg.append_record(8001, b"second", 6).unwrap();
         assert_eq!(same_block, block_off);
         assert!(second_in_block > first_in_block);
 
@@ -1296,7 +1288,7 @@ mod tests {
     #[test]
     fn test_sync_does_not_seal() {
         let (mut seg, _path) = make_segment("test_sync");
-        seg.append_record(3333, b"sync_test", 65536, 6).unwrap();
+        seg.append_record(3333, b"sync_test", 6).unwrap();
         assert!(seg.pending_block_offset.is_some());
 
         seg.sync().unwrap();
@@ -1307,7 +1299,7 @@ mod tests {
     #[test]
     fn test_ensure_open_after_close() {
         let (mut seg, _path) = make_segment("test_ensure");
-        let (block_off, _) = seg.append_record(4444, b"ensure", 65536, 6).unwrap();
+        let (block_off, _) = seg.append_record(4444, b"ensure", 6).unwrap();
         seg.idle_close(6).unwrap();
         assert!(seg.mmap.is_none());
 
@@ -1329,7 +1321,7 @@ mod tests {
         for i in 0..100 {
             let ts = 1_700_000_000 + i;
             let data = format!("record_{i}", i = i).into_bytes();
-            let (block_off, in_block_off) = seg.append_record(ts, &data, 65536, 6).unwrap();
+            let (block_off, in_block_off) = seg.append_record(ts, &data, 6).unwrap();
             entries.push(ReadIndexEntry {
                 timestamp: ts,
                 block_offset: block_off,

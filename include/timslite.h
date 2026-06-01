@@ -3,7 +3,7 @@
  *
  * A high-performance, mmap-backed time-series data store with:
  * - Block-level aggregation (max 64KB per block)
- * - Delayed compression (seal on overflow or idle-close)
+ * - Delayed compression (seal on overflow)
  * - Lazy segment lifecycle (on-demand open, idle-close after 30min)
  * - Time-indexed queries with binary search
  */
@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define TMSL_STORE_CONFIG_FFI_VERSION 1u
+#define TMSL_STORE_CONFIG_FFI_VERSION 2u
 #define TMSL_DATASET_CONFIG_FFI_VERSION 1u
 
 typedef struct TmslStoreConfigFFI {
@@ -31,7 +31,6 @@ typedef struct TmslStoreConfigFFI {
     uint64_t initial_index_segment_size;
     uint64_t cache_max_memory;
     uint64_t cache_idle_timeout_ms;
-    uint32_t block_max_size;
     uint8_t compress_level;
     uint8_t retention_check_hour;
     uint8_t enable_background_thread;

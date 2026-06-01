@@ -67,7 +67,7 @@ impl Store {
                     name: name.clone(),
                     dataset_type: dataset_type.clone(),
                 };
-                let ds = DataSet::open(key.clone(), type_path.clone(), config.block_max_size)?;
+                let ds = DataSet::open(key.clone(), type_path.clone())?;
                 log::info!("[store] loaded existing dataset: {}/{}", name, dataset_type);
                 datasets.insert(key, Arc::new(Mutex::new(ds)));
             }
@@ -149,7 +149,6 @@ impl Store {
             config.data_segment_size,
             config.index_segment_size,
             config.compress_level,
-            self.config.block_max_size,
             config.index_continuous,
             config.initial_data_segment_size,
             config.initial_index_segment_size,
@@ -215,7 +214,7 @@ impl Store {
 
         // Open existing dataset
         let dir = self.data_dir.join(name).join(dataset_type);
-        let ds = DataSet::open(key.clone(), dir, self.config.block_max_size)?;
+        let ds = DataSet::open(key.clone(), dir)?;
 
         let ds = Arc::new(Mutex::new(ds));
         {

@@ -23,16 +23,14 @@ impl DataSet {
     fn create(
         id: DataSetKey, base_dir: PathBuf,
         data_segment_size: u64, index_segment_size: u64,
-        compress_level: u8, block_max_size: u32,
+        compress_level: u8,
         index_continuous: u8,
         initial_data_segment_size: u64, initial_index_segment_size: u64,
         retention_ms: u64,
     ) -> io::Result<Self>;
 
     /// 打开已有数据集 (参数从 meta 文件读取, 不能设置)
-    fn open(
-        id: DataSetKey, base_dir: PathBuf, block_max_size: u32,
-    ) -> io::Result<Self>;
+    fn open(id: DataSetKey, base_dir: PathBuf) -> io::Result<Self>;
 
     /// 关闭数据集 (flush + 关闭所有 segment)
     fn close(&mut self) -> io::Result<()>;
@@ -125,6 +123,10 @@ physical_file_offset = segment.header_len + block_segment_offset
 ```
 
 `DataSegment` 内部读写只使用 `block_segment_offset`; 任何物理文件 seek/mmap 位置必须加 `header_len`。
+
+**meta 真源与固定 block 上限**:
+
+`DataSet::open()` 只从 `{dataset}/meta` 读取创建参数, 不接收也不比较当前 `StoreConfig` 的 dataset 默认值。`block_max_size` 不是 dataset 参数, 普通聚合 Block payload 上限固定为 `BLOCK_MAX_SIZE=65536`; 超过该上限的单条 record 使用独占 block。
 
 ### 9.1 时间戳验证与写入分支
 
