@@ -90,7 +90,7 @@ impl StoreConfigBuilder {
 ```
 
 **调度逻辑**: 后台线程根据 `retention_check_hour` 计算下一次执行时间 (距 UTC 00:00 的小时偏移), 每日触发一次。触发时:
-1. 读取每个 dataset 的 `retention_ms` 和 `latest_written_timestamp`
+1. 读取每个 dataset 的 `retention_ms` 和 `latest_written_timestamp` (写入过的最大 timestamp, 不要求该 timestamp 当前仍可读)
 2. 若 `retention_ms > 0`, 调用 `DataSet::reclaim_expired_segments()`
 
 详见 [后台任务 §17.8](background-and-cache.md#十七后台任务)。
@@ -247,7 +247,7 @@ pub struct TmslDatasetConfigFFI {
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_flush(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-// 数据集状态 — 最新写入时间戳 (0 = 空数据集)
+// 数据集状态 — 写入过的最大时间戳 (0 = 空数据集; delete latest 不回退)
 #[no_mangle] pub extern "C" fn tmsl_dataset_latest_timestamp(dataset: *mut c_void, out_ts: *mut c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // 数据写入 (correction/out-of-order 会通过 Store 的 BlockCache invalidate 旧索引 key)
@@ -256,7 +256,7 @@ pub struct TmslDatasetConfigFFI {
 // 数据删除 (索引标记为哨兵, invalidate 旧缓存 key, 数据段 invalid_record_count++)
 #[no_mangle] pub extern "C" fn tmsl_dataset_delete(dataset: *mut c_void, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-// 单时间戳读取 (timestamp=-1 读最新记录; malloc'd out_data, 0=成功/1=未找到/-1=错误)
+// 单时间戳读取 (timestamp=-1 解析为最大已写 timestamp, 不反向搜索; malloc'd out_data, 0=成功/1=未找到/-1=错误)
 #[no_mangle] pub extern "C" fn tmsl_dataset_read(dataset: *mut c_void, timestamp: c_longlong,
     out_ts: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;

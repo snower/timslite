@@ -123,8 +123,8 @@ impl IndexSegment {
     /// 连续模式: 物化到 target_ts 之前的位置, 缺失项写入 filler
     fn materialize_until(&mut self, target_ts: i64) -> Result<()>;
 
-    /// 读取段内最后一条索引条目的 timestamp (用于回收判断, 无需完全 open)
-    fn last_entry_timestamp(path: &Path, max_file_size: u64) -> Result<i64>;
+    /// 读取段内最后一条索引条目的 timestamp (用于回收和 latest 恢复, 无需完全 open)
+    fn last_entry_timestamp(path: &Path) -> Result<Option<i64>>;
 
     /// 生命周期
     pub fn ensure_open(&mut self) -> Result<()>;
@@ -204,10 +204,10 @@ entry_index      = ts - segment_start
 
 **回收规则 (TimeIndex)**:
 ```
-reclaim_expired_segments(expiration_threshold: i64, max_file_size: u64):
+reclaim_expired_segments(expiration_threshold: i64):
   前置条件: DataSet 已 close(), 所有 index segment 处于 closed 状态
   for meta in closed_index_segments:
-    last_ts = IndexSegment::last_entry_timestamp(meta.path, max_file_size)
+    last_ts = IndexSegment::last_entry_timestamp(meta.path)
     if last_ts < expiration_threshold:
       fs::remove_file(meta.path)
       closed_index_segments.remove(meta)
@@ -215,9 +215,10 @@ reclaim_expired_segments(expiration_threshold: i64, max_file_size: u64):
 
 **`last_entry_timestamp` 实现**:
 - 仅打开文件一次 (read-only mmap, 不使用 `MmapMut::map_mut` 避免 Windows 锁定)
-- 从 `meta.wrote_count` 推算最后条目位置: `header_len + (wrote_count - 1) * 18`
+- 从文件 header 的 `wrote_position` 推算最后条目位置: `header_len + (wrote_count - 1) * 18`
 - 立即 drop(mmap) + drop(file), 检查完成后不保持打开状态
-- 返回 `Ok(last_ts)` 或 `Err` (空段/wrote_count==0 返回 start_timestamp)
+- 返回 `Ok(Some(last_ts))`, `Ok(None)` 或 `Err`; 空段/`wrote_count==0` 返回 `Ok(None)`
+- `DataSet::open` 恢复 `latest_written_timestamp` 时, 只需要读取最新非空 index segment 文件的最后一条 entry; delete/filler entry 的 timestamp 仍计入 latest, 因此 `read(-1)` 不会回退到更早有效记录
 
 **关键约束**:
 - 回收期间打开的索引段文件必须**检查完成后立即释放** (不用 idle-close)

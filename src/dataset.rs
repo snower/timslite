@@ -10,7 +10,7 @@ use std::time::Instant;
 use crate::cache::BlockCache;
 use crate::config::DataSetConfig;
 use crate::error::{Result, TmslError};
-use crate::index::segment::{IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
+use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::query::iter::{QueryIterator, QuerySource};
@@ -33,7 +33,7 @@ pub struct DataSet {
     segments: DataSegmentSet,
     time_index: TimeIndex,
     last_used_at: Instant,
-    latest_written_timestamp: i64, // For continuous mode: track the highest timestamp
+    latest_written_timestamp: i64, // Highest written timestamp, not latest valid record
     retention_ms: u64,             // 0 = no limit (same unit as timestamp)
 }
 
@@ -155,8 +155,7 @@ impl DataSet {
         )?;
 
         // Recover latest_written_timestamp from index segments
-        let latest_written_timestamp =
-            Self::recover_latest_timestamp(&time_index, config.index_segment_size);
+        let latest_written_timestamp = Self::recover_latest_timestamp(&time_index);
 
         Ok(Self {
             id,
@@ -375,9 +374,9 @@ impl DataSet {
 
     /// Read a single record by exact timestamp.
     ///
-    /// Special case: `timestamp == -1` resolves to `latest_written_timestamp` and
-    /// reads the newest record. Returns `None` if the dataset is empty or the
-    /// latest entry has been deleted.
+    /// Special case: `timestamp == -1` resolves to `latest_written_timestamp`.
+    /// It does not search backward for the latest valid record, so deleted latest
+    /// entries return `None`.
     ///
     /// Returns `Ok(Some((timestamp, data)))` if found, `Ok(None)` if not found
     /// or entry is a filler (deleted or never-written in continuous mode).
@@ -504,43 +503,50 @@ impl DataSet {
         self.last_used_at = Instant::now();
     }
 
-    /// Recover the latest written timestamp from index segments (on open).
-    fn recover_latest_timestamp(time_index: &TimeIndex, max_file_size: u64) -> i64 {
-        let mut latest = 0i64;
-        for meta in &time_index.closed_index_segments {
-            if let Ok(seg) = IndexSegment::open(&meta.path, meta.start_timestamp, max_file_size) {
-                if seg.wrote_count > 0 {
-                    // Read the last entry's timestamp
-                    let mmap = seg.mmap.as_ref().unwrap();
-                    let pos = seg.header_size as usize
-                        + (seg.wrote_count - 1) * crate::index::INDEX_ENTRY_SIZE;
-                    let mmap_bytes = mmap.as_ref();
-                    let ts = i64::from_le_bytes(mmap_bytes[pos..pos + 8].try_into().unwrap());
-                    if ts > latest {
-                        latest = ts;
-                    }
-                }
-            }
+    /// Recover the highest written timestamp from the newest materialized index
+    /// position. Deleted/filler entries still define the written timestamp.
+    fn recover_latest_timestamp(time_index: &TimeIndex) -> i64 {
+        let latest_closed = time_index
+            .closed_index_segments
+            .iter()
+            .filter(|meta| meta.wrote_count > 0)
+            .max_by_key(|meta| meta.start_timestamp)
+            .and_then(|meta| last_entry_timestamp(&meta.path).ok().flatten());
+
+        let latest_open = time_index
+            .index_segments
+            .iter()
+            .filter(|seg| seg.wrote_count > 0)
+            .max_by_key(|seg| seg.start_timestamp)
+            .and_then(Self::last_open_index_entry_timestamp);
+
+        let latest_buffered = time_index
+            .in_memory_buffer
+            .iter()
+            .map(|entry| entry.timestamp)
+            .max();
+
+        latest_closed
+            .into_iter()
+            .chain(latest_open)
+            .chain(latest_buffered)
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn last_open_index_entry_timestamp(seg: &IndexSegment) -> Option<i64> {
+        if seg.wrote_count == 0 {
+            return None;
         }
-        for seg in &time_index.index_segments {
-            if seg.wrote_count > 0 {
-                if let Some(mmap) = seg.mmap.as_ref() {
-                    let pos = seg.header_size as usize
-                        + (seg.wrote_count - 1) * crate::index::INDEX_ENTRY_SIZE;
-                    let mmap_bytes = mmap.as_ref();
-                    let ts = i64::from_le_bytes(mmap_bytes[pos..pos + 8].try_into().unwrap());
-                    if ts > latest {
-                        latest = ts;
-                    }
-                }
-            }
+        let mmap = seg.mmap.as_ref()?;
+        let pos = seg.header_size as usize + (seg.wrote_count - 1) * crate::index::INDEX_ENTRY_SIZE;
+        let mmap_bytes = mmap.as_ref();
+        if pos + 8 > mmap_bytes.len() {
+            return None;
         }
-        for entry in &time_index.in_memory_buffer {
-            if entry.timestamp > latest {
-                latest = entry.timestamp;
-            }
-        }
-        latest
+        Some(i64::from_le_bytes(
+            mmap_bytes[pos..pos + 8].try_into().unwrap(),
+        ))
     }
 
     /// Get the base directory.
@@ -2484,7 +2490,7 @@ mod tests {
             dataset_type: "data".into(),
         };
         let mut ds = DataSet::create(
-            id,
+            id.clone(),
             dir.clone(),
             64 * 1024 * 1024,
             4 * 1024 * 1024,
@@ -2500,11 +2506,18 @@ mod tests {
         ds.write(200, b"later").unwrap();
         ds.delete(200).unwrap();
 
+        assert_eq!(ds.latest_written_timestamp(), 200);
         assert!(ds.read(-1, None).unwrap().is_none());
 
         // Earlier record still reachable via explicit timestamp
         let r = ds.read(100, None).unwrap().unwrap();
         assert_eq!(r.1, b"first");
+
+        ds.close().unwrap();
+
+        let mut reopened = DataSet::open(id, dir).unwrap();
+        assert_eq!(reopened.latest_written_timestamp(), 200);
+        assert!(reopened.read(-1, None).unwrap().is_none());
     }
 
     #[test]

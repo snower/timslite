@@ -15,7 +15,7 @@ struct DataSet {
     segments: DataSegmentSet,
     time_index: TimeIndex,
     last_used_at: Instant,
-    latest_written_timestamp: i64,  // 最近一次成功真实写入的最高 timestamp, 同时作为回收基准
+    latest_written_timestamp: i64,  // 写入过的最大 timestamp, 不是最新有效 record, 同时作为回收基准
 }
 
 impl DataSet {
@@ -46,8 +46,8 @@ impl DataSet {
     fn flush(&mut self) -> io::Result<()>;
     fn config(&self) -> &DataSetConfig;
 
-    /// 最近成功写入的时间戳 (0 = 数据集为空)
-    /// open 时从索引分段恢复; 写入时在内存中维护
+    /// 写入过的最大时间戳 (0 = 数据集为空)
+    /// open 时从最后一个索引分段文件的最后一条 entry 恢复; 写入时在内存中维护
     fn latest_written_timestamp(&self) -> i64;
 
     /// 删除指定时间戳的记录 (索引标记为哨兵, 数据段 invalid_record_count++)
@@ -451,8 +451,8 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - `out_data` 由 `libc::malloc` 分配, C 侧通过 `tmsl_data_free` 释放; `tmsl_iter_free_data` 仅作为兼容别名保留
 >
 > **`timestamp = -1` 快捷路径**:
-> - 直接复用内存中的 `latest_written_timestamp` (open 时从索引恢复), 省去一次索引查找
-> - 如果最新时间戳对应的 index entry 已被 delete 标记为 filler, 仍返回 `None` (不会回退到更早的有效记录)
+> - 直接复用内存中的 `latest_written_timestamp` (open 时从索引最后位置恢复), 省去一次“查找最大时间戳”的扫描
+> - 如果最大已写时间戳对应的 index entry 已被 delete 标记为 filler, 仍返回 `None` (不会回退到更早的有效记录)
 > - 适合流式消费场景: 每次 "拉最新一条" 而不需要提前知道具体时间戳
 >
 > **retention 语义**: 所有读取路径以 `retention_threshold = latest_written_timestamp.saturating_sub(retention_ms)` 为可见性下界。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
@@ -462,10 +462,11 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 数据集实例维护的最高已写时间戳:
 - `DataSet::create` 后初始化为 `0`
 - 每次正常写入 (`timestamp > latest`) 更新为该 `timestamp`
-- 纠正写 (`timestamp == latest`) / 乱序写 (`timestamp < latest`) 不改变
-- `open` 时通过 `recover_latest_timestamp` 从索引分段 (closed + open + in_memory_buffer) 恢复
+- 纠正写 (`timestamp == latest`) / 乱序写 (`timestamp < latest`) / `delete(latest)` 不改变
+- `open` 时通过 `recover_latest_timestamp` 从最新索引分段文件的最后一条 entry 恢复; 若该 entry 是 delete/filler 哨兵, 其 timestamp 仍然是 `latest_written_timestamp`
+- 运行期若存在未刷盘的 `in_memory_buffer`, 恢复辅助逻辑会把 buffer 中的最大 timestamp 作为兜底候选; 正常 open 路径下该 buffer 为空
 - 用于:
-  - `read(-1)` 快捷路径解析最新记录
+  - `read(-1)` 快捷路径解析到最大已写 timestamp; 若该 entry 不存在、已删除或已过期, 返回 `None`, 不反向搜索更早有效记录
   - 数据保留阈值计算 (`latest - retention_ms`)
   - 连续模式稀疏 filler 的上一个真实写入边界判定
 
@@ -488,7 +489,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 expiration_threshold = latest_written_timestamp.saturating_sub(retention_ms)
 ```
 
-- `latest_written_timestamp`: 数据集最近一次成功写入的时间戳 (从 meta 加载或从索引恢复)
+- `latest_written_timestamp`: 数据集写入过的最大时间戳 (从索引最后位置恢复; 不存入 meta)
 - `saturating_sub`: 防止 timestamp < retention_ms 时下溢
 - 当 `latest_written_timestamp < retention_ms` 时, expiration_threshold = 0 → 无分段满足条件 → 不回收
 

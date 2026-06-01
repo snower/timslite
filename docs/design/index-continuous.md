@@ -149,13 +149,13 @@ if entry.block_offset == BLOCK_OFFSET_FILLER {
 
 ```
 DataSet::open():
-  1. 扫描现有数值 index segment 文件:
+  1. 扫描现有数值 index segment 文件元数据:
        - 文件名解析为 segment_start
        - 读取 wrote_count
-       - 读取最后一个已物化 entry 的 timestamp
+       - 找到数值最大的非空 segment 文件, 读取其最后一个已物化 entry 的 timestamp
   2. 连续模式下, base_timestamp = 最小 segment_start
        (无任何 index segment 时为 None, 数据集为空)
-  3. latest_written_timestamp = 所有已物化 entry 中最大的 timestamp
+  3. latest_written_timestamp = 最新非空 index segment 文件最后一条 entry 的 timestamp
      (包括 delete 后保留的 filler timestamp, 与现有 read(-1) 语义一致)
 ```
 

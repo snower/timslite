@@ -192,7 +192,7 @@ impl DataSegment {
 
 #### overwrite_in_last_block: 纠正写入 (In-Place Overwrite, 支持变 size)
 
-纠正写入场景下 (`timestamp == latest_written_timestamp`), 最新记录只有在仍位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置** 时, 才可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化。只要 block 已经 sealed/compressed, 就不能再原地修改, 由 `DataSet::correct_write` 回退为乱序追加并更新索引:
+纠正写入场景下 (`timestamp == latest_written_timestamp`), 该最大已写 timestamp 对应的记录只有在仍位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置** 时, 才可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化。只要 block 已经 sealed/compressed, 就不能再原地修改, 由 `DataSet::correct_write` 回退为乱序追加并更新索引:
 
 ```rust
 fn overwrite_in_last_block(

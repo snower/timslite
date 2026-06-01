@@ -46,6 +46,12 @@
 | [x] | P2-4 | 补充 compaction 设计或明确不支持 | 若支持, 定义触发阈值、索引重写、并发隔离和 crash recovery; 若不支持, 文档明确 `invalid_record_count` 只统计 | 2026-06-01 已完成: 明确当前版本不支持 compaction, 不定义触发阈值、目标段写入、索引重写、并发隔离或 crash recovery; `invalid_record_count` 仅作持久统计/诊断, 不触发物理回收。物理删除仅由 retention reclaim 按整段文件执行。已更新 `docs/design/dataset-operations.md`, `docs/design/data-segment.md`, `docs/design/data-model.md`, `docs/design/design-decisions.md`, `include/timslite.h`。验证: `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings` 通过。 |
 | [x] | P2-5 | 修正文档与构建配置漂移 | `cargo-and-config.md`、`design-decisions.md`、`architecture.md` 与当前 Cargo/module/header 实际状态一致 | 2026-06-01 已完成: `cargo-and-config.md` 移除不存在的 `[[bench]]` 声明和 `cargo bench` 必过要求, 明确当前无 `benches/` 与 GitHub Actions workflow, benchmark 待后续补充; `architecture.md` 模块树补入 `query/mod.rs`, `query/iter.rs`, `query/hot_block.rs`, 并修正后台任务说明; `design-decisions.md` 对齐可变 header、`data_len(u32)`、UTC retention、目录名规则和当前不支持 compaction。验证: `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings` 通过。 |
 
+## 其它优化建议
+
+| 状态 | ID | 事项 | 验收标准 | 处理记录 |
+|------|----|------|----------|----------|
+| [x] | O-3 | 明确 `latest_written_timestamp` 与最新有效记录的区别 | API/设计文档明确其为写入过的最大 timestamp; `delete(latest)` 后 `read(-1)` 返回 None 且不反向搜索更早有效记录 | 2026-06-01 已完成: 确认 `latest_written_timestamp` 表示写入过的最大 timestamp, 等价于最新非空 index segment 文件最后一条 entry 的 timestamp, delete/filler entry 仍计入 latest。`read(-1)` 只解析到该 timestamp, 若对应 entry 已删除、缺失或过期则返回 `None`, 不回退查找更早有效 record。已更新 `docs/design/dataset-operations.md`, `docs/design/index-continuous.md`, `docs/design/time-index.md`, `docs/design/store-and-ffi.md`, `docs/design/data-model.md`, `docs/design/data-segment.md`, `include/timslite.h`; 已优化 `src/dataset.rs` 的 reopen 恢复逻辑, 只读取最新索引分段最后 entry, 并扩展 `test_read_minus_one_after_delete_latest` 覆盖 close/open 后语义。验证: `cargo test test_read_minus_one_after_delete_latest -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings` 通过。 |
+
 ## 建议处理顺序
 
 1. [x] 锁定文件格式: record 长度编码、header size 策略、block offset 坐标系。
