@@ -7,22 +7,32 @@
 ## 总体里程碑
 
 ```
-Phase 1:  项目骨架 + 基础工具     ✅
-Phase 2:  文件头 + Block 核心     ✅
-Phase 3:  DataSegment 写入/读取   ✅
-Phase 4:  时间索引系统            ✅
-Phase 5:  DataSegmentSet + DataSet✅
-Phase 6:  Store 门面 + 后台任务   ✅
-Phase 7:  FFI 接口                ☐ (部分待完成)
-Phase 8:  集成测试 + 性能调优     ☐ (部分待完成)
-Phase 9:  读缓存池 (BlockCache)   ✅
-Phase 10: 索引连续存储           ✅
-Phase 11: 连续模式 O(1) 查询优化 ✅
-Phase 12: 分段懒分配 + 倍率扩容  ✅ (FFI 部分待完成)
-Phase 13: 查询迭代器 + HotBlockCache  ☐ (待开始)
-Phase 23: Record 长度编码升级为 u32 ✅ (P0-1 修复)
-Phase 24: 连续索引稀疏 filler 分段 ✅ (P0-2 修复)
-Phase 25: Header 可变长度       ✅ (P0-3 修复)
+Phase 1:  项目骨架 + 基础工具                ✅
+Phase 2:  文件头 + Block 核心                ✅
+Phase 3:  DataSegment 写入/读取              ✅
+Phase 4:  时间索引系统                       ✅
+Phase 5:  DataSegmentSet + DataSet           ✅
+Phase 6:  Store 门面 + 后台任务               ✅
+Phase 7:  FFI 接口                           ⚠️ 部分完成 (C链接测试待完成)
+Phase 8:  集成测试 + 性能调优                 ⚠️ 核心完成 (基准+Valgrind待完成)
+Phase 9:  读缓存池 (BlockCache)              ✅
+Phase 10: 索引连续存储                       ✅
+Phase 11: 连续模式 O(1) 查询优化             ✅
+Phase 12: 分段懒分配 + 倍率扩容              ✅
+Phase 13: 查询迭代器 + HotBlockCache         ✅
+Phase 14: create_dataset Builder 优化        ✅
+Phase 15: Header State 分化                  ✅
+Phase 16: 数据保留 (Retention)               ✅
+Phase 17: 纠正写入 (Correction Write)        ✅
+Phase 18: 乱序写入与删除                     ✅
+Phase 19: 单时间戳读取                       ✅
+Phase 20: 最新时间戳读取                     ✅
+Phase 21: 后台任务手动执行                   ✅
+Phase 22: Manual BG Python Wrapper           ✅
+Phase 23: Record 长度编码升级为 u32          ✅ (P0-1 修复)
+Phase 24: 连续索引稀疏 filler 分段            ✅ (P0-2 修复)
+Phase 25: Header 可变长度                   ✅ (P0-3 修复)
+Phase 26: GitHub Actions CI/CD               ✅
 ```
 
 ## 目录结构变更 (核心)
@@ -84,15 +94,45 @@ Phase 12 (分段懒分配 + 倍率扩容: 初始大小创建, 2x 增长, max=seg
          │
          ▼
 Phase 13 (查询迭代器: Virtual Iterator 惰性遍历 + HotBlockCache 无锁局部缓存)
-        │
-        ▼
+         │
+         ▼
+Phase 14 (create_dataset Builder: DataSetConfigBuilder + store 默认值继承)
+         │
+         ▼
+Phase 15 (Header State 分化: Data 9 state / Index 1 state)
+         │
+         ▼
+Phase 16 (数据保留: retention_ms TLV + 自动过期回收)
+         │
+         ▼
+Phase 17 (纠正写入: overwrite_in_last_block + timestamp == latest)
+         │
+         ▼
+Phase 18 (乱序写入与删除: update_entry/find_and_delete_entry + invalid_record_count)
+         │
+         ▼
+Phase 19: 单时间戳读取 (read timestamp + FFI tmsl_dataset_read)
+         │
+         ▼
+Phase 20: 最新时间戳读取 (latest_written_timestamp + read(-1) 快捷路径)
+         │
+         ▼
+Phase 21: 后台任务手动执行 (ExecutorState Mutex + tick/next_delay API + FFI)
+         │
+         ▼
+Phase 22: Manual BG Python Wrapper (tick_background_tasks + next_background_delay 绑定)
+         │
+         ▼
 Phase 23 (Record 长度编码升级为 u32: data_len u32 + 12B record header)
-        │
-        ▼
+         │
+         ▼
 Phase 24 (连续索引稀疏 filler 分段: base_timestamp + 逻辑空洞 + 边界分段填充)
-        │
-        ▼
+         │
+         ▼
 Phase 25 (Header 可变长度: header_len = 9 + meta_length + 2 + state_length)
+         │
+         ▼
+Phase 26 (GitHub Actions CI/CD: Rust 全层测试 + Python 3.9-3.13 矩阵)
 ```
 
 ## 风险与应对
