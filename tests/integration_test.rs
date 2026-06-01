@@ -402,6 +402,64 @@ fn t8_2_4_create_after_drop() {
 // ─── Phase 12: Lazy allocation integration tests ─────────────────────────────────
 
 #[test]
+fn t8_2_5_dataset_name_type_validation() {
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    let valid = store
+        .create_dataset(
+            "AZaz09-_",
+            "type_09-OK",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    store.close_dataset(valid).unwrap();
+    assert!(dir
+        .join("AZaz09-_")
+        .join("type_09-OK")
+        .join("meta")
+        .exists());
+
+    let invalid_create = store.create_dataset(
+        "bad/name",
+        "data",
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+    );
+    assert!(matches!(invalid_create, Err(TmslError::InvalidData(_))));
+
+    let invalid_create = store.create_dataset(
+        "bad.name",
+        "data",
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+    );
+    assert!(matches!(invalid_create, Err(TmslError::InvalidData(_))));
+
+    let invalid_create =
+        store.create_dataset("", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0);
+    assert!(matches!(invalid_create, Err(TmslError::InvalidData(_))));
+
+    let invalid_open = store.open_dataset("AZaz09-_", "bad type");
+    assert!(matches!(invalid_open, Err(TmslError::InvalidData(_))));
+
+    let invalid_drop = store.drop_dataset_by_name("..", "data");
+    assert!(matches!(invalid_drop, Err(TmslError::InvalidData(_))));
+}
+
+#[test]
 fn t12_1_lazy_create_write_query_small_data() {
     use timslite::{Store, StoreConfig};
 

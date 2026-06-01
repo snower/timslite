@@ -20,10 +20,6 @@ libc = "0.2"
 
 [dev-dependencies]
 criterion = "0.5"
-
-[[bench]]
-name = "timslite_benchmarks"
-harness = false
 ```
 
 ### 依赖说明
@@ -34,7 +30,7 @@ harness = false
 | `miniz_oxide` | 0.8 | 纯 Rust deflate 压缩/解压 |
 | `log` | 0.4 | 日志门面 |
 | `libc` | 0.2 | C 标准库绑定 (malloc/free) |
-| `criterion` | 0.5 | 基准测试 (dev-only) |
+| `criterion` | 0.5 | 基准测试依赖 (dev-only; 当前尚未定义 bench target) |
 
 ### 构建命令
 
@@ -50,22 +46,21 @@ cargo build --release
 cargo test -- --test-threads=1
 
 # Clippy
-cargo clippy -- -D warnings
+cargo clippy --all-targets -- -D warnings
 
-# 基准测试
-cargo bench
+# 格式检查
+cargo fmt -- --check
 ```
+
+当前 `Cargo.toml` 尚未声明 `[[bench]]` target, 仓库也尚未创建 `benches/` 目录。`criterion` 仅作为后续性能基准的 dev-dependency 保留; 在新增基准前, 不应把 `cargo bench` 作为必过验证命令。
 
 ---
 
-## 二十、GitHub Actions CI
+## 二十、CI 状态与建议命令
 
-### Workflow 触发
+当前仓库尚未包含 `.github/workflows/` 配置。以下命令是推荐 CI/合并前验证集合, 不是已存在 workflow 的声明。
 
-- **push**: 推送到任意分支时自动执行
-- **pull_request**: PR 到 `master`/`main` 分支时自动执行
-
-### 测试矩阵
+### 建议验证矩阵
 
 | 层 | 命令 | 说明 |
 |----|------|------|
@@ -74,6 +69,7 @@ cargo bench
 | Clippy 检查 | `cargo clippy --all-targets -- -D warnings` | 零警告 |
 | 格式检查 | `cargo fmt -- --check` | 零差异 |
 | Python 包装测试 | `pytest wrapper/python/tests/ -v` | PyO3 + maturin 构建后执行 |
+| 基准测试 | 待补充 `benches/` + `[[bench]]` 后启用 | 当前不作为 CI 要求 |
 
 ### Python 测试构建流程
 

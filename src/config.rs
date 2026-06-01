@@ -19,7 +19,7 @@ use std::time::Duration;
 /// - `compress_level`: 6
 /// - `cache_max_memory`: 256 MiB (0 = disabled)
 /// - `cache_idle_timeout`: 30 minutes (1800s)
-/// - `retention_check_hour`: 0 (daily at midnight)
+/// - `retention_check_hour`: 0 (daily at UTC 00:00)
 /// - `enable_background_thread`: true
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
@@ -41,7 +41,7 @@ pub struct StoreConfig {
     pub cache_max_memory: usize,
     /// Idle timeout for cache entries (eviction by background thread).
     pub cache_idle_timeout: Duration,
-    /// Hour (0-23) at which the daily retention reclamation runs.
+    /// UTC hour (0-23) at which the daily retention reclamation runs.
     pub retention_check_hour: u8,
     /// Whether to launch a background thread. When false, callers must invoke
     /// `Store::tick_background_tasks()` periodically to drive flush/idle/cache/retention.
@@ -60,7 +60,7 @@ impl Default for StoreConfig {
             compress_level: 6,
             cache_max_memory: 256 * 1024 * 1024, // 256 MiB
             cache_idle_timeout: Duration::from_secs(1800), // 30 min
-            retention_check_hour: 0,             // midnight
+            retention_check_hour: 0,             // UTC 00:00
             enable_background_thread: true,      // default: auto thread
         }
     }
@@ -144,7 +144,7 @@ impl StoreConfigBuilder {
         self
     }
 
-    /// Set the daily retention reclamation hour (0-23, default 0 = midnight).
+    /// Set the daily retention reclamation UTC hour (0-23, default 0 = UTC 00:00).
     pub fn retention_check_hour(mut self, hour: u8) -> Self {
         self.retention_check_hour = Some(hour.clamp(0, 23));
         self

@@ -58,17 +58,30 @@ impl Store {
 | `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments | 不创建新目录, 仅读取 |
 | `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树 | `remove_dir_all(base_dir)` |
 
-### 11.3 StoreConfig: retention_check_hour
+### 11.3 Dataset name/type 校验
+
+`name` 和 `dataset_type` 直接作为目录名使用, 不做转义。两者必须非空且整体匹配 `^[0-9A-Za-z_-]+$`。
+
+允许字符:
+- `0-9`
+- `a-z`
+- `A-Z`
+- `-`
+- `_`
+
+不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。
+
+### 11.4 StoreConfig: retention_check_hour
 
 ```rust
 pub struct StoreConfig {
     // ... existing fields ...
-    /// 每日保留回收执行时间点 (24h, 0=午夜, 默认 0)
+    /// 每日保留回收执行时间点 (UTC hour, 0=UTC 00:00, 默认 0)
     pub retention_check_hour: u8,
 }
 
 impl StoreConfigBuilder {
-    /// 设置每日保留回收执行时间 (0-23 小时, 默认 0=午夜)
+    /// 设置每日保留回收执行时间 (0-23 UTC hour, 默认 0=UTC 00:00)
     pub fn retention_check_hour(mut self, hour: u8) -> Self {
         self.retention_check_hour = Some(hour.clamp(0, 23));
         self
@@ -76,13 +89,13 @@ impl StoreConfigBuilder {
 }
 ```
 
-**调度逻辑**: 后台线程根据 `retention_check_hour` 计算下一次执行时间 (距午夜整点的秒数), 每日触发一次。触发时:
+**调度逻辑**: 后台线程根据 `retention_check_hour` 计算下一次执行时间 (距 UTC 00:00 的小时偏移), 每日触发一次。触发时:
 1. 读取每个 dataset 的 `retention_ms` 和 `latest_written_timestamp`
 2. 若 `retention_ms > 0`, 调用 `DataSet::reclaim_expired_segments()`
 
 详见 [后台任务 §17.8](background-and-cache.md#十七后台任务)。
 
-### 11.4 StoreConfig: enable_background_thread
+### 11.5 StoreConfig: enable_background_thread
 
 ```rust
 pub struct StoreConfig {

@@ -165,7 +165,7 @@ Offset  (相对 state 起始)    Size  Field                       Description
 40      u64(8)  pending_block_offset      当前未完成 block 相对偏移 (u64::MAX=无)
 48      u64(8)  pending_wrote_position    pending block 内已写入位置(从 payload 起始)
 56      u64(8)  pending_record_count      pending block 内 record 数量
-64      u64(8)  invalid_record_count      段内无效记录数 (索引已不指向该 record, 但物理数据仍存在)
+64      u64(8)  invalid_record_count      段内无效记录数 (仅统计, 不触发 compaction)
 ```
 
 > `min_timestamp` / `max_timestamp`: 每次 `append_record` 更新, 用于 DataSegmentSet 的时间范围段级过滤优化。空段时 `min_timestamp = i64::MAX`, `max_timestamp = i64::MIN`。
@@ -256,6 +256,9 @@ struct DataSetKey {
     name: String,
     dataset_type: String,
 }
+
+// Store 层只接受非空且匹配 ^[0-9A-Za-z_-]+$ 的 name/type。
+// name/type 直接作为目录组件, 不做 escaping。
 
 /// FFI 数据集句柄 (不透明指针, 内部为 Arc ID)
 pub struct DataSetHandle(pub(crate) u64);
@@ -355,7 +358,7 @@ struct DataFileMetadata {
     pending_block_offset: u64,
     pending_wrote_position: u64,
     pending_record_count: u64,
-    invalid_record_count: u64,  // 段内无效记录数 (乱序写入/delete 导致)
+    invalid_record_count: u64,  // 段内无效记录数 (仅统计, 不触发 compaction)
 }
 
 /// 索引段文件元数据头 (IndexFileHeader, v1 默认 52 bytes)

@@ -100,8 +100,9 @@ reopen 时 pending block 恢复流程:
 ### 17.8 Retention Reclaim (数据保留回收)
 
 **触发调度**:
-- 基于 `StoreConfig.retention_check_hour` (u8, 0-23, 默认 0=午夜)
-- 使用 `SystemTime` 计算到下一个目标时间点的等待时长
+- 基于 `StoreConfig.retention_check_hour` (u8, 0-23, 默认 0 = UTC 00:00)
+- `retention_check_hour` 明确定义为 **UTC hour**, 不使用本地时区, 不处理 DST
+- 使用 `SystemTime` 相对 UNIX epoch 的秒数按 UTC 日边界计算到下一个目标时间点的等待时长
 - 每日触发一次, 触发后 `next_retention` 推进 24 小时
 
 **时间计算**:
@@ -110,7 +111,7 @@ fn next_retention_time(check_hour: u8) -> Instant {
     let now = SystemTime::now();
     let today = now.duration_since(UNIX_EPOCH).unwrap();
     let today_secs = today.as_secs();
-    // 今天目标时间 = 今天 0 点 + check_hour * 3600
+    // UTC day start + check_hour * 3600
     let day_start = today_secs - (today_secs % 86400);
     let target = day_start + check_hour as u64 * 3600;
     let wait_secs = if target > today_secs {

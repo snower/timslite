@@ -333,7 +333,7 @@ DataSet::delete(timestamp):
 >
 > **retention 约束**: 过期 timestamp 不允许 delete, 即使旧索引条目或旧数据段尚未被物理回收。调用方应将该错误视为“已超出可操作窗口”, 而不是继续打开旧 segment 查找。
 >
-> **物理数据保留**: 被删除的 record 物理上仍存在于数据段 block 中, 不影响后续 block 的读写。仅在数据段回收时 (retention reclaim 或 `invalid_record_count` 达到阈值触发 compaction) 才会物理清除。
+> **物理数据保留**: 被删除的 record 物理上仍存在于数据段 block 中, 不影响后续 block 的读写。当前版本只通过 retention reclaim 按整个过期分段删除文件; 不支持基于 `invalid_record_count` 的 compaction 或部分空间回收。
 >
 > **缓存一致性**: delete 使旧 record 对查询不可见, 必须 invalidate 旧索引指向的全局缓存 key。若旧 block 未压缩或未进入缓存, invalidate 为无副作用 no-op。
 >
@@ -341,7 +341,9 @@ DataSet::delete(timestamp):
 >
 > **与 `invalid_record_count` 的关系**: 每次 delete 操作使旧数据段的 `invalid_record_count += 1`。该计数器可用于:
 > - 诊断: 监控段内无效记录占比 (`invalid_record_count / record_count`)
-> - 未来 compaction: 当无效占比超过阈值时触发段压缩, 物理回收空间
+> - 统计: 评估 correction/out-of-order/delete 造成的无效记录规模
+>
+> 当前版本不定义 compaction 触发阈值、目标段写入、索引重写、并发隔离或 crash recovery 协议, 因此 `invalid_record_count` 不能触发物理回收。compaction 作为后续文件格式/并发协议版本再设计。
 
 ## 十、读取流程详解 (含缓存)
 
@@ -538,6 +540,10 @@ retention_threshold = latest_written_timestamp.saturating_sub(retention_ms)
 - 混合分段 (分段内同时包含过期和未过期 timestamp) 必须保留, 不做部分删除
 - 回收不追踪“已回收数据是否仍被索引引用”或“已回收索引是否仍关联数据”; 只保证整个分段全部过期才删除, 查询路径通过 retention 钳制和边界校验避免异常
 - 连续模式下, 回收老 index segment 后, 已删除时间范围不可回填; reopen 时以剩余最小分段文件名作为可恢复基准
+
+### 11.6 Compaction 状态
+
+当前版本不支持 compaction。`invalid_record_count` 只作为持久统计字段, 用于诊断无效记录规模, 不参与自动回收、后台任务调度或写入路径决策。过期数据的物理删除仅由 retention reclaim 按整段文件完成; 非过期段内的无效 record 会继续占用磁盘空间, 直到未来版本引入完整的 compaction 设计。
 
 ---
 

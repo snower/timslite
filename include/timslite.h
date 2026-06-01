@@ -32,7 +32,7 @@ typedef struct TmslStoreConfigFFI {
     uint64_t cache_max_memory;
     uint64_t cache_idle_timeout_ms;
     uint8_t compress_level;
-    uint8_t retention_check_hour;
+    uint8_t retention_check_hour; /* UTC hour, 0-23 */
     uint8_t enable_background_thread;
 } TmslStoreConfigFFI;
 
@@ -125,14 +125,14 @@ int tmsl_store_next_background_delay(void* store,
 /**
  * Create a new dataset (errors if already exists).
  * @param store                Opaque store pointer.
- * @param name                 Dataset name.
- * @param dataset_type         Dataset type.
+ * @param name                 Dataset name, must match ^[0-9A-Za-z_-]+$.
+ * @param dataset_type         Dataset type, must match ^[0-9A-Za-z_-]+$.
  * @param data_segment_size    Data segment size in bytes.
  * @param index_segment_size   Index segment size in bytes.
  * @param compress_level       Compression level (1-9).
  * @param index_continuous     0 = non-continuous (strict order), 1 = continuous (filler entries).
  * @param retention_ms         Data validity period (same unit as timestamp, 0 = no limit).
- *                             Store-level `retention_check_hour` controls daily reclaim schedule.
+ *                             Store-level `retention_check_hour` controls daily UTC reclaim schedule.
  * @param err_buf              Buffer for error message.
  * @param err_buf_len          Length of error buffer.
  * @return Opaque dataset pointer, or NULL on error.
@@ -146,8 +146,8 @@ void* tmsl_dataset_create(void* store, const char* name, const char* dataset_typ
 /**
  * Create a new dataset with explicit config, including initial segment sizes.
  * @param store        Opaque store pointer.
- * @param name         Dataset name.
- * @param dataset_type Dataset type.
+ * @param name         Dataset name, must match ^[0-9A-Za-z_-]+$.
+ * @param dataset_type Dataset type, must match ^[0-9A-Za-z_-]+$.
  * @param config       Versioned dataset config pointer (must not be NULL).
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
@@ -162,8 +162,8 @@ void* tmsl_dataset_create_with_config(void* store,
 /**
  * Drop (delete) an entire dataset.
  * @param store        Opaque store pointer.
- * @param name         Dataset name.
- * @param dataset_type Dataset type.
+ * @param name         Dataset name, must match ^[0-9A-Za-z_-]+$.
+ * @param dataset_type Dataset type, must match ^[0-9A-Za-z_-]+$.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
  * @return 0 on success, -1 on error.
@@ -174,8 +174,8 @@ int tmsl_dataset_drop(void* store, const char* name, const char* dataset_type,
 /**
  * Open an existing dataset (errors if not exists).
  * @param store        Opaque store pointer.
- * @param name         Dataset name.
- * @param dataset_type Dataset type.
+ * @param name         Dataset name, must match ^[0-9A-Za-z_-]+$.
+ * @param dataset_type Dataset type, must match ^[0-9A-Za-z_-]+$.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
  * @return Opaque dataset pointer, or NULL on error.
@@ -243,7 +243,7 @@ int tmsl_dataset_write(void* dataset, int64_t timestamp,
  * Marks the index entry as sentinel (block_offset = 0xFFFFFFFFFFFFFFFF,
  * in_block_offset = 0xFFFF) and increments the old data segment's
  * invalid_record_count and invalidates the old global cache entry. The physical data is preserved on disk until
- * retention-based reclamation or future compaction.
+ * retention-based reclamation; current versions do not support compaction.
  *
  * @param dataset      Opaque dataset pointer.
  * @param timestamp    Timestamp of the record to delete.

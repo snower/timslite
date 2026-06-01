@@ -70,15 +70,9 @@ impl DueTasks {
     }
 }
 
-/// Compute the next wall-clock Instant at which retention reclaim should run.
-/// `check_hour` is 0-23 representing the local hour of day (treated as UTC for simplicity).
-fn next_retention_time(check_hour: u8) -> Instant {
+/// Compute the UTC-based delay until the next retention reclaim target.
+fn retention_delay_secs_utc(check_hour: u8, secs_since_epoch: u64) -> u64 {
     let hour = (check_hour as u64) % 24;
-    let now = Instant::now();
-    let secs_since_epoch = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs();
     let secs_into_day = secs_since_epoch % 86400;
     let target_secs_into_day = hour * 3600;
     let wait_secs = if target_secs_into_day > secs_into_day {
@@ -87,8 +81,18 @@ fn next_retention_time(check_hour: u8) -> Instant {
         // Already past today's target 鈥?schedule for tomorrow
         86400 - (secs_into_day - target_secs_into_day)
     };
-    // Add wait_secs + at least 1s to avoid tight loop near the boundary
-    now + Duration::from_secs(wait_secs.max(1))
+    wait_secs.max(1)
+}
+
+/// Compute the next wall-clock Instant at which retention reclaim should run.
+/// `check_hour` is 0-23 representing the UTC hour of day.
+fn next_retention_time(check_hour: u8) -> Instant {
+    let now = Instant::now();
+    let secs_since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs();
+    now + Duration::from_secs(retention_delay_secs_utc(check_hour, secs_since_epoch))
 }
 
 /// Idle-check interval (fixed).
@@ -524,6 +528,14 @@ mod tests {
     fn test_next_retention_time_clamp_hour() {
         let _ = next_retention_time(25);
         let _ = next_retention_time(23);
+    }
+
+    #[test]
+    fn test_retention_delay_uses_utc_epoch_day_boundary() {
+        assert_eq!(retention_delay_secs_utc(0, 23 * 3600 + 59 * 60 + 59), 1);
+        assert_eq!(retention_delay_secs_utc(1, 30 * 60), 30 * 60);
+        assert_eq!(retention_delay_secs_utc(23, 24 * 3600 + 22 * 3600), 3600);
+        assert_eq!(retention_delay_secs_utc(25, 0), 3600);
     }
 
     #[test]

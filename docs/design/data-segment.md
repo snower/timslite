@@ -352,7 +352,9 @@ reclaim_expired_segments(expiration_threshold: i64):
 
 **触发时机**:
 - 由 `DataSet::reclaim_expired_segments()` 调用 (见 [数据集操作 §6.8](dataset-operations.md))
-- 后台线程按 `retention_check_hour` 每日执行一次
+- 后台线程按 `retention_check_hour` 指定的 UTC hour 每日执行一次
+
+`invalid_record_count` 只记录乱序写入、纠正写入回退和 delete 造成的无效 record 数量。当前版本不基于该字段执行 compaction, 也不回收段内局部空间。
 
 ---
 

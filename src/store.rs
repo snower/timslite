@@ -12,6 +12,28 @@ use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::dataset::{DataSet, DataSetKey};
 use crate::error::{Result, TmslError};
 
+fn is_valid_dataset_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn validate_dataset_component(label: &str, value: &str) -> Result<()> {
+    if is_valid_dataset_component(value) {
+        Ok(())
+    } else {
+        Err(TmslError::InvalidData(format!(
+            "{label} must match ^[0-9A-Za-z_-]+$"
+        )))
+    }
+}
+
+fn validate_dataset_path_components(name: &str, dataset_type: &str) -> Result<()> {
+    validate_dataset_component("dataset name", name)?;
+    validate_dataset_component("dataset type", dataset_type)
+}
+
 /// Opaque handle for FFI consumers.
 #[derive(Clone, Copy)]
 pub struct DataSetHandle(pub u64);
@@ -46,6 +68,13 @@ impl Store {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
+            if !is_valid_dataset_component(&name) {
+                log::warn!(
+                    "[store] skipping dataset directory with invalid name: {}",
+                    name
+                );
+                continue;
+            }
             // Scan types (skip internal `data/` and `index/` directories)
             for type_entry in std::fs::read_dir(&path)? {
                 let type_path = type_entry?.path();
@@ -55,6 +84,14 @@ impl Store {
                 let type_name = type_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if type_name == "data" || type_name == "index" {
                     continue; // Internal subdirectory, not a dataset type
+                }
+                if !is_valid_dataset_component(type_name) {
+                    log::warn!(
+                        "[store] skipping dataset type directory with invalid name: {}/{}",
+                        name,
+                        type_name
+                    );
+                    continue;
                 }
                 let dataset_type = type_name.to_string();
 
@@ -121,6 +158,8 @@ impl Store {
         dataset_type: &str,
         config_builder: Option<DataSetConfigBuilder>,
     ) -> Result<DataSetHandle> {
+        validate_dataset_path_components(name, dataset_type)?;
+
         let key = DataSetKey {
             name: name.to_string(),
             dataset_type: dataset_type.to_string(),
@@ -196,6 +235,8 @@ impl Store {
 
     /// Open an existing dataset (errors if not found).
     pub fn open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetHandle> {
+        validate_dataset_path_components(name, dataset_type)?;
+
         let key = DataSetKey {
             name: name.to_string(),
             dataset_type: dataset_type.to_string(),
@@ -267,6 +308,8 @@ impl Store {
 
     /// Drop (delete) an entire dataset by name and type.
     pub fn drop_dataset_by_name(&mut self, name: &str, dataset_type: &str) -> Result<()> {
+        validate_dataset_path_components(name, dataset_type)?;
+
         let key = DataSetKey {
             name: name.to_string(),
             dataset_type: dataset_type.to_string(),

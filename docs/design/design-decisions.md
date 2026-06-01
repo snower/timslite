@@ -8,11 +8,11 @@
 | 压缩粒度 | record | Block |
 | 压缩时机 | 立即 | 延迟 (pending overflow 或超大独占 block 创建时) |
 | 内存映射 | MappedByteBuffer | memmap2::MmapMut, 懒加载/超时关闭(30min) |
-| 元数据 | Protobuf | 100字节 header (meta/state 分离) |
+| 元数据 | Protobuf | 可变长度 header (v1 data=116B, index=52B, meta/state 分离) |
 | 索引目录 | 同级子目录 | `data/` + `index/` 独立子目录 |
 | 索引条目 | 16B (ts+offset) | 18B (ts+block+in_block) |
-| 文件头 | 64B | 100B (meta/state分离) |
-| Record编码 | size+ts+data | data_len+ts+data |
+| 文件头 | 64B | 可变长度 header (meta/state分离) |
+| Record编码 | size+ts+data | data_len(u32)+ts(i64)+data |
 | FFI | 无 | `extern "C"` |
 
 ## 二十二、关键设计决策
@@ -25,7 +25,7 @@
 | 超大 record | 独占 block | 不截断数据 |
 | Record 编码 | data_len(4)+ts(8)+data | 支持 block 内随机定位, `u32` 长度可表达超大独占 record |
 | 索引条目 | 18 字节 | 精确定位到 block 内 record |
-| 文件头 | 100 字节 | meta(不可变TLV)/state(可变7×8B)分离, 版本化扩展 |
+| 文件头 | 可变长度 | meta(不可变TLV)/state(可变)分离, 打开文件时按 header 中长度计算数据区起点 |
 | meta 扩展 | TLV {type:1}{len:2}{value:N} | 未知 type 通过 length 跳过, 向前兼容 |
 | 索引目录 | `data/` + `index/` 独立子目录 | 数据与索引物理隔离 |
 | 并发 | DataSet 级 Mutex | 不同数据集独立 |
@@ -42,6 +42,9 @@
 | **LRU 水位** | 降至 max_memory × 0.85 | 留 15% 余量, 减少淘汰频率 |
 | **缓存禁用** | `cache_max_memory=0` | 零额外开销 |
 | **Filler 哨兵** | `block_offset=0xFFFFFFFFFFFFFFFF` | `block_offset` 语义为数据区逻辑全局 offset, 合法全局偏移远低于该值, 零成本识别 |
+| **目录名规则** | `^[0-9A-Za-z_-]+$` | name/type 直接作为目录名, 禁止转义和路径穿越字符 |
+| **retention 调度时区** | UTC hour | 与 UNIX epoch 日边界计算一致, 避免本地时区/DST 依赖 |
+| **compaction** | 当前不支持 | `invalid_record_count` 只统计无效记录规模, 物理回收仅由 retention 整段删除 |
 
 ---
 
