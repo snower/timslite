@@ -937,7 +937,7 @@ mod tests {
     fn csf_open_invalid_magic() {
         let dir = temp_queue_dir();
         let path = dir.join("bad");
-        fs::create_dir_all(&path.parent().unwrap()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         {
             let file = OpenOptions::new()
                 .read(true)
@@ -960,7 +960,7 @@ mod tests {
     fn csf_open_invalid_version() {
         let dir = temp_queue_dir();
         let path = dir.join("bad");
-        fs::create_dir_all(&path.parent().unwrap()).unwrap();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
         {
             let file = OpenOptions::new()
                 .read(true)

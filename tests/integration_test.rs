@@ -1673,14 +1673,14 @@ fn t27_5_1_producer_consumer_threads() {
     let producer = thread::spawn(move || {
         b_prod.wait();
         for i in 0..10i64 {
-            q_prod.push(&format!("p_{}", i).as_bytes()).unwrap();
+            q_prod.push(format!("p_{}", i).as_bytes()).unwrap();
             thread::sleep(Duration::from_millis(1));
         }
     });
 
     let consumer = thread::spawn(move || {
         let mut store2 = Store::open(&dir2, StoreConfig::default()).unwrap();
-        let h2 = store2.open_dataset("t27q", "events").unwrap();
+        let _h2 = store2.open_dataset("t27q", "events").unwrap();
         let c = store2.open_consumer(&q_cons, "workers").unwrap();
         b_cons.wait();
 
@@ -1715,7 +1715,6 @@ fn t27_6_1_store_invalid_handle_errors() {
 
 #[test]
 fn t27_6_2_store_close_queue() {
-    use std::time::Duration;
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
