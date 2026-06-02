@@ -5,6 +5,7 @@
 //! Subsequent opens read those values from meta.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use crate::cache::BlockCache;
@@ -14,8 +15,11 @@ use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOC
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::query::iter::{QueryIterator, QuerySource};
+use crate::queue::{flush_queue_state_files, queue_dir_for, QueueInner};
 use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
+
+type QueueCondvarPair = Arc<(Mutex<bool>, Condvar)>;
 
 /// Dataset key for identifying a (name, type) pair.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -35,6 +39,8 @@ pub struct DataSet {
     last_used_at: Instant,
     latest_written_timestamp: i64, // Highest written timestamp, not latest valid record
     retention_ms: u64,             // 0 = no limit (same unit as timestamp)
+    queue_inner: Option<Arc<Mutex<QueueInner>>>,
+    queue_notify: Option<Arc<(Mutex<bool>, Condvar)>>,
 }
 
 impl DataSet {
@@ -110,6 +116,8 @@ impl DataSet {
             last_used_at: Instant::now(),
             latest_written_timestamp: 0,
             retention_ms,
+            queue_inner: None,
+            queue_notify: None,
         })
     }
 
@@ -166,6 +174,8 @@ impl DataSet {
             last_used_at: Instant::now(),
             latest_written_timestamp,
             retention_ms,
+            queue_inner: None,
+            queue_notify: None,
         })
     }
 
@@ -240,6 +250,14 @@ impl DataSet {
         }
         self.latest_written_timestamp = timestamp;
         self.last_used_at = Instant::now();
+        // Notify queue consumers if queue is open (only on normal write)
+        if let Some(ref notify) = self.queue_notify {
+            let (lock, cvar) = (&notify.0, &notify.1);
+            if let Ok(mut guard) = lock.lock() {
+                *guard = true;
+                cvar.notify_all();
+            }
+        }
         Ok(())
     }
 
@@ -486,6 +504,12 @@ impl DataSet {
         self.time_index.flush_to_disk()?;
         self.segments.sync_all()?;
         self.time_index.sync_all()?;
+        // Flush queue state files if open
+        if let Some(ref inner) = self.queue_inner {
+            if let Err(e) = flush_queue_state_files(inner) {
+                log::warn!("[flush] queue state flush failed: {}", e);
+            }
+        }
         self.last_used_at = Instant::now();
         Ok(())
     }
@@ -501,6 +525,52 @@ impl DataSet {
     /// Mark usage.
     pub fn touch(&mut self) {
         self.last_used_at = Instant::now();
+    }
+
+    /// Return the queue directory path.
+    pub(crate) fn queue_dir(&self) -> PathBuf {
+        queue_dir_for(&self.base_dir)
+    }
+
+    /// Open the queue subsystem for this dataset.
+    ///
+    /// Returns (QueueInner, CondvarPair) for the caller to construct DatasetQueue.
+    pub(crate) fn open_queue(&mut self) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
+        if self.queue_inner.is_some() {
+            return Err(TmslError::QueueAlreadyOpen(format!(
+                "queue already open for dataset {}",
+                self.id.name
+            )));
+        }
+        let q_dir = self.queue_dir();
+        std::fs::create_dir_all(&q_dir)?;
+
+        let inner = Arc::new(Mutex::new(QueueInner::new()));
+        let pair: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        self.queue_inner = Some(Arc::clone(&inner));
+        self.queue_notify = Some(Arc::clone(&pair));
+        Ok((inner, pair))
+    }
+
+    /// Close the queue subsystem.
+    ///
+    /// Syncs all consumer state files and marks the queue as closed.
+    pub fn close_queue(&mut self) -> Result<()> {
+        if let Some(inner) = self.queue_inner.take() {
+            let guard = inner
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
+            for sf in guard.consumers().values() {
+                if let Ok(mut state) = sf.lock() {
+                    let _ = state.sync_to_mmap();
+                    let _ = state.flush();
+                }
+            }
+            guard.close();
+        }
+        self.queue_inner = None;
+        self.queue_notify = None;
+        Ok(())
     }
 
     /// Recover the highest written timestamp from the newest materialized index

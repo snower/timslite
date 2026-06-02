@@ -28,6 +28,18 @@ pub enum TmslError {
     AlreadyExists(String),
     /// Segment file is full (no more space for data, expansion needed or seal+new).
     SegmentFull,
+    /// Queue already opened for this dataset.
+    QueueAlreadyOpen(String),
+    /// Queue not opened for this dataset yet.
+    QueueNotOpen(String),
+    /// Consumer group not found.
+    ConsumerGroupNotFound(String),
+    /// Consumer group already exists.
+    ConsumerGroupExists(String),
+    /// Queue has been closed; no further operations allowed.
+    QueueClosed(String),
+    /// Pending entries limit reached (max 239).
+    PendingFull(String),
 }
 
 impl fmt::Display for TmslError {
@@ -44,6 +56,14 @@ impl fmt::Display for TmslError {
             TmslError::Expired(msg) => write!(f, "expired: {msg}"),
             TmslError::AlreadyExists(msg) => write!(f, "already exists: {msg}"),
             TmslError::SegmentFull => write!(f, "segment full (expansion needed)"),
+            TmslError::QueueAlreadyOpen(msg) => write!(f, "queue already open: {msg}"),
+            TmslError::QueueNotOpen(msg) => write!(f, "queue not open: {msg}"),
+            TmslError::ConsumerGroupNotFound(msg) => write!(f, "consumer group not found: {msg}"),
+            TmslError::ConsumerGroupExists(msg) => {
+                write!(f, "consumer group already exists: {msg}")
+            }
+            TmslError::QueueClosed(msg) => write!(f, "queue closed: {msg}"),
+            TmslError::PendingFull(msg) => write!(f, "pending entries full: {msg}"),
         }
     }
 }

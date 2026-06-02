@@ -33,7 +33,7 @@ Phase 23: Record 长度编码升级为 u32          ✅ (P0-1 修复)
 Phase 24: 连续索引稀疏 filler 分段            ✅ (P0-2 修复)
 Phase 25: Header 可变长度                   ✅ (P0-3 修复)
 Phase 26: GitHub Actions CI/CD               ✅
-Phase 27: Queue 模块 (DatasetQueue + Consumer) ⬜ 待开发
+Phase 27: Queue 模块 (DatasetQueue + Consumer) ✅ 完成
 ```
 
 ## 目录结构变更 (核心)

@@ -1,9 +1,10 @@
 //! FFI interface (extern "C" API) for C and other language bindings.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_longlong, c_uchar, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::bg::TickResult;
@@ -11,7 +12,20 @@ use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
 use crate::query::iter::QuerySource;
+use crate::queue::{DatasetQueue, DatasetQueueConsumer};
 use crate::store::{DataSetHandle, Store};
+
+use std::sync::LazyLock;
+
+// ─── Queue handle registry (FFI-safe opaque handles) ────────────────────────
+
+static NEXT_QUEUE_ID: AtomicUsize = AtomicUsize::new(1);
+static QUEUE_REGISTRY: LazyLock<Mutex<HashMap<usize, DatasetQueue>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+static NEXT_CONSUMER_ID: AtomicUsize = AtomicUsize::new(1);
+static CONSUMER_REGISTRY: LazyLock<Mutex<HashMap<usize, DatasetQueueConsumer>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // ─── FFI error handling helpers ─────────────────────────────────────────────
 
@@ -60,6 +74,23 @@ macro_rules! ffi_catch_ptr {
             Err(_) => {
                 write_error($err_buf, $err_len, "internal panic");
                 return std::ptr::null_mut();
+            }
+        }
+    };
+}
+
+/// Like ffi_catch_int but returns 0 (instead of -1) on error — for usize handles.
+macro_rules! ffi_catch_usize {
+    ($err_buf:expr, $err_len:expr, $body:expr) => {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body)) {
+            Ok(Ok(val)) => val,
+            Ok(Err(e)) => {
+                write_error($err_buf, $err_len, &format!("{}", e));
+                return 0;
+            }
+            Err(_) => {
+                write_error($err_buf, $err_len, "internal panic");
+                return 0;
             }
         }
     };
@@ -792,6 +823,195 @@ pub extern "C" fn tmsl_data_free(data: *mut c_void) {
 #[no_mangle]
 pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar) {
     tmsl_data_free(data as *mut c_void);
+}
+
+// ─── Queue FFI functions ───────────────────────────────────────────────────
+
+/// Open the queue subsystem for a dataset.
+///
+/// Returns an opaque queue handle (usize) that must be passed to other
+/// queue functions. Returns 0 on failure (error written to err_buf).
+#[no_mangle]
+pub extern "C" fn tmsl_queue_open(
+    store: *mut Store,
+    dataset_handle: u64,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> usize {
+    ffi_catch_usize! { err_buf, err_len, {
+        let store = unsafe { &mut *store };
+        let handle = DataSetHandle(dataset_handle);
+        let queue = store.open_queue(handle)?;
+        let id = NEXT_QUEUE_ID.fetch_add(1, Ordering::Relaxed);
+        QUEUE_REGISTRY.lock().unwrap().insert(id, queue);
+        Ok::<usize, TmslError>(id)
+    }}
+}
+
+/// Close the queue subsystem for a dataset.
+///
+/// Invalidates all associated consumer handles.
+#[no_mangle]
+pub extern "C" fn tmsl_queue_close(
+    store: *mut Store,
+    queue_handle: usize,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    ffi_catch_int! { err_buf, err_len, {
+        let store = unsafe { &mut *store };
+        let registry = QUEUE_REGISTRY.lock().unwrap();
+        let _queue = registry.get(&queue_handle).ok_or_else(|| {
+            TmslError::NotFound("queue handle not found".into())
+        })?;
+        drop(registry);
+
+        let handle = DataSetHandle(0);
+        store.close_queue(handle).map_err(|_| {
+            TmslError::NotFound("queue close failed".into())
+        })?;
+        QUEUE_REGISTRY.lock().unwrap().remove(&queue_handle);
+        Ok::<c_int, TmslError>(0)
+    }}
+}
+
+/// Open or create a consumer group for a queue.
+///
+/// Returns an opaque consumer handle (usize).
+#[no_mangle]
+pub extern "C" fn tmsl_queue_consumer_open(
+    queue_handle: usize,
+    group_name: *const c_char,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> usize {
+    ffi_catch_usize! { err_buf, err_len, {
+        let group_name = unsafe { CStr::from_ptr(group_name) }
+            .to_str()
+            .map_err(|_| TmslError::InvalidData("invalid group name encoding".into()))?;
+        let queue = QUEUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&queue_handle)
+            .cloned()
+            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+        let consumer = queue.open_consumer(group_name)?;
+        let id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
+        CONSUMER_REGISTRY.lock().unwrap().insert(id, consumer);
+        Ok::<usize, TmslError>(id)
+    }}
+}
+
+/// Drop (close and remove) a consumer group.
+#[no_mangle]
+pub extern "C" fn tmsl_queue_consumer_drop(
+    queue_handle: usize,
+    consumer_handle: usize,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    ffi_catch_int! { err_buf, err_len, {
+        let _queue = QUEUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&queue_handle)
+            .cloned()
+            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+        CONSUMER_REGISTRY.lock().unwrap().remove(&consumer_handle);
+        Ok::<c_int, TmslError>(0)
+    }}
+}
+
+/// Push data into the queue.
+///
+/// Auto-increments timestamp and notifies waiting consumers.
+/// Returns the assigned timestamp (> 0) on success, 0 on failure.
+#[no_mangle]
+pub extern "C" fn tmsl_queue_push(
+    queue_handle: usize,
+    data: *const c_uchar,
+    data_len: usize,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_longlong {
+    ffi_catch_int! { err_buf, err_len, {
+        if data.is_null() || data_len == 0 {
+            return Err(TmslError::InvalidData("data pointer is null or empty".into()));
+        }
+        let queue = QUEUE_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&queue_handle)
+            .cloned()
+            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+        let slice = unsafe { std::slice::from_raw_parts(data, data_len) };
+        let ts = queue.push(slice)?;
+        Ok::<c_longlong, TmslError>(ts as c_longlong)
+    }}
+}
+
+/// Poll for the next record from a consumer.
+///
+/// Returns 0 on success (with data), -1 on error, -2 on timeout.
+/// On success: *out_timestamp and *out_data are set.
+#[no_mangle]
+pub extern "C" fn tmsl_queue_poll(
+    consumer_handle: usize,
+    timeout_ms: c_longlong,
+    out_timestamp: *mut c_longlong,
+    out_data: *mut *mut c_uchar,
+    out_len: *mut usize,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    ffi_catch_int! { err_buf, err_len, {
+        let consumer = CONSUMER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&consumer_handle)
+            .cloned()
+            .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?;
+        let timeout = Duration::from_millis(std::cmp::max(0, timeout_ms) as u64);
+
+        match consumer.poll(timeout)? {
+            Some((ts, data)) => {
+                unsafe {
+                    *out_timestamp = ts as c_longlong;
+                    let ptr = libc::malloc(data.len()) as *mut c_uchar;
+                    if ptr.is_null() {
+                        return Err(TmslError::Io(std::io::Error::other(
+                            "malloc failed",
+                        )));
+                    }
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+                    *out_data = ptr;
+                    *out_len = data.len();
+                }
+                Ok(0)
+            }
+            None => Ok(-2), // Timeout
+        }
+    }}
+}
+
+/// Ack a previously polled record.
+#[no_mangle]
+pub extern "C" fn tmsl_queue_ack(
+    consumer_handle: usize,
+    timestamp: c_longlong,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    ffi_catch_int! { err_buf, err_len, {
+        let consumer = CONSUMER_REGISTRY
+            .lock()
+            .unwrap()
+            .get(&consumer_handle)
+            .cloned()
+            .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?;
+        consumer.ack(timestamp)?;
+        Ok::<c_int, TmslError>(0)
+    }}
 }
 
 #[cfg(test)]

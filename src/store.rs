@@ -11,6 +11,7 @@ use crate::cache::BlockCache;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::dataset::{DataSet, DataSetKey};
 use crate::error::{Result, TmslError};
+use crate::queue::{DatasetQueue, DatasetQueueConsumer};
 
 fn is_valid_dataset_component(value: &str) -> bool {
     !value.is_empty()
@@ -392,16 +393,111 @@ impl Store {
             bg.stop();
         }
 
-        // 2. Flush and close all datasets
+        // 2. Flush and close all datasets (close queues first)
         let mut guard = self.datasets.write().unwrap();
         for (_key, ds_arc) in guard.drain() {
             let mut ds = ds_arc.lock().unwrap();
+            let _ = ds.close_queue(); // best-effort close queue
             if let Err(e) = ds.close() {
                 log::error!("[store] close failed: {}", e);
             }
         }
 
         Ok(())
+    }
+
+    // ─── Queue operations ────────────────────────────────────────────────────
+
+    /// Open the queue subsystem for a dataset.
+    ///
+    /// Must be called before any consumer or push operations on the dataset.
+    /// Returns a `DatasetQueue` handle that can be cloned and shared.
+    pub fn open_queue(&mut self, handle: DataSetHandle) -> Result<DatasetQueue> {
+        let key = self
+            .handles
+            .get(&handle.0)
+            .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?
+            .clone();
+        let ds_arc = self
+            .datasets
+            .read()
+            .unwrap()
+            .get(&key)
+            .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
+            .clone();
+
+        // Initialize queue on the dataset
+        let (inner, notify) = {
+            let mut ds = ds_arc
+                .lock()
+                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+            ds.open_queue()?
+        };
+
+        Ok(DatasetQueue {
+            dataset: ds_arc,
+            inner,
+            notify,
+        })
+    }
+
+    /// Close the queue subsystem for a dataset.
+    pub fn close_queue(&mut self, handle: DataSetHandle) -> Result<()> {
+        let key = self
+            .handles
+            .get(&handle.0)
+            .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?
+            .clone();
+        let ds_arc = self
+            .datasets
+            .read()
+            .unwrap()
+            .get(&key)
+            .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
+            .clone();
+
+        let mut ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.close_queue()
+    }
+
+    /// Open or create a consumer group for a dataset queue.
+    ///
+    /// The queue must have been opened via `open_queue` first.
+    /// Multiple consumers in the same group share progress.
+    pub fn open_consumer(
+        &mut self,
+        queue: &DatasetQueue,
+        group_name: &str,
+    ) -> Result<DatasetQueueConsumer> {
+        queue.open_consumer(group_name)
+    }
+
+    /// Drop a consumer group for a dataset queue.
+    pub fn drop_consumer(&mut self, queue: &DatasetQueue, group_name: &str) -> Result<()> {
+        queue.drop_consumer(group_name)
+    }
+
+    /// Push data into a dataset queue.
+    ///
+    /// Auto-increments timestamp and notifies waiting consumers.
+    pub fn queue_push(&mut self, queue: &DatasetQueue, data: &[u8]) -> Result<i64> {
+        queue.push(data)
+    }
+
+    /// Poll for the next record from a consumer.
+    pub fn queue_poll(
+        &self,
+        consumer: &DatasetQueueConsumer,
+        timeout: Duration,
+    ) -> Result<Option<(i64, Vec<u8>)>> {
+        consumer.poll(timeout)
+    }
+
+    /// Ack a previously polled record.
+    pub fn queue_ack(&self, consumer: &DatasetQueueConsumer, timestamp: i64) -> Result<()> {
+        consumer.ack(timestamp)
     }
 }
 

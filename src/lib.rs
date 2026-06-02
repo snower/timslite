@@ -51,6 +51,7 @@ mod index;
 mod meta;
 #[allow(clippy::module_inception)]
 mod query;
+pub mod queue;
 mod segment;
 mod store;
 
@@ -62,7 +63,22 @@ pub use error::{Result, TmslError};
 pub use index::segment::{IndexEntry, BLOCK_OFFSET_FILLER};
 pub use query::hot_block::HotBlockCache;
 pub use query::iter::{QueryIterator, QuerySource, SourceIndex};
+pub use queue::{DatasetQueue, DatasetQueueConsumer, PendingEntry};
 pub use store::{DataSetHandle, Store};
+
+// ─── Queue constants (exported for FFI consumers) ───────────────────────────
+
+/// Queue state file magic bytes ("QSTF").
+pub const QUEUE_STATE_MAGIC: [u8; 4] = *queue::QUEUE_STATE_MAGIC;
+
+/// Queue state file version.
+pub const QUEUE_STATE_VERSION: u32 = queue::QUEUE_STATE_VERSION;
+
+/// Queue state file size in bytes (4KB).
+pub const QUEUE_STATE_FILE_SIZE: usize = queue::STATE_FILE_SIZE;
+
+/// Maximum pending entries per consumer group.
+pub const QUEUE_MAX_PENDING_ENTRIES: usize = queue::MAX_PENDING_ENTRIES;
 
 // ─── Core constants (exported for FFI consumers) ────────────────────────────
 
