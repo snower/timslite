@@ -535,7 +535,7 @@ impl DataSet {
     /// Open the queue subsystem for this dataset.
     ///
     /// Returns (QueueInner, CondvarPair) for the caller to construct DatasetQueue.
-    pub(crate) fn open_queue(&mut self) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
+    pub fn open_queue(&mut self) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
         if self.queue_inner.is_some() {
             return Err(TmslError::QueueAlreadyOpen(format!(
                 "queue already open for dataset {}",

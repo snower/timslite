@@ -18,12 +18,13 @@
 | PY-6 | Python 模块导出 + `__init__.py` | ✅ 完成 | `src/lib.rs`, `python/timslite/__init__.py` |
 | PY-7 | 集成测试 (8 个测试文件, 39 用例) | ✅ 完成 | `tests/` — 全部通过 |
 | PY-8 | CI/CD + 多平台 Wheel 构建 | 🔲 待开始 | GitHub Actions workflow |
+| PY-9 | Queue 模块 Python 包装 | ✅ 完成 | `src/queue.rs` — DatasetQueue + Consumer |
 
 **验证结果**:
 - ✅ `cargo clippy -- -D warnings` — wrapper crate 无警告
 - ✅ `cargo clippy -- -D warnings` — 主 crate 无警告
-- ✅ `pytest tests/ -v` — **39 tests passed**, 0 failed
-- ✅ `cargo test -- --test-threads=1` — 主 crate 19 tests passed
+- ✅ `pytest tests/ -v` — **42 tests passed**, 0 failed
+- ✅ `cargo test -- --test-threads=1` — 主 crate 173+29 tests passed
 - ✅ `maturin develop --release` — 编译并安装成功 (CPython 3.13)
 
 ---
@@ -65,7 +66,8 @@ wrapper/python/
 │   ├── config.rs                   # PyStoreConfig #[pyclass]
 │   ├── store.rs                    # PyStore #[pyclass]
 │   ├── dataset.rs                  # PyDataset #[pyclass]
-│   └── query.rs                    # PyQueryIterator #[pyclass]
+│   ├── query.rs                    # PyQueryIterator #[pyclass]
+│   ├── queue.rs                    # PyDatasetQueue + PyDatasetQueueConsumer #[pyclass]
 ├── python/
 │   └── timslite/
 │       └── __init__.py             # 纯 Python 层: 类型重导出

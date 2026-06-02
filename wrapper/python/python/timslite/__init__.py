@@ -18,6 +18,8 @@ from .timslite import (
     StoreConfig,
     Dataset,
     QueryIterator,
+    DatasetQueue,
+    DatasetQueueConsumer,
     TmslError,
     TmslIoError,
     TmslNotFoundError,
@@ -27,6 +29,13 @@ from .timslite import (
     TmslMmapError,
     TmslCompressionError,
     TmslDecompressionError,
+    TmslExpiredError,
+    TmslQueueAlreadyOpenError,
+    TmslQueueNotOpenError,
+    TmslConsumerGroupNotFoundError,
+    TmslConsumerGroupExistsError,
+    TmslQueueClosedError,
+    TmslPendingFullError,
 )
 
 __all__ = [
@@ -34,6 +43,8 @@ __all__ = [
     "StoreConfig",
     "Dataset",
     "QueryIterator",
+    "DatasetQueue",
+    "DatasetQueueConsumer",
     "TmslError",
     "TmslIoError",
     "TmslNotFoundError",
@@ -43,4 +54,11 @@ __all__ = [
     "TmslMmapError",
     "TmslCompressionError",
     "TmslDecompressionError",
+    "TmslExpiredError",
+    "TmslQueueAlreadyOpenError",
+    "TmslQueueNotOpenError",
+    "TmslConsumerGroupNotFoundError",
+    "TmslConsumerGroupExistsError",
+    "TmslQueueClosedError",
+    "TmslPendingFullError",
 ]

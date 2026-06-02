@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use crate::config::PyStoreConfig;
 use crate::dataset::PyDataset;
 use crate::exceptions::wrap;
+use crate::queue::PyDatasetQueue;
 
 #[pyclass(name = "Store")]
 pub struct PyStore {
@@ -161,6 +162,36 @@ impl PyStore {
         let py_ds = PyDataset::new(ds_arc, id, base_dir);
         self.datasets.insert(id, py_ds.inner_arc());
         Ok(py_ds)
+    }
+
+    /// Open the queue subsystem for a dataset.
+    ///
+    /// Args:
+    ///     dataset_id: The ID of the dataset (returned by `open_dataset().id`).
+    ///
+    /// Returns a DatasetQueue that supports push and consumer group operations.
+    ///
+    /// Raises:
+    ///     TmslQueueAlreadyOpenError: Queue is already open for this dataset.
+    fn open_queue(&mut self, dataset_id: u64) -> PyResult<PyDatasetQueue> {
+        let ds_arc = self
+            .datasets
+            .get(&dataset_id)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "dataset_id {dataset_id} not found"
+                ))
+            })?
+            .clone();
+
+        let (inner, notify) = {
+            let mut ds = ds_arc.lock().unwrap();
+            wrap(ds.open_queue())?
+        };
+
+        Ok(PyDatasetQueue::new(timslite::DatasetQueue::new(
+            ds_arc, inner, notify,
+        )))
     }
 
     /// Delete an entire dataset.

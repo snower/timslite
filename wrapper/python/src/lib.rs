@@ -6,6 +6,7 @@ mod config;
 mod dataset;
 mod exceptions;
 mod query;
+mod queue;
 mod store;
 
 use pyo3::prelude::*;
@@ -20,6 +21,8 @@ fn timslite(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<config::PyStoreConfig>()?;
     m.add_class::<dataset::PyDataset>()?;
     m.add_class::<query::PyQueryIterator>()?;
+    m.add_class::<queue::PyDatasetQueue>()?;
+    m.add_class::<queue::PyDatasetQueueConsumer>()?;
 
     Ok(())
 }

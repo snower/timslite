@@ -328,7 +328,7 @@ fn write_i64_at(mmap: &mut MmapMut, offset: usize, val: i64) {
 // ─── QueueInner ──────────────────────────────────────────────────────────────
 
 /// Shared internal state for a dataset queue.
-pub(crate) struct QueueInner {
+pub struct QueueInner {
     consumers: HashMap<String, Arc<Mutex<ConsumerStateFile>>>,
     closed: Arc<AtomicBool>,
 }
@@ -384,6 +384,22 @@ impl fmt::Debug for DatasetQueue {
 }
 
 impl DatasetQueue {
+    /// Construct a new DatasetQueue from raw components.
+    ///
+    /// Used by FFI and Python wrappers that manage dataset lifecycle
+    /// separately from Store's internal handle registry.
+    pub fn new(
+        dataset: Arc<Mutex<DataSet>>,
+        inner: Arc<Mutex<QueueInner>>,
+        notify: Arc<(Mutex<bool>, Condvar)>,
+    ) -> Self {
+        DatasetQueue {
+            dataset,
+            inner,
+            notify,
+        }
+    }
+
     /// Open or create a consumer group and return a consumer handle.
     pub fn open_consumer(&self, group_name: &str) -> Result<DatasetQueueConsumer> {
         let mut inner = self

@@ -67,6 +67,42 @@ create_exception!(
     TmslError,
     "Timestamp is outside the retention window."
 );
+create_exception!(
+    timslite,
+    TmslQueueAlreadyOpenError,
+    TmslError,
+    "Queue is already open for this dataset."
+);
+create_exception!(
+    timslite,
+    TmslQueueNotOpenError,
+    TmslError,
+    "Queue is not open for this dataset."
+);
+create_exception!(
+    timslite,
+    TmslConsumerGroupNotFoundError,
+    TmslError,
+    "Consumer group not found."
+);
+create_exception!(
+    timslite,
+    TmslConsumerGroupExistsError,
+    TmslError,
+    "Consumer group already exists."
+);
+create_exception!(
+    timslite,
+    TmslQueueClosedError,
+    TmslError,
+    "Queue has been closed."
+);
+create_exception!(
+    timslite,
+    TmslPendingFullError,
+    TmslError,
+    "Pending entries limit reached (max 239)."
+);
 
 /// Register all exception types on the Python module.
 ///
@@ -98,6 +134,30 @@ pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
         TmslDecompressionError::type_object(m.py()),
     )?;
     m.add("TmslExpiredError", TmslExpiredError::type_object(m.py()))?;
+    m.add(
+        "TmslQueueAlreadyOpenError",
+        TmslQueueAlreadyOpenError::type_object(m.py()),
+    )?;
+    m.add(
+        "TmslQueueNotOpenError",
+        TmslQueueNotOpenError::type_object(m.py()),
+    )?;
+    m.add(
+        "TmslConsumerGroupNotFoundError",
+        TmslConsumerGroupNotFoundError::type_object(m.py()),
+    )?;
+    m.add(
+        "TmslConsumerGroupExistsError",
+        TmslConsumerGroupExistsError::type_object(m.py()),
+    )?;
+    m.add(
+        "TmslQueueClosedError",
+        TmslQueueClosedError::type_object(m.py()),
+    )?;
+    m.add(
+        "TmslPendingFullError",
+        TmslPendingFullError::type_object(m.py()),
+    )?;
     Ok(())
 }
 
@@ -117,6 +177,12 @@ pub fn map_error(err: timslite::TmslError) -> pyo3::PyErr {
         E::CompressionError(_) => TmslCompressionError::new_err(msg),
         E::DecompressionError(_) => TmslDecompressionError::new_err(msg),
         E::Expired(_) => TmslExpiredError::new_err(msg),
+        E::QueueAlreadyOpen(_) => TmslQueueAlreadyOpenError::new_err(msg),
+        E::QueueNotOpen(_) => TmslQueueNotOpenError::new_err(msg),
+        E::ConsumerGroupNotFound(_) => TmslConsumerGroupNotFoundError::new_err(msg),
+        E::ConsumerGroupExists(_) => TmslConsumerGroupExistsError::new_err(msg),
+        E::QueueClosed(_) => TmslQueueClosedError::new_err(msg),
+        E::PendingFull(_) => TmslPendingFullError::new_err(msg),
     }
 }
 

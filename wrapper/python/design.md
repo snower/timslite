@@ -48,6 +48,8 @@ timslite
 ├── StoreConfig     # Configuration (kwargs-based, no builder)
 ├── Dataset         # Returned by store.open_dataset(), lock hidden
 ├── QueryIterator   # Lazy iterator for query results
+├── DatasetQueue    # Push/poll/ack queue with consumer groups
+├── DatasetQueueConsumer  # Consumer handle for polling
 ├── QueryResult     # Eager result (list-like wrapper, optional)
 └── Exceptions
     ├── TmslError       # Base exception
@@ -58,7 +60,14 @@ timslite
     ├── TmslSegmentFullError
     ├── TmslMmapError
     ├── TmslCompressionError
-    └── TmslDecompressionError
+    ├── TmslDecompressionError
+    ├── TmslExpiredError
+    ├── TmslQueueAlreadyOpenError
+    ├── TmslQueueNotOpenError
+    ├── TmslConsumerGroupNotFoundError
+    ├── TmslConsumerGroupExistsError
+    ├── TmslQueueClosedError
+    └── TmslPendingFullError
 ```
 
 ### 2.2 Module Structure
@@ -74,6 +83,7 @@ wrapper/python/
 │   ├── config.rs               # PyStoreConfig#[pyclass]
 │   ├── dataset.rs              # PyDataset#[pyclass]
 │   ├── query.rs                # PyQueryIterator[#pyclass]
+│   ├── queue.rs                # PyDatasetQueue + PyDatasetQueueConsumer #[pyclass]
 │   └── exceptions.rs           # Python exception types
 ├── python/
 │   └── timslite/
@@ -348,9 +358,141 @@ class TmslCompressionError(TmslError):
 
 class TmslDecompressionError(TmslError):
     """Decompression failure."""
+
+class TmslExpiredError(TmslError):
+    """Timestamp is outside the retention window."""
+
+class TmslQueueAlreadyOpenError(TmslError):
+    """Queue is already open for this dataset."""
+
+class TmslQueueNotOpenError(TmslError):
+    """Queue is not open for this dataset."""
+
+class TmslConsumerGroupNotFoundError(TmslError):
+    """Consumer group not found."""
+
+class TmslConsumerGroupExistsError(TmslError):
+    """Consumer group already exists."""
+
+class TmslQueueClosedError(TmslError):
+    """Queue has been closed."""
+
+class TmslPendingFullError(TmslError):
+    """Pending entries limit reached (max 239)."""
 ```
 
 **Rust mapping**: `fn map_error(err: TmslError) -> PyErr` in `exceptions.rs`, matches on variant and creates corresponding Python exception via `pyo3::exceptions::PyException`.
+
+### 3.6 `DatasetQueue` + `DatasetQueueConsumer` — `#[pyclass]`
+
+Queue semantics built on top of Dataset with consumer group support.
+
+**Directory layout per dataset**: `{data_dir}/{name}/{type}/queue/{group_name}`
+
+#### DatasetQueue
+
+```python
+class DatasetQueue:
+    """Queue handle for a dataset (one per dataset).
+
+    Supports push and consumer group management. Multiple consumers
+    in the same group share progress via 4KB mmap state files.
+
+    Obtained via Store.open_queue(dataset_id).
+    """
+
+    def push(self, data: bytes) -> int:
+        """Push data into the queue.
+
+        Auto-increments the dataset timestamp and notifies all
+        waiting consumers across all consumer groups.
+
+        Returns:
+            Assigned timestamp.
+
+        Raises:
+            TmslQueueClosedError: Queue has been closed.
+            TmslInvalidDataError: Write failed.
+        """
+
+    def open_consumer(self, group_name: str) -> "DatasetQueueConsumer":
+        """Open or create a consumer group and return a consumer handle.
+
+        Multiple consumers in the same group share progress via
+        the shared 4KB mmap state file. The first call for a group
+        creates the state file; subsequent calls open the existing file.
+
+        Args:
+            group_name: Consumer group identifier (e.g. "worker-1").
+
+        Returns:
+            DatasetQueueConsumer handle.
+
+        Raises:
+            TmslQueueClosedError: Queue has been closed.
+        """
+
+    def close(self) -> None:
+        """Close the queue and all associated consumers.
+
+        All pending records are synced, consumer state files are
+        flushed, and waiting polls are unblocked with QueueClosed.
+        """
+```
+
+#### DatasetQueueConsumer
+
+```python
+class DatasetQueueConsumer:
+    """Consumer handle for a specific consumer group.
+
+    Polls for new records with configurable timeout.
+    Multiple consumers for the same group share progress via mmap.
+
+    Obtained via DatasetQueue.open_consumer(group_name).
+    """
+
+    def poll(self, timeout_ms: int) -> tuple[int, bytes] | None:
+        """Poll for the next record.
+
+        Returns the next unacked record as (timestamp, data), or None
+        if the timeout expires with no data available.
+
+        Internally: checks for unacked pending entries first,
+        then reads from dataset starting at processed_ts + 1.
+        Uses Condvar wait/notify for efficient polling.
+
+        Args:
+            timeout_ms: Maximum wait time in milliseconds. Use 0 for
+                non-blocking poll (returns immediately if no data).
+
+        Returns:
+            (timestamp, data) tuple, or None on timeout.
+
+        Raises:
+            TmslQueueClosedError: Queue has been closed.
+        """
+
+    def ack(self, timestamp: int) -> None:
+        """Acknowledge a previously polled record.
+
+        Removes the pending entry and advances the consumer's
+        processed timestamp. Only call after successfully processing
+        a record returned by poll().
+
+        Args:
+            timestamp: The timestamp from the poll() return value.
+
+        Raises:
+            TmslConsumerGroupNotFoundError: Consumer group not found.
+        """
+```
+
+**Rust backing**: `PyDatasetQueue` wraps `timslite::DatasetQueue` (Clone-safe, all fields Arc). `PyDatasetQueueConsumer` wraps `timslite::DatasetQueueConsumer`. 
+
+**Store integration**: `PyStore.open_queue(dataset_id)` looks up the `Arc<Mutex<DataSet>>` from its internal dataset registry by ID, then calls `DataSet::open_queue()` and constructs `DatasetQueue` from the resulting components.
+
+**Lock hierarchy**: Store → Dataset → QueueInner → ConsumerStateFile → Condvar.
 
 ---
 
