@@ -472,11 +472,22 @@ Phase 27 (Queue 模块)
 
 ## 27.13 验收总览
 
-- [ ] 所有子阶段任务完成
-- [ ] `cargo build` 编译通过
-- [ ] `cargo clippy --all-targets -- -D warnings` 无警告
-- [ ] `cargo fmt -- --check` 格式正确
-- [ ] 所有单元测试通过
-- [ ] 所有集成测试通过
-- [ ] 设计文档更新完成
-- [ ] plan.md 更新完成
+- [x] 所有子阶段任务完成
+- [x] `cargo build` 编译通过
+- [x] `cargo clippy --all-targets -- -D warnings` 无警告
+- [x] `cargo fmt -- --check` 格式正确
+- [x] 所有单元测试通过 (27 个 queue 单元测试)
+- [x] 所有集成测试通过 (15 个 queue 集成测试)
+- [x] Python 功能测试通过 (14 个 Python queue 测试)
+- [x] 设计文档更新完成
+- [x] plan.md 更新完成
+
+### 测试统计
+
+| 测试层 | 测试数量 | 状态 |
+|--------|----------|------|
+| Rust 单元测试 (src/queue/mod.rs #[cfg(test)]) | 27 | ✅ |
+| Rust 集成测试 (tests/integration_test.rs t27_*) | 15 | ✅ |
+| Python 测试 (wrapper/python/tests/test_queue.py) | 14 | ✅ |
+| 主 crate 总测试数 | 244 (200 lib + 44 integration) | ✅ |
+| Python 总测试数 | 56 (42 existing + 14 new) | ✅ |

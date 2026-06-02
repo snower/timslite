@@ -50,6 +50,15 @@ impl PyDatasetQueue {
     fn close(&self) -> PyResult<()> {
         wrap(self.inner.close())
     }
+
+    /// Drop (close and remove) a consumer group.
+    ///
+    /// The consumer group's state file is synced and deleted.
+    /// Subsequent calls to open_consumer with the same group name
+    /// will create a fresh group.
+    fn drop_consumer(&self, group_name: &str) -> PyResult<()> {
+        wrap(self.inner.drop_consumer(group_name))
+    }
 }
 
 impl PyDatasetQueue {

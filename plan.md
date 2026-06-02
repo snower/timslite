@@ -35,7 +35,7 @@
 | 24 | 连续索引稀疏 filler 分段 | ✅ 完成 | [phase-24-sparse-continuous-index.md](docs/plan/phase-24-sparse-continuous-index.md) |
 | 25 | Header 可变长度 (P0-3 修复) | ✅ 完成 | [phase-25-header-variable-length.md](docs/plan/phase-25-header-variable-length.md) |
 | 26 | GitHub Actions CI/CD | ✅ 完成 | [phase-26-github-actions-ci.md](docs/plan/phase-26-github-actions-ci.md) |
-| 27 | Queue 模块 (DatasetQueue + Consumer) | ✅ 完成 | [phase-27-queue-module.md](docs/plan/phase-27-queue-module.md) |
+| 27 | Queue 模块 (DatasetQueue + Consumer) | ✅ 完成 (含完整测试) | [phase-27-queue-module.md](docs/plan/phase-27-queue-module.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---

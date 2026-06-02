@@ -23,8 +23,8 @@
 **验证结果**:
 - ✅ `cargo clippy -- -D warnings` — wrapper crate 无警告
 - ✅ `cargo clippy -- -D warnings` — 主 crate 无警告
-- ✅ `pytest tests/ -v` — **42 tests passed**, 0 failed
-- ✅ `cargo test -- --test-threads=1` — 主 crate 173+29 tests passed
+- ✅ `pytest tests/ -v` — **56 tests passed** (42 existing + 14 queue), 0 failed
+- ✅ `cargo test -- --test-threads=1` — 主 crate 244 tests passed (200 lib + 44 integration)
 - ✅ `maturin develop --release` — 编译并安装成功 (CPython 3.13)
 
 ---

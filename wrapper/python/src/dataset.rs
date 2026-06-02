@@ -131,6 +131,12 @@ impl PyDataset {
         &self.base_dir
     }
 
+    /// Internal dataset ID (used for queue operations).
+    #[getter]
+    fn id(&self) -> u64 {
+        self.id
+    }
+
     /// Latest successfully written timestamp (0 if the dataset is empty).
     #[getter]
     fn latest_timestamp(&self) -> i64 {

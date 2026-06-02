@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -110,7 +110,12 @@ impl ConsumerStateFile {
             fs::create_dir_all(parent)?;
         }
 
-        let file = File::create(&path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)?;
         file.set_len(STATE_FILE_SIZE as u64)?;
 
         let mut mmap = unsafe { MmapMut::map_mut(&file)? };
@@ -805,4 +810,509 @@ pub(crate) fn flush_queue_state_files(inner: &Arc<Mutex<QueueInner>>) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_queue_dir() -> PathBuf {
+        let d = std::env::temp_dir().join("timslite_queue_tests");
+        fs::create_dir_all(&d).unwrap();
+        d.join(format!(
+            "test_{:?}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    fn cleanup(dir: &Path) {
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    // ─── PendingEntry ────────────────────────────────────────────────────
+
+    #[test]
+    fn pending_entry_round_trip() {
+        let entry = PendingEntry {
+            timestamp: 1700000000,
+            start_time: 1700000005,
+            status: PENDING_STATUS_UNACKED,
+        };
+        let mut buf = [0u8; PENDING_ENTRY_SIZE];
+        entry.serialize_to(&mut buf);
+        let restored = PendingEntry::deserialize_from(&buf);
+        assert_eq!(restored.timestamp, entry.timestamp);
+        assert_eq!(restored.start_time, entry.start_time);
+        assert_eq!(restored.status, entry.status);
+    }
+
+    #[test]
+    fn pending_entry_acked_status() {
+        let entry = PendingEntry {
+            timestamp: -42,
+            start_time: 0,
+            status: PENDING_STATUS_ACKED,
+        };
+        let mut buf = [0u8; PENDING_ENTRY_SIZE];
+        entry.serialize_to(&mut buf);
+        let restored = PendingEntry::deserialize_from(&buf);
+        assert_eq!(restored.timestamp, -42);
+        assert_eq!(restored.status, PENDING_STATUS_ACKED);
+    }
+
+    // ─── ConsumerStateFile: create / open ─────────────────────────────────
+
+    #[test]
+    fn csf_create_and_reopen() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let sf = ConsumerStateFile::open_or_create(path.clone(), 42).unwrap();
+        assert_eq!(sf.processed_ts(), 42);
+        assert_eq!(sf.pending_count(), 0);
+        drop(sf);
+
+        let sf2 = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        assert_eq!(sf2.processed_ts(), 42);
+        assert_eq!(sf2.pending_count(), 0);
+        drop(sf2);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_create_parent_dirs() {
+        let dir = temp_queue_dir();
+        let path = dir.join("sub").join("deep").join("group1");
+        let sf = ConsumerStateFile::open_or_create(path.clone(), 0).unwrap();
+        assert!(path.exists());
+        assert_eq!(sf.processed_ts(), 0);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_file_size() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let sf = ConsumerStateFile::open_or_create(path.clone(), 0).unwrap();
+        drop(sf);
+        let meta = fs::metadata(&path).unwrap();
+        assert_eq!(meta.len() as usize, STATE_FILE_SIZE);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_open_existing_with_pending() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        {
+            let mut sf = ConsumerStateFile::open_or_create(path.clone(), 100).unwrap();
+            sf.add_pending(PendingEntry {
+                timestamp: 101,
+                start_time: 1000,
+                status: PENDING_STATUS_UNACKED,
+            })
+            .unwrap();
+            sf.add_pending(PendingEntry {
+                timestamp: 102,
+                start_time: 1001,
+                status: PENDING_STATUS_ACKED,
+            })
+            .unwrap();
+            sf.sync_to_mmap().unwrap();
+            sf.flush().unwrap();
+        }
+        let sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        assert_eq!(sf.processed_ts(), 100);
+        assert_eq!(sf.pending_count(), 2);
+        assert!(sf.find_pending(101).is_some());
+        assert!(sf.find_pending(102).is_some());
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_open_invalid_magic() {
+        let dir = temp_queue_dir();
+        let path = dir.join("bad");
+        fs::create_dir_all(&path.parent().unwrap()).unwrap();
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .unwrap();
+            file.set_len(STATE_FILE_SIZE as u64).unwrap();
+            let mut mmap = unsafe { MmapMut::map_mut(&file).unwrap() };
+            mmap[0..4].copy_from_slice(b"BAD!");
+            mmap.flush().unwrap();
+        }
+        let result = ConsumerStateFile::open_or_create(path, 0);
+        assert!(matches!(result, Err(TmslError::InvalidMagic)));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_open_invalid_version() {
+        let dir = temp_queue_dir();
+        let path = dir.join("bad");
+        fs::create_dir_all(&path.parent().unwrap()).unwrap();
+        {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(&path)
+                .unwrap();
+            file.set_len(STATE_FILE_SIZE as u64).unwrap();
+            let mut mmap = unsafe { MmapMut::map_mut(&file).unwrap() };
+            mmap[0..4].copy_from_slice(QUEUE_STATE_MAGIC);
+            mmap[4..8].copy_from_slice(&99u32.to_le_bytes());
+            mmap.flush().unwrap();
+        }
+        let result = ConsumerStateFile::open_or_create(path, 0);
+        assert!(matches!(result, Err(TmslError::InvalidVersion(v)) if v == 99));
+        cleanup(&dir);
+    }
+
+    // ─── ConsumerStateFile: add_pending / ack_pending ─────────────────────
+
+    #[test]
+    fn csf_add_pending_increments_count() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        assert_eq!(sf.pending_count(), 0);
+        sf.add_pending(PendingEntry {
+            timestamp: 1,
+            start_time: 0,
+            status: PENDING_STATUS_UNACKED,
+        })
+        .unwrap();
+        assert_eq!(sf.pending_count(), 1);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_add_pending_full() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        for i in 0..MAX_PENDING_ENTRIES {
+            sf.add_pending(PendingEntry {
+                timestamp: i as i64,
+                start_time: 0,
+                status: PENDING_STATUS_UNACKED,
+            })
+            .unwrap();
+        }
+        let result = sf.add_pending(PendingEntry {
+            timestamp: 9999,
+            start_time: 0,
+            status: PENDING_STATUS_UNACKED,
+        });
+        assert!(matches!(result, Err(TmslError::PendingFull(_))));
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_ack_pending_marks_acked() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 42,
+            start_time: 0,
+            status: PENDING_STATUS_UNACKED,
+        })
+        .unwrap();
+        sf.ack_pending(42).unwrap();
+        assert!(sf.find_pending(42).unwrap().status == PENDING_STATUS_ACKED);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_ack_nonexistent_errors() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        let result = sf.ack_pending(999);
+        assert!(result.is_err());
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    // ─── ConsumerStateFile: find helpers ──────────────────────────────────
+
+    #[test]
+    fn csf_find_first_unacked() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 10,
+            start_time: 0,
+            status: PENDING_STATUS_ACKED,
+        })
+        .unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 11,
+            start_time: 0,
+            status: PENDING_STATUS_UNACKED,
+        })
+        .unwrap();
+        let found = sf.find_first_unacked().unwrap();
+        assert_eq!(found.timestamp, 11);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_find_first_unacked_all_acked() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 10,
+            start_time: 0,
+            status: PENDING_STATUS_ACKED,
+        })
+        .unwrap();
+        assert!(sf.find_first_unacked().is_none());
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    // ─── ConsumerStateFile: cleanup_acked ─────────────────────────────────
+
+    #[test]
+    fn csf_cleanup_acked_consecutive() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 10,
+            start_time: 0,
+            status: PENDING_STATUS_ACKED,
+        })
+        .unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 11,
+            start_time: 0,
+            status: PENDING_STATUS_ACKED,
+        })
+        .unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 12,
+            start_time: 0,
+            status: PENDING_STATUS_UNACKED,
+        })
+        .unwrap();
+        let cleaned = sf.cleanup_acked();
+        assert_eq!(cleaned, 2);
+        assert_eq!(sf.pending_count(), 1);
+        assert_eq!(sf.processed_ts(), 11);
+        assert_eq!(sf.pending_entries()[0].timestamp, 12);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_cleanup_acked_empty() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        assert_eq!(sf.cleanup_acked(), 0);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_cleanup_acked_persists() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        {
+            let mut sf = ConsumerStateFile::open_or_create(path.clone(), 10).unwrap();
+            sf.add_pending(PendingEntry {
+                timestamp: 11,
+                start_time: 0,
+                status: PENDING_STATUS_UNACKED,
+            })
+            .unwrap();
+            sf.ack_pending(11).unwrap();
+            sf.cleanup_acked();
+            sf.sync_to_mmap().unwrap();
+            sf.flush().unwrap();
+        }
+        let sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        assert_eq!(sf.processed_ts(), 11);
+        assert_eq!(sf.pending_count(), 0);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    // ─── ConsumerStateFile: cleanup_timeout ───────────────────────────────
+
+    #[test]
+    fn csf_cleanup_timeout_removes_expired() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 100,
+            start_time: 1, // very old
+            status: PENDING_STATUS_UNACKED,
+        })
+        .unwrap();
+        let removed = sf.cleanup_timeout(300);
+        assert_eq!(removed, 1);
+        assert_eq!(sf.pending_count(), 0);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_cleanup_timeout_keeps_future() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        let future = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
+        sf.add_pending(PendingEntry {
+            timestamp: 100,
+            start_time: future,
+            status: PENDING_STATUS_UNACKED,
+        })
+        .unwrap();
+        let removed = sf.cleanup_timeout(300);
+        assert_eq!(removed, 0);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    // ─── ConsumerStateFile: next_poll_ts ──────────────────────────────────
+
+    #[test]
+    fn csf_next_poll_ts_positive() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let sf = ConsumerStateFile::open_or_create(path, 100).unwrap();
+        assert_eq!(sf.next_poll_ts(), 101);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_next_poll_ts_zero() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        assert_eq!(sf.next_poll_ts(), 1);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    // ─── ConsumerStateFile: sync / flush ──────────────────────────────────
+
+    #[test]
+    fn csf_sync_persists_data() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        {
+            let mut sf = ConsumerStateFile::open_or_create(path.clone(), 0).unwrap();
+            sf.add_pending(PendingEntry {
+                timestamp: 99,
+                start_time: 88,
+                status: PENDING_STATUS_UNACKED,
+            })
+            .unwrap();
+            sf.sync_to_mmap().unwrap();
+            sf.flush().unwrap();
+        }
+        let sf2 = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        assert_eq!(sf2.pending_count(), 1);
+        assert_eq!(sf2.pending_entries()[0].timestamp, 99);
+        assert_eq!(sf2.pending_entries()[0].start_time, 88);
+        drop(sf2);
+        cleanup(&dir);
+    }
+
+    // ─── ConsumerStateFile: is_in_pending / find_pending ──────────────────
+
+    #[test]
+    fn csf_is_in_pending_and_find() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 42,
+            start_time: 0,
+            status: PENDING_STATUS_UNACKED,
+        })
+        .unwrap();
+        assert!(sf.is_in_pending(42));
+        assert!(!sf.is_in_pending(99));
+        assert_eq!(sf.find_pending(42).unwrap().timestamp, 42);
+        assert!(sf.find_pending(99).is_none());
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    // ─── QueueInner ──────────────────────────────────────────────────────
+
+    #[test]
+    fn qi_new_empty() {
+        let qi = QueueInner::new();
+        assert!(!qi.is_closed());
+        assert!(qi.consumers().is_empty());
+    }
+
+    #[test]
+    fn qi_close() {
+        let qi = QueueInner::new();
+        qi.close();
+        assert!(qi.is_closed());
+    }
+
+    #[test]
+    fn qi_consumers_can_add() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        let mut qi = QueueInner::new();
+        qi.consumers_mut()
+            .insert("group1".to_string(), Arc::new(Mutex::new(sf)));
+        assert_eq!(qi.consumers().len(), 1);
+        assert!(qi.consumers().contains_key("group1"));
+        drop(qi);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn qi_multiple_groups() {
+        let dir = temp_queue_dir();
+        let sf1 = ConsumerStateFile::open_or_create(dir.join("g1"), 0).unwrap();
+        let sf2 = ConsumerStateFile::open_or_create(dir.join("g2"), 0).unwrap();
+        let mut qi = QueueInner::new();
+        qi.consumers_mut()
+            .insert("g1".to_string(), Arc::new(Mutex::new(sf1)));
+        qi.consumers_mut()
+            .insert("g2".to_string(), Arc::new(Mutex::new(sf2)));
+        assert_eq!(qi.consumers().len(), 2);
+        qi.close();
+        assert!(qi.is_closed());
+        drop(qi);
+        cleanup(&dir);
+    }
 }
