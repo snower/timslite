@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-90%20passing-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-244%20passing-brightgreen.svg)](#)
 
 ---
 
@@ -18,7 +18,9 @@
 - **显式生命周期**: `create` / `open` / `close` / `drop` 分离, 参数创建后不可变
 - **数据保留策略**: 按数据集配置 `retention_ms` 有效期, 每日定时回收过期分段, 查询自动排除过期数据
 - **C ABI FFI**: 提供完整的 `extern "C"` 接口, 可被 C/C++/Go/Python 等语言调用
+- **消息队列**: 基于持久化状态文件的 Consumer Group 队列, 支持超时重投递、多消费组独立进度
 - **后台任务**: 单线程统一循环执行定期 flush (mmap sync)、idle 检查和数据保留回收
+- **Python 绑定**: 基于 PyO3 + maturin 的完整 Python 封装, 类型安全, context manager 支持
 - **纯 Rust 依赖**: 无 C 库依赖, 跨平台编译简单
 
 ## 项目结构
@@ -34,10 +36,13 @@ timslite/
 │   ├── ffi.rs              # extern "C" FFI 接口
 │   ├── segment/            # DataSegmentSet + DataSegment (mmap 生命周期)
 │   ├── index/              # TimeIndex + IndexSegment (二分查找)
-│   ├── bg/                 # BackgroundTasks (flush + idle check)
+│   ├── bg/                 # BackgroundTasks (flush + idle check + retention)
+│   ├── queue/              # DatasetQueue + Consumer State File
 │   └── ...                 # block/cache/compress/header/meta/util
 ├── include/
 │   └── timslite.h          # C 头文件 (FFI 函数声明)
+├── wrapper/
+│   └── python/             # Python PyO3 绑定 + tests
 ├── tests/                  # 集成测试
 ├── benches/                # 性能基准测试 (待创建)
 ├── docs/
@@ -262,6 +267,55 @@ let config = StoreConfig::builder()
 
 **约束**: 回收期间打开的文件 (读索引最后一个 ts) 检查完成后立即释放, 不依赖 idle-close。
 
+## 消息队列
+
+基于数据集的持久化队列, 支持 Consumer Group 语义和超时重投递。
+
+### 核心概念
+
+| 概念 | 说明 |
+|------|------|
+| **DatasetQueue** | 绑定到一个 `(name, type)` 数据集, 按写入时间戳顺序消费 |
+| **Consumer Group** | 命名组, 组内消费者共享消费进度, 不同组独立 |
+| **Pending Entry** | 已推送给消费者但未 ACK 的条目, 超时后自动重投递 |
+| **Consumer State File** | 持久化当前组的消费进度 (processed_ts + pending entries) |
+
+### 基本流程
+
+```
+push → poll → ack        # 正常流程
+push → poll → (timeout) → poll (重新获取)   # 超时重投递
+```
+
+### Rust API
+
+```rust
+use timslite::{Store, StoreConfig};
+
+let mut store = Store::open("/data/timslite", StoreConfig::default())?;
+
+// 创建数据集
+store.create_dataset_with_config("tasks", "events", None)?;
+let h = store.open_dataset("tasks", "events")?;
+
+// 打开队列
+let q = store.open_queue(h)?;
+
+// 生产者: push
+store.queue_push(&q, b"{\"cmd\": \"process\", \"id\": 1}")?;
+
+// 消费者: poll + ack
+let c = store.open_consumer(&q, "workers")?;
+if let Some((ts, data)) = store.queue_poll(&c, Duration::from_secs(5))? {
+    println!("got: {:?}", data);
+    store.queue_ack(&c, ts)?;  // 确认消费
+}
+
+store.close()?;
+```
+
+> 打开 Consumer 的时机: Consumer 须在 push 数据**之前**打开, 因为其 `processed_ts` 初始化为 `latest_written_timestamp()`, 之后打开将跳过已有数据。
+
 ## Block 设计
 
 ### Block Layout (磁盘)
@@ -388,7 +442,7 @@ cargo build --release
 
 ```bash
 cargo test -- --test-threads=1
-# 90 tests passing (81 unit + 9 integration)
+# 244 tests passing (200 unit + 44 integration)
 ```
 
 ### Clippy
@@ -407,6 +461,7 @@ cargo fmt -- --check
 
 - **[设计文档索引](design.md)** — 14 个专题设计文档 (`docs/design/`)，覆盖架构、数据模型、FFI、并发、压缩等
 - **[开发计划](plan.md)** — 计划状态总览 + 待完成清单，详细 phase 文档在 `docs/plan/`
+- **[Python 绑定](wrapper/python/)** — PyO3 + maturin Python 封装, 含 Queue 支持
 
 ## 并发控制
 

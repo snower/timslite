@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-timslite 是一个用 Rust 编写的时序数据存储库，编译为 `cdylib` 动态库，通过 C ABI FFI 供 C/C++/Go/Python 等语言调用。核心特性：内存映射存储、Block 级聚合、延迟压缩、懒加载生命周期、时间索引。
+timslite 是一个用 Rust 编写的时序数据存储库，编译为 `cdylib` 动态库，通过 C ABI FFI 供 C/C++/Go/Python 等语言调用。核心特性：内存映射存储、Block 级聚合、延迟压缩、懒加载生命周期、时间索引、持久化消息队列、Python 绑定 (PyO3)。
 
 ## 目录结构
 
@@ -25,6 +25,8 @@ timslite/
 │   ├── ffi.rs          # extern "C" FFI 接口
 │   ├── bg/
 │   │   └── mod.rs      # BackgroundTasks 统一执行器 (flush + idle + cache + retention; 支持线程/手动双模式)
+│   ├── queue/
+│   │   └── mod.rs      # DatasetQueue + DatasetQueueConsumer + ConsumerStateFile
 │   ├── segment/
 │   │   ├── mod.rs      # DataSegmentSet (段路由 + 懒加载管理)
 │   │   └── data.rs     # DataSegment (mmap 生命周期 + Block 写入/读取)
@@ -33,6 +35,11 @@ timslite/
 │       └── segment.rs  # IndexSegment (二分查找 + 连续模式优化)
 ├── include/
 │   └── timslite.h      # C 头文件 (FFI 函数声明)
+├── wrapper/
+│   └── python/          # Python PyO3 绑定 (maturin)
+│       ├── src/         # Rust FFI 层 (dataset/queue/store/query/error)
+│       ├── python/      # Python 包 (timslite/)
+│       └── tests/       # Python 测试 (56 tests)
 ├── tests/
 │   └── integration_test.rs   # 集成测试
 ├── benches/                   # 性能基准测试 (待创建)
@@ -152,9 +159,9 @@ DataSet: Arc<Mutex<DataSet<>>>      (读写互斥, 数据集内部操作)
 ## 开发计划
 
 计划状态总览在 [`plan.md`](plan.md)，包含：
-- 已完成的 Phase (1-4, 9-11)
-- 核心完成但有待完成的 Phase (5, 6, 12)
-- 待完成的 Phase (7, 8)
+- 已完成的 Phase (1-27, 含 Queue 模块)
+- Python 绑定 (PyO3) 已完成
+- 待完成: C 链接测试 (Phase 7), 性能基准 (Phase 8)
 
 详细计划文档在 [`docs/plan/`](docs/plan/) 目录，每个 Phase 独立成文。
 
@@ -162,11 +169,12 @@ DataSet: Arc<Mutex<DataSet<>>>      (读写互斥, 数据集内部操作)
 
 | Phase | 待完成 |
 |-------|--------|
-| 5 | DataSet open/close/drop 集成测试 |
-| 6 | Store create/open/drop FFI 集成测试 |
-| 7 | FFI 接口完整实现 + C 链接测试 (全部待完成) |
-| 8 | 端到端集成测试 + 性能基准 + 内存安全验证 (全部待完成) |
-| 12 | `tmsl_dataset_create` FFI 新增参数 + lazy 相关集成测试 |
+| 7 | C 链接测试 — 独立 C 程序链接 `libtimslite` 完整流程验证 |
+| 8 | 性能基准测试 (`benches/`) — criterion 已配置, 目录已创建但无文件 |
+| 8 | 内存安全验证 — 需 Linux/Valgrind 环境, Windows 不支持 |
+
+> **注意**: 大部分 Phase (1-27) 和 Python Wrapper 已完成。`
+> `tmsl_dataset_create` 新增参数、lazy 集成测试 等已在对应 Phase (12, 15, 16) 的原计划中完成。
 
 ## 数据集目录格式
 
@@ -231,3 +239,6 @@ drop → 删除整个目录 (不可恢复)
 5. **BlockCache**: 读缓存使用 LRU + idle-close 回收, 缓存的是解压后的 Block 数据
 6. **连续索引模式**: IndexSegment 支持连续模式 (filler 哨兵 + O(1) 直接计算)
 7. **懒分配**: 段文件初始分配最小尺寸, 2 倍扩容, header 保持不变
+8. **Queue Consumer 顺序**: Consumer 必须在 push 数据前打开, 否则其 `processed_ts` 从 `latest_written_timestamp()` 初始化后将跳过已有数据
+9. **Consumer State File**: 持久化消费者组进度 (processed_ts + pending entries map), mmap 映射; Windows 下 mmap 需 `OpenOptions` 显式指定 read+write 权限
+10. **Queue ACK 超时**: pending entry 超时后重新可 poll, 由 `poll_timeout` 参数控制; 跨 poll 调用无需重新 open consumer
