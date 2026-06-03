@@ -27,6 +27,7 @@ pub struct Store {
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,
+    journal: JournalManager,        // 内置 .journal/logs 变更日志, 可配置启用/禁用
     // 内部共享的执行器 (详见 §17.9), 由 BackgroundTasks 持有
     bg_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
@@ -39,6 +40,7 @@ impl Store {
         retention_ms: u64,
     ) -> Result<DataSetHandle>;
     pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
+    pub fn open_journal_queue(&self) -> Result<DatasetQueue>;
     pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>;
     pub fn drop_dataset(&self, handle: DataSetHandle) -> Result<()>;
     pub fn close(self) -> Result<()>;
@@ -53,10 +55,10 @@ impl Store {
 
 | 操作 | 文件操作 | 目录操作 |
 |------|---------|---------|
-| `Store::open` | 扫描 `{data_dir}/*/*` 加载已有数据集 | 不创建新目录, 仅读取 |
-| `Store::create_dataset` | 写入 `meta` 文件; 写入第一个空 data segment + index segment header | 创建 `{name}/{type}/data/` + `{name}/{type}/index/` |
+| `Store::open` | 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs`, 再扫描 `{data_dir}/*/*` 加载已有普通数据集 | `.journal/logs` 是内部保留 dataset; 普通扫描跳过它 |
+| `Store::create_dataset` | 写入 `meta` 文件; 写入第一个空 data segment + index segment header; journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/data/` + `{name}/{type}/index/` |
 | `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments | 不创建新目录, 仅读取 |
-| `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树 | `remove_dir_all(base_dir)` |
+| `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树; journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
 
 ### 11.3 Dataset name/type 校验
 
@@ -70,6 +72,8 @@ impl Store {
 - `_`
 
 不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。
+
+内部保留 dataset `.journal/logs` 不适用公共命名规则。`enable_journal=true` 时, public `open_dataset(".journal", "logs")` 允许返回只读 handle, 支持 `read/query/query_iter/latest_timestamp/open_queue`; public create/write/delete/drop 仍必须拒绝 `.journal`。`enable_journal=false` 时, 所有 `.journal/logs` public open/read/query/open_queue 请求返回 `NotFound`。
 
 ### 11.4 StoreConfig: retention_check_hour
 
@@ -95,7 +99,33 @@ impl StoreConfigBuilder {
 
 详见 [后台任务 §17.8](background-and-cache.md#十七后台任务)。
 
-### 11.5 StoreConfig: enable_background_thread
+### 11.5 StoreConfig: enable_journal
+
+```rust
+pub struct StoreConfig {
+    // ... existing fields ...
+    /// 是否启用内置 journal (默认 true)
+    pub enable_journal: bool,
+}
+
+impl StoreConfigBuilder {
+    /// 设置是否启用内置 journal。
+    ///
+    /// - `true` (默认): `Store::open` 自动 open/create `.journal/logs`, 普通变更成功后同步追加 journal record
+    /// - `false`: 不创建、不打开、不追加 journal; `.journal/logs` 的 open/read/query/open_queue 均不可用
+    pub fn enable_journal(mut self, enable: bool) -> Self {
+        self.enable_journal = Some(enable);
+        self
+    }
+}
+```
+
+**默认值与兼容性**:
+- `tmsl_store_open(data_dir)` 使用默认配置, journal 默认开启。
+- 如果宿主希望完全避免 journal 写放大或不希望自动创建 `.journal/`, 必须使用 `tmsl_store_open_with_config` 并设置 `enable_journal=false`。
+- 禁用 journal 不影响普通 dataset 的 create/write/delete/drop 成功语义, 对应 journal hook 为 no-op。
+
+### 11.6 StoreConfig: enable_background_thread
 
 ```rust
 pub struct StoreConfig {
@@ -127,7 +157,7 @@ impl StoreConfigBuilder {
 - 需要禁用线程时, 调用方应使用 `tmsl_store_open_with_config(data_dir, config_ptr, ...)`
 - `tmsl_store_open_with_config` 使用版本化 `TmslStoreConfigFFI`; `config_ptr == NULL` 时等价于默认配置
 
-### 11.5 Store: 后台任务手动执行与查询
+### 11.7 Store: 后台任务手动执行与查询
 
 ```rust
 impl Store {
@@ -180,7 +210,7 @@ loop {
 ```rust
 #[repr(C)]
 pub struct TmslStoreConfigFFI {
-    pub version: u32,                    // 必须为 TMSL_STORE_CONFIG_FFI_VERSION
+    pub version: u32,                    // 必须为支持 enable_journal 的 TMSL_STORE_CONFIG_FFI_VERSION
     pub flush_interval_ms: u64,
     pub idle_timeout_ms: u64,
     pub data_segment_size: u64,
@@ -192,7 +222,11 @@ pub struct TmslStoreConfigFFI {
     pub compress_level: u8,
     pub retention_check_hour: u8,
     pub enable_background_thread: u8,    // 0=false, non-zero=true
+    pub enable_journal: u8,              // 0=false, non-zero=true
 }
+
+// enable_journal 追加后必须提升 TMSL_STORE_CONFIG_FFI_VERSION。
+// 若实现选择兼容旧版本 config, 旧版本缺失的 enable_journal 按默认 true 处理。
 
 #[repr(C)]
 pub struct TmslDatasetConfigFFI {
@@ -241,6 +275,8 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_dataset_open(store: *mut c_void,
     name: *const c_char, dataset_type: *const c_char,
     err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+// `name=".journal", dataset_type="logs"` 在 enable_journal=true 时打开只读 journal handle;
+// 该 handle 可 read/query/open_queue, 但 write/delete/drop 必须返回错误。
 #[no_mangle] pub extern "C" fn tmsl_dataset_close(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_drop(store: *mut c_void,
     name: *const c_char, dataset_type: *const c_char,

@@ -28,6 +28,7 @@
 | 15 | [查询迭代器](docs/design/query-iterator.md) | Virtual Iterator 惰性查询、HotBlockCache 读取循环级缓存、FFI 迭代器重构 | 查询性能优化 |
 | 16 | [Queue 架构与 API](docs/design/queue-overview.md) | DatasetQueue/Consumer 类型、API 设计、生命周期、并发控制、Dataset 集成 | 队列功能开发 |
 | 17 | [Queue 状态文件](docs/design/queue-state-file.md) | 消费组 4KB mmap 状态文件格式、Pending Entry 结构、Crash 恢复、同步策略 | 队列持久化/恢复 |
+| 18 | [Journal 变更日志](docs/design/journal.md) | 内置 `.journal/logs` dataset、操作日志格式、Store/DataSet hook、read/query/open_queue 实时消费、热迁移/恢复边界 | 变更日志/热迁移/恢复工具 |
 
 ---
 
@@ -46,6 +47,7 @@
 - **磁盘优化**: [懒分配与扩容](docs/design/lazy-allocation.md)
 - **连续时间索引**: [索引连续存储](docs/design/index-continuous.md) (稀疏 filler + 逻辑空洞)
 - **队列消费**: [Queue 架构与 API](docs/design/queue-overview.md) → [Queue 状态文件](docs/design/queue-state-file.md)
+- **变更日志/热迁移**: [Journal 变更日志](docs/design/journal.md) (`.journal/logs` 内置 dataset)
 
 ### 按模块查找
 | 模块 | 对应文档 |
@@ -61,6 +63,7 @@
 | `BackgroundTasks` | [后台任务与缓存](docs/design/background-and-cache.md#十七后台任务) |
 | `DatasetQueue` + `DatasetQueueConsumer` | [Queue 架构与 API](docs/design/queue-overview.md) |
 | `ConsumerStateFile` + `PendingEntry` | [Queue 状态文件](docs/design/queue-state-file.md) |
+| `JournalManager` | [Journal 变更日志](docs/design/journal.md) |
 
 ---
 

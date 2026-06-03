@@ -307,6 +307,7 @@ pub struct StoreConfig {
     pub compress_level: u8,          // 新建 DataSet 默认 6
     pub cache_max_memory: usize,     // 读缓存池上限 (字节, 0=禁用, 默认 256MB)
     pub cache_idle_timeout: Duration, // 缓存块空闲超时 (默认 30 分钟)
+    pub enable_journal: bool,        // 是否启用内置 .journal/logs (默认 true)
 }
 
 impl Default for StoreConfig {
@@ -321,6 +322,7 @@ impl Default for StoreConfig {
             compress_level: 6,
             cache_max_memory: 256 * 1024 * 1024,         // 256MB
             cache_idle_timeout: Duration::from_secs(1800), // 30 分钟
+            enable_journal: true,
         }
     }
 }

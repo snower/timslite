@@ -1729,3 +1729,234 @@ fn t27_6_2_store_close_queue() {
     assert!(store.queue_push(&q, b"y").is_err());
     store.close().unwrap();
 }
+
+#[test]
+fn t27_2_3_open_consumer_creates_group() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "new_group").unwrap();
+    store.queue_push(&q, b"test").unwrap();
+    let result = store.queue_poll(&c, Duration::from_millis(100)).unwrap();
+    assert!(result.is_some());
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_3_5_open_consumer_on_closed_queue_errors() {
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    store.close_queue(h).unwrap();
+    let err = store.open_consumer(&q, "g1").unwrap_err();
+    assert!(matches!(err, TmslError::QueueClosed(_)));
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_3_6_drop_nonexistent_consumer_group_errors() {
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let err = store.drop_consumer(&q, "no_such_group").unwrap_err();
+    assert!(matches!(err, TmslError::ConsumerGroupNotFound(_)));
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_4_3_acked_progress_persists() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+    for i in 0..3 {
+        let ts = store
+            .queue_push(&q, format!("item{}", i).as_bytes())
+            .unwrap();
+        store.queue_poll(&c, Duration::from_millis(100)).unwrap().unwrap();
+        store.queue_ack(&c, ts).unwrap();
+    }
+    store.close().unwrap();
+    let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h2 = store2.open_dataset("t27q", "events").unwrap();
+    let q2 = store2.open_queue(h2).unwrap();
+    let c2 = store2.open_consumer(&q2, "g1").unwrap();
+    assert!(store2
+        .queue_poll(&c2, Duration::from_millis(50))
+        .unwrap()
+        .is_none());
+    store2.close().unwrap();
+}
+
+#[test]
+fn t27_5_2_multiple_producers() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = Arc::new(store.open_queue(h).unwrap());
+    let qc = store.open_consumer(&q, "g1").unwrap();
+    let q1 = q.clone();
+    let q2 = q.clone();
+    let q3 = q.clone();
+    let cc = qc.clone();
+    let barrier = Arc::new(Barrier::new(5));
+    let mut prod_handles = Vec::new();
+    for (i, q_ref) in [q1, q2, q3].into_iter().enumerate() {
+        let b = Arc::clone(&barrier);
+        prod_handles.push(thread::spawn(move || {
+            b.wait();
+            for j in 0..7 {
+                q_ref.push(format!("p{}_{}", i, j).as_bytes()).unwrap();
+            }
+        }));
+    }
+    let consumer = thread::spawn(move || {
+        barrier.wait();
+        thread::sleep(Duration::from_millis(20));
+        let mut count = 0;
+        for _ in 0..21 {
+            match cc.poll(Duration::from_secs(10)) {
+                Ok(Some((ts, _data))) => {
+                    cc.ack(ts).unwrap();
+                    count += 1;
+                }
+                Ok(None) => panic!("timeout"),
+                Err(e) => panic!("err: {:?}", e),
+            }
+        }
+        assert_eq!(count, 21);
+    });
+    for ph in prod_handles {
+        ph.join().unwrap();
+    }
+    consumer.join().unwrap();
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_5_3_multiple_consumers_different_groups() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    for i in 0..5 {
+        store.queue_push(&q, format!("msg_{}", i).as_bytes()).unwrap();
+    }
+    let ca = store.open_consumer(&q, "group_a").unwrap();
+    let cb = store.open_consumer(&q, "group_b").unwrap();
+    let ca_clone = ca.clone();
+    let cb_clone = cb.clone();
+    let barrier = Arc::new(Barrier::new(3));
+    let b1 = Arc::clone(&barrier);
+    let b2 = Arc::clone(&barrier);
+    let t1 = thread::spawn(move || {
+        b1.wait();
+        let mut count = 0;
+        for _ in 0..5 {
+            let (ts, _) = ca_clone.poll(Duration::from_secs(5)).unwrap().unwrap();
+            ca_clone.ack(ts).unwrap();
+            count += 1;
+        }
+        count
+    });
+    let t2 = thread::spawn(move || {
+        b2.wait();
+        let mut count = 0;
+        for _ in 0..5 {
+            let (ts, _) = cb_clone.poll(Duration::from_secs(5)).unwrap().unwrap();
+            cb_clone.ack(ts).unwrap();
+            count += 1;
+        }
+        count
+    });
+    assert_eq!(t1.join().unwrap(), 5);
+    assert_eq!(t2.join().unwrap(), 5);
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_6_1_store_open_queue_valid() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    store.queue_push(&q, b"data").unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+    assert!(store
+        .queue_poll(&c, Duration::from_millis(100))
+        .unwrap()
+        .is_some());
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_6_4_store_open_consumer_and_drop_consumer() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+    store.queue_push(&q, b"test").unwrap();
+    assert!(store
+        .queue_poll(&c, Duration::from_millis(100))
+        .unwrap()
+        .is_some());
+    store.drop_consumer(&q, "g1").unwrap();
+    let err = store.drop_consumer(&q, "g1").unwrap_err();
+    assert!(matches!(err, TmslError::ConsumerGroupNotFound(_)));
+    store.close().unwrap();
+}

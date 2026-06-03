@@ -191,6 +191,8 @@ DataSet::write(timestamp, data):
     └─ latest_written_timestamp = timestamp (仅正序写入时更新)
 ```
 
+> **Journal hook**: 通过 Store 门面执行的成功写入需要返回最终 `IndexEntry(timestamp, block_offset, in_block_offset)` 给 `JournalManager`, 由 Store 在写入成功后向内置 `.journal/logs` 写入 `0x11` 日志。直接绕过 Store 调用 `DataSet::write` 的内部路径默认不具备 journal 语义, 除非显式传入 journal sink。
+
 **纠正写入**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
 
 **乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
@@ -328,6 +330,8 @@ DataSet::delete(timestamp):
     │
     └─ return Ok(())
 ```
+
+> **Journal hook**: 通过 Store 门面执行的成功删除需要返回删除前的真实 `IndexEntry` 给 `JournalManager`, 由 Store 在删除成功后向 `.journal/logs` 写入 `0x12` 日志。不存在、已删除 filler 或过期不可操作的删除失败路径不写 journal。
 
 > **查询影响**: 删除后, 查询路径自动跳过 `block_offset == 0xFFFFFFFFFFFFFFFF` 的哨兵条目, 被删除的记录不会出现在查询结果中。无需修改查询逻辑。
 >

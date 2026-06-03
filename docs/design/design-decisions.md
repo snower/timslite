@@ -43,6 +43,7 @@
 | **缓存禁用** | `cache_max_memory=0` | 零额外开销 |
 | **Filler 哨兵** | `block_offset=0xFFFFFFFFFFFFFFFF` | `block_offset` 语义为数据区逻辑全局 offset, 合法全局偏移远低于该值, 零成本识别 |
 | **目录名规则** | `^[0-9A-Za-z_-]+$` | name/type 直接作为目录名, 禁止转义和路径穿越字符 |
+| **Journal** | 默认启用的内置 `.journal/logs` dataset 记录变更日志 | 复用现有 dataset/queue 存储能力; 可 read/query/open_queue 实时消费; 可通过 `enable_journal=false` 关闭; 不升级为事务 WAL |
 | **retention 调度时区** | UTC hour | 与 UNIX epoch 日边界计算一致, 避免本地时区/DST 依赖 |
 | **compaction** | 当前不支持 | `invalid_record_count` 只统计无效记录规模, 物理回收仅由 retention 整段删除 |
 

@@ -29,6 +29,8 @@
 
 每个消费组对应一个独立的 4KB 状态文件, 存储已处理时间戳和处理中列表。
 
+`.journal/logs` 也可打开 queue, 用于实时 poll 消费 journal record。该 queue 是只读消费队列: producer 只能是 `JournalManager.append_*`, 外部 `queue.push()` 必须返回错误, 但 `open_consumer/poll/ack/drop_consumer` 语义与普通 dataset queue 相同。
+
 ### 28.3 核心类型
 
 ```rust
@@ -107,7 +109,7 @@ impl DataSet {
 |------|------|--------|
 | `open_consumer(group_name)` | 打开消费组 (不存在则创建状态文件) | `DatasetQueueConsumer` |
 | `drop_consumer(group_name)` | 删除消费组 (删除状态文件) | `Result<()>` |
-| `push(data)` | 推送数据 (自动分配 timestamp = latest+1) | `i64` (分配的 timestamp) |
+| `push(data)` | 推送数据 (自动分配 timestamp = latest+1); journal queue 禁止外部 push | `i64` (分配的 timestamp) |
 | `close()` | 关闭队列 (自动 drop 所有 consumers) | `Result<()>` |
 
 #### DatasetQueueConsumer 方法
@@ -320,6 +322,8 @@ pub fn push(&self, data: &[u8]) -> Result<i64> {
 ```
 
 **串行化保证**: Dataset 的 `Mutex<DataSet>` 已保证所有 write 操作串行, 不需要额外 queue_mutex。
+
+**Journal queue 特例**: 如果 queue 绑定的是 `.journal/logs`, `push(data)` 必须拒绝外部调用。journal record 只能由 `JournalManager.append_*` 写入; append 成功后仍复用 queue notify 机制唤醒等待 consumer。
 
 ### 30.3 Poll 流程
 

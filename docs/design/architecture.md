@@ -10,14 +10,16 @@ libtimslite (CDylib)
 │
 ├── Store              (门面 - data_dir 级别)
 │   │
-│   └── DataSet        (数据集 - (name, type) 级别)
-│       │
-│       ├───DataSegment       (单个数据文件, Mmap-backed, 含多个 Block)
-│       ├───DataSegmentSet    (同类型数据文件集合)
-│       │
-│       └───TimeIndex         (当前数据集的专属时间索引)
-│           │
-│           └───IndexSegment  (单个索引文件, Mmap-backed)
+│   ├── DataSet        (数据集 - (name, type) 级别)
+│   │   │
+│   │   ├───DataSegment       (单个数据文件, Mmap-backed, 含多个 Block)
+│   │   ├───DataSegmentSet    (同类型数据文件集合)
+│   │   │
+│   │   └───TimeIndex         (当前数据集的专属时间索引)
+│   │       │
+│   │       └───IndexSegment  (单个索引文件, Mmap-backed)
+│   │
+│   └── JournalManager (内置 .journal/logs 变更日志)
 └── FFI                (extern "C" API)
 ```
 
@@ -45,11 +47,17 @@ libtimslite (CDylib)
 │       └── index/
 │           └── 0000000000001700000000
 │
-└── {dataset_name_2}/
-    └── {dataset_type_C}/
+├── {dataset_name_2}/
+│   └── {dataset_type_C}/
+│       ├── meta
+│       ├── data/
+│       │   └── 00000000000000000000
+│       └── index/
+│
+└── .journal/                                           # 内部保留 dataset name, public API 只读受控访问
+    └── logs/                                           # journal dataset type
         ├── meta
         ├── data/
-        │   └── 00000000000000000000
         └── index/
 ```
 
@@ -62,6 +70,8 @@ libtimslite (CDylib)
 | 索引段(IndexSegment) | `{name}/{type}/index/` | 20位十进制, 起始秒级timestamp, 零填充 | `0000000000001700000000` |
 
 `dataset_name` 和 `dataset_type` 是目录名, 不做转义或编码。合法值必须非空且整体匹配 `^[0-9A-Za-z_-]+$`: 只允许数字、大小写英文字母、`-`、`_`。任何路径分隔符、`.`、空格、控制字符、非 ASCII 字符、Windows 保留路径写法等都不允许。`Store::create_dataset*` / `open_dataset` / `drop_dataset_by_name` 必须在拼接路径前校验; `Store::open` 扫描已有目录时只加载名称合法且包含 `meta` 的数据集目录。
+
+例外: `.journal/logs` 是 Store 内部保留 dataset。`enable_journal=true` 时 public API 可受控打开它进行 read/query/open_queue 实时消费, 但不能 create/write/delete/drop; 普通扫描路径应跳过它, 由 `JournalManager` 单独管理。
 
 ### 2.2 隔离保证
 
@@ -91,6 +101,8 @@ src/
 │   ├── mod.rs          # 查询模块导出
 │   ├── iter.rs         # QueryIterator + source cursor 惰性读取
 │   └── hot_block.rs    # 迭代器局部 hot block 结构
+├── journal/
+│   └── mod.rs          # JournalManager + journal record encoder/decoder
 ├── header.rs           # 可变长度 FileMetadata, meta/state 分离, 运行时 header_len
 ├── ffi.rs              # extern "C" (catch_unwind, opaque handles, memory mgmt)
 ├── error.rs            # TmslError enum + From impls
@@ -116,4 +128,5 @@ src/
 - [设计决策](design-decisions.md) — 关键决策 + 与 TimeStore 差异
 - [索引连续存储](index-continuous.md) — 连续模式稀疏 filler + 逻辑空洞
 - [懒分配与扩容](lazy-allocation.md) — 分段文件懒分配 + 倍率扩容
+- [Journal 变更日志](journal.md) — 内置 `.journal/logs` dataset + 操作日志格式 + queue 实时消费
 - [构建配置](cargo-and-config.md) — Cargo.toml 依赖
