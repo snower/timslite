@@ -34,6 +34,7 @@ Phase 24: 连续索引稀疏 filler 分段            ✅ (P0-2 修复)
 Phase 25: Header 可变长度                   ✅ (P0-3 修复)
 Phase 26: GitHub Actions CI/CD               ✅
 Phase 27: Queue 模块 (DatasetQueue + Consumer) ✅ 完成
+Phase 28: Journal 变更日志 (.journal/logs)   📝 计划完成 / 待实现
 ```
 
 ## 目录结构变更 (核心)
@@ -137,6 +138,9 @@ Phase 26 (GitHub Actions CI/CD: Rust 全层测试 + Python 3.9-3.13 矩阵)
           │
           ▼
 Phase 27 (Queue 模块: DatasetQueue + Consumer + 4KB 状态文件 + Condvar 通知)
+          │
+          ▼
+Phase 28 (Journal 变更日志: .journal/logs + Store hook + read/query/open_queue)
 ```
 
 ## 风险与应对
@@ -170,6 +174,10 @@ Phase 27 (Queue 模块: DatasetQueue + Consumer + 4KB 状态文件 + Condvar 通
 | timestamp=0 冲突 | index segment 命名歧义 | timestamp=0 保留为空位标记, 写入时拒绝 |
 | 超大 record 长度截断 | `u16 data_len` 无法表达 >64KB 数据 | Record header 升级为 `u32 data_len`, 普通聚合 Block 保持 64KB 上限 |
 | Header 扩展读歪数据区 | TLV/state 增长但数据/索引区仍按 116/52 固定起点访问 | Phase 25 改为运行时计算 `header_len`, 所有 Block/Entry 物理定位基于动态 header |
+| Journal 写入放大 | create/drop/write/delete 会额外写 `.journal/logs` | `StoreConfig.enable_journal=false` 可关闭; 默认开启以支持热迁移/恢复工具 |
+| Journal 被误认为事务 WAL | 调用方可能高估 crash 恢复保证 | Phase 28 明确 journal 是 change log, 主操作与 journal append 不回滚、不保证同步落盘 |
+| Journal 递归写入 | `.journal/logs` 自身操作再次写 journal 导致无限递归 | JournalManager 内部路径不走 public hook, 普通扫描跳过 `.journal` |
+| Journal queue 被外部伪造 | 热迁移/恢复消费者读到非系统日志 | `.journal/logs` queue 禁止外部 `push`, producer 仅允许 `JournalManager.append_*` |
 
 ## 开发规范
 
@@ -204,3 +212,7 @@ Phase 27 (Queue 模块: DatasetQueue + Consumer + 4KB 状态文件 + Condvar 通
 | [phase-13-query-iterator.md](phase-13-query-iterator.md) | 查询迭代器 + HotBlockCache | ☐ |
 | [phase-23-record-length-u32.md](phase-23-record-length-u32.md) | Record 长度编码升级为 u32 | ✅ |
 | [phase-24-sparse-continuous-index.md](phase-24-sparse-continuous-index.md) | 连续索引稀疏 filler 分段 | ✅ |
+| [phase-25-header-variable-length.md](phase-25-header-variable-length.md) | Header 可变长度 | ✅ |
+| [phase-26-github-actions-ci.md](phase-26-github-actions-ci.md) | GitHub Actions CI/CD | ✅ |
+| [phase-27-queue-module.md](phase-27-queue-module.md) | Queue 模块 | ✅ |
+| [phase-28-journal.md](phase-28-journal.md) | Journal 变更日志 | 📝 |
