@@ -19,6 +19,10 @@
 
 **Block 大小限制**: 普通聚合 Block 的 payload 最大 64KB (65536 字节)。如果单条 record 的编码后大小超过 64KB, 则该 record **独占一个 Block**, Block 实际大小可超过 64KB。
 
+**单条 Record 上限**: `write` 与 `append` 都必须拒绝纯数据长度超过 4MiB 的单条 record。普通写入校验 `data.len() <= 4MiB`; append 校验追加后的逻辑 record 数据长度 `old_data_len + append_len <= 4MiB`。该限制独立于 `data_len:u32` 的磁盘编码上限, 是当前实现的资源保护边界。
+
+**Append 迁移阈值**: `DataSet::append` 修改最新 record 时, 如果追加后的 record 编码大小 (`12 + data_len`) 超过 `BLOCK_MAX_SIZE * 70 / 100`, 则不再把该 record 留在普通聚合 block 中, 而是把追加后的整条 record 迁移为独占 block, 并更新该 timestamp 的索引条目。该阈值按 block payload 字节计算, 当前固定为 `45875` 字节。
+
 **纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时触发纠正写入。该最大已写 timestamp 对应的记录只有在仍位于 **最新数据段最后一个 pending raw block (`flags=0`)** 的最末位置时, 才可通过 mmap 直接修改该 record 的 data 字节, **支持改变 data 长度** (增长或缩小)。索引条目保持不变 (`block_offset`/`in_block_offset` 不变, 其中 `block_offset` 是数据区逻辑全局偏移, 不含 header)。修改时 delta = new_data.len() - old_data_len, 需同步更新 5 个字段: block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position / total_uncompressed_size / wrote_position。**回退行为**: 若目标 block 已经 `SEALED|COMPRESSED` 或不是可原地修改位置, 则自动回退为更新写入: 数据追加到最新数据段、更新索引值, 同时旧数据所在段的 `invalid_record_count` 加一, 并 invalidate 旧索引对应的全局缓存 key。compressed block 一旦写入后不允许再被修改, 这是全局 BlockCache 只缓存 compressed block 解压结果的前提。
 
 ### 3.3 Block Layout (磁盘上的 Block 结构)
@@ -72,6 +76,7 @@ Offset  Size  Field                    Description
 - Record header 固定 12 字节 (`data_len:4 + timestamp:8`)
 - 记录之间紧密排列, 无额外分隔符
 - 遍历方式: offset += 4 + 8 + data_len
+- 写入路径必须保证单条 record 的纯数据长度不超过 4MiB; append 路径增长 `data_len` 时同样受该限制约束
 
 ### 3.4 IndexEntry (索引条目)
 
@@ -118,7 +123,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 |----------|----------|------|
 | 时间戳、时间范围、创建时间 | `i64 LE` | `timestamp`, `min_timestamp`, `max_timestamp`, `created_at/create_time`。允许业务使用负 timestamp; 空数据段使用 `i64::MAX` / `i64::MIN` 作为 sentinel。 |
 | segment header 的 `file_offset` | `i64 LE` | 复用字段: data segment 中必须为非负数据区逻辑起点; index segment 中表示 `start_timestamp`, 因此保持 signed。 |
-| 数据长度、payload 长度、压缩前长度 | `u32 LE` | `data_len`, `block_payload_size`, `uncompressed_size`, `file_size`。写入时必须拒绝超过 `u32::MAX` 的值; 读取时必须校验不会越过 block/file 边界。 |
+| 数据长度、payload 长度、压缩前长度 | `u32 LE` | `data_len`, `block_payload_size`, `uncompressed_size`, `file_size`。写入时必须拒绝超过 `u32::MAX` 的值; 当前 API 还必须拒绝纯数据长度超过 4MiB 的单条 record; 读取时必须校验不会越过 block/file 边界。 |
 | 逻辑 offset、写入位置、计数、retention、segment size | `u64 LE` | `block_offset`, `wrote_position`, `record_count`, `pending_*`, `invalid_record_count`, `*_segment_size`, `retention_ms`。所有加法/乘法必须使用 checked/saturating 语义并校验上界。 |
 | block 内 offset、flags、version、length | `u16 LE` | `in_block_offset`, `flags`, `version`, `meta_length`, `state_length`, TLV length。`0xFFFF` 是 `in_block_offset` filler sentinel, 真实 record offset 不得使用该值。 |
 | type、fileType、compress_level、boolean flag | `u8` | 单字节字段不涉及端序。 |

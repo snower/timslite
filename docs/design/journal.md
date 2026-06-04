@@ -6,7 +6,7 @@
 
 Journal 用于记录 Store/DataSet 的关键变更操作, 后续可服务于数据热迁移、增量同步、审计和故障恢复工具。Journal 自身不引入 WAL、二阶段提交或跨 dataset 事务, 不改变 timslite 当前“高性能、允许最近写入丢失”的 crash 模型。
 
-Journal v1 记录四类事件:
+Journal v1 记录五类事件:
 
 | 日志类型 | 含义 | 触发操作 |
 |----------|------|----------|
@@ -14,6 +14,7 @@ Journal v1 记录四类事件:
 | `0x02` | 删除 dataset | `Store::drop_dataset*` 成功删除普通 dataset |
 | `0x11` | dataset 写入数据 | `DataSet::write*` 成功发布/更新 index entry |
 | `0x12` | dataset 删除数据 | `DataSet::delete*` 成功把 index entry 标记为 filler |
+| `0x13` | dataset append 数据 | `DataSet::append*` 成功创建、追加或迁移 record |
 
 Journal 只记录普通用户 dataset 的操作。内部 journal dataset 自身的创建、打开、写入、flush、retention 和删除流程不得再次写 journal, 避免递归。
 
@@ -92,7 +93,7 @@ journal_ts = last + 1
 - 不读取当前时间, 不使用 wall-clock/UNIX timestamp, 不受时钟回拨影响。
 - 如果 `last == i64::MAX`, 返回 `InvalidData`。
 
-业务数据 timestamp 只出现在 `0x11/0x12` 的索引信息 TLV 中。
+业务数据 timestamp 只出现在 `0x11/0x12/0x13` 的索引信息 TLV 中。
 
 ### 25.4 日志二进制格式
 
@@ -129,6 +130,7 @@ TLV entry:
 | `0x01` | dataset name | UTF-8 bytes | 全部 |
 | `0x02` | dataset type | UTF-8 bytes | 全部 |
 | `0x03` | metadata / index info | 变体 | 全部 |
+| `0x04` | append info | 8 bytes | `0x13` |
 
 #### 25.5.1 `0x01` 创建 dataset
 
@@ -222,6 +224,45 @@ Offset  Size  Type       Field
 - 如果目标不存在、已是 filler 或过期不可操作, 不写 journal。
 - 删除日志记录旧位置, 便于迁移端或恢复工具理解“哪条已发布 record 被删除”。删除后业务 index 中会被覆盖为 filler sentinel, 但 journal 不记录 sentinel 作为 `index_info`。
 
+#### 25.5.5 `0x13` dataset append 数据
+
+```text
+log_type = 0x13
+TLV:
+  0x01 name         : UTF-8 bytes
+  0x02 type         : UTF-8 bytes
+  0x03 index_info   : 18 bytes
+  0x04 append_info  : 8 bytes
+```
+
+`index_info` 固定 18 字节, 使用 append 成功后的最终 index entry:
+
+```text
+Offset  Size  Type       Field
+0       8     i64 LE     timestamp
+8       8     u64 LE     block_offset
+16      2     u16 LE     in_block_offset
+```
+
+`append_info` 固定 8 字节:
+
+```text
+Offset  Size  Type       Field
+0       4     u32 LE     data_offset
+4       4     u32 LE     data_len
+```
+
+记录语义:
+
+- `timestamp` 是业务数据 timestamp。
+- `block_offset` / `in_block_offset` 指向 append 完成后可读取到完整逻辑 record 的最终位置。
+- `data_offset` 是本次 append 数据在逻辑 record data 内的起始偏移。
+- `data_len` 是本次 append 写入的数据长度, 不是追加后的完整 record 长度。
+- 当 append 因 `timestamp > latest_written_timestamp` 创建新 record 时, `data_offset=0`, `data_len=input.len()`, `index_info` 指向新 record。
+- 当 append 原地追加到最新末尾 record 时, `data_offset=old_data_len`, `data_len=input.len()`, `index_info` 保持原 record 起始位置。
+- 当 append 触发独占 block 迁移时, `data_offset=old_data_len`, `data_len=input.len()`, `index_info` 指向迁移后的新 block。
+- append 失败不写 `0x13` journal record。
+
 ### 25.6 Store/DataSet 写入流程集成
 
 #### Store::open
@@ -284,6 +325,24 @@ journal.append_data_write(dataset_key, outcome.index_entry)
 
 如果未来仍允许直接持有 `DataSet` 调用 `write`, 则直接调用路径默认不写 journal; 需要通过 Store 门面或传入 `JournalSink` 才能获得完整 journal 语义。
 
+#### DataSet::append
+
+```text
+Store::append_dataset(handle, timestamp, data):
+  1. 获取目标 DataSet mutex
+  2. dataset.append_with_cache(timestamp, data, Some(&block_cache))
+       -> AppendOutcome { index_entry, data_offset, data_len, migrated }
+  3. 释放或保持目标锁后, 按既有锁顺序追加 journal
+```
+
+Store/FFI 层在 append 成功后调用:
+
+```text
+journal.append_data_append(dataset_key, outcome.index_entry, outcome.data_offset, outcome.data_len)
+```
+
+当 `enable_journal=false` 时, 该 hook 是 no-op, 不影响主 append 返回结果。`timestamp > latest_written_timestamp` 由 append API 创建新 record 时仍写 `0x13`, 不写 `0x11`, 因为外部语义是 append。
+
 #### DataSet::delete
 
 删除成功时需要返回旧真实 `IndexEntry`:
@@ -321,6 +380,7 @@ impl JournalManager {
     pub(crate) fn append_drop(&self, key: &DataSetKey, meta_values: &[u8]) -> Result<Option<i64>>;
     pub(crate) fn append_data_write(&self, key: &DataSetKey, entry: &IndexEntry) -> Result<Option<i64>>;
     pub(crate) fn append_data_delete(&self, key: &DataSetKey, old_entry: &IndexEntry) -> Result<Option<i64>>;
+    pub(crate) fn append_data_append(&self, key: &DataSetKey, entry: &IndexEntry, data_offset: u32, data_len: u32) -> Result<Option<i64>>;
     pub(crate) fn query_since(&self, after_journal_ts: i64) -> Result<QueryIterator<'_>>;
 }
 ```
@@ -460,6 +520,6 @@ src/
 - metadata snapshot 提取。
 - journal sequence timestamp 生成。
 - `JournalManager` 内部 dataset 生命周期管理。
-- Store/DataSet 操作 hook 的窄接口。
+- Store/DataSet 操作 hook 的窄接口, 包括 create/drop/write/delete/append。
 
 Journal 不应放入 `DataSet` 本体以避免普通 dataset 依赖 Store; DataSet 可返回 `WriteOutcome/DeleteOutcome`, Store 层负责调用 JournalManager。

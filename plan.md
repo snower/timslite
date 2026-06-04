@@ -37,6 +37,7 @@
 | 26 | GitHub Actions CI/CD | ✅ 完成 | [phase-26-github-actions-ci.md](docs/plan/phase-26-github-actions-ci.md) |
 | 27 | Queue 模块 (DatasetQueue + Consumer) | ✅ 完成 (含完整测试) | [phase-27-queue-module.md](docs/plan/phase-27-queue-module.md) |
 | 28 | Journal 变更日志 (`.journal/logs`) | ✅ 完成 | [phase-28-journal.md](docs/plan/phase-28-journal.md) |
+| 29 | Dataset Append API + Journal `0x13` | 📋 设计完成, 待实现 | [phase-29-dataset-append.md](docs/plan/phase-29-dataset-append.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -57,6 +58,12 @@
 - [x] 操作 hook — create/drop/write/delete 成功后追加 `0x01/0x02/0x11/0x12`
 - [x] 查询与实时消费 — read/query/query_iter/latest/open_queue + queue poll/ack
 - [x] 验证 — journal/queue/ffi 集成测试、fmt、clippy、全量 cargo test
+
+### Phase 29: Dataset Append API + Journal `0x13`
+- [x] 设计文档 — append 行为、4MiB 上限、70% 迁移阈值、journal `0x13`
+- [ ] 测试 — append 行为矩阵、迁移、错误路径、journal 编解码与 Store/FFI hook
+- [ ] 实现 — DataSegment tail append、DataSet append、Store/FFI API、journal `0x13`
+- [ ] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`
 
 ---
 
@@ -95,7 +102,8 @@ docs/plan/
 ├── phase-25-header-variable-length.md ← Phase 25: Header 可变长度 (P0-3)
 ├── phase-26-github-actions-ci.md    ← Phase 26: GitHub Actions CI/CD
 ├── phase-27-queue-module.md         ← Phase 27: Queue 模块 (DatasetQueue + Consumer)
-└── phase-28-journal.md              ← Phase 28: Journal 变更日志 (.journal/logs)
+├── phase-28-journal.md              ← Phase 28: Journal 变更日志 (.journal/logs)
+└── phase-29-dataset-append.md       ← Phase 29: Dataset Append API + Journal 0x13
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

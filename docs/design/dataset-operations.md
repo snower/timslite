@@ -54,6 +54,10 @@ impl DataSet {
     fn delete(&mut self, timestamp: i64) -> io::Result<()>;
     fn delete_with_cache(&mut self, timestamp: i64, cache: Option<&BlockCache>) -> io::Result<()>;
 
+    /// 向记录追加数据: 不存在则按正序写入创建; 仅允许追加到最新未压缩末尾记录
+    fn append(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
+    fn append_with_cache(&mut self, timestamp: i64, data: &[u8], cache: Option<&BlockCache>) -> io::Result<()>;
+
     /// 回收超过有效期的分段文件 (需先 close)
     /// retention_ms=0 时跳过; retention_ms > 0 时计算过期阈值并删除过期分段
     fn reclaim_expired_segments(&mut self) -> io::Result<usize>;
@@ -193,6 +197,8 @@ DataSet::write(timestamp, data):
 
 > **Journal hook**: 通过 Store 门面执行的成功写入需要返回最终 `IndexEntry(timestamp, block_offset, in_block_offset)` 给 `JournalManager`, 由 Store 在写入成功后向内置 `.journal/logs` 写入 `0x11` 日志。直接绕过 Store 调用 `DataSet::write` 的内部路径默认不具备 journal 语义, 除非显式传入 journal sink。
 
+**单条 record 上限**: `DataSet::write` 必须拒绝 `data.len() > 4MiB`。该限制适用于普通聚合 block 和超大独占 block, 与 `data_len:u32` 的磁盘编码能力无关。
+
 **纠正写入**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
 
 **乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
@@ -297,7 +303,89 @@ flush (配置化，默认10分钟):
 
 > **关键区别**: flush ≠ seal。flush 和 idle-close 都不改变 block 状态；密封/压缩只发生在 next write 导致 pending overflow 或超大独占 block 创建时。
 
-### 9.3 删除操作 (DataSet::delete)
+### 9.3 追加操作 (DataSet::append)
+
+**目标**: append 是独立于 correction write 的 API。它不覆盖现有 record, 而是在逻辑 record 的 data 尾部追加新 bytes。若该 timestamp 尚不存在且大于 `latest_written_timestamp`, append 创建一条新 record; 若 timestamp 已存在, 只允许追加到当前最大时间戳对应的最新末尾 record。
+
+```
+DataSet::append(timestamp, data):
+    │
+    ├─ if timestamp <= 0 → Error("timestamp must be > 0")
+    │
+    ├─ if data.len() == 0 → Ok(())
+    │      (空 append 不写数据、不写 journal)
+    │
+    ├─ if timestamp < latest_written_timestamp
+    │      └─ Error("append timestamp is older than latest")
+    │
+    ├─ if timestamp > latest_written_timestamp
+    │      ├─ 校验 data.len() <= 4MiB
+    │      ├─ 复用正常正序 write 路径创建新 record
+    │      ├─ latest_written_timestamp = timestamp
+    │      └─ 返回 AppendOutcome(index_entry, data_offset=0, data_len=data.len(), migrated=false)
+    │
+    └─ timestamp == latest_written_timestamp
+           │
+           ├─ time_index.find_entry(timestamp)
+           │      ├─ 不存在 / filler / deleted → Error("latest record not found")
+           │      └─ 获取 latest index entry
+           │
+           ├─ 根据 block_offset 打开所属数据段并读取目标 block header
+           │
+           ├─ if block 已 SEALED|COMPRESSED 或 BLOCK_FLAG_COMPRESSED=1
+           │      └─ Error("cannot append to compressed block")
+           │
+           ├─ 校验目标 record 是 block payload 中最后一条 record
+           │   且 record 末尾等于当前数据段 wrote_position
+           │      └─ 否则 Error("latest record is not at segment tail")
+           │
+           ├─ final_data_len = old_data_len + data.len()
+           │   if final_data_len > 4MiB → Error("record too large")
+           │
+           ├─ if 12 + final_data_len > BLOCK_MAX_SIZE * 70 / 100:
+           │      ├─ 读取 old_data + append data 组成完整 record
+           │      ├─ 追加为独占 block (single_record)
+           │      ├─ 更新该 timestamp 的 index entry 指向新 block
+           │      ├─ old block 所在数据段 invalid_record_count += 1
+           │      ├─ invalidate 旧 index entry 对应的全局缓存 key
+           │      └─ 返回 AppendOutcome(new_index_entry, data_offset=old_data_len,
+           │                         data_len=data.len(), migrated=true)
+           │
+           └─ 原地追加:
+                  ├─ old record.data_len += data.len()
+                  ├─ 在 old data 后复制 append bytes
+                  ├─ block_payload_size += data.len()
+                  ├─ block.uncompressed_size += data.len()
+                  ├─ segment.pending_wrote_position += data.len()
+                  ├─ segment.total_uncompressed_size += data.len()
+                  ├─ segment.wrote_position += data.len()
+                  ├─ record_count / min_timestamp / max_timestamp / index entry 不变
+                  └─ 返回 AppendOutcome(old_index_entry, data_offset=old_data_len,
+                                      data_len=data.len(), migrated=false)
+```
+
+约束与说明:
+
+1. `timestamp < latest_written_timestamp` 不回退为乱序写入。append 的语义是“尾部追加”, 旧 timestamp 的 record 可能位于 compressed block、历史段或中间位置, 不具备稳定追加边界。
+2. `timestamp == latest_written_timestamp` 时, compressed block 一律返回错误, 即使追加后会超过迁移阈值也不迁移。迁移只发生在目标 block 仍是未压缩可验证末尾 record 时。
+3. “record 在分段文件最末尾位置”定义为: `(block_offset - segment.file_offset) + BLOCK_HEADER_SIZE + in_block_offset + 12 + old_data_len == segment.wrote_position`。实现需要同时校验它是 block 内最后一条 record, 防止 block 内部还有后续 record。
+4. 原地追加不修改索引, 因为 `block_offset` 和 `in_block_offset` 仍指向同一 record 起点。迁移追加必须更新索引, 因为 record 物理位置变化。
+5. 迁移后的旧 record 物理保留但不再可见, 与 correction 回退/乱序写入一致, 通过 `invalid_record_count` 统计无效记录。
+6. 全局 `BlockCache` 只缓存 compressed block。原地 append 目标是 pending raw block, 正常不会在全局缓存中; 迁移时仍对旧 index key 执行幂等 invalidate。
+7. Store 门面成功执行 append 后写 journal `0x13`。`timestamp > latest` 创建新 record 的 append 也写 `0x13`, 其中 `data_offset=0`。
+
+建议新增内部返回值:
+
+```rust
+pub(crate) struct AppendOutcome {
+    pub index_entry: IndexEntry,
+    pub data_offset: u32,
+    pub data_len: u32,
+    pub migrated: bool,
+}
+```
+
+### 9.4 删除操作 (DataSet::delete)
 
 **语义**: 将指定时间戳对应的记录从索引中移除 (标记为哨兵), 数据段中的物理数据保留但 `invalid_record_count` 递增, 表示该 record 不再有效。
 
@@ -533,6 +621,9 @@ retention_threshold = latest_written_timestamp.saturating_sub(retention_ms)
 | `delete(ts)` | 返回 `Expired` 错误, 不打开旧索引/旧数据段 |
 | `write(ts)` 且 `ts < latest` | 作为过期乱序写入返回 `Expired` 错误 |
 | `write(ts)` 且 `ts > latest` | 正序写入允许, 并推进 latest/threshold |
+| `append(ts)` 且 `ts < latest` | 返回 append 顺序错误; 若同时过期, 可返回 `Expired` |
+| `append(ts)` 且 `ts == latest` | 仅当 latest record 仍是未压缩末尾 record 时可追加; 追加后 latest 不变 |
+| `append(ts)` 且 `ts > latest` | 按 append 创建新 record, 推进 latest/threshold |
 
 **效果**: 过期数据即使索引或数据物理文件尚未回收, 也不再通过读路径可见, 且不能被 delete 或 out-of-order rewrite 修改。
 

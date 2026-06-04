@@ -177,6 +177,15 @@ impl DataSegment {
         in_block_offset: u16,
         new_data: &[u8],
     ) -> io::Result<()>;
+
+    /// append 写入: 只允许向本段最后一个 pending raw block 的最末 record 追加 bytes
+    /// 返回 append 前的 old_data_len, 供 journal 记录 data_offset
+    fn append_to_last_record(
+        &mut self,
+        block_segment_offset: u64,
+        in_block_offset: u16,
+        append_data: &[u8],
+    ) -> io::Result<u32>;
 }
 ```
 
@@ -239,6 +248,57 @@ fn overwrite_in_last_block(
 > - record 是 block 内最末 record
 >
 > **不支持缩小的情况**: 若新 data 长度更小, 后续 block 需前移 (本段内只此 block 时无影响, 但通用场景复杂)。实现中允许缩小, 只需移动本 block 后的字节 (如果有) 并调整 wrote_position。
+
+#### append_to_last_record: 追加写入 (Tail Append)
+
+append 追加场景下 (`timestamp == latest_written_timestamp`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前 `wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限和 70% 迁移阈值判断。如果上层判断追加后需要迁移为独占 block, 应先读取完整旧数据并走 `create_single_record_block`, 不调用本方法。
+
+```rust
+fn append_to_last_record(
+    &mut self,
+    block_segment_offset: u64,
+    in_block_offset: u16,
+    append_data: &[u8],
+) -> io::Result<u32> {
+    // 1. 验证 block 是段内最后一个 block:
+    //    block_abs_end = block_segment_offset + BLOCK_HEADER_SIZE + block.payload_size
+    //    block_abs_end 必须等于 self.wrote_position
+    //
+    // 2. 读取 block header:
+    //    - flags 必须等于 0; compressed/sealed 均返回错误
+    //    - payload_size 必须等于 uncompressed_size
+    //
+    // 3. 验证 record 是块内最末 record:
+    //    - old_data_len = read_u32(record_pos)
+    //    - in_block_offset + 12 + old_data_len 必须等于 payload_size
+    //
+    // 4. final_data_len = old_data_len + append_data.len()
+    //    - final_data_len 必须 <= 4MiB
+    //    - 12 + final_data_len 必须 <= BLOCK_MAX_SIZE * 70 / 100
+    //    - 上述阈值通常由 DataSet 层预检, 本方法仍可防御性校验
+    //
+    // 5. 在 mmap 中更新 record.data_len 并把 append_data 复制到 old data 后方
+    //
+    // 6. 更新 block header:
+    //    - payload_size      += append_data.len()
+    //    - uncompressed_size += append_data.len()
+    //
+    // 7. 更新段 state:
+    //    - self.wrote_position          += append_data.len()
+    //    - self.total_uncompressed_size += append_data.len()
+    //    - self.pending_wrote_position  += append_data.len()
+    //    - record_count/min_timestamp/max_timestamp 不变
+    //
+    // 8. 返回 old_data_len, 作为 journal 0x13 append_info.data_offset
+}
+```
+
+与 `overwrite_in_last_block` 的差异:
+
+1. append 只增长 record data, 不支持缩小或替换已有 data。
+2. append 失败不回退为乱序写入; compressed block、非末尾 record、历史段都直接返回错误。
+3. append 超过 70% 聚合 block 阈值时迁移整条 record, 而不是继续增长普通 pending block。
+4. 原地 append 不改变索引; 迁移 append 由 `DataSet` 层更新索引并递增旧段 `invalid_record_count`。
 
 
 ### 6.4 读取: 通过索引定位 Block 内 record (含缓存)

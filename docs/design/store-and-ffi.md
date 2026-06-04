@@ -41,6 +41,7 @@ impl Store {
     ) -> Result<DataSetHandle>;
     pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
     pub fn open_journal_queue(&self) -> Result<DatasetQueue>;
+    pub fn append_dataset(&self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
     pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>;
     pub fn drop_dataset(&self, handle: DataSetHandle) -> Result<()>;
     pub fn close(self) -> Result<()>;
@@ -289,6 +290,9 @@ pub struct TmslDatasetConfigFFI {
 // 数据写入 (correction/out-of-order 会通过 Store 的 BlockCache invalidate 旧索引 key)
 #[no_mangle] pub extern "C" fn tmsl_dataset_write(dataset: *mut c_void, timestamp: c_longlong, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
+// 数据追加 (timestamp > latest 创建新 record; timestamp == latest 仅允许追加到未压缩末尾 record)
+#[no_mangle] pub extern "C" fn tmsl_dataset_append(dataset: *mut c_void, timestamp: c_longlong, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
 // 数据删除 (索引标记为哨兵, invalidate 旧缓存 key, 数据段 invalid_record_count++)
 #[no_mangle] pub extern "C" fn tmsl_dataset_delete(dataset: *mut c_void, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
@@ -305,7 +309,7 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_iter_close(iter: *mut c_void);
 ```
 
-`block_max_size` 不在 Store/Dataset/FFI 配置中暴露。普通聚合 Block 的 payload 上限固定为 `BLOCK_MAX_SIZE=65536`, 是文件格式常量。
+`block_max_size` 不在 Store/Dataset/FFI 配置中暴露。普通聚合 Block 的 payload 上限固定为 `BLOCK_MAX_SIZE=65536`, 是文件格式常量。`write` 与 `append` 的单条 record 纯数据上限固定为 4MiB, 也不作为运行期配置暴露。
 
 > **内存所有权**:
 > - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
@@ -343,6 +347,10 @@ void* ds = tmsl_dataset_create(store, "patient_001", "waveform",
 // 3. 写入
 unsigned char d[] = {1,2,3,4};
 tmsl_dataset_write(ds, 1700000000, d, 4, err_buf, sizeof(err_buf));
+
+// 3b. 追加到最新记录或创建更新 timestamp 的新记录
+unsigned char more[] = {5,6};
+tmsl_dataset_append(ds, 1700000000, more, 2, err_buf, sizeof(err_buf));
 
 // 4. 查询
 void* iter = tmsl_dataset_query(ds, 1700000000, 1700000060, err_buf, sizeof(err_buf));
