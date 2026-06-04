@@ -11,7 +11,7 @@
 | Flush | 可配置, 默认 10min | 遍历所有打开的 segment, mmap.flush() (MS_SYNC) |
 | Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + unmmap + close |
 | Cache Eviction | 60s | 扫描缓存池, last_access_at ≥30min → 回收 + 释放内存 → LRU 检查 |
-| Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_ms > 0 的 dataset, 回收过期分段 |
+| Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_window > 0 的 dataset, 回收过期分段 |
 
 **线程模型**:
 ```
@@ -127,13 +127,13 @@ fn next_retention_time(check_hour: u8) -> Instant {
 **执行流程**:
 ```
 retention-reclaim (每日 retention_check_hour):
-  1. 读锁遍历 datasets, 收集 retention_ms > 0 的 dataset keys + retention_ms
+  1. 读锁遍历 datasets, 收集 retention_window > 0 的 dataset keys + retention_window
   2. 对每个 retention 启用的 dataset:
      a. Read lock → 获取 dataset Arc 引用
      b. Lock individual dataset mutex
      c. 调用 DataSet::reclaim_expired_segments()
         - 先 close() (flush + idle_close_all)
-        - 计算 threshold = latest_written_timestamp - retention_ms
+        - 计算 threshold = latest_written_timestamp.saturating_sub(retention_window)
         - 删除 data 分段 (max_timestamp < threshold)
         - 删除 index 分段 (last_entry_timestamp < threshold)
      d. 释放 dataset mutex
@@ -150,7 +150,7 @@ retention-reclaim (每日 retention_check_hour):
 
 **数据集级过期判断**:
 ```
-expiration_threshold = ds.latest_written_timestamp - ds.retention_ms
+expiration_threshold = ds.latest_written_timestamp.saturating_sub(ds.retention_window)
 ```
 
 **分段级过期判断**:

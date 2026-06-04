@@ -11,7 +11,7 @@ struct DataSet {
     id: DataSetKey,
     base_dir: PathBuf,
     config: DataSetConfig,     // 从 meta 文件读取 (创建时写入, 之后不可变)
-    retention_ms: u64,         // 数据有效期 (与 timestamp 同单位, 0=不限)
+    retention_window: u64,     // 数据保留窗口 (timestamp unit, 0=不限)
     segments: DataSegmentSet,
     time_index: TimeIndex,
     last_used_at: Instant,
@@ -26,7 +26,7 @@ impl DataSet {
         compress_level: u8,
         index_continuous: u8,
         initial_data_segment_size: u64, initial_index_segment_size: u64,
-        retention_ms: u64,
+        retention_window: u64,
     ) -> io::Result<Self>;
 
     /// 打开已有数据集 (参数从 meta 文件读取, 不能设置)
@@ -59,11 +59,11 @@ impl DataSet {
     fn append_with_cache(&mut self, timestamp: i64, data: &[u8], cache: Option<&BlockCache>) -> io::Result<()>;
 
     /// 回收超过有效期的分段文件 (需先 close)
-    /// retention_ms=0 时跳过; retention_ms > 0 时计算过期阈值并删除过期分段
+    /// retention_window=0 时跳过; retention_window > 0 时计算过期阈值并删除过期分段
     fn reclaim_expired_segments(&mut self) -> io::Result<usize>;
 
-    /// 获取 retention_ms 配置
-    fn retention_ms(&self) -> u64;
+    /// 获取 retention_window 配置
+    fn retention_window(&self) -> u64;
 }
 ```
 
@@ -139,7 +139,7 @@ DataSet::write(timestamp, data):
     │
     ├─ if timestamp <= 0 → Error("timestamp must be > 0")
     │
-    ├─ if retention_ms > 0 && timestamp < retention_threshold:
+    ├─ if retention_window > 0 && timestamp < retention_threshold:
     │      ├─ timestamp < latest_written_timestamp → Error("timestamp expired")
     │      └─ 其它情况不可达 (threshold 基于 latest 计算, 正序写入不会小于 threshold)
     │
@@ -203,7 +203,7 @@ DataSet::write(timestamp, data):
 
 **乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
 
-**retention 写入约束**: 当 `retention_ms > 0` 时, `timestamp < latest_written_timestamp.saturating_sub(retention_ms)` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。正序写入仍允许推进 `latest_written_timestamp`, 并可能使更多旧数据进入过期窗口。
+**retention 写入约束**: 当 `retention_window > 0` 时, `timestamp < latest_written_timestamp.saturating_sub(retention_window)` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。正序写入仍允许推进 `latest_written_timestamp`, 并可能使更多旧数据进入过期窗口。
 
 **连续模式稀疏 filler 规则**:
 
@@ -230,7 +230,7 @@ DataSet::write(timestamp, data):
 | BlockHeader.uncompressed_size (u32) | block header | `+ delta` (block 内原始数据长度变化) |
 | DataSegment.pending_wrote_position (u64) | 段状态 | `+ delta` |
 | DataSegment.total_uncompressed_size (u64) | 段状态 | `+ delta` |
-| DataSegment.wrote_position (u64) | 段状态 | `+ delta` |
+| DataSegment.data_wrote_position (u64, runtime) / header `wrote_position` (u64, on-disk) | 段状态 | runtime `+ delta`; header 保存 `header_len + data_wrote_position` |
 
 其中 `delta = new_record_bytes - old_record_bytes = new_data.len() - old_data_len` (record_overhead 固定为 12)
 
@@ -251,10 +251,10 @@ DataSet::write(timestamp, data):
 //   4. 更新 mmap 中 record 的 data_len (u32) 和 data 字节
 //   5. 更新 block header: payload_size += delta, uncompressed_size += delta
 //   6. 更新段内计数字段:
-//      - wrote_position += delta
+//      - data_wrote_position += delta
 //      - total_uncompressed_size += delta
 //      - pending_wrote_position += delta; 更新 file header 中 pending_wrote_position
-//   7. 更新 file header 中 wrote_position (update_file_wrote_position)
+//   7. 更新 file header 中 wrote_position = header_len + data_wrote_position
 ```
 
 **乱序写入机制 (Out-of-Order Write)**:
@@ -336,7 +336,7 @@ DataSet::append(timestamp, data):
            │      └─ Error("cannot append to compressed block")
            │
            ├─ 校验目标 record 是 block payload 中最后一条 record
-           │   且 record 末尾等于当前数据段 wrote_position
+           │   且 record 末尾等于当前数据段运行时 data_wrote_position
            │      └─ 否则 Error("latest record is not at segment tail")
            │
            ├─ final_data_len = old_data_len + data.len()
@@ -358,7 +358,7 @@ DataSet::append(timestamp, data):
                   ├─ block.uncompressed_size += data.len()
                   ├─ segment.pending_wrote_position += data.len()
                   ├─ segment.total_uncompressed_size += data.len()
-                  ├─ segment.wrote_position += data.len()
+                  ├─ segment.data_wrote_position += data.len()
                   ├─ record_count / min_timestamp / max_timestamp / index entry 不变
                   └─ 返回 AppendOutcome(old_index_entry, data_offset=old_data_len,
                                       data_len=data.len(), migrated=false)
@@ -368,7 +368,7 @@ DataSet::append(timestamp, data):
 
 1. `timestamp < latest_written_timestamp` 不回退为乱序写入。append 的语义是“尾部追加”, 旧 timestamp 的 record 可能位于 compressed block、历史段或中间位置, 不具备稳定追加边界。
 2. `timestamp == latest_written_timestamp` 时, compressed block 一律返回错误, 即使追加后会超过迁移阈值也不迁移。迁移只发生在目标 block 仍是未压缩可验证末尾 record 时。
-3. “record 在分段文件最末尾位置”定义为: `(block_offset - segment.file_offset) + BLOCK_HEADER_SIZE + in_block_offset + 12 + old_data_len == segment.wrote_position`。实现需要同时校验它是 block 内最后一条 record, 防止 block 内部还有后续 record。
+3. “record 在分段文件最末尾位置”定义为: `(block_offset - segment.file_offset) + BLOCK_HEADER_SIZE + in_block_offset + 12 + old_data_len == segment.data_wrote_position`。这里使用运行时数据区相对坐标; header state 中持久化的 `wrote_position` 必须保存为 `segment.header_len + segment.data_wrote_position`。实现需要同时校验它是 block 内最后一条 record, 防止 block 内部还有后续 record。
 4. 原地追加不修改索引, 因为 `block_offset` 和 `in_block_offset` 仍指向同一 record 起点。迁移追加必须更新索引, 因为 record 物理位置变化。
 5. 迁移后的旧 record 物理保留但不再可见, 与 correction 回退/乱序写入一致, 通过 `invalid_record_count` 统计无效记录。
 6. 全局 `BlockCache` 只缓存 compressed block。原地 append 目标是 pending raw block, 正常不会在全局缓存中; 迁移时仍对旧 index key 执行幂等 invalidate。
@@ -396,7 +396,7 @@ DataSet::delete(timestamp):
     │
     ├─ if latest_written_timestamp == 0 → Error("no data")
     │
-    ├─ if retention_ms > 0 && timestamp < retention_threshold
+    ├─ if retention_window > 0 && timestamp < retention_threshold
     │      └─ Error("timestamp expired")
     │
     ├─ time_index.find_and_delete_entry(timestamp)
@@ -520,7 +520,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
     │      └─ 其它情况
     │         → effective_ts = timestamp
     │
-    ├─ 2. if retention_ms > 0 && effective_ts < retention_threshold
+    ├─ 2. if retention_window > 0 && effective_ts < retention_threshold
     │      → return Ok(None)
     │
     ├─ 3. TimeIndex.find_entry(effective_ts)
@@ -547,7 +547,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - 如果最大已写时间戳对应的 index entry 已被 delete 标记为 filler, 仍返回 `None` (不会回退到更早的有效记录)
 > - 适合流式消费场景: 每次 "拉最新一条" 而不需要提前知道具体时间戳
 >
-> **retention 语义**: 所有读取路径以 `retention_threshold = latest_written_timestamp.saturating_sub(retention_ms)` 为可见性下界。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
+> **retention 语义**: 所有读取路径以 `retention_threshold = latest_written_timestamp.saturating_sub(retention_window)` 为可见性下界。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
 
 ### 10.4 `latest_written_timestamp`
 
@@ -559,38 +559,38 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 - 运行期若存在未刷盘的 `in_memory_buffer`, 恢复辅助逻辑会把 buffer 中的最大 timestamp 作为兜底候选; 正常 open 路径下该 buffer 为空
 - 用于:
   - `read(-1)` 快捷路径解析到最大已写 timestamp; 若该 entry 不存在、已删除或已过期, 返回 `None`, 不反向搜索更早有效记录
-  - 数据保留阈值计算 (`latest - retention_ms`)
+  - 数据保留阈值计算 (`latest_written_timestamp.saturating_sub(retention_window)`)
   - 连续模式稀疏 filler 的上一个真实写入边界判定
 
 ## 十一、数据保留 (Retention) 与回收
 
-### 11.1 retention_ms 配置
+### 11.1 retention_window 配置
 
-`retention_ms` 是数据集级不可变配置, 存储在 `meta` 文件中 (TLV type `0x08`, u64 LE)。
+`retention_window` 是数据集级不可变配置, 存储在 `meta` 文件中 (TLV type `0x08`, u64 LE)。其单位必须与业务 timestamp 完全相同, 不绑定秒或毫秒。
 
 | 值 | 含义 |
 |---|------|
 | `0` | 不限数据有效期, 不触发回收 (默认) |
-| `> 0` | 数据有效期, 单位与 timestamp 相同 (通常为毫秒) |
+| `> 0` | 数据保留窗口, 单位必须与业务 timestamp 完全相同 |
 
-> **单位说明**: `retention_ms` 的单位与数据集写入使用的时间戳单位一致。如果时间戳为 unix 毫秒, 则 retention_ms 为毫秒; 如果时间戳为秒, 则为秒。调用方需确保二者单位一致。
+> **单位说明**: `retention_window` 不表示固定毫秒。其值必须使用 timestamp unit: 如果业务 timestamp 按秒递增, retention 也按秒; 如果业务 timestamp 按其它单位递增, retention 也按同一单位。调用方需确保二者单位一致。
 
 ### 11.2 过期阈值计算
 
 ```
-expiration_threshold = latest_written_timestamp.saturating_sub(retention_ms)
+expiration_threshold = latest_written_timestamp.saturating_sub(retention_window)
 ```
 
 - `latest_written_timestamp`: 数据集写入过的最大时间戳 (从索引最后位置恢复; 不存入 meta)
-- `saturating_sub`: 防止 timestamp < retention_ms 时下溢
-- 当 `latest_written_timestamp < retention_ms` 时, expiration_threshold = 0 → 无分段满足条件 → 不回收
+- `saturating_sub`: 防止 timestamp < retention_window 时下溢
+- 当 `latest_written_timestamp < retention_window` 时, expiration_threshold = 0 → 无分段满足条件 → 不回收
 
 ### 11.3 回收流程
 
 ```
 DataSet::reclaim_expired_segments():
-  1. if retention_ms == 0 → return Ok(0)
-  2. threshold = latest_written_timestamp.saturating_sub(retention_ms)
+  1. if retention_window == 0 → return Ok(0)
+  2. threshold = latest_written_timestamp.saturating_sub(retention_window)
   3. self.flush()  -- 确保 in-memory buffer 落盘
   4. self.time_index.idle_close_all()
      self.segments.idle_close_all()
@@ -605,10 +605,10 @@ DataSet::reclaim_expired_segments():
 
 ### 11.4 读取与写入约束
 
-当 `retention_ms > 0` 时, 所有读路径共享同一个过期阈值:
+当 `retention_window > 0` 时, 所有读路径共享同一个过期阈值:
 
 ```rust
-retention_threshold = latest_written_timestamp.saturating_sub(retention_ms)
+retention_threshold = latest_written_timestamp.saturating_sub(retention_window)
 ```
 
 | 操作 | `timestamp < retention_threshold` 行为 |

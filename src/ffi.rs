@@ -1,4 +1,4 @@
-//! FFI interface (extern "C" API) for C and other language bindings.
+﻿//! FFI interface (extern "C" API) for C and other language bindings.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -17,7 +17,7 @@ use crate::store::{DataSetHandle, Store};
 
 use std::sync::LazyLock;
 
-// ─── Queue handle registry (FFI-safe opaque handles) ────────────────────────
+// 鈹€鈹€鈹€ Queue handle registry (FFI-safe opaque handles) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 static NEXT_QUEUE_ID: AtomicUsize = AtomicUsize::new(1);
 static QUEUE_REGISTRY: LazyLock<Mutex<HashMap<usize, DatasetQueue>>> =
@@ -27,7 +27,7 @@ static NEXT_CONSUMER_ID: AtomicUsize = AtomicUsize::new(1);
 static CONSUMER_REGISTRY: LazyLock<Mutex<HashMap<usize, DatasetQueueConsumer>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-// ─── FFI error handling helpers ─────────────────────────────────────────────
+// 鈹€鈹€鈹€ FFI error handling helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Write an error message to a C string buffer.
 pub fn write_error(buf: *mut c_char, len: usize, msg: &str) {
@@ -79,7 +79,7 @@ macro_rules! ffi_catch_ptr {
     };
 }
 
-/// Like ffi_catch_int but returns 0 (instead of -1) on error — for usize handles.
+/// Like ffi_catch_int but returns 0 (instead of -1) on error 鈥?for usize handles.
 macro_rules! ffi_catch_usize {
     ($err_buf:expr, $err_len:expr, $body:expr) => {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| $body)) {
@@ -96,7 +96,7 @@ macro_rules! ffi_catch_usize {
     };
 }
 
-// ─── Opaque handle types ────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Opaque handle types 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 3;
 pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 1;
@@ -133,7 +133,7 @@ pub struct TmslDatasetConfigFFI {
     pub index_segment_size: u64,
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
-    pub retention_ms: u64,
+    pub retention_window: u64,
     pub compress_level: u8,
     pub index_continuous: u8,
 }
@@ -247,7 +247,7 @@ fn dataset_config_from_ffi(
         .initial_index_segment_size(raw.initial_index_segment_size)
         .compress_level(raw.compress_level)
         .index_continuous(raw.index_continuous)
-        .retention_ms(raw.retention_ms))
+        .retention_window(raw.retention_window))
 }
 
 fn register_dataset_child(ffi_store: &FfiStore, handle: DataSetHandle) -> Box<FfiDataset> {
@@ -273,7 +273,7 @@ fn next_iter_index_entry(iter: &mut FfiIterator) -> crate::error::Result<Option<
     Ok(None)
 }
 
-// ─── Store Management ───────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Store Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Write default store config to `out_config`.
 #[no_mangle]
@@ -419,7 +419,7 @@ pub extern "C" fn tmsl_store_next_background_delay(
     })
 }
 
-// ─── Dataset Management ────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Dataset Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Create a new dataset (explicit, errors if already exists).
 #[no_mangle]
@@ -431,7 +431,7 @@ pub extern "C" fn tmsl_dataset_create(
     index_segment_size: u64,
     compress_level: c_uchar,
     index_continuous: c_uchar,
-    retention_ms: u64,
+    retention_window: u64,
     err_buf: *mut c_char,
     err_buf_len: usize,
 ) -> *mut c_void {
@@ -455,7 +455,7 @@ pub extern "C" fn tmsl_dataset_create(
             index_segment_size,
             compress_level,
             index_continuous,
-            retention_ms,
+            retention_window,
         )?;
         let boxed = register_dataset_child(ffi_store, handle);
         Ok(Box::into_raw(boxed) as *mut c_void)
@@ -757,7 +757,7 @@ pub extern "C" fn tmsl_iter_close(iter: *mut c_void) {
     }
 }
 
-// ─── Query Iterator ────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Query Iterator 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Query a time range. Returns iterator pointer or NULL on error.
 #[no_mangle]
@@ -850,7 +850,7 @@ pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar) {
     tmsl_data_free(data as *mut c_void);
 }
 
-// ─── Queue FFI functions ───────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Queue FFI functions 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Open the queue subsystem for a dataset.
 ///
@@ -1117,7 +1117,7 @@ mod tests {
             index_segment_size: 64 * 1024,
             initial_data_segment_size: 8 * 1024,
             initial_index_segment_size: 4 * 1024,
-            retention_ms: 0,
+            retention_window: 0,
             compress_level: 6,
             index_continuous: 0,
         };

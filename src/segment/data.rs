@@ -45,7 +45,11 @@ pub struct DataSegment {
     pub max_file_size: u64,
     /// Physical byte offset where block data starts in this file.
     pub header_size: u64,
-    pub wrote_position: u64,
+    /// Bytes used in the data area, excluding the variable file header.
+    ///
+    /// The on-disk header state field `wrote_position` stores the absolute file
+    /// offset: `header_size + data_wrote_position`.
+    pub data_wrote_position: u64,
     pub record_count: u64,
     pub total_uncompressed_size: u64,
     pub min_timestamp: i64,
@@ -101,7 +105,7 @@ impl DataSegment {
             file_size: initial_size,
             max_file_size,
             header_size,
-            wrote_position: 0,
+            data_wrote_position: 0,
             record_count: 0,
             total_uncompressed_size: 0,
             min_timestamp: TIMESTAMP_MIN_SENTINEL,
@@ -148,7 +152,7 @@ impl DataSegment {
             file_size: actual_file_size,
             max_file_size,
             header_size,
-            wrote_position: metadata.wrote_position.saturating_sub(header_size),
+            data_wrote_position: metadata.wrote_position.saturating_sub(header_size),
             record_count: metadata.record_count,
             total_uncompressed_size: metadata.total_uncompressed_size,
             min_timestamp: metadata.min_timestamp,
@@ -236,7 +240,7 @@ impl DataSegment {
 
         self.file_size = actual_file_size;
         self.header_size = metadata.header_size;
-        self.wrote_position = metadata.wrote_position.saturating_sub(self.header_size);
+        self.data_wrote_position = metadata.wrote_position.saturating_sub(self.header_size);
         self.record_count = metadata.record_count;
         self.total_uncompressed_size = metadata.total_uncompressed_size;
         self.min_timestamp = metadata.min_timestamp;
@@ -373,7 +377,7 @@ impl DataSegment {
                 self.seal_pending_block(compress_level)?;
                 self.clear_pending();
                 if self.file_size.saturating_sub(self.header_size)
-                    < self.wrote_position + total_needed
+                    < self.data_wrote_position + total_needed
                 {
                     return Err(TmslError::SegmentFull);
                 }
@@ -381,7 +385,7 @@ impl DataSegment {
             }
 
             if self.file_size.saturating_sub(self.header_size)
-                < self.wrote_position + record_size as u64
+                < self.data_wrote_position + record_size as u64
             {
                 return Err(TmslError::SegmentFull);
             }
@@ -395,7 +399,8 @@ impl DataSegment {
         }
 
         // Case 3: No pending block → create new one
-        if self.file_size.saturating_sub(self.header_size) < self.wrote_position + total_needed {
+        if self.file_size.saturating_sub(self.header_size) < self.data_wrote_position + total_needed
+        {
             return Err(TmslError::SegmentFull);
         }
         self.create_pending_and_append(timestamp, data)
@@ -429,7 +434,7 @@ impl DataSegment {
 
         self.pending_wrote_position = new_pending_wrote_position;
         self.pending_record_count = new_pending_record_count;
-        self.wrote_position += record_size;
+        self.data_wrote_position += record_size;
         self.record_count += 1;
         self.total_uncompressed_size += record_size;
 
@@ -449,7 +454,7 @@ impl DataSegment {
 
     /// Create a new pending block and write the first record.
     fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u16)> {
-        let block_pos = self.header_size + self.wrote_position;
+        let block_pos = self.header_size + self.data_wrote_position;
         let rec_size = RECORD_OVERHEAD + data.len() as u64;
 
         // Write BlockHeader (flags=0, not sealed)
@@ -472,7 +477,7 @@ impl DataSegment {
         self.pending_block_offset = Some(block_pos - self.header_size);
         self.pending_wrote_position = rec_size;
         self.pending_record_count = 1;
-        self.wrote_position += crate::block::BLOCK_HEADER_SIZE + rec_size;
+        self.data_wrote_position += crate::block::BLOCK_HEADER_SIZE + rec_size;
         self.record_count += 1;
         self.total_uncompressed_size += rec_size;
         self.last_accessed_at = Instant::now();
@@ -522,7 +527,7 @@ impl DataSegment {
             mmap[payload_start..payload_start + compressed.len()].copy_from_slice(&compressed);
             clear_pending_from_mmap(mmap)?;
         }
-        self.wrote_position = new_wrote_position;
+        self.data_wrote_position = new_wrote_position;
         self.update_file_wrote_position()?;
 
         Ok(())
@@ -536,7 +541,7 @@ impl DataSegment {
         compress_level: u8,
     ) -> Result<(u64, u16)> {
         let rec_size = checked_record_size(data.len())?;
-        let block_pos = self.header_size + self.wrote_position;
+        let block_pos = self.header_size + self.data_wrote_position;
 
         // Build record payload: [data_len:4][ts:8][data]
         let mut raw = Vec::with_capacity(rec_size);
@@ -552,7 +557,8 @@ impl DataSegment {
         let payload_len = u32::try_from(payload.len())
             .map_err(|_| TmslError::InvalidData("compressed block exceeds u32".into()))?;
         let total_needed = crate::block::BLOCK_HEADER_SIZE + payload.len() as u64;
-        if self.file_size.saturating_sub(self.header_size) < self.wrote_position + total_needed {
+        if self.file_size.saturating_sub(self.header_size) < self.data_wrote_position + total_needed
+        {
             return Err(TmslError::SegmentFull);
         }
 
@@ -569,7 +575,7 @@ impl DataSegment {
         let data_pos = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
         mmap[data_pos..data_pos + payload.len()].copy_from_slice(&payload);
 
-        self.wrote_position += crate::block::BLOCK_HEADER_SIZE + payload.len() as u64;
+        self.data_wrote_position += crate::block::BLOCK_HEADER_SIZE + payload.len() as u64;
         self.record_count += 1;
         self.total_uncompressed_size += rec_size as u64;
         self.last_accessed_at = Instant::now();
@@ -603,7 +609,7 @@ impl DataSegment {
         let hdr = BlockHeader::read_from(mmap, block_abs_start);
         let block_abs_end =
             block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + hdr.payload_size as usize;
-        let seg_wrote_end = (self.header_size + self.wrote_position) as usize;
+        let seg_wrote_end = (self.header_size + self.data_wrote_position) as usize;
         if block_abs_end != seg_wrote_end {
             return Err(TmslError::InvalidData(
                 "append: target block is not the last in segment".into(),
@@ -681,7 +687,7 @@ impl DataSegment {
         let delta = append_data.len();
         let required = self
             .header_size
-            .checked_add(self.wrote_position)
+            .checked_add(self.data_wrote_position)
             .and_then(|v| v.checked_add(delta as u64))
             .ok_or_else(|| TmslError::InvalidData("append wrote_position overflow".into()))?;
         if required > self.file_size {
@@ -716,7 +722,7 @@ impl DataSegment {
             new_hdr.write_to(mmap, block_abs_start);
         }
 
-        self.wrote_position += delta as u64;
+        self.data_wrote_position += delta as u64;
         self.total_uncompressed_size += delta as u64;
         self.pending_wrote_position += delta as u64;
         self.update_file_header_for_pending(block_rel_offset)?;
@@ -753,7 +759,7 @@ impl DataSegment {
         // 1. Verify the target block is the last in this segment
         let block_abs_end =
             block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + hdr.payload_size as usize;
-        let seg_wrote_end = (self.header_size + self.wrote_position) as usize;
+        let seg_wrote_end = (self.header_size + self.data_wrote_position) as usize;
         if block_abs_end != seg_wrote_end {
             return Err(TmslError::InvalidData(
                 "correction write: target block is not the last in segment".into(),
@@ -815,7 +821,7 @@ impl DataSegment {
             ));
         }
         if delta > 0 {
-            let required = self.header_size + self.wrote_position + delta as u64;
+            let required = self.header_size + self.data_wrote_position + delta as u64;
             if required > self.file_size {
                 return Err(TmslError::SegmentFull);
             }
@@ -842,11 +848,11 @@ impl DataSegment {
         // 7. Update segment-level counters
         if delta >= 0 {
             let d = delta as u64;
-            self.wrote_position += d;
+            self.data_wrote_position += d;
             self.total_uncompressed_size += d;
         } else {
             let d = (-delta) as u64;
-            self.wrote_position = self.wrote_position.saturating_sub(d);
+            self.data_wrote_position = self.data_wrote_position.saturating_sub(d);
             self.total_uncompressed_size = self.total_uncompressed_size.saturating_sub(d);
         }
 
@@ -888,7 +894,7 @@ impl DataSegment {
 
     fn update_file_wrote_position(&mut self) -> Result<()> {
         let mmap = self.mmap.as_mut().unwrap();
-        let abs_pos = self.header_size + self.wrote_position;
+        let abs_pos = self.header_size + self.data_wrote_position;
         write_data_core_state_to_mmap(
             mmap,
             self.min_timestamp,
@@ -1111,7 +1117,7 @@ impl DataSegment {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::header::DATA_HEADER_SIZE;
+    use crate::header::{DataFileMetadata, DATA_HEADER_SIZE};
     use std::fs;
 
     fn temp_dir() -> std::path::PathBuf {
@@ -1132,7 +1138,7 @@ mod tests {
         let extra_meta = [0xEE, 4, 0, 1, 2, 3, 4];
         let old_header = DATA_HEADER_SIZE as usize;
         let new_header = old_header + extra_meta.len();
-        let used = seg.wrote_position as usize;
+        let used = seg.data_wrote_position as usize;
         let mmap = seg.mmap.as_mut().unwrap();
 
         let data = mmap[old_header..old_header + used].to_vec();
@@ -1166,6 +1172,23 @@ mod tests {
         assert_eq!(block_off, 0);
         assert_eq!(in_block_off, 0);
         assert_eq!(seg.pending_record_count, 1);
+    }
+
+    #[test]
+    fn test_header_wrote_position_is_absolute_and_runtime_is_data_relative() {
+        let (mut seg, path) = make_segment("test_wrote_position_coordinate");
+        seg.append_record(1700000000, b"hello", 6).unwrap();
+
+        let runtime_data_pos = seg.data_wrote_position;
+        let header_size = seg.header_size;
+        let metadata = DataFileMetadata::read_from(seg.mmap.as_ref().unwrap()).unwrap();
+
+        assert_eq!(metadata.wrote_position, header_size + runtime_data_pos);
+
+        drop(seg);
+        let reopened = DataSegment::open(&path, 0, 1024 * 1024).unwrap();
+        assert_eq!(reopened.header_size, header_size);
+        assert_eq!(reopened.data_wrote_position, runtime_data_pos);
     }
 
     #[test]
@@ -1263,7 +1286,7 @@ mod tests {
         let (off, ib) = seg.append_record(6002, &data, 6).unwrap();
 
         assert_eq!(ib, 0);
-        assert!(seg.wrote_position <= file_size - DATA_HEADER_SIZE);
+        assert!(seg.data_wrote_position <= file_size - DATA_HEADER_SIZE);
         assert_eq!(
             block_flags(&seg, off),
             BLOCK_FLAG_SEALED | BLOCK_FLAG_COMPRESSED | BLOCK_FLAG_SINGLE_RECORD

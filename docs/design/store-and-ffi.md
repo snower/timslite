@@ -37,7 +37,7 @@ impl Store {
     pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self>;
     pub fn create_dataset(&self, name: &str, dataset_type: &str,
         data_segment_size: u64, index_segment_size: u64, compress_level: u8,
-        retention_ms: u64,
+        retention_window: u64,
     ) -> Result<DataSetHandle>;
     pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
     pub fn open_journal_queue(&self) -> Result<DatasetQueue>;
@@ -95,8 +95,8 @@ impl StoreConfigBuilder {
 ```
 
 **调度逻辑**: 后台线程根据 `retention_check_hour` 计算下一次执行时间 (距 UTC 00:00 的小时偏移), 每日触发一次。触发时:
-1. 读取每个 dataset 的 `retention_ms` 和 `latest_written_timestamp` (写入过的最大 timestamp, 不要求该 timestamp 当前仍可读)
-2. 若 `retention_ms > 0`, 调用 `DataSet::reclaim_expired_segments()`
+1. 读取每个 dataset 的 `retention_window` 和 `latest_written_timestamp` (写入过的最大 timestamp, 不要求该 timestamp 当前仍可读)
+2. 若 `retention_window > 0`, 调用 `DataSet::reclaim_expired_segments()`
 
 详见 [后台任务 §17.8](background-and-cache.md#十七后台任务)。
 
@@ -236,7 +236,7 @@ pub struct TmslDatasetConfigFFI {
     pub index_segment_size: u64,
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
-    pub retention_ms: u64,
+    pub retention_window: u64,
     pub compress_level: u8,
     pub index_continuous: u8,            // 0=false, non-zero=true
 }
@@ -267,7 +267,7 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_dataset_create(store: *mut c_void,
     name: *const c_char, dataset_type: *const c_char,
     data_segment_size: u64, index_segment_size: u64,
-    compress_level: u8, index_continuous: u8, retention_ms: u64,
+    compress_level: u8, index_continuous: u8, retention_window: u64,
     err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 #[no_mangle] pub extern "C" fn tmsl_dataset_create_with_config(store: *mut c_void,
     name: *const c_char, dataset_type: *const c_char,
@@ -338,7 +338,7 @@ void* ds = tmsl_dataset_create(store, "patient_001", "waveform",
     4ULL * 1024 * 1024,    // index_segment_size = 4MB
     6,                     // compress_level
     0,                     // index_continuous (non-continuous)
-    30ULL * 86400 * 1000,  // retention_ms = 30 days (ms timestamps)
+    30ULL * 86400,         // retention_window = 30 days in timestamp units (seconds in this example)
     err_buf, sizeof(err_buf));
 
 // 2b. 打开已有数据集 (参数从 meta 读取, 不可设置)

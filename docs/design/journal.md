@@ -71,7 +71,7 @@ Journal dataset 的创建参数:
 | 参数 | v1 选择 | 说明 |
 |------|---------|------|
 | `index_continuous` | `0` | journal timestamp 使用连续递增 seq, 不需要连续 filler |
-| `retention_ms` | `0` | 默认不自动回收 journal; 未来可加独立保留策略 |
+| `retention_window` | `0` | 默认不自动回收 journal; 未来可加独立保留策略 |
 | segment size / initial size / compress_level | 继承 `StoreConfig` dataset 默认值 | 保持与普通 dataset 相同存储能力 |
 
 ### 25.3 Journal Record 时间戳
@@ -480,7 +480,7 @@ Journal v1 是同步 change log, 不是事务 WAL:
 
 ### 25.11 Retention、删除与保留策略
 
-Journal dataset 默认 `retention_ms = 0`, 不被普通 retention 策略删除。若 `enable_journal=false`, Store 不会打开或维护 journal retention。未来可增加独立 journal retention 或 checkpoint 机制:
+Journal dataset 默认 `retention_window = 0`, 不被普通 retention 策略删除。若 `enable_journal=false`, Store 不会打开或维护 journal retention。未来可增加独立 journal retention 或 checkpoint 机制:
 
 - 基于已消费 `journal_ts` 的安全截断。
 - 基于时间窗口的日志保留。

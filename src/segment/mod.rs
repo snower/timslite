@@ -185,7 +185,9 @@ impl DataSegmentSet {
         } else {
             let last = self.segments.last().unwrap();
             if last.lifecycle == SL::Closed
-                || last.wrote_position + crate::block::BLOCK_HEADER_SIZE + data::RECORD_OVERHEAD
+                || last.data_wrote_position
+                    + crate::block::BLOCK_HEADER_SIZE
+                    + data::RECORD_OVERHEAD
                     > self.segment_size
             {
                 self.next_offset
@@ -313,7 +315,7 @@ impl DataSegmentSet {
         // The block_offset is relative to each segment's data area start.
         // Each segment starts at seg.file_offset in the logical data stream.
         let seg_start = seg.file_offset;
-        let seg_end_data = seg_start + seg.wrote_position;
+        let seg_end_data = seg_start + seg.data_wrote_position;
         if block_offset < seg_start || block_offset >= seg_end_data {
             return Err(TmslError::InvalidData(format!(
                 "correction write: block_offset {} is not in the latest segment [{}, {})",
@@ -338,7 +340,9 @@ impl DataSegmentSet {
             ));
         }
         let seg = self.lazy_open(target_segment_offset)?;
-        if block_offset < seg.file_offset || block_offset >= seg.file_offset + seg.wrote_position {
+        if block_offset < seg.file_offset
+            || block_offset >= seg.file_offset + seg.data_wrote_position
+        {
             return Err(TmslError::InvalidData(
                 "append: block_offset is outside latest segment data".into(),
             ));
@@ -360,7 +364,9 @@ impl DataSegmentSet {
             ));
         }
         let seg = self.lazy_open(target_segment_offset)?;
-        if block_offset < seg.file_offset || block_offset >= seg.file_offset + seg.wrote_position {
+        if block_offset < seg.file_offset
+            || block_offset >= seg.file_offset + seg.data_wrote_position
+        {
             return Err(TmslError::InvalidData(
                 "append: block_offset is outside latest segment data".into(),
             ));

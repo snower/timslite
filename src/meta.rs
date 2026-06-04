@@ -18,7 +18,7 @@ const META_CREATE_TIME: u8 = 0x04; // i64 LE (unix ms)
 const META_INDEX_CONTINUOUS: u8 = 0x05; // u8
 const META_INITIAL_DATA_SEGMENT_SIZE: u8 = 0x06; // u64 LE
 const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
-const META_RETENTION_MS: u8 = 0x08; // u64 LE (0 = no limit)
+const META_RETENTION_WINDOW: u8 = 0x08; // u64 LE (0 = no limit)
 
 /// Immutable dataset configuration. Written once at creation.
 #[derive(Debug, Clone)]
@@ -30,7 +30,7 @@ pub struct DataSetMeta {
     pub index_continuous: u8,
     pub initial_data_segment_size: u64, // 0 = uninitialized (backward compat)
     pub initial_index_segment_size: u64, // 0 = uninitialized (backward compat)
-    pub retention_ms: u64,              // 0 = no limit (same unit as timestamp)
+    pub retention_window: u64,          // 0 = no limit (same unit as timestamp)
 }
 
 impl DataSetMeta {
@@ -42,7 +42,7 @@ impl DataSetMeta {
         index_continuous: u8,
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
-        retention_ms: u64,
+        retention_window: u64,
     ) -> Self {
         Self {
             data_segment_size,
@@ -51,7 +51,7 @@ impl DataSetMeta {
             index_continuous,
             initial_data_segment_size,
             initial_index_segment_size,
-            retention_ms,
+            retention_window,
             create_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
@@ -64,7 +64,7 @@ impl DataSetMeta {
         // Calculate meta_data_length:
         // 8 TLV entries: data_seg_size(11) + idx_seg_size(11) + compress(4) + create_time(11)
         //               + index_continuous(4) + initial_data_seg_size(11) + initial_idx_seg_size(11)
-        //               + retention_ms(11) = 74
+        //               + retention_window(11) = 74
         // Each u64 TLV: type(1) + length(2) + value(8) = 11 bytes
         // Each u8 TLV:  type(1) + length(2) + value(1) = 4 bytes
         let meta_data_length: u16 = (1 + 2 + 8)
@@ -74,7 +74,7 @@ impl DataSetMeta {
             + (1 + 2 + 1)
             + (1 + 2 + 8)
             + (1 + 2 + 8)
-            + (1 + 2 + 8); // retention_ms
+            + (1 + 2 + 8); // retention_window
 
         let mut buf = Vec::with_capacity(8 + meta_data_length as usize);
         buf.extend_from_slice(&META_MAGIC);
@@ -110,15 +110,15 @@ impl DataSetMeta {
         buf.push(META_INITIAL_INDEX_SEGMENT_SIZE);
         buf.extend_from_slice(&8u16.to_le_bytes());
         buf.extend_from_slice(&self.initial_index_segment_size.to_le_bytes());
-        // retention_ms
-        buf.push(META_RETENTION_MS);
+        // retention_window
+        buf.push(META_RETENTION_WINDOW);
         buf.extend_from_slice(&8u16.to_le_bytes());
-        buf.extend_from_slice(&self.retention_ms.to_le_bytes());
+        buf.extend_from_slice(&self.retention_window.to_le_bytes());
 
         buf
     }
 
-    /// Deserialize: validate magic → read version → read meta_data_length → parse TLV
+    /// Deserialize: validate magic 鈫?read version 鈫?read meta_data_length 鈫?parse TLV
     /// Unknown type codes are skipped.
     pub fn from_bytes(buf: &[u8]) -> Result<Self> {
         if buf.len() < 8 {
@@ -147,7 +147,7 @@ impl DataSetMeta {
         let mut index_continuous = 0u8;
         let mut initial_data_segment_size = 0u64;
         let mut initial_index_segment_size = 0u64;
-        let mut retention_ms = 0u64;
+        let mut retention_window = 0u64;
 
         let mut off = 8;
         let end = 8 + meta_data_length;
@@ -181,8 +181,8 @@ impl DataSetMeta {
                 META_INITIAL_INDEX_SEGMENT_SIZE if len == 8 => {
                     initial_index_segment_size = read_u64_le(buf[off..off + 8].try_into().unwrap());
                 }
-                META_RETENTION_MS if len == 8 => {
-                    retention_ms = read_u64_le(buf[off..off + 8].try_into().unwrap());
+                META_RETENTION_WINDOW if len == 8 => {
+                    retention_window = read_u64_le(buf[off..off + 8].try_into().unwrap());
                 }
                 _ => {} // Skip unknown
             }
@@ -239,7 +239,7 @@ impl DataSetMeta {
             index_continuous,
             initial_data_segment_size,
             initial_index_segment_size,
-            retention_ms,
+            retention_window,
         })
     }
 
@@ -268,7 +268,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
-            30 * 86400 * 1000,
+            30 * 86400,
         );
         let bytes = meta.to_bytes();
 
@@ -279,7 +279,7 @@ mod tests {
         assert_eq!(parsed.index_continuous, 0);
         assert_eq!(parsed.initial_data_segment_size, 256 * 1024);
         assert_eq!(parsed.initial_index_segment_size, 4 * 1024);
-        assert_eq!(parsed.retention_ms, 30 * 86400 * 1000);
+        assert_eq!(parsed.retention_window, 30 * 86400);
     }
 
     #[test]
@@ -302,7 +302,7 @@ mod tests {
         // Missing initial_* means old full-allocation format; use segment sizes.
         assert_eq!(parsed.initial_data_segment_size, 1024);
         assert_eq!(parsed.initial_index_segment_size, 512);
-        assert_eq!(parsed.retention_ms, 0);
+        assert_eq!(parsed.retention_window, 0);
     }
 
     #[test]
@@ -364,15 +364,15 @@ mod tests {
     }
 
     #[test]
-    fn test_meta_retention_ms_roundtrip() {
-        let meta = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 7 * 86400 * 1000);
+    fn test_meta_retention_window_roundtrip() {
+        let meta = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 7 * 86400);
         let parsed = DataSetMeta::from_bytes(&meta.to_bytes()).unwrap();
-        assert_eq!(parsed.retention_ms, 7 * 86400 * 1000);
+        assert_eq!(parsed.retention_window, 7 * 86400);
 
         // Zero = no limit
         let meta_zero = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 0);
         let parsed_zero = DataSetMeta::from_bytes(&meta_zero.to_bytes()).unwrap();
-        assert_eq!(parsed_zero.retention_ms, 0);
+        assert_eq!(parsed_zero.retention_window, 0);
     }
 
     #[test]
@@ -395,7 +395,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test_meta");
 
-        let meta = DataSetMeta::new(1024, 512, 9, 0, 256, 128, 86400 * 1000);
+        let meta = DataSetMeta::new(1024, 512, 9, 0, 256, 128, 86400);
         meta.write_to_file(&path).unwrap();
         let loaded = DataSetMeta::read_from_file(&path).unwrap();
         assert_eq!(loaded.data_segment_size, 1024);
@@ -404,6 +404,6 @@ mod tests {
         assert_eq!(loaded.index_continuous, 0);
         assert_eq!(loaded.initial_data_segment_size, 256);
         assert_eq!(loaded.initial_index_segment_size, 128);
-        assert_eq!(loaded.retention_ms, 86400 * 1000);
+        assert_eq!(loaded.retention_window, 86400);
     }
 }

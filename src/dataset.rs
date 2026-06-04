@@ -76,7 +76,7 @@ pub struct DataSet {
     time_index: TimeIndex,
     last_used_at: Instant,
     latest_written_timestamp: i64, // Highest written timestamp, not latest valid record
-    retention_ms: u64,             // 0 = no limit (same unit as timestamp)
+    retention_window: u64,         // 0 = no limit (same unit as timestamp)
     queue_inner: Option<Arc<Mutex<QueueInner>>>,
     queue_notify: Option<Arc<(Mutex<bool>, Condvar)>>,
 }
@@ -84,7 +84,7 @@ pub struct DataSet {
 impl DataSet {
     /// Create a new dataset (explicit creation, errors if already exists).
     ///
-    /// Parameters are written to the meta file and are **immutable** 鈥?cannot be changed
+    /// Parameters are written to the meta file and are **immutable** 閳?cannot be changed
     /// after creation.
     pub fn create(
         id: DataSetKey,
@@ -95,7 +95,7 @@ impl DataSet {
         index_continuous: u8,
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
-        retention_ms: u64,
+        retention_window: u64,
     ) -> Result<Self> {
         let meta_path = base_dir.join("meta");
         if meta_path.exists() {
@@ -120,7 +120,7 @@ impl DataSet {
             index_continuous,
             initial_data_segment_size,
             initial_index_segment_size,
-            retention_ms,
+            retention_window,
         );
         meta.write_to_file(&meta_path)?;
 
@@ -147,13 +147,13 @@ impl DataSet {
                 index_continuous,
                 initial_data_segment_size,
                 initial_index_segment_size,
-                retention_ms,
+                retention_window,
             },
             segments,
             time_index,
             last_used_at: Instant::now(),
             latest_written_timestamp: 0,
-            retention_ms,
+            retention_window,
             queue_inner: None,
             queue_notify: None,
         })
@@ -182,9 +182,9 @@ impl DataSet {
             index_continuous: meta.index_continuous,
             initial_data_segment_size: meta.initial_data_segment_size,
             initial_index_segment_size: meta.initial_index_segment_size,
-            retention_ms: meta.retention_ms,
+            retention_window: meta.retention_window,
         };
-        let retention_ms = meta.retention_ms;
+        let retention_window = meta.retention_window;
 
         let segments = DataSegmentSet::load_existing(
             &base_dir,
@@ -211,7 +211,7 @@ impl DataSet {
             time_index,
             last_used_at: Instant::now(),
             latest_written_timestamp,
-            retention_ms,
+            retention_window,
             queue_inner: None,
             queue_notify: None,
         })
@@ -228,15 +228,15 @@ impl DataSet {
     /// # Timestamp dispatch (both indexing modes)
     ///
     /// - `timestamp <= 0`: error.
-    /// - `timestamp == latest_written_timestamp` (and latest > 0): **correction write** 鈥?    ///   in-place overwrite of the data bytes in the last pending raw block of the latest
+    /// - `timestamp == latest_written_timestamp` (and latest > 0): **correction write** 閳?    ///   in-place overwrite of the data bytes in the last pending raw block of the latest
     ///   data segment. The index entry is unchanged. If the target block has already been
     ///   sealed and compressed, falls back to out-of-order write:
     ///   appends data to latest segment, updates index entry, and increments the old
     ///   segment's `invalid_record_count`.
-    /// - `timestamp < latest_written_timestamp`: **out-of-order write** 鈥?appends data to
+    /// - `timestamp < latest_written_timestamp`: **out-of-order write** 閳?appends data to
     ///   the latest data segment and updates the existing index position in place. In
     ///   continuous mode, sparse logical holes are materialized on demand.
-    /// - `timestamp > latest_written_timestamp`: **normal write** 鈥?in continuous mode only
+    /// - `timestamp > latest_written_timestamp`: **normal write** 閳?in continuous mode only
     ///   materializes filler entries in the previous and current edge index segments.
     pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
         self.write_with_cache(timestamp, data, None)
@@ -268,13 +268,13 @@ impl DataSet {
             return Err(self.expired_error(timestamp));
         }
 
-        // Correction write: same timestamp as latest 鈫?in-place overwrite in
+        // Correction write: same timestamp as latest 閳?in-place overwrite in
         // the last pending raw block of the latest data segment. Index unchanged.
         if self.latest_written_timestamp > 0 && timestamp == self.latest_written_timestamp {
             return self.correct_write(timestamp, data, cache);
         }
 
-        // Out-of-order write: timestamp < latest 鈫?append to latest segment,
+        // Out-of-order write: timestamp < latest 閳?append to latest segment,
         // update existing index entry in place. May increment invalid_record_count
         // on the old data segment.
         if timestamp < self.latest_written_timestamp {
@@ -481,7 +481,7 @@ impl DataSet {
     ///
     /// The record is located via the existing index entry, then its data bytes
     /// in the last pending raw block of the latest data segment are replaced.
-    /// Supports variable data length 鈥?updates block + segment counters accordingly.
+    /// Supports variable data length 閳?updates block + segment counters accordingly.
     ///
     /// If the target block has been sealed and compressed,
     /// falls back to out-of-order write: appends data to latest segment, updates
@@ -511,7 +511,7 @@ impl DataSet {
                     }
                     Err(_) => {
                         // Target block cannot be modified in place (sealed/compressed or
-                        // not the last block/record) 鈫?fall back to out-of-order write:
+                        // not the last block/record) 閳?fall back to out-of-order write:
                         // append to latest segment, update index, increment invalid_record_count
                         self.out_of_order_write(timestamp, data, cache)
                     }
@@ -530,7 +530,7 @@ impl DataSet {
     /// and increments the data segment's `invalid_record_count` by 1.
     ///
     /// Returns `TmslError::NotFound` if:
-    /// - `timestamp` is invalid (鈮?0)
+    /// - `timestamp` is invalid (閳?0)
     /// - the dataset is empty
     /// - no entry exists at `timestamp`
     /// - the entry is already a filler (no real data)
@@ -563,7 +563,7 @@ impl DataSet {
 
         let old_entry = self.time_index.find_and_delete_entry(timestamp)?;
         self.invalidate_cache_for_entry(&old_entry, cache);
-        // Old entry references real data 鈫?increment invalid_record_count on its segment
+        // Old entry references real data 閳?increment invalid_record_count on its segment
         self.segments
             .increment_invalid_record_count(old_entry.block_offset)?;
 
@@ -825,8 +825,8 @@ impl DataSet {
     }
 
     /// Data retention period (same unit as timestamp; 0 = no limit).
-    pub fn retention_ms(&self) -> u64 {
-        self.retention_ms
+    pub fn retention_window(&self) -> u64 {
+        self.retention_window
     }
 
     /// Latest successfully written timestamp (0 = dataset is empty).
@@ -841,22 +841,22 @@ impl DataSet {
     /// Returns (effective_start, effective_end). If retention is disabled
     /// or latest_written_timestamp is unknown, returns the original range.
     fn clamp_query_range(&self, start_ts: i64, end_ts: i64) -> (i64, i64) {
-        if self.retention_ms == 0 || self.latest_written_timestamp <= 0 {
+        if self.retention_window == 0 || self.latest_written_timestamp <= 0 {
             return (start_ts, end_ts);
         }
         let threshold = self
             .latest_written_timestamp
-            .saturating_sub(self.retention_ms as i64);
+            .saturating_sub(self.retention_window as i64);
         (start_ts.max(threshold), end_ts)
     }
 
     /// Compute retention expiration threshold, or -1 if retention disabled / no data yet.
     fn retention_threshold(&self) -> i64 {
-        if self.retention_ms == 0 || self.latest_written_timestamp <= 0 {
+        if self.retention_window == 0 || self.latest_written_timestamp <= 0 {
             return -1;
         }
         self.latest_written_timestamp
-            .saturating_sub(self.retention_ms as i64)
+            .saturating_sub(self.retention_window as i64)
     }
 
     fn is_timestamp_expired(&self, timestamp: i64) -> bool {
@@ -967,7 +967,7 @@ mod tests {
         let before = {
             let seg = ds.segments.segments.last().unwrap();
             (
-                seg.wrote_position,
+                seg.data_wrote_position,
                 seg.pending_wrote_position,
                 seg.total_uncompressed_size,
             )
@@ -984,7 +984,7 @@ mod tests {
         assert_eq!(ds.latest_written_timestamp(), 100);
         assert_eq!(ds.read(100, None).unwrap().unwrap().1, b"abcd");
         let seg = ds.segments.segments.last().unwrap();
-        assert_eq!(seg.wrote_position, before.0 + 2);
+        assert_eq!(seg.data_wrote_position, before.0 + 2);
         assert_eq!(seg.pending_wrote_position, before.1 + 2);
         assert_eq!(seg.total_uncompressed_size, before.2 + 2);
         assert_eq!(seg.invalid_record_count, 0);
@@ -1265,7 +1265,7 @@ mod tests {
             1,          // continuous
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
-            0,          // retention_ms
+            0,          // retention_window
         )
         .unwrap();
 
@@ -1303,7 +1303,7 @@ mod tests {
             1,          // continuous
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
-            0,          // retention_ms
+            0,          // retention_window
         )
         .unwrap();
 
@@ -1346,7 +1346,7 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.write(150, b"second").unwrap();
 
-        // Same ts=150 鈫?correction write (in-place overwrite)
+        // Same ts=150 閳?correction write (in-place overwrite)
         ds.write(150, b"corrected").unwrap();
 
         let entries = ds.query(100, 150, None).unwrap();
@@ -1380,7 +1380,7 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.write(150, b"second").unwrap();
 
-        // Same ts=150 鈫?correction write
+        // Same ts=150 閳?correction write
         ds.write(150, b"corrected").unwrap();
 
         let entries = ds.query(100, 150, None).unwrap();
@@ -1572,7 +1572,7 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.write(150, b"second").unwrap();
 
-        // ts=120 was never written 鈫?no index entry 鈫?out-of-order write rejected
+        // ts=120 was never written 閳?no index entry 閳?out-of-order write rejected
         let result = ds.write(120, b"middle");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
@@ -1634,7 +1634,7 @@ mod tests {
             1,
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
-            0,          // retention_ms
+            0,          // retention_window
         )
         .unwrap();
 
@@ -1676,7 +1676,7 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.write(150, b"last").unwrap();
 
-        // Out-of-order at ts=100 (real entry) 鈫?succeeds via out_of_order_write
+        // Out-of-order at ts=100 (real entry) 閳?succeeds via out_of_order_write
         ds.write(100, b"updated_first").unwrap();
         assert_eq!(ds.latest_written_timestamp, 150); // unchanged
 
@@ -1714,7 +1714,7 @@ mod tests {
             ds.write(100, b"v1").unwrap();
             ds.write(200, b"latest").unwrap();
 
-            // Two out-of-order writes at ts=100 鈥?each increments invalid_record_count
+            // Two out-of-order writes at ts=100 閳?each increments invalid_record_count
             ds.write(100, b"v2").unwrap();
             ds.write(100, b"v3").unwrap();
 
@@ -1755,7 +1755,7 @@ mod tests {
             1,
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
-            0,          // retention_ms
+            0,          // retention_window
         )
         .unwrap();
 
@@ -1792,7 +1792,7 @@ mod tests {
                 1,
                 256 * 1024, // initial_data_segment_size
                 4 * 1024,   // initial_index_segment_size
-                0,          // retention_ms
+                0,          // retention_window
             )
             .unwrap();
             ds.write(100, b"first").unwrap();
@@ -1806,7 +1806,7 @@ mod tests {
     }
 
     #[test]
-    fn test_retention_ms_no_reclaim_when_zero() {
+    fn test_retention_window_no_reclaim_when_zero() {
         let dir = temp_dir("retention_no_reclaim");
         let id = DataSetKey {
             name: "test".into(),
@@ -1821,7 +1821,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
-            0, // retention_ms = 0 (no limit)
+            0, // retention_window = 0 (no limit)
         )
         .unwrap();
 
@@ -1834,20 +1834,20 @@ mod tests {
         // Write new data to force different segment
         ds.write(200, b"new").unwrap();
 
-        // reclaim should do nothing because retention_ms = 0
+        // reclaim should do nothing because retention_window = 0
         let reclaimed = ds.reclaim_expired_segments().unwrap();
         assert_eq!(reclaimed, 0);
-        assert!(ds.retention_ms() == 0);
+        assert!(ds.retention_window() == 0);
     }
 
     #[test]
-    fn test_retention_ms_stored_and_roundtrip() {
+    fn test_retention_window_stored_and_roundtrip() {
         let dir = temp_dir("retention_stored");
         let id = DataSetKey {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let ret = 30 * 86400 * 1000u64;
+        let ret = 30 * 86400u64;
         let ds = DataSet::create(
             id.clone(),
             dir.clone(),
@@ -1860,11 +1860,11 @@ mod tests {
             ret,
         )
         .unwrap();
-        assert_eq!(ds.retention_ms(), ret);
+        assert_eq!(ds.retention_window(), ret);
 
         // Reopen and verify
         let ds2 = DataSet::open(id, dir).unwrap();
-        assert_eq!(ds2.retention_ms(), ret);
+        assert_eq!(ds2.retention_window(), ret);
     }
 
     #[test]
@@ -1896,15 +1896,15 @@ mod tests {
 
         assert_eq!(ds.latest_written_timestamp, 200);
 
-        // Query [150, 200] 鈫?clamp to [max(150,150)=150, 200] 鈫?3 records
+        // Query [150, 200] 閳?clamp to [max(150,150)=150, 200] 閳?3 records
         let entries = ds.query(150, 200, None).unwrap();
         assert_eq!(entries.len(), 3);
 
-        // Query [100, 200] 鈫?clamp to [max(100,150)=150, 200] 鈫?3 records
+        // Query [100, 200] 閳?clamp to [max(100,150)=150, 200] 閳?3 records
         let entries_before = ds.query(100, 200, None).unwrap();
         assert_eq!(entries_before.len(), 3);
 
-        // Single data segment with max_ts=200 >= threshold 鈫?no reclaim
+        // Single data segment with max_ts=200 >= threshold 閳?no reclaim
         let reclaimed = ds.reclaim_expired_segments().unwrap();
         assert_eq!(reclaimed, 0);
 
@@ -1931,7 +1931,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
-            0, // retention_ms = 0
+            0, // retention_window = 0
         )
         .unwrap();
 
@@ -1962,7 +1962,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
-            50, // retention_ms = 50
+            50, // retention_window = 50
         )
         .unwrap();
 
@@ -1976,7 +1976,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, 200);
 
-        // Query entirely within expired range 鈫?empty
+        // Query entirely within expired range 閳?empty
         let empty = ds.query(50, 130, None).unwrap();
         assert!(empty.is_empty());
 
@@ -2190,7 +2190,7 @@ mod tests {
 
     #[test]
     fn test_delete_idempotent_error() {
-        // Deleting the same timestamp twice 鈫?second delete errors.
+        // Deleting the same timestamp twice 閳?second delete errors.
         let dir = temp_dir("delete_idempotent");
         let id = DataSetKey {
             name: "test".into(),
@@ -2244,7 +2244,7 @@ mod tests {
         ds.delete(100).unwrap();
         ds.delete(200).unwrap();
 
-        // Both deletes target the same segment 鈫?count = 2
+        // Both deletes target the same segment 閳?count = 2
         let seg = ds.segments.segments.last().unwrap();
         assert_eq!(seg.invalid_record_count, 2);
 
@@ -2256,8 +2256,8 @@ mod tests {
 
     #[test]
     fn test_delete_then_out_of_order_rewrite() {
-        // After delete(ts), rewrite at ts becomes out-of-order 鈫?replaces filler.
-        // invalid_record_count should NOT increase on the rewrite (filler 鈫?real).
+        // After delete(ts), rewrite at ts becomes out-of-order 閳?replaces filler.
+        // invalid_record_count should NOT increase on the rewrite (filler 閳?real).
         let dir = temp_dir("delete_then_ooo");
         let id = DataSetKey {
             name: "test".into(),
@@ -2283,7 +2283,7 @@ mod tests {
         ds.delete(100).unwrap();
         // After delete: entry at 100 is filler, invalid_record_count=1
 
-        // Rewrite at ts=100 鈫?out-of-order, replaces filler (FILLER 鈫?real):
+        // Rewrite at ts=100 閳?out-of-order, replaces filler (FILLER 閳?real):
         // invalid_record_count unchanged
         ds.write(100, b"replaced").unwrap();
 
@@ -2584,7 +2584,7 @@ mod tests {
 
         ds.write(100, b"hello").unwrap();
 
-        // Read non-existent timestamp 鈫?None
+        // Read non-existent timestamp 閳?None
         let result = ds.read(999, None).unwrap();
         assert!(result.is_none());
     }
@@ -2615,7 +2615,7 @@ mod tests {
         // Delete ts=100
         ds.delete(100).unwrap();
 
-        // Read deleted timestamp 鈫?None (filler)
+        // Read deleted timestamp 閳?None (filler)
         let result = ds.read(100, None).unwrap();
         assert!(result.is_none());
 
@@ -2649,11 +2649,11 @@ mod tests {
         ds.write(110, b"world").unwrap();
         ds.flush().unwrap();
 
-        // Filler positions (101..109) 鈫?None
+        // Filler positions (101..109) 閳?None
         let result = ds.read(105, None).unwrap();
         assert!(result.is_none());
 
-        // Real positions (100, 110) 鈫?Some
+        // Real positions (100, 110) 閳?Some
         let result = ds.read(100, None).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"hello");
@@ -2774,7 +2774,7 @@ mod tests {
             ds.close().unwrap();
         }
 
-        // Reopen 鈫?latest_written_timestamp recovered from index
+        // Reopen 閳?latest_written_timestamp recovered from index
         {
             let ds = DataSet::open(id, dir).unwrap();
             assert_eq!(ds.latest_written_timestamp(), 250);

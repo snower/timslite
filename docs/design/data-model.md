@@ -124,7 +124,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 | 时间戳、时间范围、创建时间 | `i64 LE` | `timestamp`, `min_timestamp`, `max_timestamp`, `created_at/create_time`。允许业务使用负 timestamp; 空数据段使用 `i64::MAX` / `i64::MIN` 作为 sentinel。 |
 | segment header 的 `file_offset` | `i64 LE` | 复用字段: data segment 中必须为非负数据区逻辑起点; index segment 中表示 `start_timestamp`, 因此保持 signed。 |
 | 数据长度、payload 长度、压缩前长度 | `u32 LE` | `data_len`, `block_payload_size`, `uncompressed_size`, `file_size`。写入时必须拒绝超过 `u32::MAX` 的值; 当前 API 还必须拒绝纯数据长度超过 4MiB 的单条 record; 读取时必须校验不会越过 block/file 边界。 |
-| 逻辑 offset、写入位置、计数、retention、segment size | `u64 LE` | `block_offset`, `wrote_position`, `record_count`, `pending_*`, `invalid_record_count`, `*_segment_size`, `retention_ms`。所有加法/乘法必须使用 checked/saturating 语义并校验上界。 |
+| 逻辑 offset、写入位置、计数、retention、segment size | `u64 LE` | `block_offset`, `wrote_position`, `record_count`, `pending_*`, `invalid_record_count`, `*_segment_size`, `retention_window`。`retention_window` 使用 timestamp unit。所有加法/乘法必须使用 checked/saturating 语义并校验上界。 |
 | block 内 offset、flags、version、length | `u16 LE` | `in_block_offset`, `flags`, `version`, `meta_length`, `state_length`, TLV length。`0xFFFF` 是 `in_block_offset` filler sentinel, 真实 record offset 不得使用该值。 |
 | type、fileType、compress_level、boolean flag | `u8` | 单字节字段不涉及端序。 |
 
@@ -252,7 +252,7 @@ pub const INDEX_HEADER_SIZE: u64 = 52;   // v1 默认 index header_len
 ```
 
 > 新建 v1 文件时数据区起点分别为 116/52。打开已有文件时, 数据区起点必须使用文件 header 中计算出的 `header_len`。
-> `wrote_position` 是文件内绝对偏移, 必须满足 `wrote_position >= header_len`。
+> `wrote_position` 是文件内绝对偏移, 必须满足 `wrote_position >= header_len`。运行时可派生 `data_wrote_position = wrote_position - header_len` 作为数据区相对已用字节数; 该派生值不得直接写入 header。
 
 #### 兼容性设计
 

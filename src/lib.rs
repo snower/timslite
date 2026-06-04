@@ -1,4 +1,4 @@
-//! timslite - Rust time-series data storage library.
+﻿//! timslite - Rust time-series data storage library.
 //!
 //! A high-performance, mmap-backed time-series data store with:
 //! - Block-level aggregation (max 64KB per block)
@@ -8,7 +8,7 @@
 //! - C ABI FFI interface
 //! - Explicit create/open/drop lifecycle for datasets
 
-// Intentionally unused pub helpers / FFI-facing API — suppress dead_code warnings
+// Intentionally unused pub helpers / FFI-facing API 鈥?suppress dead_code warnings
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::wrong_self_convention)]
@@ -27,7 +27,7 @@
 //!     4 * 1024 * 1024,    // index_segment_size = 4MB
 //!     6,                  // compress_level
 //!     0,                  // index_continuous
-//!     0,                  // retention_ms
+//!     0,                  // retention in timestamp units (0 = no limit)
 //! ).unwrap();
 //!
 //! // Open an existing dataset (parameters read from meta file)
@@ -35,7 +35,7 @@
 //! // ... write and query
 //! ```
 
-// ─── Module declarations ────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Module declarations 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 pub mod config;
 pub mod error;
 pub mod util;
@@ -56,7 +56,7 @@ pub mod queue;
 mod segment;
 mod store;
 
-// ─── Public re-exports ──────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Public re-exports 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 pub use bg::TickResult;
 pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
 pub use dataset::{DataSet, DataSetKey};
@@ -71,7 +71,7 @@ pub use query::iter::{QueryIterator, QuerySource, SourceIndex};
 pub use queue::{DatasetQueue, DatasetQueueConsumer, PendingEntry};
 pub use store::{DataSetHandle, Store};
 
-// ─── Queue constants (exported for FFI consumers) ───────────────────────────
+// 鈹€鈹€鈹€ Queue constants (exported for FFI consumers) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Queue state file magic bytes ("QSTF").
 pub const QUEUE_STATE_MAGIC: [u8; 4] = *queue::QUEUE_STATE_MAGIC;
@@ -85,7 +85,7 @@ pub const QUEUE_STATE_FILE_SIZE: usize = queue::STATE_FILE_SIZE;
 /// Maximum pending entries per consumer group.
 pub const QUEUE_MAX_PENDING_ENTRIES: usize = queue::MAX_PENDING_ENTRIES;
 
-// ─── Core constants (exported for FFI consumers) ────────────────────────────
+// 鈹€鈹€鈹€ Core constants (exported for FFI consumers) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Data segment v1 default header size in bytes.
 pub const DATA_HEADER_SIZE: u64 = header::DATA_HEADER_SIZE;
@@ -114,7 +114,7 @@ pub const FILE_TYPE_DATA: u8 = header::FILE_TYPE_DATA;
 /// File type: index segment.
 pub const FILE_TYPE_INDEX: u8 = header::FILE_TYPE_INDEX;
 
-// ─── Default crate-level test ───────────────────────────────────────────────
+// 鈹€鈹€鈹€ Default crate-level test 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 #[cfg(test)]
 mod tests {
     #[test]

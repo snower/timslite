@@ -59,7 +59,7 @@ struct DataSegment {
     min_timestamp: i64,          // 段内最小时间戳 (i64::MAX=空段)
     max_timestamp: i64,          // 段内最大时间戳 (i64::MIN=空段)
     header_len: u64,             // 从文件头计算出的数据区起点
-    wrote_position: u64,         // 从 header_len 起算的数据区内已用字节数
+    data_wrote_position: u64,    // 运行时数据区内已用字节数; header state wrote_position 保存文件内绝对偏移
     record_count: u64,
     total_uncompressed_size: u64,
     created_at: i64,
@@ -89,7 +89,7 @@ block_segment_offset = block_offset - segment.file_offset
 physical_file_offset = segment.header_len + block_segment_offset
 ```
 
-`DataSegment` 内部只使用 `block_segment_offset`; 任何 mmap/seek 位置都必须再加 `header_len`。
+`DataSegment` 内部读写使用数据区相对坐标: `block_segment_offset` 与运行时 `data_wrote_position` 均不包含 header。文件 header state 中的 `wrote_position` 持久化为文件内绝对偏移, 即 `header_len + data_wrote_position`; 打开文件时必须减去动态 `header_len` 恢复运行时相对坐标。任何 mmap/seek 位置都必须再加 `header_len`。
 
 ### 6.2 文件布局
 
@@ -212,7 +212,7 @@ fn overwrite_in_last_block(
 ) -> io::Result<()> {
     // 1. 验证这是段内最后一个 block:
     //    block_abs_end = block_segment_offset + BLOCK_HEADER_SIZE + block.payload_size
-    //    若 block_abs_end < self.wrote_position → 不是最后 block, 返回错误
+    //    若 block_abs_end < self.data_wrote_position → 不是最后 block, 返回错误
     //
     // 2. 读取 block header (16B at header_len + block_segment_offset)
     //    - 检查 flags: 必须等于 0; 若含 SEALED 或 COMPRESSED → 返回错误
@@ -232,12 +232,12 @@ fn overwrite_in_last_block(
     //    - uncompressed_size  += delta  (block 内原始数据长度变化)
     //
     // 7. 更新段内计数字段:
-    //    - self.wrote_position              += delta
+    //    - self.data_wrote_position         += delta
     //    - self.total_uncompressed_size     += delta
     //    - if block is pending (pending_block_offset.matches):
     //        self.pending_wrote_position += delta
     //        更新 file header pending_wrote_position
-    //    - 更新 file header wrote_position (update_file_wrote_position)
+    //    - 更新 file header wrote_position = header_len + data_wrote_position
 }
 ```
 
@@ -251,7 +251,7 @@ fn overwrite_in_last_block(
 
 #### append_to_last_record: 追加写入 (Tail Append)
 
-append 追加场景下 (`timestamp == latest_written_timestamp`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前 `wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限和 70% 迁移阈值判断。如果上层判断追加后需要迁移为独占 block, 应先读取完整旧数据并走 `create_single_record_block`, 不调用本方法。
+append 追加场景下 (`timestamp == latest_written_timestamp`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前运行时 `data_wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限和 70% 迁移阈值判断。如果上层判断追加后需要迁移为独占 block, 应先读取完整旧数据并走 `create_single_record_block`, 不调用本方法。
 
 ```rust
 fn append_to_last_record(
@@ -262,7 +262,7 @@ fn append_to_last_record(
 ) -> io::Result<u32> {
     // 1. 验证 block 是段内最后一个 block:
     //    block_abs_end = block_segment_offset + BLOCK_HEADER_SIZE + block.payload_size
-    //    block_abs_end 必须等于 self.wrote_position
+    //    block_abs_end 必须等于 self.data_wrote_position
     //
     // 2. 读取 block header:
     //    - flags 必须等于 0; compressed/sealed 均返回错误
@@ -284,7 +284,7 @@ fn append_to_last_record(
     //    - uncompressed_size += append_data.len()
     //
     // 7. 更新段 state:
-    //    - self.wrote_position          += append_data.len()
+    //    - self.data_wrote_position     += append_data.len()
     //    - self.total_uncompressed_size += append_data.len()
     //    - self.pending_wrote_position  += append_data.len()
     //    - record_count/min_timestamp/max_timestamp 不变
@@ -331,7 +331,7 @@ impl DataSegment {
 
 > **安全性保证**: 只有 `SEALED|COMPRESSED` block 的解压 payload 才能进入全局 `BlockCache`。pending raw block 仍在写入中, 不能进入全局缓存。sealed raw block 为非法状态。compressed block 一旦写入后不允许原地修改。
 >
-> **Header 起点约束**: 进入 `DataSegment` 后的 `block_segment_offset` 表示相对数据区起点的偏移, 即 `block_offset - segment.file_offset`; 物理文件位置必须通过 `segment.header_len + block_segment_offset` 计算。新建 v1 文件的 `header_len` 为 116, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。索引中的 `block_offset` 是数据区逻辑全局偏移, 不可直接作为文件内 seek 位置。
+> **Header 起点约束**: 进入 `DataSegment` 后的 `block_segment_offset` 表示相对数据区起点的偏移, 即 `block_offset - segment.file_offset`; 运行时 `data_wrote_position` 也是相对数据区起点的已用字节数。物理文件位置必须通过 `segment.header_len + block_segment_offset` 计算。新建 v1 文件的 `header_len` 为 116, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。索引中的 `block_offset` 是数据区逻辑全局偏移, 不可直接作为文件内 seek 位置。文件 header state 的 `wrote_position` 唯一保存形式是文件内绝对偏移: `header_len + data_wrote_position`。
 
 ### 6.5 生命周期方法
 

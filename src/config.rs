@@ -1,4 +1,4 @@
-//! Configuration types for timslite.
+﻿//! Configuration types for timslite.
 //!
 //! `StoreConfig` combines Store runtime settings with defaults for newly
 //! created datasets. Existing datasets reopen from their own meta files.
@@ -212,7 +212,7 @@ pub struct DataSetConfig {
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
     /// Data validity period in same unit as timestamps. 0 = no limit.
-    pub retention_ms: u64,
+    pub retention_window: u64,
 }
 
 #[allow(dead_code)]
@@ -225,7 +225,7 @@ impl DataSetConfig {
             index_continuous: 0,
             initial_data_segment_size: config.initial_data_segment_size,
             initial_index_segment_size: config.initial_index_segment_size,
-            retention_ms: 0,
+            retention_window: 0,
         }
     }
 
@@ -263,7 +263,7 @@ pub struct DataSetConfigBuilder {
     index_continuous: Option<u8>,
     initial_data_segment_size: Option<u64>,
     initial_index_segment_size: Option<u64>,
-    retention_ms: Option<u64>,
+    retention_window: Option<u64>,
 }
 
 impl DataSetConfigBuilder {
@@ -277,7 +277,7 @@ impl DataSetConfigBuilder {
             index_continuous: Some(0),
             initial_data_segment_size: Some(store.initial_data_segment_size),
             initial_index_segment_size: Some(store.initial_index_segment_size),
-            retention_ms: Some(0),
+            retention_window: Some(0),
         }
     }
 
@@ -317,9 +317,9 @@ impl DataSetConfigBuilder {
         self
     }
 
-    /// Set the data retention period (same unit as timestamp, 0 = no limit).
-    pub fn retention_ms(mut self, ms: u64) -> Self {
-        self.retention_ms = Some(ms);
+    /// Set the data retention period in timestamp units (0 = no limit).
+    pub fn retention_window(mut self, units: u64) -> Self {
+        self.retention_window = Some(units);
         self
     }
 
@@ -339,7 +339,7 @@ impl DataSetConfigBuilder {
             initial_index_segment_size: self
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
-            retention_ms: self.retention_ms.unwrap_or(0),
+            retention_window: self.retention_window.unwrap_or(0),
         }
     }
 }
@@ -447,7 +447,7 @@ mod tests {
         let dataset = DataSetConfig::from_store(&store);
         assert_eq!(dataset.data_segment_size, 32 * 1024 * 1024);
         assert_eq!(dataset.compress_level, 3);
-        assert_eq!(dataset.retention_ms, 0);
+        assert_eq!(dataset.retention_window, 0);
     }
 
     #[test]
@@ -467,7 +467,7 @@ mod tests {
         assert_eq!(config.index_continuous, 0);
         assert_eq!(config.initial_data_segment_size, 512 * 1024);
         assert_eq!(config.initial_index_segment_size, 8 * 1024);
-        assert_eq!(config.retention_ms, 0);
+        assert_eq!(config.retention_window, 0);
     }
 
     #[test]
@@ -480,14 +480,21 @@ mod tests {
         let config = DataSetConfigBuilder::from_store(&store)
             .compress_level(9)
             .index_continuous(1)
-            .retention_ms(30 * 86400 * 1000)
+            .retention_window(30 * 86400)
             .build();
 
         // Override takes effect
         assert_eq!(config.compress_level, 9);
         assert_eq!(config.index_continuous, 1);
-        assert_eq!(config.retention_ms, 30 * 86400 * 1000);
+        assert_eq!(config.retention_window, 30 * 86400);
         // Store default is inherited
         assert_eq!(config.data_segment_size, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_dataset_config_builder_retention_window() {
+        let config = DataSetConfigBuilder::default().retention_window(30).build();
+
+        assert_eq!(config.retention_window, 30);
     }
 }

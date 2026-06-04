@@ -37,7 +37,7 @@ const META_TYPE_CREATE_TIME: u8        = 0x04;  // i64 LE (unix ms)
 const META_TYPE_INDEX_CONTINUOUS: u8   = 0x05;  // u8 (0=非连续, 1=连续)
 const META_TYPE_INITIAL_DATA_SEGMENT_SIZE: u8 = 0x06;  // u64 LE
 const META_TYPE_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
-const META_TYPE_RETENTION_MS: u8       = 0x08;  // u64 LE (data validity period)
+const META_TYPE_RETENTION_WINDOW: u8   = 0x08;  // u64 LE (timestamp unit)
 ```
 
 ### TLV 类型定义
@@ -51,7 +51,7 @@ const META_TYPE_RETENTION_MS: u8       = 0x08;  // u64 LE (data validity period)
 | 0x05 | index_continuous | 1 | u8 | 0=非连续, 1=连续存储 |
 | 0x06 | initial_data_segment_size | 8 | u64 LE | 数据分段初始大小 |
 | 0x07 | initial_index_segment_size | 8 | u64 LE | 索引分段初始大小 |
-| 0x08 | retention_ms | 8 | u64 LE | 数据有效期 (毫秒, 0=不限) |
+| 0x08 | retention_window | 8 | u64 LE | 数据保留窗口 (timestamp unit, 0=不限) |
 
 > `block_max_size` 无 TLV type。普通聚合 Block 上限由 `BLOCK_MAX_SIZE=65536` 固定定义, 不是 dataset 创建参数。
 >
@@ -68,7 +68,7 @@ pub struct DataSetMeta {
     pub index_continuous: u8,
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
-    pub retention_ms: u64,       // 数据有效期 (与 timestamp 同单位, 0=不限)
+    pub retention_window: u64,   // 数据保留窗口 (timestamp unit, 0=不限)
 }
 
 impl DataSetMeta {
@@ -76,7 +76,7 @@ impl DataSetMeta {
     pub fn new(data_segment_size: u64, index_segment_size: u64,
                compress_level: u8, index_continuous: u8,
                initial_data_segment_size: u64, initial_index_segment_size: u64,
-               retention_ms: u64) -> Self;
+               retention_window: u64) -> Self;
 
     /// 序列化: magic + version + meta_data_length + TLV values
     pub fn to_bytes(&self) -> Vec<u8>;

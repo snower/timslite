@@ -1,4 +1,4 @@
-//! Store: facade that manages all datasets and background tasks.
+﻿//! Store: facade that manages all datasets and background tasks.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -206,7 +206,7 @@ impl Store {
             config.index_continuous,
             config.initial_data_segment_size,
             config.initial_index_segment_size,
-            config.retention_ms,
+            config.retention_window,
         )?;
 
         let ds = Arc::new(Mutex::new(ds));
@@ -236,7 +236,7 @@ impl Store {
         index_segment_size: u64,
         compress_level: u8,
         index_continuous: u8,
-        retention_ms: u64,
+        retention_window: u64,
     ) -> Result<DataSetHandle> {
         self.create_dataset_with_config(
             name,
@@ -247,7 +247,7 @@ impl Store {
                     .index_segment_size(index_segment_size)
                     .compress_level(compress_level)
                     .index_continuous(index_continuous)
-                    .retention_ms(retention_ms),
+                    .retention_window(retention_window),
             ),
         )
     }
@@ -517,7 +517,7 @@ impl Store {
     /// due and runs them immediately.  Returns the number of executed tasks
     /// and the delay until the next one is due.
     ///
-    /// Safe to call even when the background thread is enabled — it will
+    /// Safe to call even when the background thread is enabled 鈥?it will
     /// be serialised with the thread via the internal `Mutex`.
     pub fn tick_background_tasks(&self) -> Result<TickResult> {
         let bg = self
@@ -560,7 +560,7 @@ impl Store {
         Ok(())
     }
 
-    // ─── Queue operations ────────────────────────────────────────────────────
+    // 鈹€鈹€鈹€ Queue operations 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     /// Open the queue subsystem for a dataset.
     ///

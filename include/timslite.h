@@ -1,4 +1,4 @@
-/**
+﻿/**
  * timslite - Time-Series Data Storage Library (C Header)
  *
  * A high-performance, mmap-backed time-series data store with:
@@ -43,12 +43,12 @@ typedef struct TmslDatasetConfigFFI {
     uint64_t index_segment_size;
     uint64_t initial_data_segment_size;
     uint64_t initial_index_segment_size;
-    uint64_t retention_ms;
+    uint64_t retention_window;
     uint8_t compress_level;
     uint8_t index_continuous;
 } TmslDatasetConfigFFI;
 
-/* ─── Store Management ──────────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Store Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 /**
  * Fill a store config struct with default values.
@@ -121,7 +121,7 @@ int tmsl_store_next_background_delay(void* store,
                                      uint64_t* out_next_delay_ms,
                                      char* err_buf, size_t err_buf_len);
 
-/* ─── Dataset Management ────────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Dataset Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 /**
  * Create a new dataset (errors if already exists).
@@ -132,7 +132,7 @@ int tmsl_store_next_background_delay(void* store,
  * @param index_segment_size   Index segment size in bytes.
  * @param compress_level       Compression level (1-9).
  * @param index_continuous     0 = non-continuous (strict order), 1 = continuous (filler entries).
- * @param retention_ms         Data validity period (same unit as timestamp, 0 = no limit).
+ * @param retention_window         Data validity period (same unit as timestamp, 0 = no limit).
  *                             Store-level `retention_check_hour` controls daily UTC reclaim schedule.
  * @param err_buf              Buffer for error message.
  * @param err_buf_len          Length of error buffer.
@@ -141,7 +141,7 @@ int tmsl_store_next_background_delay(void* store,
 void* tmsl_dataset_create(void* store, const char* name, const char* dataset_type,
                           uint64_t data_segment_size, uint64_t index_segment_size,
                           unsigned char compress_level, unsigned char index_continuous,
-                          uint64_t retention_ms,
+                          uint64_t retention_window,
                           char* err_buf, size_t err_buf_len);
 
 /**
@@ -217,17 +217,17 @@ int tmsl_dataset_flush(void* dataset, char* err_buf, size_t err_buf_len);
 int tmsl_dataset_latest_timestamp(void* dataset, int64_t* out_ts,
                                   char* err_buf, size_t err_buf_len);
 
-/* ─── Data Write ─────────────────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Data Write 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 /**
  * Write a record to a dataset.
  *
  * Supports three timestamp modes:
- *   - correction: timestamp == latest → overwrite data in place (index unchanged)
- *   - out-of-order: timestamp < latest → append to latest segment + update index
+ *   - correction: timestamp == latest 鈫?overwrite data in place (index unchanged)
+ *   - out-of-order: timestamp < latest 鈫?append to latest segment + update index
  *     entry in place; the old data segment's invalid_record_count is incremented
  *     if the previous entry referenced real data; its global cache entry is invalidated
- *   - in-order: timestamp > latest → append; continuous mode fills gaps with filler
+ *   - in-order: timestamp > latest 鈫?append; continuous mode fills gaps with filler
  *
  * @param dataset      Opaque dataset pointer.
  * @param timestamp    Timestamp (unit must match the dataset's timestamp scheme).
@@ -278,7 +278,7 @@ int tmsl_dataset_append(void* dataset, int64_t timestamp,
 int tmsl_dataset_delete(void* dataset, int64_t timestamp,
                         char* err_buf, size_t err_buf_len);
 
-/* ─── Single Record Read ────────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Single Record Read 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 /**
  * Read a single record by exact timestamp.
@@ -304,7 +304,7 @@ int tmsl_dataset_read(void* dataset, int64_t timestamp,
                       int64_t* out_ts, unsigned char** out_data, size_t* out_data_len,
                       char* err_buf, size_t err_buf_len);
 
-/* ─── Query Iterator ────────────────────────────────────────────────────── */
+/* 鈹€鈹€鈹€ Query Iterator 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 /**
  * Query records in a time range.
