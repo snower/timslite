@@ -1,5 +1,4 @@
 //! Journal integration tests.
-mod common;
 
 use std::fs;
 use std::path::PathBuf;
@@ -163,12 +162,11 @@ fn t28_7_disabled_journal_creates_no_journal_files() {
         .unwrap();
     store.close().unwrap();
 
-    assert!(
-        !dir.join(JOURNAL_DATASET_NAME)
-            .join(JOURNAL_DATASET_TYPE)
-            .join("meta")
-            .exists()
-    );
+    assert!(!dir
+        .join(JOURNAL_DATASET_NAME)
+        .join(JOURNAL_DATASET_TYPE)
+        .join("meta")
+        .exists());
 }
 
 #[test]

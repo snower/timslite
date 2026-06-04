@@ -1,11 +1,24 @@
 //! Dataset basic lifecycle tests: create, open, close, persistence, flush.
-mod common;
+use std::fs;
+use std::path::PathBuf;
+
+fn temp_dir() -> PathBuf {
+    let d = std::env::temp_dir().join("timslite_integration");
+    fs::create_dir_all(&d).unwrap();
+    d.join(format!(
+        "test_{:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
 
 #[test]
 fn t8_1_1_basic_lifecycle() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .flush_interval(std::time::Duration::from_secs(30))
         .idle_timeout(std::time::Duration::from_secs(60))
@@ -51,7 +64,7 @@ fn t8_1_1_basic_lifecycle() {
 fn t8_1_2_multi_dataset_isolation() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
@@ -122,7 +135,7 @@ fn t8_1_2_multi_dataset_isolation() {
 fn t8_1_3_block_aggregation() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
@@ -156,12 +169,20 @@ fn t8_1_3_block_aggregation() {
 fn t8_1_6_persistence() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
 
     {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         store
-            .create_dataset("persist", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+            .create_dataset(
+                "persist",
+                "data",
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
             .unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
         for i in 0..50i64 {
@@ -193,7 +214,7 @@ fn t8_1_6_persistence() {
 fn t8_1_7_flush_does_not_seal() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .flush_interval(std::time::Duration::from_millis(500))
         .idle_timeout(std::time::Duration::from_secs(60))

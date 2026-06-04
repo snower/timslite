@@ -1,23 +1,28 @@
 //! Out-of-order writes, continuous index, delete lifecycle, and mixed operations tests.
-mod common;
+use std::fs;
+use std::path::PathBuf;
+
+fn temp_dir() -> PathBuf {
+    let d = std::env::temp_dir().join("timslite_integration");
+    fs::create_dir_all(&d).unwrap();
+    d.join(format!(
+        "test_{:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
 
 #[test]
 fn t18_1_out_of_order_write() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset(
-            "ooo_ds",
-            "data",
-            64 * 1024 * 1024,
-            4 * 1024 * 1024,
-            6,
-            0,
-            0,
-        )
+        .create_dataset("ooo_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
 
     let ds = store.open_dataset("ooo_ds", "data").unwrap();
@@ -48,19 +53,11 @@ fn t18_1_out_of_order_write() {
 fn t18_1b_out_of_order_write_continuous() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset(
-            "ooo_ds",
-            "data",
-            64 * 1024 * 1024,
-            4 * 1024 * 1024,
-            6,
-            1,
-            0,
-        )
+        .create_dataset("ooo_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
         .unwrap();
 
     let ds = store.open_dataset("ooo_ds", "data").unwrap();
@@ -87,19 +84,11 @@ fn t18_1b_out_of_order_write_continuous() {
 fn t18_2_delete_lifecycle() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
-        .create_dataset(
-            "del_ds",
-            "data",
-            64 * 1024 * 1024,
-            4 * 1024 * 1024,
-            6,
-            0,
-            0,
-        )
+        .create_dataset("del_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
 
     let ds = store.open_dataset("del_ds", "data").unwrap();
@@ -131,7 +120,7 @@ fn t18_2_delete_lifecycle() {
 fn t18_3_mixed_operations() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store

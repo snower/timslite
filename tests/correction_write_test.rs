@@ -1,11 +1,24 @@
 //! Correction write tests: overwrite same-size and resize.
-mod common;
+use std::fs;
+use std::path::PathBuf;
+
+fn temp_dir() -> PathBuf {
+    let d = std::env::temp_dir().join("timslite_integration");
+    fs::create_dir_all(&d).unwrap();
+    d.join(format!(
+        "test_{:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
 
 #[test]
 fn t17_1_correction_write_same_size() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
@@ -37,7 +50,7 @@ fn t17_1_correction_write_same_size() {
 fn t17_2_correction_write_resize_reopen() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store

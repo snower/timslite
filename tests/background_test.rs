@@ -1,5 +1,18 @@
 //! Manual background execution tests.
-mod common;
+use std::fs;
+use std::path::PathBuf;
+
+fn temp_dir() -> PathBuf {
+    let d = std::env::temp_dir().join("timslite_integration");
+    fs::create_dir_all(&d).unwrap();
+    d.join(format!(
+        "test_{:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
 
 use std::time::Duration;
 
@@ -7,7 +20,7 @@ use std::time::Duration;
 fn t21_1_manual_bg_lifecycle() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .enable_background_thread(false)
         .flush_interval(Duration::from_millis(100))
@@ -50,7 +63,7 @@ fn t21_1_manual_bg_lifecycle() {
 fn t21_2_manual_bg_next_delay_consistency() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .enable_background_thread(false)
         .flush_interval(Duration::from_secs(3600))
@@ -69,7 +82,7 @@ fn t21_2_manual_bg_next_delay_consistency() {
 fn t21_3_manual_bg_concurrent_with_thread() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .enable_background_thread(true)
         .flush_interval(Duration::from_millis(100))

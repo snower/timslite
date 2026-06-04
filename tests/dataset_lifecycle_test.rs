@@ -1,11 +1,24 @@
 //! Dataset lifecycle tests: create/open/drop error handling and validation.
-mod common;
+use std::fs;
+use std::path::PathBuf;
+
+fn temp_dir() -> PathBuf {
+    let d = std::env::temp_dir().join("timslite_integration");
+    fs::create_dir_all(&d).unwrap();
+    d.join(format!(
+        "test_{:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
 
 #[test]
 fn t8_2_1_create_returns_error_if_exists() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
@@ -42,7 +55,7 @@ fn t8_2_1_create_returns_error_if_exists() {
 fn t8_2_2_open_returns_error_if_not_exists() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     // Open non-existent dataset
@@ -59,7 +72,7 @@ fn t8_2_2_open_returns_error_if_not_exists() {
 fn t8_2_3_drop_deletes_dataset() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
@@ -95,7 +108,7 @@ fn t8_2_3_drop_deletes_dataset() {
 fn t8_2_4_create_after_drop() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     store
@@ -144,7 +157,7 @@ fn t8_2_4_create_after_drop() {
 fn t8_2_5_dataset_name_type_validation() {
     use timslite::{Store, StoreConfig, TmslError};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
     let valid = store

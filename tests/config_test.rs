@@ -1,11 +1,24 @@
 //! StoreConfig and DataSetConfig builder API tests.
-mod common;
+use std::fs;
+use std::path::PathBuf;
+
+fn temp_dir() -> PathBuf {
+    let d = std::env::temp_dir().join("timslite_integration");
+    fs::create_dir_all(&d).unwrap();
+    d.join(format!(
+        "test_{:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
 
 #[test]
 fn t14_1_create_with_none_config_uses_store_defaults() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .data_segment_size(32 * 1024 * 1024)
         .index_segment_size(8 * 1024 * 1024)
@@ -33,7 +46,7 @@ fn t14_1_create_with_none_config_uses_store_defaults() {
 fn t14_2_create_with_builder_override() {
     use timslite::{DataSetConfigBuilder, Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .data_segment_size(64 * 1024 * 1024)
         .compress_level(6)
@@ -66,7 +79,7 @@ fn t14_2_create_with_builder_override() {
 fn t14_3_backward_compat_existing_api() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::default();
     let mut store = Store::open(&dir, config).unwrap();
 

@@ -1,5 +1,18 @@
 //! Queue integration tests: push/poll/ack, consumer groups, persistence, threading.
-mod common;
+use std::fs;
+use std::path::PathBuf;
+
+fn temp_dir() -> PathBuf {
+    let d = std::env::temp_dir().join("timslite_integration");
+    fs::create_dir_all(&d).unwrap();
+    d.join(format!(
+        "test_{:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
 
 use std::time::Duration;
 
@@ -7,7 +20,7 @@ use std::time::Duration;
 fn t27_1_1_basic_push_poll_ack() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -38,7 +51,7 @@ fn t27_1_1_basic_push_poll_ack() {
 fn t27_1_2_multiple_pushes_sequential_poll() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -75,7 +88,7 @@ fn t27_1_2_multiple_pushes_sequential_poll() {
 fn t27_1_3_poll_timeout_empty_queue() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -93,7 +106,7 @@ fn t27_1_3_poll_timeout_empty_queue() {
 fn t27_2_1_multi_consumer_groups() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -139,7 +152,7 @@ fn t27_2_1_multi_consumer_groups() {
 fn t27_2_2_two_consumers_same_group() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -169,7 +182,7 @@ fn t27_2_2_two_consumers_same_group() {
 fn t27_2_3_open_consumer_creates_group() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -187,7 +200,7 @@ fn t27_2_3_open_consumer_creates_group() {
 fn t27_3_1_open_queue_twice_errors() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -202,7 +215,7 @@ fn t27_3_1_open_queue_twice_errors() {
 fn t27_3_2_push_to_closed_queue_errors() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -218,7 +231,7 @@ fn t27_3_2_push_to_closed_queue_errors() {
 fn t27_3_3_poll_after_close_errors() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -235,7 +248,7 @@ fn t27_3_3_poll_after_close_errors() {
 fn t27_3_4_ack_nonexistent_errors() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -251,7 +264,7 @@ fn t27_3_4_ack_nonexistent_errors() {
 fn t27_3_5_drop_nonexistent_consumer_errors() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -266,7 +279,7 @@ fn t27_3_5_drop_nonexistent_consumer_errors() {
 fn t27_3_5_open_consumer_on_closed_queue_errors() {
     use timslite::{Store, StoreConfig, TmslError};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -283,7 +296,7 @@ fn t27_3_5_open_consumer_on_closed_queue_errors() {
 fn t27_3_6_drop_nonexistent_consumer_group_errors() {
     use timslite::{Store, StoreConfig, TmslError};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -299,7 +312,7 @@ fn t27_3_6_drop_nonexistent_consumer_group_errors() {
 fn t27_4_1_pending_survives_reopen() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         store
@@ -355,7 +368,7 @@ fn t27_4_1_pending_survives_reopen() {
 fn t27_4_2_drop_and_recreate_consumer() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -372,7 +385,7 @@ fn t27_4_2_drop_and_recreate_consumer() {
 fn t27_4_3_acked_progress_persists() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -408,7 +421,7 @@ fn t27_5_1_producer_consumer_threads() {
     use std::thread;
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -458,7 +471,7 @@ fn t27_5_2_multiple_producers() {
     use std::thread;
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -510,7 +523,7 @@ fn t27_5_3_multiple_consumers_different_groups() {
     use std::thread;
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -558,7 +571,7 @@ fn t27_5_3_multiple_consumers_different_groups() {
 fn t27_6_1_store_invalid_handle_errors() {
     use timslite::{DataSetHandle, Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -571,7 +584,7 @@ fn t27_6_1_store_invalid_handle_errors() {
 fn t27_6_2_store_close_queue() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -588,7 +601,7 @@ fn t27_6_2_store_close_queue() {
 fn t27_6_1_store_open_queue_valid() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
@@ -608,7 +621,7 @@ fn t27_6_1_store_open_queue_valid() {
 fn t27_6_4_store_open_consumer_and_drop_consumer() {
     use timslite::{Store, StoreConfig, TmslError};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)

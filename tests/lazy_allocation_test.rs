@@ -1,11 +1,24 @@
 //! Lazy allocation integration tests.
-mod common;
+use std::fs;
+use std::path::PathBuf;
+
+fn temp_dir() -> PathBuf {
+    let d = std::env::temp_dir().join("timslite_integration");
+    fs::create_dir_all(&d).unwrap();
+    d.join(format!(
+        "test_{:?}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ))
+}
 
 #[test]
 fn t12_1_lazy_create_write_query_small_data() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .initial_data_segment_size(256 * 1024) // 256KB initial
         .initial_index_segment_size(4 * 1024) // 4KB initial
@@ -49,7 +62,7 @@ fn t12_1_lazy_create_write_query_small_data() {
 fn t12_2_lazy_write_until_max_then_new_segment() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .initial_data_segment_size(256 * 1024)
         .initial_index_segment_size(4 * 1024)
@@ -95,7 +108,7 @@ fn t12_2_lazy_write_until_max_then_new_segment() {
 fn t12_3_open_legacy_full_allocated_dataset() {
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     // Create with default (full allocation) config
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     store
@@ -139,7 +152,7 @@ fn t12_4_disk_space_efficiency() {
     use std::fs;
     use timslite::{Store, StoreConfig};
 
-    let dir = common::temp_dir();
+    let dir = temp_dir();
     let config = StoreConfig::builder()
         .initial_data_segment_size(256 * 1024)
         .initial_index_segment_size(4 * 1024)
