@@ -15,6 +15,15 @@ class TestWriteQuery:
             assert len(results) == 1
             assert results[0] == (1, b"only_one")
 
+    def test_append_latest_record(self, tmpdir):
+        """append() creates a new record, then appends to the latest record."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("append", "data")
+            ds = store.open_dataset("append", "data")
+            ds.append(1, b"abc")
+            ds.append(1, b"de")
+            assert ds.read(1) == (1, b"abcde")
+
     def test_multiple_write_query_range(self, tmpdir):
         """Write 100 records, query(3, 7) returns 5."""
         with timslite.Store.open(tmpdir) as store:

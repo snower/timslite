@@ -315,8 +315,16 @@ impl DataSegment {
 /// `data_len` (4 bytes) + `timestamp` (8 bytes) = 12 bytes.
 pub(crate) const RECORD_HEADER_SIZE: usize = 12;
 pub(crate) const RECORD_OVERHEAD: u64 = RECORD_HEADER_SIZE as u64;
+pub(crate) const MAX_RECORD_DATA_SIZE: usize = 4 * 1024 * 1024;
+pub(crate) const APPEND_MIGRATION_THRESHOLD: usize =
+    (crate::block::BLOCK_MAX_SIZE as usize * 70) / 100;
 
 fn checked_record_size(data_len: usize) -> Result<usize> {
+    if data_len > MAX_RECORD_DATA_SIZE {
+        return Err(TmslError::InvalidData(
+            "record data_len exceeds 4MiB limit".into(),
+        ));
+    }
     let record_size = RECORD_HEADER_SIZE
         .checked_add(data_len)
         .ok_or_else(|| TmslError::InvalidData("record size overflow".into()))?;
@@ -484,7 +492,7 @@ impl DataSegment {
     }
 
     /// Seal the pending block: compress and write back.
-    fn seal_pending_block(&mut self, compress_level: u8) -> Result<()> {
+    pub(crate) fn seal_pending_block(&mut self, compress_level: u8) -> Result<()> {
         let block_rel_offset = self.pending_block_offset.unwrap();
         let hdr_pos = (self.header_size + block_rel_offset) as usize;
         let payload_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
@@ -521,7 +529,7 @@ impl DataSegment {
     }
 
     /// Create an exclusive block for a single record > 64KB.
-    fn create_single_record_block(
+    pub(crate) fn create_single_record_block(
         &mut self,
         timestamp: i64,
         data: &[u8],
@@ -577,6 +585,144 @@ impl DataSegment {
         self.update_file_wrote_position()?;
 
         Ok((block_pos - self.header_size, 0))
+    }
+
+    fn validate_mutable_tail_record(
+        &self,
+        block_rel_offset: u64,
+        in_block_offset: u16,
+    ) -> Result<(usize, BlockHeader, usize, usize)> {
+        let mmap = self
+            .mmap
+            .as_ref()
+            .ok_or_else(|| TmslError::MmapError("segment mmap not open".into()))?;
+        let block_abs_start = (self.header_size + block_rel_offset) as usize;
+        if block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize > mmap.len() {
+            return Err(TmslError::InvalidData("block header out of bounds".into()));
+        }
+        let hdr = BlockHeader::read_from(mmap, block_abs_start);
+        let block_abs_end =
+            block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + hdr.payload_size as usize;
+        let seg_wrote_end = (self.header_size + self.wrote_position) as usize;
+        if block_abs_end != seg_wrote_end {
+            return Err(TmslError::InvalidData(
+                "append: target block is not the last in segment".into(),
+            ));
+        }
+        if self.pending_block_offset != Some(block_rel_offset) {
+            return Err(TmslError::InvalidData(
+                "append: target block is not pending".into(),
+            ));
+        }
+        if hdr.is_sealed() || hdr.is_compressed() {
+            return Err(TmslError::InvalidData(
+                "append: target block is sealed or compressed".into(),
+            ));
+        }
+        if hdr.payload_size != hdr.uncompressed_size {
+            return Err(TmslError::InvalidData(
+                "append: pending raw payload_size != uncompressed_size".into(),
+            ));
+        }
+
+        let record_pos =
+            block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + in_block_offset as usize;
+        if record_pos + RECORD_HEADER_SIZE > mmap.len() {
+            return Err(TmslError::InvalidData("cannot read record header".into()));
+        }
+        let old_data_len = u32::from_le_bytes(
+            mmap[record_pos..record_pos + 4]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+        ) as usize;
+        let record_end_in_payload = in_block_offset as usize + RECORD_HEADER_SIZE + old_data_len;
+        if record_end_in_payload != hdr.payload_size as usize {
+            return Err(TmslError::InvalidData(
+                "append: target record is not the last in block".into(),
+            ));
+        }
+        Ok((block_abs_start, hdr, record_pos, old_data_len))
+    }
+
+    pub(crate) fn read_mutable_tail_record(
+        &self,
+        block_rel_offset: u64,
+        in_block_offset: u16,
+    ) -> Result<Vec<u8>> {
+        let (_block_abs_start, _hdr, record_pos, old_data_len) =
+            self.validate_mutable_tail_record(block_rel_offset, in_block_offset)?;
+        let mmap = self
+            .mmap
+            .as_ref()
+            .ok_or_else(|| TmslError::MmapError("segment mmap not open".into()))?;
+        Ok(
+            mmap[record_pos + RECORD_HEADER_SIZE..record_pos + RECORD_HEADER_SIZE + old_data_len]
+                .to_vec(),
+        )
+    }
+
+    pub(crate) fn append_to_last_record(
+        &mut self,
+        block_rel_offset: u64,
+        in_block_offset: u16,
+        append_data: &[u8],
+    ) -> Result<u32> {
+        let (block_abs_start, hdr, record_pos, old_data_len) =
+            self.validate_mutable_tail_record(block_rel_offset, in_block_offset)?;
+        let final_data_len = old_data_len
+            .checked_add(append_data.len())
+            .ok_or_else(|| TmslError::InvalidData("append data_len overflow".into()))?;
+        let final_record_size = checked_record_size(final_data_len)?;
+        if final_record_size > APPEND_MIGRATION_THRESHOLD {
+            return Err(TmslError::InvalidData(
+                "append: final record exceeds migration threshold".into(),
+            ));
+        }
+        let delta = append_data.len();
+        let required = self
+            .header_size
+            .checked_add(self.wrote_position)
+            .and_then(|v| v.checked_add(delta as u64))
+            .ok_or_else(|| TmslError::InvalidData("append wrote_position overflow".into()))?;
+        if required > self.file_size {
+            return Err(TmslError::SegmentFull);
+        }
+
+        let new_payload_size = hdr
+            .payload_size
+            .checked_add(delta as u32)
+            .ok_or_else(|| TmslError::InvalidData("append block payload overflow".into()))?;
+        let new_uncompressed_size = hdr
+            .uncompressed_size
+            .checked_add(delta as u32)
+            .ok_or_else(|| TmslError::InvalidData("append block uncompressed overflow".into()))?;
+        let new_data_len = u32::try_from(final_data_len)
+            .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?;
+
+        {
+            let mmap = self
+                .mmap
+                .as_mut()
+                .ok_or_else(|| TmslError::MmapError("segment mmap not open".into()))?;
+            mmap[record_pos..record_pos + 4].copy_from_slice(&new_data_len.to_le_bytes());
+            let append_pos = record_pos + RECORD_HEADER_SIZE + old_data_len;
+            mmap[append_pos..append_pos + append_data.len()].copy_from_slice(append_data);
+            let new_hdr = BlockHeader::new(
+                new_payload_size,
+                hdr.flags,
+                hdr.record_count,
+                new_uncompressed_size,
+            );
+            new_hdr.write_to(mmap, block_abs_start);
+        }
+
+        self.wrote_position += delta as u64;
+        self.total_uncompressed_size += delta as u64;
+        self.pending_wrote_position += delta as u64;
+        self.update_file_header_for_pending(block_rel_offset)?;
+        self.last_accessed_at = Instant::now();
+        u32::try_from(old_data_len)
+            .map_err(|_| TmslError::InvalidData("old data_len exceeds u32".into()))
     }
 
     /// Overwrite the data bytes of the last record in the last pending raw block.
@@ -722,7 +868,7 @@ impl DataSegment {
     }
 
     /// Clear the pending block state.
-    fn clear_pending(&mut self) {
+    pub(crate) fn clear_pending(&mut self) {
         self.pending_block_offset = None;
         self.pending_wrote_position = 0;
         self.pending_record_count = 0;

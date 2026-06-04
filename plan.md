@@ -37,7 +37,7 @@
 | 26 | GitHub Actions CI/CD | ✅ 完成 | [phase-26-github-actions-ci.md](docs/plan/phase-26-github-actions-ci.md) |
 | 27 | Queue 模块 (DatasetQueue + Consumer) | ✅ 完成 (含完整测试) | [phase-27-queue-module.md](docs/plan/phase-27-queue-module.md) |
 | 28 | Journal 变更日志 (`.journal/logs`) | ✅ 完成 | [phase-28-journal.md](docs/plan/phase-28-journal.md) |
-| 29 | Dataset Append API + Journal `0x13` | 📋 设计完成, 待实现 | [phase-29-dataset-append.md](docs/plan/phase-29-dataset-append.md) |
+| 29 | Dataset Append API + Journal `0x13` | ✅ 完成 | [phase-29-dataset-append.md](docs/plan/phase-29-dataset-append.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -61,9 +61,9 @@
 
 ### Phase 29: Dataset Append API + Journal `0x13`
 - [x] 设计文档 — append 行为、4MiB 上限、70% 迁移阈值、journal `0x13`
-- [ ] 测试 — append 行为矩阵、迁移、错误路径、journal 编解码与 Store/FFI hook
-- [ ] 实现 — DataSegment tail append、DataSet append、Store/FFI API、journal `0x13`
-- [ ] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`
+- [x] 测试 — append 行为矩阵、迁移、错误路径、journal 编解码与 Store/FFI hook
+- [x] 实现 — DataSegment tail append、DataSet append、Store/FFI API、journal `0x13`
+- [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`
 
 ---
 

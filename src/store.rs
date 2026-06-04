@@ -430,6 +430,47 @@ impl Store {
         Ok(())
     }
 
+    /// Append through the Store so journal and global cache hooks are applied.
+    pub fn append_dataset(
+        &mut self,
+        handle: DataSetHandle,
+        timestamp: i64,
+        data: &[u8],
+    ) -> Result<()> {
+        let key = self
+            .handles
+            .get(&handle.0)
+            .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?
+            .clone();
+        if JournalManager::is_journal_key(&key) || self.read_only_handles.contains(&handle.0) {
+            return Err(TmslError::InvalidData(
+                "read-only internal dataset cannot be appended".into(),
+            ));
+        }
+        let ds_arc = {
+            let guard = self.datasets.read().unwrap();
+            guard
+                .get(&key)
+                .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
+                .clone()
+        };
+        let outcome = {
+            let mut ds = ds_arc
+                .lock()
+                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+            ds.append_with_cache_outcome(timestamp, data, Some(self.block_cache()))?
+        };
+        if let Some(outcome) = outcome {
+            self.journal.append_data_append(
+                &key,
+                outcome.index_entry,
+                outcome.data_offset,
+                outcome.data_len,
+            )?;
+        }
+        Ok(())
+    }
+
     /// Delete through the Store so journal and global cache hooks are applied.
     pub fn delete_dataset_record(&mut self, handle: DataSetHandle, timestamp: i64) -> Result<()> {
         let key = self

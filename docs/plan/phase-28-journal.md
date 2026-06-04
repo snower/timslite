@@ -41,7 +41,7 @@
 - [x] Created `src/journal/mod.rs`.
 - [x] Exported `JournalRecord`, `JournalRecordKind`, `JournalIndexInfo`, `JOURNAL_DATASET_NAME`, and `JOURNAL_DATASET_TYPE`.
 - [x] Defined log types `0x01`, `0x02`, `0x11`, and `0x12`.
-- [ ] Add log type `0x13` for dataset append in Phase 29.
+- [x] Add log type `0x13` for dataset append in Phase 29.
 - [x] Implemented outer payload format: `log_type:u8 + length:u16 LE + TLV bytes`.
 - [x] Implemented TLV format: `type:u8 + length:u16 LE + value`.
 - [x] Implemented create/drop/data-write/data-delete record constructors and encoder.
@@ -151,7 +151,7 @@
 - [x] Existing `DataSet::write` and `DataSet::delete_with_cache` compatibility paths remain available.
 - [x] Store write path appends `0x11`.
 - [x] Store delete path appends `0x12`.
-- [ ] Store append path appends `0x13` in Phase 29.
+- [x] Store append path appends `0x13` in Phase 29.
 - [x] FFI write/delete paths go through Store hooks.
 - [x] `enable_journal=false` makes hooks no-op.
 - [x] Journal timestamp is a dense sequence: first record is `1`, each later record is `last + 1`, with no wall-clock dependency.

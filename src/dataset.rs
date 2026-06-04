@@ -16,10 +16,24 @@ use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::query::iter::{QueryIterator, QuerySource};
 use crate::queue::{flush_queue_state_files, queue_dir_for, QueueInner};
+use crate::segment::data::{APPEND_MIGRATION_THRESHOLD, MAX_RECORD_DATA_SIZE, RECORD_HEADER_SIZE};
 use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
 
 type QueueCondvarPair = Arc<(Mutex<bool>, Condvar)>;
+
+fn validate_record_data_len(data_len: usize) -> Result<()> {
+    if data_len > MAX_RECORD_DATA_SIZE {
+        return Err(TmslError::InvalidData(
+            "record data_len exceeds 4MiB limit".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn data_len_u32(data_len: usize) -> Result<u32> {
+    u32::try_from(data_len).map_err(|_| TmslError::InvalidData("data_len exceeds u32".into()))
+}
 
 /// Dataset key for identifying a (name, type) pair.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -46,6 +60,14 @@ pub struct WriteOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeleteOutcome {
     pub old_index_entry: IndexEntry,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AppendOutcome {
+    pub index_entry: IndexEntry,
+    pub data_offset: u32,
+    pub data_len: u32,
+    pub migrated: bool,
 }
 
 pub struct DataSet {
@@ -240,6 +262,7 @@ impl DataSet {
         data: &[u8],
         cache: Option<&BlockCache>,
     ) -> Result<WriteOutcome> {
+        validate_record_data_len(data.len())?;
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
         }
@@ -292,6 +315,121 @@ impl DataSet {
                 branch: WriteBranch::Normal,
             })
         }
+    }
+
+    pub fn append(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+        self.append_with_cache(timestamp, data, None)
+    }
+
+    pub fn append_with_cache(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        cache: Option<&BlockCache>,
+    ) -> Result<()> {
+        self.append_with_cache_outcome(timestamp, data, cache)
+            .map(|_| ())
+    }
+
+    pub(crate) fn append_with_cache_outcome(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        cache: Option<&BlockCache>,
+    ) -> Result<Option<AppendOutcome>> {
+        if timestamp <= 0 {
+            return Err(TmslError::InvalidData("timestamp must be > 0".into()));
+        }
+        if data.is_empty() {
+            return Ok(None);
+        }
+        validate_record_data_len(data.len())?;
+        if self.is_timestamp_expired(timestamp) {
+            return Err(self.expired_error(timestamp));
+        }
+        if timestamp < self.latest_written_timestamp {
+            return Err(TmslError::InvalidData(
+                "append timestamp is older than latest_written_timestamp".into(),
+            ));
+        }
+        if timestamp > self.latest_written_timestamp {
+            let outcome = self.write_with_cache_outcome(timestamp, data, cache)?;
+            return Ok(Some(AppendOutcome {
+                index_entry: outcome.index_entry,
+                data_offset: 0,
+                data_len: data_len_u32(data.len())?,
+                migrated: false,
+            }));
+        }
+
+        if self.latest_written_timestamp == 0 {
+            let outcome = self.write_with_cache_outcome(timestamp, data, cache)?;
+            return Ok(Some(AppendOutcome {
+                index_entry: outcome.index_entry,
+                data_offset: 0,
+                data_len: data_len_u32(data.len())?,
+                migrated: false,
+            }));
+        }
+
+        let entry = self.time_index.find_entry(timestamp)?.ok_or_else(|| {
+            TmslError::NotFound(format!("no index entry for append timestamp {}", timestamp))
+        })?;
+        if entry.block_offset == BLOCK_OFFSET_FILLER {
+            return Err(TmslError::NotFound(format!(
+                "latest index entry at timestamp {} is deleted",
+                timestamp
+            )));
+        }
+
+        let old_data = self
+            .segments
+            .read_mutable_tail_record(entry.block_offset, entry.in_block_offset)?;
+        let final_len = old_data
+            .len()
+            .checked_add(data.len())
+            .ok_or_else(|| TmslError::InvalidData("append data_len overflow".into()))?;
+        validate_record_data_len(final_len)?;
+        let final_record_size = RECORD_HEADER_SIZE
+            .checked_add(final_len)
+            .ok_or_else(|| TmslError::InvalidData("append record size overflow".into()))?;
+        let data_offset = data_len_u32(old_data.len())?;
+        let data_len = data_len_u32(data.len())?;
+
+        if final_record_size > APPEND_MIGRATION_THRESHOLD {
+            let mut full_data = Vec::with_capacity(final_len);
+            full_data.extend_from_slice(&old_data);
+            full_data.extend_from_slice(data);
+            let (seg_offset, block_rel_offset, in_block_offset) =
+                self.segments.append_single_record(timestamp, &full_data)?;
+            let new_block_offset = seg_offset + block_rel_offset;
+            let old_entry =
+                self.time_index
+                    .update_entry(timestamp, new_block_offset, in_block_offset)?;
+            self.invalidate_cache_for_entry(&old_entry, cache);
+            self.segments
+                .increment_invalid_record_count(old_entry.block_offset)?;
+            self.last_used_at = Instant::now();
+            self.notify_queue();
+            return Ok(Some(AppendOutcome {
+                index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
+                data_offset,
+                data_len,
+                migrated: true,
+            }));
+        }
+
+        let actual_offset =
+            self.segments
+                .append_to_last_record(entry.block_offset, entry.in_block_offset, data)?;
+        self.last_used_at = Instant::now();
+        self.notify_queue();
+        Ok(Some(AppendOutcome {
+            index_entry: entry,
+            data_offset: actual_offset,
+            data_len,
+            migrated: false,
+        }))
     }
 
     fn notify_queue(&self) {
@@ -805,6 +943,106 @@ mod tests {
             0,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn test_append_new_timestamp_creates_record() {
+        let mut ds = make_cache_dataset("append_new_timestamp");
+
+        let outcome = ds
+            .append_with_cache_outcome(100, b"hello", None)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(outcome.index_entry.timestamp, 100);
+        assert_eq!(outcome.data_offset, 0);
+        assert_eq!(outcome.data_len, 5);
+        assert!(!outcome.migrated);
+        assert_eq!(ds.latest_written_timestamp(), 100);
+        assert_eq!(ds.read(100, None).unwrap().unwrap().1, b"hello");
+    }
+
+    #[test]
+    fn test_append_latest_tail_in_place() {
+        let mut ds = make_cache_dataset("append_latest_tail_in_place");
+        ds.write(100, b"ab").unwrap();
+        let before = {
+            let seg = ds.segments.segments.last().unwrap();
+            (
+                seg.wrote_position,
+                seg.pending_wrote_position,
+                seg.total_uncompressed_size,
+            )
+        };
+
+        let outcome = ds
+            .append_with_cache_outcome(100, b"cd", None)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(outcome.data_offset, 2);
+        assert_eq!(outcome.data_len, 2);
+        assert!(!outcome.migrated);
+        assert_eq!(ds.latest_written_timestamp(), 100);
+        assert_eq!(ds.read(100, None).unwrap().unwrap().1, b"abcd");
+        let seg = ds.segments.segments.last().unwrap();
+        assert_eq!(seg.wrote_position, before.0 + 2);
+        assert_eq!(seg.pending_wrote_position, before.1 + 2);
+        assert_eq!(seg.total_uncompressed_size, before.2 + 2);
+        assert_eq!(seg.invalid_record_count, 0);
+    }
+
+    #[test]
+    fn test_append_old_timestamp_returns_error() {
+        let mut ds = make_cache_dataset("append_old_timestamp");
+        ds.write(100, b"a").unwrap();
+        ds.write(200, b"b").unwrap();
+
+        assert!(ds.append(100, b"x").is_err());
+        assert_eq!(ds.read(100, None).unwrap().unwrap().1, b"a");
+    }
+
+    #[test]
+    fn test_append_compressed_latest_returns_error() {
+        let mut ds = make_cache_dataset("append_compressed_latest");
+        let data = vec![0xAB; 70_000];
+        ds.write(100, &data).unwrap();
+
+        assert!(ds.append(100, b"x").is_err());
+        assert_eq!(ds.read(100, None).unwrap().unwrap().1, data);
+    }
+
+    #[test]
+    fn test_append_crossing_threshold_migrates_to_single_record_block() {
+        let mut ds = make_cache_dataset("append_threshold_migrates");
+        let old_len = APPEND_MIGRATION_THRESHOLD - RECORD_HEADER_SIZE - 1;
+        let old = vec![0x11; old_len];
+        ds.write(100, &old).unwrap();
+
+        let outcome = ds
+            .append_with_cache_outcome(100, &[0x22, 0x33], None)
+            .unwrap()
+            .unwrap();
+
+        assert!(outcome.migrated);
+        assert_eq!(outcome.data_offset, old_len as u32);
+        assert_eq!(outcome.data_len, 2);
+        let mut expected = old;
+        expected.extend_from_slice(&[0x22, 0x33]);
+        assert_eq!(ds.read(100, None).unwrap().unwrap().1, expected);
+        let seg = ds.segments.segments.last().unwrap();
+        assert_eq!(seg.invalid_record_count, 1);
+    }
+
+    #[test]
+    fn test_write_and_append_reject_record_over_4mib() {
+        let mut ds = make_cache_dataset("append_4mib_limit");
+        let too_large = vec![0u8; MAX_RECORD_DATA_SIZE + 1];
+        assert!(ds.write(100, &too_large).is_err());
+
+        ds.write(100, b"a").unwrap();
+        let almost_too_large = vec![0u8; MAX_RECORD_DATA_SIZE];
+        assert!(ds.append(100, &almost_too_large).is_err());
     }
 
     #[test]

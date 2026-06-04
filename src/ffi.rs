@@ -654,6 +654,32 @@ pub extern "C" fn tmsl_dataset_write(
     })
 }
 
+/// Append bytes to the dataset record.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_append(
+    dataset: *mut c_void,
+    timestamp: c_longlong,
+    data: *const c_uchar,
+    data_len: usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() || (data.is_null() && data_len > 0) {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let data_slice = if data_len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(data, data_len) }
+        };
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
+        store_inner.append_dataset(ffi_ds.handle, timestamp, data_slice)?;
+        Ok(0)
+    })
+}
+
 /// Delete the record at the given timestamp.
 ///
 /// Marks the index entry as sentinel and increments the old data segment's
@@ -1119,6 +1145,18 @@ mod tests {
             ),
             0
         );
+        let appended = [5u8, 6];
+        assert_eq!(
+            tmsl_dataset_append(
+                dataset,
+                100,
+                appended.as_ptr(),
+                appended.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
 
         let mut out_ts: c_longlong = 0;
         let mut out_data: *mut c_uchar = std::ptr::null_mut();
@@ -1136,8 +1174,10 @@ mod tests {
             0
         );
         assert_eq!(out_ts, 100);
-        assert_eq!(out_len, payload.len());
+        assert_eq!(out_len, payload.len() + appended.len());
         assert!(!out_data.is_null());
+        let out_slice = unsafe { std::slice::from_raw_parts(out_data, out_len) };
+        assert_eq!(out_slice, &[1, 2, 3, 4, 5, 6]);
         tmsl_data_free(out_data as *mut c_void);
 
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);

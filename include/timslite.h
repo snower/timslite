@@ -242,6 +242,26 @@ int tmsl_dataset_write(void* dataset, int64_t timestamp,
                        char* err_buf, size_t err_buf_len);
 
 /**
+ * Append bytes to a dataset record.
+ *
+ * If timestamp is greater than the dataset latest timestamp, this creates a new
+ * record. If timestamp equals latest, the latest record must still be the
+ * uncompressed tail record; otherwise this returns an error. A single logical
+ * record may not exceed 4MiB.
+ *
+ * @param dataset      Opaque dataset pointer.
+ * @param timestamp    Timestamp to append/create.
+ * @param data         Raw data bytes to append.
+ * @param data_len     Length of data.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_dataset_append(void* dataset, int64_t timestamp,
+                        const unsigned char* data, size_t data_len,
+                        char* err_buf, size_t err_buf_len);
+
+/**
  * Delete the record at the given timestamp.
  *
  * Marks the index entry as sentinel (block_offset = 0xFFFFFFFFFFFFFFFF,

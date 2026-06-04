@@ -16,10 +16,12 @@ const LOG_CREATE_DATASET: u8 = 0x01;
 const LOG_DROP_DATASET: u8 = 0x02;
 const LOG_DATA_WRITE: u8 = 0x11;
 const LOG_DATA_DELETE: u8 = 0x12;
+const LOG_DATA_APPEND: u8 = 0x13;
 
 const TLV_NAME: u8 = 0x01;
 const TLV_TYPE: u8 = 0x02;
 const TLV_META_OR_INDEX: u8 = 0x03;
+const TLV_APPEND_INFO: u8 = 0x04;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JournalRecordKind {
@@ -27,6 +29,7 @@ pub enum JournalRecordKind {
     DropDataset,
     DataWrite,
     DataDelete,
+    DataAppend,
     Unknown(u8),
 }
 
@@ -37,6 +40,7 @@ impl JournalRecordKind {
             JournalRecordKind::DropDataset => LOG_DROP_DATASET,
             JournalRecordKind::DataWrite => LOG_DATA_WRITE,
             JournalRecordKind::DataDelete => LOG_DATA_DELETE,
+            JournalRecordKind::DataAppend => LOG_DATA_APPEND,
             JournalRecordKind::Unknown(t) => t,
         }
     }
@@ -47,6 +51,7 @@ impl JournalRecordKind {
             LOG_DROP_DATASET => JournalRecordKind::DropDataset,
             LOG_DATA_WRITE => JournalRecordKind::DataWrite,
             LOG_DATA_DELETE => JournalRecordKind::DataDelete,
+            LOG_DATA_APPEND => JournalRecordKind::DataAppend,
             other => JournalRecordKind::Unknown(other),
         }
     }
@@ -69,6 +74,12 @@ impl From<IndexEntry> for JournalIndexInfo {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JournalAppendInfo {
+    pub data_offset: u32,
+    pub data_len: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JournalRecord {
     pub kind: JournalRecordKind,
@@ -76,6 +87,7 @@ pub struct JournalRecord {
     pub dataset_type: String,
     pub metadata: Option<Vec<u8>>,
     pub index_info: Option<JournalIndexInfo>,
+    pub append_info: Option<JournalAppendInfo>,
 }
 
 impl JournalRecord {
@@ -86,6 +98,7 @@ impl JournalRecord {
             dataset_type: dataset_type.to_string(),
             metadata: Some(metadata),
             index_info: None,
+            append_info: None,
         }
     }
 
@@ -96,6 +109,7 @@ impl JournalRecord {
             dataset_type: dataset_type.to_string(),
             metadata: Some(metadata),
             index_info: None,
+            append_info: None,
         }
     }
 
@@ -106,6 +120,7 @@ impl JournalRecord {
             dataset_type: dataset_type.to_string(),
             metadata: None,
             index_info: Some(entry.into()),
+            append_info: None,
         }
     }
 
@@ -116,6 +131,27 @@ impl JournalRecord {
             dataset_type: dataset_type.to_string(),
             metadata: None,
             index_info: Some(entry.into()),
+            append_info: None,
+        }
+    }
+
+    pub fn data_append(
+        name: &str,
+        dataset_type: &str,
+        entry: IndexEntry,
+        data_offset: u32,
+        data_len: u32,
+    ) -> Self {
+        Self {
+            kind: JournalRecordKind::DataAppend,
+            name: name.to_string(),
+            dataset_type: dataset_type.to_string(),
+            metadata: None,
+            index_info: Some(entry.into()),
+            append_info: Some(JournalAppendInfo {
+                data_offset,
+                data_len,
+            }),
         }
     }
 
@@ -131,7 +167,9 @@ impl JournalRecord {
                     .ok_or_else(|| TmslError::InvalidData("journal metadata is missing".into()))?;
                 push_tlv(&mut tlv, TLV_META_OR_INDEX, metadata)?;
             }
-            JournalRecordKind::DataWrite | JournalRecordKind::DataDelete => {
+            JournalRecordKind::DataWrite
+            | JournalRecordKind::DataDelete
+            | JournalRecordKind::DataAppend => {
                 let index = self.index_info.ok_or_else(|| {
                     TmslError::InvalidData("journal index_info is missing".into())
                 })?;
@@ -140,6 +178,15 @@ impl JournalRecord {
                 buf[8..16].copy_from_slice(&index.block_offset.to_le_bytes());
                 buf[16..18].copy_from_slice(&index.in_block_offset.to_le_bytes());
                 push_tlv(&mut tlv, TLV_META_OR_INDEX, &buf)?;
+                if self.kind == JournalRecordKind::DataAppend {
+                    let append = self.append_info.ok_or_else(|| {
+                        TmslError::InvalidData("journal append_info is missing".into())
+                    })?;
+                    let mut append_buf = [0u8; 8];
+                    append_buf[0..4].copy_from_slice(&append.data_offset.to_le_bytes());
+                    append_buf[4..8].copy_from_slice(&append.data_len.to_le_bytes());
+                    push_tlv(&mut tlv, TLV_APPEND_INFO, &append_buf)?;
+                }
             }
             JournalRecordKind::Unknown(_) => {}
         }
@@ -169,6 +216,7 @@ impl JournalRecord {
         let mut name = None;
         let mut dataset_type = None;
         let mut field3 = None;
+        let mut append_field = None;
         while off < end {
             if off + 3 > end {
                 return Err(TmslError::InvalidData(
@@ -198,6 +246,7 @@ impl JournalRecord {
                     );
                 }
                 TLV_META_OR_INDEX => field3 = Some(value.to_vec()),
+                TLV_APPEND_INFO => append_field = Some(value.to_vec()),
                 _ => {}
             }
             off += tlv_len;
@@ -208,6 +257,7 @@ impl JournalRecord {
             dataset_type.ok_or_else(|| TmslError::InvalidData("journal type missing".into()))?;
         let mut metadata = None;
         let mut index_info = None;
+        let mut append_info = None;
         match kind {
             JournalRecordKind::CreateDataset | JournalRecordKind::DropDataset => {
                 metadata =
@@ -215,7 +265,9 @@ impl JournalRecord {
                         TmslError::InvalidData("journal metadata missing".into())
                     })?);
             }
-            JournalRecordKind::DataWrite | JournalRecordKind::DataDelete => {
+            JournalRecordKind::DataWrite
+            | JournalRecordKind::DataDelete
+            | JournalRecordKind::DataAppend => {
                 let bytes = field3
                     .ok_or_else(|| TmslError::InvalidData("journal index_info missing".into()))?;
                 if bytes.len() != 18 {
@@ -228,6 +280,20 @@ impl JournalRecord {
                     block_offset: u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
                     in_block_offset: u16::from_le_bytes(bytes[16..18].try_into().unwrap()),
                 });
+                if kind == JournalRecordKind::DataAppend {
+                    let append_bytes = append_field.ok_or_else(|| {
+                        TmslError::InvalidData("journal append_info missing".into())
+                    })?;
+                    if append_bytes.len() != 8 {
+                        return Err(TmslError::InvalidData(
+                            "journal append_info must be 8 bytes".into(),
+                        ));
+                    }
+                    append_info = Some(JournalAppendInfo {
+                        data_offset: u32::from_le_bytes(append_bytes[0..4].try_into().unwrap()),
+                        data_len: u32::from_le_bytes(append_bytes[4..8].try_into().unwrap()),
+                    });
+                }
             }
             JournalRecordKind::Unknown(_) => {}
         }
@@ -238,6 +304,7 @@ impl JournalRecord {
             dataset_type,
             metadata,
             index_info,
+            append_info,
         })
     }
 }
@@ -371,6 +438,22 @@ impl JournalManager {
             &key.name,
             &key.dataset_type,
             entry,
+        ))
+    }
+
+    pub(crate) fn append_data_append(
+        &self,
+        key: &DataSetKey,
+        entry: IndexEntry,
+        data_offset: u32,
+        data_len: u32,
+    ) -> Result<Option<i64>> {
+        self.append(JournalRecord::data_append(
+            &key.name,
+            &key.dataset_type,
+            entry,
+            data_offset,
+            data_len,
         ))
     }
 

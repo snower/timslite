@@ -1,7 +1,7 @@
 # Phase 29: Dataset Append API
 
 > Goal: add a `DataSet::append` API that can create a new latest record or append bytes to the current latest tail record, with journal event `0x13` and a 4MiB single-record limit.
-> Status: design completed, implementation pending.
+> Status: completed.
 
 ## 29.0 Design Documents
 
@@ -13,12 +13,12 @@
 
 ## 29.1 Scope
 
-- [ ] Add Rust dataset append APIs: `DataSet::append`, `DataSet::append_with_cache`, and internal `AppendOutcome`.
-- [ ] Add Store/handle append route so public calls go through cache invalidation and journal hooks.
-- [ ] Add FFI `tmsl_dataset_append`.
-- [ ] Add journal record kind `0x13` with `index_info` and `append_info`.
-- [ ] Enforce 4MiB maximum pure data length for a single record in both `write` and `append`.
-- [ ] Migrate appended latest records to a single-record block when final encoded record size exceeds `BLOCK_MAX_SIZE * 70 / 100`.
+- [x] Add Rust dataset append APIs: `DataSet::append`, `DataSet::append_with_cache`, and internal `AppendOutcome`.
+- [x] Add Store/handle append route so public calls go through cache invalidation and journal hooks.
+- [x] Add FFI `tmsl_dataset_append`.
+- [x] Add journal record kind `0x13` with `index_info` and `append_info`.
+- [x] Enforce 4MiB maximum pure data length for a single record in both `write` and `append`.
+- [x] Migrate appended latest records to a single-record block when final encoded record size exceeds `BLOCK_MAX_SIZE * 70 / 100`.
 
 ## 29.2 Non-Goals
 
@@ -44,89 +44,93 @@
 
 ### 29.4.1 Record Size Limits
 
-- [ ] Add a shared constant for the 4MiB single-record data limit.
-- [ ] Add a shared constant or helper for the append migration threshold: `BLOCK_MAX_SIZE * 70 / 100`.
-- [ ] Reject `write` inputs where `data.len() > 4MiB`.
-- [ ] Reject append attempts where `old_data_len + append_len > 4MiB`.
-- [ ] Use checked arithmetic for all `old_data_len + append_len`, `12 + data_len`, and size-field updates.
+- [x] Add a shared constant for the 4MiB single-record data limit.
+- [x] Add a shared constant or helper for the append migration threshold: `BLOCK_MAX_SIZE * 70 / 100`.
+- [x] Reject `write` inputs where `data.len() > 4MiB`.
+- [x] Reject append attempts where `old_data_len + append_len > 4MiB`.
+- [x] Use checked arithmetic for all `old_data_len + append_len`, `12 + data_len`, and size-field updates.
 
 ### 29.4.2 DataSegment Tail Append
 
-- [ ] Add a segment-level helper to validate and append to the last pending raw record.
-- [ ] Verify the target block is the segment tail and has `flags=0`.
-- [ ] Verify `payload_size == uncompressed_size` for pending raw blocks.
-- [ ] Verify the target record ends at `block_payload_size`.
-- [ ] Verify the target record end also matches segment `wrote_position`.
-- [ ] Update mmap bytes: `record.data_len`, appended data bytes, `BlockHeader.block_payload_size`, `BlockHeader.uncompressed_size`, data segment `wrote_position`, `pending_wrote_position`, and `total_uncompressed_size`.
-- [ ] Keep record count and timestamp range unchanged for in-place append.
+- [x] Add a segment-level helper to validate and append to the last pending raw record.
+- [x] Verify the target block is the segment tail and has `flags=0`.
+- [x] Verify `payload_size == uncompressed_size` for pending raw blocks.
+- [x] Verify the target record ends at `block_payload_size`.
+- [x] Verify the target record end also matches segment `wrote_position`.
+- [x] Update mmap bytes: `record.data_len`, appended data bytes, `BlockHeader.block_payload_size`, `BlockHeader.uncompressed_size`, data segment `wrote_position`, `pending_wrote_position`, and `total_uncompressed_size`.
+- [x] Keep record count and timestamp range unchanged for in-place append.
 
 ### 29.4.3 Migration Path
 
-- [ ] Read old logical record data from the latest tail record.
-- [ ] Build `old_data + append_data`.
-- [ ] Create a single-record block for the full logical record.
-- [ ] Update the timestamp index entry to the migrated block location.
-- [ ] Increment `invalid_record_count` for the old data segment.
-- [ ] Invalidate the old global cache key defensively.
-- [ ] Return `AppendOutcome` with `data_offset=old_data_len`, `data_len=append_data.len()`, and `migrated=true`.
+- [x] Read old logical record data from the latest tail record.
+- [x] Build `old_data + append_data`.
+- [x] Create a single-record block for the full logical record.
+- [x] Update the timestamp index entry to the migrated block location.
+- [x] Increment `invalid_record_count` for the old data segment.
+- [x] Invalidate the old global cache key defensively.
+- [x] Return `AppendOutcome` with `data_offset=old_data_len`, `data_len=append_data.len()`, and `migrated=true`.
 
 ### 29.4.4 DataSet And Store API
 
-- [ ] Add `DataSet::append` and `append_with_cache`.
-- [ ] Add Store append route using existing dataset handle validation.
-- [ ] Keep direct DataSet append non-journal by default, matching write/delete behavior.
-- [ ] Ensure `last_used_at` updates consistently with existing write paths.
-- [ ] Preserve retention semantics: expired old timestamps are not appendable; forward append may advance latest.
+- [x] Add `DataSet::append` and `append_with_cache`.
+- [x] Add Store append route using existing dataset handle validation.
+- [x] Keep direct DataSet append non-journal by default, matching write/delete behavior.
+- [x] Ensure `last_used_at` updates consistently with existing write paths.
+- [x] Preserve retention semantics: expired old timestamps are not appendable; forward append may advance latest.
 
 ### 29.4.5 FFI And Wrappers
 
-- [ ] Add `tmsl_dataset_append` to `src/ffi.rs`.
-- [ ] Add declaration to `include/timslite.h`.
-- [ ] Follow existing pointer/null/data length/error-buffer rules.
-- [ ] If Python wrapper exposes dataset write/delete APIs, add matching `append`.
+- [x] Add `tmsl_dataset_append` to `src/ffi.rs`.
+- [x] Add declaration to `include/timslite.h`.
+- [x] Follow existing pointer/null/data length/error-buffer rules.
+- [x] If Python wrapper exposes dataset write/delete APIs, add matching `append`.
 
 ### 29.4.6 Journal 0x13
 
-- [ ] Add `JournalRecordKind::DataAppend` or equivalent.
-- [ ] Add encoder/decoder for `0x13`.
-- [ ] Validate `index_info` length is exactly 18 bytes.
-- [ ] Validate `append_info` length is exactly 8 bytes.
-- [ ] Add `JournalManager::append_data_append`.
-- [ ] Store append success writes `0x13`; append failures write no journal.
-- [ ] Queue notification works through the existing journal append path.
+- [x] Add `JournalRecordKind::DataAppend` or equivalent.
+- [x] Add encoder/decoder for `0x13`.
+- [x] Validate `index_info` length is exactly 18 bytes.
+- [x] Validate `append_info` length is exactly 8 bytes.
+- [x] Add `JournalManager::append_data_append`.
+- [x] Store append success writes `0x13`; append failures write no journal.
+- [x] Queue notification works through the existing journal append path.
 
 ## 29.5 Tests
 
-- [ ] `append(timestamp > latest)` creates a new record and advances latest.
-- [ ] `append(timestamp < latest)` returns error and does not write journal.
-- [ ] `append(timestamp == latest)` appends bytes in place when the record is the latest uncompressed segment tail.
-- [ ] Empty append is a no-op and writes no journal.
-- [ ] In-place append updates `data_len`, `block_payload_size`, `uncompressed_size`, `wrote_position`, `pending_wrote_position`, and `total_uncompressed_size`.
-- [ ] Append to compressed latest block returns error.
-- [ ] Append to a latest timestamp whose index entry is deleted/filler returns error.
-- [ ] Append to a latest record that is not segment tail returns error.
-- [ ] Append crossing the 70% threshold migrates to a single-record block and updates index.
-- [ ] Migrated append invalidates the old cache key and increments `invalid_record_count`.
-- [ ] `write` rejects records larger than 4MiB.
-- [ ] `append` rejects final logical record data larger than 4MiB.
-- [ ] Journal `0x13` encodes/decodes `index_info` and `append_info`.
-- [ ] Store/FFI append success writes `0x13`, including the `timestamp > latest` create-new-record case.
-- [ ] Disabled journal makes append journal hook a no-op.
-- [ ] Full test suite passes with `cargo test -- --test-threads=1`.
-- [ ] `cargo fmt -- --check`.
-- [ ] `cargo clippy --all-targets -- -D warnings`.
+- [x] `append(timestamp > latest)` creates a new record and advances latest.
+- [x] `append(timestamp < latest)` returns error and does not write journal.
+- [x] `append(timestamp == latest)` appends bytes in place when the record is the latest uncompressed segment tail.
+- [x] Empty append is a no-op and writes no journal.
+- [x] In-place append updates `data_len`, `block_payload_size`, `uncompressed_size`, `wrote_position`, `pending_wrote_position`, and `total_uncompressed_size`.
+- [x] Append to compressed latest block returns error.
+- [x] Append to a latest timestamp whose index entry is deleted/filler returns error.
+- [x] Append to a latest record that is not segment tail returns error.
+- [x] Append crossing the 70% threshold migrates to a single-record block and updates index.
+- [x] Migrated append invalidates the old cache key and increments `invalid_record_count`.
+- [x] `write` rejects records larger than 4MiB.
+- [x] `append` rejects final logical record data larger than 4MiB.
+- [x] Journal `0x13` encodes/decodes `index_info` and `append_info`.
+- [x] Store/FFI append success writes `0x13`, including the `timestamp > latest` create-new-record case.
+- [x] Disabled journal makes append journal hook a no-op.
+- [x] Full test suite passes with `cargo test -- --test-threads=1`.
+- [x] `cargo fmt -- --check`.
+- [x] `cargo clippy --all-targets -- -D warnings`.
 
 ## 29.6 Execution Order
 
-1. [ ] Add failing tests for record size limits and append behavior.
-2. [ ] Implement shared constants and write limit.
-3. [ ] Implement segment tail append helper.
-4. [ ] Implement DataSet append branching and migration.
-5. [ ] Implement Store and FFI append routes.
-6. [ ] Implement journal `0x13` codec and hook.
-7. [ ] Add wrapper support if applicable.
-8. [ ] Run focused tests, then full suite/fmt/clippy.
-9. [ ] Update this plan and `plan.md` completion markers.
+1. [x] Add failing tests for record size limits and append behavior.
+2. [x] Implement shared constants and write limit.
+3. [x] Implement segment tail append helper.
+4. [x] Implement DataSet append branching and migration.
+5. [x] Implement Store and FFI append routes.
+6. [x] Implement journal `0x13` codec and hook.
+7. [x] Add wrapper support if applicable.
+8. [x] Run focused tests, then full suite/fmt/clippy.
+9. [x] Update this plan and `plan.md` completion markers.
+
+## 29.8 Implementation Record
+
+2026-06-04: implemented dataset append API, tail raw record append, 70% migration to single-record block, 4MiB record limit for write/append, Store/FFI append route, journal `0x13`, Python wrapper append, and tests. Verification passed: `cargo test append -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --manifest-path wrapper/python/Cargo.toml`, `cargo clippy --manifest-path wrapper/python/Cargo.toml --all-targets -- -D warnings`, and Python pytest via a locally built maturin wheel (`57 passed`).
 
 ## 29.7 Open Implementation Notes
 

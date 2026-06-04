@@ -325,6 +325,85 @@ impl DataSegmentSet {
         seg.overwrite_in_last_block(block_rel_offset, in_block_offset, new_data)
     }
 
+    pub fn read_mutable_tail_record(
+        &mut self,
+        block_offset: u64,
+        in_block_offset: u16,
+    ) -> Result<Vec<u8>> {
+        let target_segment_offset = (block_offset / self.segment_size) * self.segment_size;
+        let latest_segment_offset = self.next_offset.saturating_sub(self.segment_size);
+        if target_segment_offset != latest_segment_offset {
+            return Err(TmslError::InvalidData(
+                "append: target block is not in the latest segment".into(),
+            ));
+        }
+        let seg = self.lazy_open(target_segment_offset)?;
+        if block_offset < seg.file_offset || block_offset >= seg.file_offset + seg.wrote_position {
+            return Err(TmslError::InvalidData(
+                "append: block_offset is outside latest segment data".into(),
+            ));
+        }
+        seg.read_mutable_tail_record(block_offset - seg.file_offset, in_block_offset)
+    }
+
+    pub fn append_to_last_record(
+        &mut self,
+        block_offset: u64,
+        in_block_offset: u16,
+        append_data: &[u8],
+    ) -> Result<u32> {
+        let target_segment_offset = (block_offset / self.segment_size) * self.segment_size;
+        let latest_segment_offset = self.next_offset.saturating_sub(self.segment_size);
+        if target_segment_offset != latest_segment_offset {
+            return Err(TmslError::InvalidData(
+                "append: target block is not in the latest segment".into(),
+            ));
+        }
+        let seg = self.lazy_open(target_segment_offset)?;
+        if block_offset < seg.file_offset || block_offset >= seg.file_offset + seg.wrote_position {
+            return Err(TmslError::InvalidData(
+                "append: block_offset is outside latest segment data".into(),
+            ));
+        }
+        seg.append_to_last_record(block_offset - seg.file_offset, in_block_offset, append_data)
+    }
+
+    pub fn append_single_record(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u64, u16)> {
+        let compress_level = self.compress_level;
+        let seg = self
+            .segments
+            .last_mut()
+            .ok_or_else(|| TmslError::InvalidData("no data segment available".into()))?;
+        if seg.pending_block_offset.is_some() {
+            seg.seal_pending_block(compress_level)?;
+            seg.clear_pending();
+        }
+        match seg.create_single_record_block(timestamp, data, compress_level) {
+            Ok((block_rel, in_block)) => Ok((seg.file_offset, block_rel, in_block)),
+            Err(TmslError::SegmentFull) => {
+                let new_offset = self.next_offset;
+                let file_name = format!("{:020}", new_offset);
+                let path = self.base_dir.join(&file_name);
+                let new_seg = DataSegment::create(
+                    &path,
+                    new_offset,
+                    self.initial_segment_size,
+                    self.segment_size,
+                )?;
+                self.segments.push(new_seg);
+                self.next_offset += self.segment_size;
+                let seg = self
+                    .segments
+                    .last_mut()
+                    .ok_or_else(|| TmslError::InvalidData("no data segment available".into()))?;
+                let (block_rel, in_block) =
+                    seg.create_single_record_block(timestamp, data, compress_level)?;
+                Ok((seg.file_offset, block_rel, in_block))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Increment invalid_record_count on the data segment that contains the given offset.
     ///
     /// Routes by `absolute_offset` (same coordinate as index entries' block_offset,

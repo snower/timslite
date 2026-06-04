@@ -131,6 +131,46 @@ fn t28_4_create_write_delete_drop_are_recorded() {
 }
 
 #[test]
+fn t29_1_append_records_are_journaled_as_0x13() {
+    let dir = temp_dir("append_records");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    let handle = store
+        .create_dataset("append", "events", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    store.append_dataset(handle, 10, b"abc").unwrap();
+    store.append_dataset(handle, 10, b"de").unwrap();
+
+    let records = read_all_journal_records(&mut store);
+    let kinds: Vec<_> = records.iter().map(|r| r.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            JournalRecordKind::CreateDataset,
+            JournalRecordKind::DataAppend,
+            JournalRecordKind::DataAppend,
+        ]
+    );
+
+    let first_append = records[1].append_info.unwrap();
+    assert_eq!(first_append.data_offset, 0);
+    assert_eq!(first_append.data_len, 3);
+    assert_eq!(records[1].index_info.unwrap().timestamp, 10);
+
+    let second_append = records[2].append_info.unwrap();
+    assert_eq!(second_append.data_offset, 3);
+    assert_eq!(second_append.data_len, 2);
+    assert_eq!(records[2].index_info.unwrap().timestamp, 10);
+
+    let ds = store.get_dataset(&handle).unwrap();
+    let mut ds = ds.lock().unwrap();
+    assert_eq!(
+        ds.read(10, Some(store.block_cache())).unwrap().unwrap().1,
+        b"abcde"
+    );
+}
+
+#[test]
 fn t28_4b_journal_timestamps_are_dense_sequence() {
     let dir = temp_dir("sequence");
     let mut store = Store::open(&dir, test_config()).unwrap();

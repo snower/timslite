@@ -64,6 +64,17 @@ impl PyDataset {
         wrap(ds.write(timestamp, &data))
     }
 
+    /// Append bytes to a record.
+    fn append(&mut self, timestamp: i64, data: Vec<u8>) -> PyResult<()> {
+        if self.read_only {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Dataset is read-only",
+            ));
+        }
+        let mut ds = self.inner.lock().unwrap();
+        wrap(ds.append(timestamp, &data))
+    }
+
     /// Read a single record by exact timestamp.
     ///
     /// Args:
