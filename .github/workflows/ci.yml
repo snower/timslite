@@ -41,7 +41,7 @@ jobs:
         run: cargo test --lib -- --test-threads=1
 
       - name: Run integration tests
-        run: cargo test --test integration_test -- --test-threads=1
+        run: cargo test --tests -- --test-threads=1
 
   python-tests:
     name: Python Wrapper Tests
