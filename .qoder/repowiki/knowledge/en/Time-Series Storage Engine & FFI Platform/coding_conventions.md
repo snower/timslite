@@ -1,0 +1,2 @@
+- Dual crate-type configuration (`cdylib`, `rlib`) in the core to support both static internal usage and dynamic FFI exposure.
+- Synchronized semantic versioning and metadata alignment between the core `Cargo.toml` and the Python wrapper's `pyproject.toml`.

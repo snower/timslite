@@ -1,0 +1,4 @@
+- Builder pattern is used for all configuration structs (`StoreConfigBuilder`, `DataSetConfigBuilder`) to provide fluent, type-safe initialization with default value fallbacks.
+- Error handling relies on a custom `TmslError` enum with a `Result<T>` alias, wrapping standard I/O errors and providing domain-specific variants like `InvalidMagic` and `SegmentFull`.
+- Lazy lifecycle management is applied to segment files, where data and index segments are memory-mapped on demand and idle-closed after a configurable timeout to conserve system resources.
+- FFI functions use `#[no_mangle]` and panic-catching macros (`ffi_catch_int!`, `ffi_catch_ptr!`) to ensure safe interoperability with C callers by converting Rust panics and errors into integer return codes and C-string buffers.

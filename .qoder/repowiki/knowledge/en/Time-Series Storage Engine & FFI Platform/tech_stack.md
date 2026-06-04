@@ -1,0 +1,1 @@
+Rust (2021 Edition) with `cdylib` output for cross-language interoperability; `pyo3` for Python extension module generation.

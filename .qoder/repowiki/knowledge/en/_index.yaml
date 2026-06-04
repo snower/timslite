@@ -1,0 +1,149 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: en-US
+branch: main
+exported_at: "2026-06-04T12:10:06Z"
+modules:
+    "":
+        dir_name: Time-Series Storage Engine & FFI Platform
+        title: Time-Series Storage Engine & FFI Platform
+        scope:
+            - design.md
+            - plan.md
+            - AGENTS.md
+            - .gitignore
+            - Cargo.toml
+            - Cargo.lock
+            - docs/
+            - tests/
+            - .github/
+            - .github\workflows\ci.yml
+            - .sisyphus\run-continuation\ses_1b1675dc8ffeYSRa5Jr39ZJuJb.json
+            - README.md
+            - docs\design\architecture.md
+            - docs\design\background-and-cache.md
+            - docs\design\cargo-and-config.md
+            - docs\design\compression.md
+            - docs\design\data-model.md
+            - docs\design\data-segment.md
+            - docs\design\dataset-operations.md
+            - docs\design\design-decisions.md
+            - docs\design\index-continuous.md
+            - docs\design\journal.md
+            - docs\design\lazy-allocation.md
+            - docs\design\memory-and-concurrency.md
+            - docs\design\meta-format.md
+            - docs\design\query-iterator.md
+            - docs\design\queue-overview.md
+            - docs\design\queue-state-file.md
+            - docs\design\store-and-ffi.md
+            - docs\design\time-index.md
+            - docs\plan\overview.md
+            - docs\plan\phase-01-skeleton.md
+            - docs\plan\phase-02-header-block.md
+            - docs\plan\phase-03-datasegment.md
+            - docs\plan\phase-04-time-index.md
+            - docs\plan\phase-05-dataset.md
+            - docs\plan\phase-06-store-bg.md
+            - docs\plan\phase-07-ffi.md
+            - docs\plan\phase-08-tests-perf.md
+            - docs\plan\phase-09-blockcache.md
+            - docs\plan\phase-10-continuous-storage.md
+            - docs\plan\phase-11-o1-optimization.md
+            - docs\plan\phase-12-lazy-allocation.md
+            - docs\plan\phase-13-query-iterator.md
+            - docs\plan\phase-14-dataset-config-builder.md
+            - docs\plan\phase-15-header-state-split.md
+            - docs\plan\phase-16-data-retention.md
+            - docs\plan\phase-17-correction-write.md
+            - docs\plan\phase-18-out-of-order-write-and-delete.md
+            - docs\plan\phase-19-single-timestamp-read.md
+            - docs\plan\phase-20-latest-timestamp-read.md
+            - docs\plan\phase-21-manual-bg-execution.md
+            - docs\plan\phase-22-manual-bg-python-wrapper.md
+            - docs\plan\phase-23-record-length-u32.md
+            - docs\plan\phase-24-sparse-continuous-index.md
+            - docs\plan\phase-25-header-variable-length.md
+            - docs\plan\phase-26-github-actions-ci.md
+            - docs\plan\phase-27-queue-module.md
+            - docs\plan\phase-28-journal.md
+            - docs\plan\phase-29-dataset-append.md
+            - docs\review\archives\Round1\design-review-todo.md
+            - docs\review\archives\Round1\design-review.md
+            - docs\review\design-review-todo.md
+            - docs\review\design-review.md
+            - include\timslite.h
+            - src\bg\mod.rs
+            - src\block.rs
+            - src\cache.rs
+            - src\compress.rs
+            - src\config.rs
+            - src\dataset.rs
+            - src\error.rs
+            - src\ffi.rs
+            - src\header.rs
+            - src\index\mod.rs
+            - src\index\segment.rs
+            - src\journal\mod.rs
+            - src\lib.rs
+            - src\meta.rs
+            - src\query\hot_block.rs
+            - src\query\iter.rs
+            - src\query\mod.rs
+            - src\queue\mod.rs
+            - src\segment\data.rs
+            - src\segment\mod.rs
+            - src\store.rs
+            - src\util.rs
+            - tests\background_test.rs
+            - tests\config_test.rs
+            - tests\correction_write_test.rs
+            - tests\dataset_basic_test.rs
+            - tests\dataset_lifecycle_test.rs
+            - tests\journal_test.rs
+            - tests\lazy_allocation_test.rs
+            - tests\out_of_order_delete_test.rs
+            - tests\query_test.rs
+            - tests\queue_test.rs
+            - wrapper\python\.gitignore
+            - wrapper\python\Cargo.lock
+            - wrapper\python\Cargo.toml
+            - wrapper\python\README.md
+            - wrapper\python\design.md
+            - wrapper\python\plan.md
+            - wrapper\python\pyproject.toml
+            - wrapper\python\python\timslite\__init__.py
+            - wrapper\python\python\timslite\timslite.cp313-win_amd64.pyd
+            - wrapper\python\python\timslite\timslite.pdb
+            - wrapper\python\src\config.rs
+            - wrapper\python\src\dataset.rs
+            - wrapper\python\src\exceptions.rs
+            - wrapper\python\src\lib.rs
+            - wrapper\python\src\query.rs
+            - wrapper\python\src\queue.rs
+            - wrapper\python\src\store.rs
+            - wrapper\python\tests\conftest.py
+            - wrapper\python\tests\test_basic.py
+            - wrapper\python\tests\test_config.py
+            - wrapper\python\tests\test_continuous.py
+            - wrapper\python\tests\test_exceptions.py
+            - wrapper\python\tests\test_lifecycle.py
+            - wrapper\python\tests\test_multi_dataset.py
+            - wrapper\python\tests\test_persistence.py
+            - wrapper\python\tests\test_queue.py
+            - wrapper\python\tests\test_store_manual_bg.py
+            - wrapper\python\tests\test_write_query.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    core_library:
+        dir_name: Time-Series Data Storage Engine
+        title: Time-Series Data Storage Engine
+        scope:
+            - src/
+            - include/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []

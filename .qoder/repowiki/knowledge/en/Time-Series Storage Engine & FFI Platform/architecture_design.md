@@ -1,0 +1,4 @@
+- The root workspace defines the core `timslite` library as a `cdylib`/`rlib`, establishing the primary storage engine and C ABI surface.
+- The `wrapper/python` submodule acts as a distinct consumer, linking against the core via a path dependency and exposing functionality through `pyo3`.
+- Cross-module isolation is enforced by the `include/timslite.h` header and the `src/ffi.rs` implementation, which serve as the single source of truth for data structures and error codes shared between the Rust core and external runtimes.
+- CI workflows (`.github/workflows/ci.yml`) and top-level test suites validate both the native Rust logic and the integrated Python binding behavior, ensuring the FFI contract remains stable during core evolution.

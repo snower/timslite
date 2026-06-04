@@ -1,0 +1,1 @@
+A high-performance, mmap-backed time-series storage library with block-level aggregation, delayed compression, and a C-compatible FFI interface.

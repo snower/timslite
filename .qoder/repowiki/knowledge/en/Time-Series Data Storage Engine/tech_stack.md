@@ -1,0 +1,1 @@
+Uses `memmap2` for memory-mapped I/O and `libc` for manual memory management in the FFI layer.
