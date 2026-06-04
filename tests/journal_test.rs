@@ -186,3 +186,20 @@ fn t28_8_reopen_preserves_journal() {
     assert!(records2.len() >= records1.len());
     store2.close().unwrap();
 }
+
+#[test]
+fn t28_9_public_journal_handle_rejects_append() {
+    let dir = temp_dir("readonly_append");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    let journal = store
+        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
+        .unwrap();
+
+    let err = store
+        .append_dataset(journal, 1, b"forged")
+        .expect_err("public journal handle must be read-only for append");
+    assert!(err.to_string().contains("read-only internal dataset"));
+
+    store.close().unwrap();
+}

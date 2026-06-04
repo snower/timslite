@@ -71,7 +71,7 @@ libtimslite (CDylib)
 
 `dataset_name` 和 `dataset_type` 是目录名, 不做转义或编码。合法值必须非空且整体匹配 `^[0-9A-Za-z_-]+$`: 只允许数字、大小写英文字母、`-`、`_`。任何路径分隔符、`.`、空格、控制字符、非 ASCII 字符、Windows 保留路径写法等都不允许。`Store::create_dataset*` / `open_dataset` / `drop_dataset_by_name` 必须在拼接路径前校验; `Store::open` 扫描已有目录时只加载名称合法且包含 `meta` 的数据集目录。
 
-例外: `.journal/logs` 是 Store 内部保留 dataset。`enable_journal=true` 时 public API 可受控打开它进行 read/query/open_queue 实时消费, 但不能 create/write/delete/drop; 普通扫描路径应跳过它, 由 `JournalManager` 单独管理。
+例外: `.journal/logs` 是 Store 内部保留 dataset。`enable_journal=true` 时 public API 可受控打开它进行 read/query/open_queue 实时消费, 但不能 create/write/append/delete/drop; 普通扫描路径应跳过它, 由 `JournalManager` 单独管理。
 
 ### 2.2 隔离保证
 

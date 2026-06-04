@@ -372,7 +372,8 @@ DataSet::append(timestamp, data):
 4. 原地追加不修改索引, 因为 `block_offset` 和 `in_block_offset` 仍指向同一 record 起点。迁移追加必须更新索引, 因为 record 物理位置变化。
 5. 迁移后的旧 record 物理保留但不再可见, 与 correction 回退/乱序写入一致, 通过 `invalid_record_count` 统计无效记录。
 6. 全局 `BlockCache` 只缓存 compressed block。原地 append 目标是 pending raw block, 正常不会在全局缓存中; 迁移时仍对旧 index key 执行幂等 invalidate。
-7. Store 门面成功执行 append 后写 journal `0x13`。`timestamp > latest` 创建新 record 的 append 也写 `0x13`, 其中 `data_offset=0`。
+7. 普通 DatasetQueue 只按 timestamp 递增投递。`timestamp > latest` 创建新 record 的 append 必须 notify, 与 normal write 等价; `timestamp == latest` 修改已有 latest record 不重新投递、不 notify。
+8. Store 门面成功执行 append 后写 journal `0x13`。`timestamp > latest` 创建新 record 的 append 也写 `0x13`, 其中 `data_offset=0`。journal queue 使用独立递增 journal sequence timestamp, 因此每条 `0x13` 都会投递给 journal queue consumer。
 
 建议新增内部返回值:
 

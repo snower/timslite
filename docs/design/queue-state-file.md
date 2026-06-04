@@ -9,6 +9,8 @@
 {data_dir}/{dataset_name}/{dataset_type}/queue/{group_name}
 ```
 
+`group_name` 是文件名, 不做转义或编码。合法值必须非空且整体匹配 `^[0-9A-Za-z_-]+$`: 只允许数字、大小写英文字母、`-`、`_`。任何路径分隔符、`.`、空格、控制字符、非 ASCII 字符都不允许。`open_consumer(group_name)` 与 `drop_consumer(group_name)` 必须在拼接 `queue/{group_name}` 前校验。
+
 **文件结构**:
 ```
 Offset  Size    Field                   Description

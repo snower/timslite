@@ -29,7 +29,9 @@
 
 每个消费组对应一个独立的 4KB 状态文件, 存储已处理时间戳和处理中列表。
 
-`.journal/logs` 也可打开 queue, 用于实时 poll 消费 journal record。该 queue 是只读消费队列: producer 只能是 `JournalManager.append_*`, 外部 `queue.push()` 必须返回错误, 但 `open_consumer/poll/ack/drop_consumer` 语义与普通 dataset queue 相同。
+`.journal/logs` 也可打开 queue, 用于实时 poll 消费 journal record。该 queue 是只读消费队列: producer 只能是 `JournalManager.append_*`, 外部 `queue.push()` 必须返回错误, 但 `open_consumer/poll/ack/drop_consumer` 语义与普通 dataset queue 相同。journal queue 以 journal sequence timestamp 作为独立递增消费序列, 每条成功写入的 `0x13` append journal record 都必须投递。
+
+`group_name` 直接作为 `queue/{group_name}` 状态文件名, 因此必须复用 dataset name/type 的路径安全规则: 非空且整体匹配 `^[0-9A-Za-z_-]+$`, 只允许数字、大小写英文字母、`-`、`_`; `open_consumer` 和 `drop_consumer` 必须在拼接路径前校验。
 
 ### 28.3 核心类型
 
@@ -201,11 +203,17 @@ pub struct DataSet {
 ```
 
 - `queue_inner.is_some()` 表示 Queue 已打开, 同时阻止 idle-close
-- `queue_notify` 用于 write hook 唤醒等待 consumer
+- `queue_notify` 用于 normal write / append-created-new-timestamp hook 唤醒等待 consumer
 
 ### 29.2 Write Hook
 
-`dataset.write()` 成功后, 如果 `queue_notify` 存在且是正常写入, 触发通知:
+`dataset.write()` 成功后, 如果 `queue_notify` 存在且是正常写入, 触发通知。`dataset.append()` 的普通 queue 语义为:
+
+- `timestamp > latest_written_timestamp`: 创建新 timestamp, 与 normal write 等价, 必须 notify。
+- `timestamp == latest_written_timestamp`: 修改已存在 latest record, 不推进 queue timestamp, 不重新投递, 不 notify。
+- journal queue 例外: journal dataset 自身每条 `0x13` 都是新的 journal sequence timestamp, 必须 notify。
+
+通知实现:
 
 ```rust
 // 在 write_with_cache 末尾, 正常写入 (timestamp > old_latest) 成功后:
@@ -323,7 +331,7 @@ pub fn push(&self, data: &[u8]) -> Result<i64> {
 
 **串行化保证**: Dataset 的 `Mutex<DataSet>` 已保证所有 write 操作串行, 不需要额外 queue_mutex。
 
-**Journal queue 特例**: 如果 queue 绑定的是 `.journal/logs`, `push(data)` 必须拒绝外部调用。journal record 只能由 `JournalManager.append_*` 写入; append 成功后仍复用 queue notify 机制唤醒等待 consumer。
+**Journal queue 特例**: 如果 queue 绑定的是 `.journal/logs`, `push(data)` 必须拒绝外部调用。journal record 只能由 `JournalManager.append_*` 写入; append 成功后仍复用 queue notify 机制唤醒等待 consumer。这里的 append 指 journal record 写入 journal dataset, 其 timestamp 是独立递增 journal sequence, 不等同于业务 dataset 的 `append(ts == latest)` 修改已有 record。
 
 ### 30.3 Poll 流程
 

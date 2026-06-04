@@ -21,10 +21,10 @@
 |------|----|------|----------|----------|
 | [x] | P1-1 | 统一 `retention_window` 单位语义, 并消除后台 retention 非饱和减法描述/实现风险 | `meta-format.md`, `dataset-operations.md`, `background-and-cache.md`, `store-and-ffi.md`, config/meta/bg/retention 代码 | 文档只保留 timestamp unit 语义; 所有阈值计算统一为饱和/安全减法; 读/write/delete/append/retention 行为测试覆盖 |
 | [x] | P1-2 | 明确 `wrote_position` 的 on-disk 与 runtime 坐标系 | `data-model.md`, `data-segment.md`, `dataset-operations.md`, segment/header/append/correction 代码 | 文件内绝对偏移与数据区相对偏移命名清晰; append/correction tail 校验使用同一坐标; 可变 header 场景有验证 |
-| [ ] | P1-3 | 重新界定 Journal v1 热迁移/恢复边界, 或升级日志格式为可自包含变更数据 | `journal.md`, queue/journal API, journal encoder/decoder, migration/recovery docs/tests | 明确 journal 是 pointer-based 辅助日志还是 payload-bearing change log; append/write/delete 记录格式和 consumer 读取路径无歧义 |
-| [ ] | P1-4 | 补齐 `append` 与普通 DatasetQueue 的通知和消费语义 | `queue-overview.md`, `dataset-operations.md`, queue/write/append hook 代码 | `append(ts > latest)` 是否通知明确且实现一致; `append(ts == latest)` 原地追加/迁移是否重新投递明确; journal queue 与普通 queue 行为分离 |
-| [ ] | P1-5 | `.journal/logs` 只读 public handle 禁止 `append` | `architecture.md`, `store-and-ffi.md`, `journal.md`, Store/FFI/DataSet handle 代码 | read-only/internal dataset 拒绝 create/write/append/delete/drop/push; FFI 与 Rust API 都有保护和测试 |
-| [ ] | P1-6 | 为 Queue consumer `group_name` 增加合法性和路径安全规则 | `queue-overview.md`, `queue-state-file.md`, queue API/FFI 代码 | `group_name` 非空且匹配 `^[0-9A-Za-z_-]+$`; 禁止路径穿越/控制字符/非 ASCII/Windows 保留路径; open/drop consumer 测试覆盖 |
+| [x] | P1-3 | 重新界定 Journal v1 热迁移/恢复边界, 或升级日志格式为可自包含变更数据 | `journal.md`, queue/journal API, journal encoder/decoder, migration/recovery docs/tests | 明确 journal 是 pointer-based 辅助日志还是 payload-bearing change log; append/write/delete 记录格式和 consumer 读取路径无歧义 |
+| [x] | P1-4 | 补齐 `append` 与普通 DatasetQueue 的通知和消费语义 | `queue-overview.md`, `dataset-operations.md`, queue/write/append hook 代码 | `append(ts > latest)` 是否通知明确且实现一致; `append(ts == latest)` 原地追加/迁移是否重新投递明确; journal queue 与普通 queue 行为分离 |
+| [x] | P1-5 | `.journal/logs` 只读 public handle 禁止 `append` | `architecture.md`, `store-and-ffi.md`, `journal.md`, Store/FFI/DataSet handle 代码 | read-only/internal dataset 拒绝 create/write/append/delete/drop/push; FFI 与 Rust API 都有保护和测试 |
+| [x] | P1-6 | 为 Queue consumer `group_name` 增加合法性和路径安全规则 | `queue-overview.md`, `queue-state-file.md`, queue API/FFI 代码 | `group_name` 非空且匹配 `^[0-9A-Za-z_-]+$`; 禁止路径穿越/控制字符/非 ASCII/Windows 保留路径; open/drop consumer 测试覆盖 |
 | [ ] | P1-7 | 调整空 append no-op 的校验顺序, 避免绕过 timestamp 顺序契约 | `dataset-operations.md`, append 代码/tests, journal/queue hook | `timestamp <= 0`、`timestamp < latest`、retention 等契约先校验; 合法空 append 才 no-op; 非法旧 timestamp 空 append 返回错误 |
 
 ## P2 Tasks
@@ -44,4 +44,8 @@
 |------|----|------|------|------|
 | 2026-06-04 | P1-1 | 已完成 | retention 统一为 timestamp unit 语义, 最终命名为 `retention_window`; 后台阈值文档统一为 `saturating_sub`; 移除旧的单位误导和过渡兼容命名 | `cargo test test_dataset_config_builder_retention_window -- --test-threads=1`; `cargo test -- --test-threads=1` |
 | 2026-06-04 | P1-2 | 已完成 | 数据段 header state `wrote_position` 明确保存文件内绝对偏移; 运行时字段改为 `data_wrote_position`, 持久化时写入 `header_size + data_wrote_position` | `cargo test test_header_wrote_position_is_absolute_and_runtime_is_data_relative -- --test-threads=1`; `cargo test -- --test-threads=1` |
+| 2026-06-04 | P1-3 | 已完成 | Journal v1 明确降级为 pointer-based 辅助日志; consumer 必须通过源 dataset 的 `read_entry_at_index(index_info)` 读取业务数据, 不承诺自包含 redo | 文档检查: `docs/design/journal.md` |
+| 2026-06-04 | P1-4 | 已完成 | append 创建新 timestamp 时普通 queue notify; append 修改已有 latest 不重新投递也不 notify; journal queue 继续按 journal sequence 投递每条 `0x13` | `cargo test test_append_notifies_queue_only_when_creating_new_timestamp -- --test-threads=1` |
+| 2026-06-04 | P1-5 | 已完成 | `.journal/logs` read-only public handle 的禁止操作补齐 `append`/`queue_push`; Store/FFI 经 Store append 路径保持拒绝 | `cargo test t28_9_public_journal_handle_rejects_append -- --test-threads=1` |
+| 2026-06-04 | P1-6 | 已完成 | Queue consumer `group_name` 复用 dataset 路径安全字符集, open/drop consumer 拼路径前校验 | `cargo test t27_2_4_consumer_group_name_must_be_path_safe -- --test-threads=1` |
 | 2026-06-04 | ALL | 未完成 | 基于第二轮 design review 创建追踪清单, 后续仍需处理未完成项 | `rg -n "^### P[0-9]-" docs/review/design-review.md` |

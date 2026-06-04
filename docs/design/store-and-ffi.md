@@ -74,7 +74,7 @@ impl Store {
 
 不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。
 
-内部保留 dataset `.journal/logs` 不适用公共命名规则。`enable_journal=true` 时, public `open_dataset(".journal", "logs")` 允许返回只读 handle, 支持 `read/query/query_iter/latest_timestamp/open_queue`; public create/write/delete/drop 仍必须拒绝 `.journal`。`enable_journal=false` 时, 所有 `.journal/logs` public open/read/query/open_queue 请求返回 `NotFound`。
+内部保留 dataset `.journal/logs` 不适用公共命名规则。`enable_journal=true` 时, public `open_dataset(".journal", "logs")` 允许返回只读 handle, 支持 `read/query/query_iter/latest_timestamp/open_queue`; public create/write/append/delete/drop/queue_push 仍必须拒绝 `.journal`。`enable_journal=false` 时, 所有 `.journal/logs` public open/read/query/open_queue 请求返回 `NotFound`。
 
 ### 11.4 StoreConfig: retention_check_hour
 
@@ -277,7 +277,7 @@ pub struct TmslDatasetConfigFFI {
     name: *const c_char, dataset_type: *const c_char,
     err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 // `name=".journal", dataset_type="logs"` 在 enable_journal=true 时打开只读 journal handle;
-// 该 handle 可 read/query/open_queue, 但 write/delete/drop 必须返回错误。
+// 该 handle 可 read/query/open_queue, 但 write/append/delete/drop/queue_push 必须返回错误。
 #[no_mangle] pub extern "C" fn tmsl_dataset_close(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_drop(store: *mut c_void,
     name: *const c_char, dataset_type: *const c_char,

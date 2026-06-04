@@ -197,6 +197,38 @@ fn t27_2_3_open_consumer_creates_group() {
 }
 
 #[test]
+fn t27_2_4_consumer_group_name_must_be_path_safe() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+
+    for group_name in [
+        "",
+        ".",
+        "..",
+        "../bad",
+        "bad/name",
+        "bad\\name",
+        "bad name",
+        "中文",
+    ] {
+        assert!(
+            store.open_consumer(&q, group_name).is_err(),
+            "group name {group_name:?} must be rejected"
+        );
+    }
+
+    store.open_consumer(&q, "A-z_09").unwrap();
+    store.close().unwrap();
+}
+
+#[test]
 fn t27_3_1_open_queue_twice_errors() {
     use timslite::{Store, StoreConfig};
 

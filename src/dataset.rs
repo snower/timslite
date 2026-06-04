@@ -408,7 +408,6 @@ impl DataSet {
             self.segments
                 .increment_invalid_record_count(old_entry.block_offset)?;
             self.last_used_at = Instant::now();
-            self.notify_queue();
             return Ok(Some(AppendOutcome {
                 index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
                 data_offset,
@@ -421,7 +420,6 @@ impl DataSet {
             self.segments
                 .append_to_last_record(entry.block_offset, entry.in_block_offset, data)?;
         self.last_used_at = Instant::now();
-        self.notify_queue();
         Ok(Some(AppendOutcome {
             index_entry: entry,
             data_offset: actual_offset,
@@ -988,6 +986,30 @@ mod tests {
         assert_eq!(seg.pending_wrote_position, before.1 + 2);
         assert_eq!(seg.total_uncompressed_size, before.2 + 2);
         assert_eq!(seg.invalid_record_count, 0);
+    }
+
+    #[test]
+    fn test_append_notifies_queue_only_when_creating_new_timestamp() {
+        let mut ds = make_cache_dataset("append_notify_queue");
+        let (_inner, notify) = ds.open_queue().unwrap();
+
+        ds.append(100, b"first").unwrap();
+        {
+            let (lock, _) = &*notify;
+            let mut flag = lock.lock().unwrap();
+            assert!(*flag, "append creating a new timestamp must notify queue");
+            *flag = false;
+        }
+
+        ds.append(100, b"_tail").unwrap();
+        {
+            let (lock, _) = &*notify;
+            let flag = lock.lock().unwrap();
+            assert!(
+                !*flag,
+                "append modifying the existing latest timestamp must not notify queue"
+            );
+        }
     }
 
     #[test]

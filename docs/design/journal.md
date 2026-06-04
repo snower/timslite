@@ -4,6 +4,10 @@
 
 ### 25.1 目标与边界
 
+> Journal v1 定位为 **pointer-based 辅助日志**: 仅在源 dataset 仍可访问, 且目标数据未被 retention 或未来 checkpoint 清除时, 支撑热迁移、增量同步、审计和有限故障恢复工具。它不是自包含 redo log, 不携带业务 payload、payload checksum 或 record version, 因此不能独立重建业务数据。
+>
+> Consumer 处理 `0x11/0x12/0x13` 时必须把 journal record 中的 `index_info` 视为读取指针, 通过源 dataset 的 `read_entry_at_index(index_info)` 拉取当前可读数据; 如果源 dataset 不可访问、索引指向的数据已被回收/删除/覆盖, consumer 必须把该条记录视为不可重放或需要全量校验补偿。
+
 Journal 用于记录 Store/DataSet 的关键变更操作, 后续可服务于数据热迁移、增量同步、审计和故障恢复工具。Journal 自身不引入 WAL、二阶段提交或跨 dataset 事务, 不改变 timslite 当前“高性能、允许最近写入丢失”的 crash 模型。
 
 Journal v1 记录五类事件:
@@ -42,7 +46,7 @@ const JOURNAL_DATASET_TYPE: &str = "logs";
 
 - public `create_dataset` 不允许创建 `.journal/logs`。
 - public `open_dataset(".journal", "logs")` 在 `StoreConfig.enable_journal=true` 时允许, 返回只读 DataSet handle, 可执行 `read/query/query_iter/latest_timestamp/open_queue`。
-- public `write/delete/drop/close-as-drop` 不允许修改或删除 `.journal/logs`。
+- public `write/append/delete/drop/close-as-drop` 不允许修改或删除 `.journal/logs`。
 - `Store::open` 扫描普通 dataset 时继续跳过非法目录名; `Journal` 模块单独按固定路径打开或创建 `.journal/logs`。
 - journal dataset 不进入普通可写 dataset registry, 或进入带 read-only 标记的 internal registry; 后台任务若需要 flush/idle-close 它, 必须通过 `JournalManager` 访问。
 
@@ -261,6 +265,7 @@ Offset  Size  Type       Field
 - 当 append 因 `timestamp > latest_written_timestamp` 创建新 record 时, `data_offset=0`, `data_len=input.len()`, `index_info` 指向新 record。
 - 当 append 原地追加到最新末尾 record 时, `data_offset=old_data_len`, `data_len=input.len()`, `index_info` 保持原 record 起始位置。
 - 当 append 触发独占 block 迁移时, `data_offset=old_data_len`, `data_len=input.len()`, `index_info` 指向迁移后的新 block。
+- `0x13` 不携带 append bytes; consumer 必须通过源 dataset 的 `read_entry_at_index(index_info)` 获取完整 record, 再按 `data_offset/data_len` 识别本次追加范围。
 - append 失败不写 `0x13` journal record。
 
 ### 25.6 Store/DataSet 写入流程集成
@@ -405,7 +410,7 @@ let iter = journal.query_iter(start_journal_ts, end_journal_ts)?;
 
 - 返回的 handle 标记为 `read_only_internal=true`。
 - 允许: `read`, `query`, `query_iter`, `latest_written_timestamp`, `open_queue`, `close`。
-- 禁止: `write`, `delete`, `drop_dataset`, `create_dataset`。
+- 禁止: `write`, `append`, `delete`, `drop_dataset`, `create_dataset`, `queue.push`。
 - `read/query` 返回的是 journal record payload 原始字节, 调用方可用 journal parser 解码为 `JournalRecord`。
 - `timestamp=-1` 语义保持不变: 读取最大 journal sequence timestamp 对应的日志 record; 若最新日志被未来 retention/checkpoint 删除, 返回 `None`, 不回退。
 
@@ -431,6 +436,7 @@ Queue 语义:
 
 - journal queue 的 producer 只有 `JournalManager.append_*`。
 - `DatasetQueue::push` 对 journal queue 必须返回 `InvalidData`, 外部不能伪造日志。
+- journal queue 以 journal sequence timestamp 作为独立递增消费序列; 每条成功写入的 `0x13` 都必须投递给 journal queue consumer, 不受普通 dataset queue 的 append 去重语义影响。
 - 每次 journal append 成功后, 复用 Queue 的 notify 机制唤醒等待中的 consumer。
 - 每个消费组维护自己的 4KB queue state 文件: `{data_dir}/.journal/logs/queue/{group}`。
 - `poll(timeout)` 返回 `(journal_ts, payload)`; `journal_ts` 是 journal dataset timestamp, 可作为迁移端 checkpoint。

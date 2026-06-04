@@ -54,6 +54,20 @@ pub const STATE_HEADER_SIZE: usize = 21;
 /// Default pending timeout in seconds (5 minutes).
 pub const DEFAULT_PENDING_TIMEOUT_SECS: u64 = 300;
 
+fn validate_consumer_group_name(group_name: &str) -> Result<()> {
+    if !group_name.is_empty()
+        && group_name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        Ok(())
+    } else {
+        Err(TmslError::InvalidData(
+            "queue consumer group_name must match ^[0-9A-Za-z_-]+$".into(),
+        ))
+    }
+}
+
 // ─── PendingEntry ────────────────────────────────────────────────────────────
 
 /// A single pending entry tracked in the consumer state file.
@@ -423,6 +437,8 @@ impl DatasetQueue {
 
     /// Open or create a consumer group and return a consumer handle.
     pub fn open_consumer(&self, group_name: &str) -> Result<DatasetQueueConsumer> {
+        validate_consumer_group_name(group_name)?;
+
         let mut inner = self
             .inner
             .lock()
@@ -472,6 +488,8 @@ impl DatasetQueue {
 
     /// Drop (close and remove) a consumer group.
     pub fn drop_consumer(&self, group_name: &str) -> Result<()> {
+        validate_consumer_group_name(group_name)?;
+
         let mut inner = self
             .inner
             .lock()
