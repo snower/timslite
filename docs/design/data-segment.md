@@ -191,7 +191,7 @@ impl DataSegment {
 
 **append 发布顺序约束**:
 
-`DataSegment::append_record` 返回的 `(block_segment_offset, in_block_offset)` 会被 `DataSet` 与当前 `segment.file_offset` 合成为 `block_offset`, 再写入 `TimeIndex`。因此 data segment 侧必须先完成 record payload 和 block/header state 更新, 再让上层发布 index entry。对于新 pending block、追加 pending block、超大独占 block 三类路径, 设计上的可见性顺序都是:
+`DataSegment::append_record` 返回的 `(block_segment_offset, in_block_offset)` 会被 `DataSet` 与当前 `segment.file_offset` 合成为 `block_offset`, 再写入 `TimeIndex`。因此 data segment 侧必须先完成 record payload 和 block/header state 更新, 再让上层发布 index entry。对于新 pending block、追加 pending block、exclusive/single-record block 三类路径, 设计上的可见性顺序都是:
 
 1. 写入 record payload。
 2. 写入或更新 `BlockHeader` 与 data segment state。
@@ -251,7 +251,7 @@ fn overwrite_in_last_block(
 
 #### append_to_last_record: 追加写入 (Tail Append)
 
-append 追加场景下 (`timestamp == latest_written_timestamp`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前运行时 `data_wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限和 70% 迁移阈值判断。如果上层判断追加后需要迁移为独占 block, 应先读取完整旧数据并走 `create_single_record_block`, 不调用本方法。
+append 追加场景下 (`timestamp == latest_written_timestamp`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前运行时 `data_wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限和 70% 迁移阈值判断。如果上层判断追加后需要迁移为 exclusive/single-record block, 应先读取完整旧数据并走 `create_single_record_block`, 不调用本方法。
 
 ```rust
 fn append_to_last_record(
@@ -297,7 +297,7 @@ fn append_to_last_record(
 
 1. append 只增长 record data, 不支持缩小或替换已有 data。
 2. append 失败不回退为乱序写入; compressed block、非末尾 record、历史段都直接返回错误。
-3. append 超过 70% 聚合 block 阈值时迁移整条 record, 而不是继续增长普通 pending block。
+3. append 修改已存在 latest record 且超过 70% 聚合 block 阈值时迁移整条 record, 而不是继续增长普通 pending block; append 创建新 timestamp 不使用该 70% 阈值。
 4. 原地 append 不改变索引; 迁移 append 由 `DataSet` 层更新索引并递增旧段 `invalid_record_count`。
 
 

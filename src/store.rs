@@ -501,6 +501,42 @@ impl Store {
         Ok(())
     }
 
+    /// Read through the Store so global cache and read-only internal handles are honored.
+    pub fn read_dataset(
+        &self,
+        handle: DataSetHandle,
+        timestamp: i64,
+    ) -> Result<Option<(i64, Vec<u8>)>> {
+        let ds_arc = self.get_dataset(&handle)?;
+        let mut ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.read(timestamp, Some(self.block_cache()))
+    }
+
+    /// Query through the Store so global cache and read-only internal handles are honored.
+    pub fn query_dataset(
+        &self,
+        handle: DataSetHandle,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Vec<(i64, Vec<u8>)>> {
+        let ds_arc = self.get_dataset(&handle)?;
+        let mut ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.query(start_ts, end_ts, Some(self.block_cache()))
+    }
+
+    /// Return the highest successfully written timestamp for a dataset handle.
+    pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<i64> {
+        let ds_arc = self.get_dataset(&handle)?;
+        let ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        Ok(ds.latest_written_timestamp())
+    }
+
     /// Get a reference to the global block cache.
     pub fn block_cache(&self) -> &Arc<BlockCache> {
         &self.block_cache

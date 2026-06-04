@@ -144,7 +144,7 @@ int tmsl_iter_next_buf(void* iter, int64_t* out_ts,
 | `DataSet::query_iter()` | 不全量收集落盘 `IndexEntry`; 按需读取 record; 持有当前 hot block |
 | FFI iterator | 不全量收集落盘 `IndexEntry`; 每条 record 仍 malloc 返回 |
 | 未 flush index buffer | 命中范围内 entry 会被复制为 snapshot |
-| 超大 record | 当前 record buffer 可超过 64KB, 独占 block 正常返回 |
+| exclusive/single-record block | 当前 record buffer 可超过 64KB, 独占 block 正常返回 |
 
 禁止表述:
 

@@ -132,6 +132,39 @@ fn t8_1_2_multi_dataset_isolation() {
 }
 
 #[test]
+fn t8_1_2b_store_read_query_latest_facade() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset(
+            "facade",
+            "events",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let handle = store.open_dataset("facade", "events").unwrap();
+
+    store.write_dataset(handle, 1, b"one").unwrap();
+    store.write_dataset(handle, 2, b"two").unwrap();
+
+    assert_eq!(store.latest_written_timestamp(handle).unwrap(), 2);
+    assert_eq!(store.read_dataset(handle, 1).unwrap().unwrap().1, b"one");
+    assert_eq!(store.read_dataset(handle, -1).unwrap().unwrap().1, b"two");
+    let rows = store.query_dataset(handle, 1, 2).unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].1, b"one");
+    assert_eq!(rows[1].1, b"two");
+
+    store.close().unwrap();
+}
+
+#[test]
 fn t8_1_3_block_aggregation() {
     use timslite::{Store, StoreConfig};
 

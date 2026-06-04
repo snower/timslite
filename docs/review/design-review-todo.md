@@ -25,14 +25,14 @@
 | [x] | P1-4 | 补齐 `append` 与普通 DatasetQueue 的通知和消费语义 | `queue-overview.md`, `dataset-operations.md`, queue/write/append hook 代码 | `append(ts > latest)` 是否通知明确且实现一致; `append(ts == latest)` 原地追加/迁移是否重新投递明确; journal queue 与普通 queue 行为分离 |
 | [x] | P1-5 | `.journal/logs` 只读 public handle 禁止 `append` | `architecture.md`, `store-and-ffi.md`, `journal.md`, Store/FFI/DataSet handle 代码 | read-only/internal dataset 拒绝 create/write/append/delete/drop/push; FFI 与 Rust API 都有保护和测试 |
 | [x] | P1-6 | 为 Queue consumer `group_name` 增加合法性和路径安全规则 | `queue-overview.md`, `queue-state-file.md`, queue API/FFI 代码 | `group_name` 非空且匹配 `^[0-9A-Za-z_-]+$`; 禁止路径穿越/控制字符/非 ASCII/Windows 保留路径; open/drop consumer 测试覆盖 |
-| [ ] | P1-7 | 调整空 append no-op 的校验顺序, 避免绕过 timestamp 顺序契约 | `dataset-operations.md`, append 代码/tests, journal/queue hook | `timestamp <= 0`、`timestamp < latest`、retention 等契约先校验; 合法空 append 才 no-op; 非法旧 timestamp 空 append 返回错误 |
+| [x] | P1-7 | 调整空 append no-op 的校验顺序, 避免绕过 timestamp 顺序契约 | `dataset-operations.md`, append 代码/tests, journal/queue hook | `timestamp <= 0`、`timestamp < latest`、retention 等契约先校验; 合法空 append 才 no-op; 非法旧 timestamp 空 append 返回错误 |
 
 ## P2 Tasks
 
 | 状态 | ID | 任务 | 主要范围 | 完成标准 |
 |------|----|------|----------|----------|
-| [ ] | P2-1 | 将 `single_record` 语义从 "超大 record" 调整为 "exclusive/single-record block" | `data-model.md`, `compression.md`, `design-decisions.md`, `dataset-operations.md`, block flag docs/code comments | 文档说明 single-record block 可由 >64KB write 或 append 70% 迁移产生; 校验逻辑不假设其一定大于 64KB |
-| [ ] | P2-2 | 补齐 Store Rust API 文档, 明确 write/read/query/delete/append/queue 的门面职责 | `store-and-ffi.md`, `journal.md`, public API docs | Store 与 FFI 操作表完整; 每个 write-like API 的 journal/cache/queue 责任清晰 |
+| [x] | P2-1 | 将 `single_record` 语义从 "超大 record" 调整为 "exclusive/single-record block" | `data-model.md`, `compression.md`, `design-decisions.md`, `dataset-operations.md`, block flag docs/code comments | 文档说明 single-record block 可由 >64KB write 或 append 70% 迁移产生; 校验逻辑不假设其一定大于 64KB |
+| [x] | P2-2 | 补齐 Store Rust API 文档, 明确 write/read/query/delete/append/queue 的门面职责 | `store-and-ffi.md`, `journal.md`, public API docs | Store 与 FFI 操作表完整; 每个 write-like API 的 journal/cache/queue 责任清晰 |
 | [ ] | P2-3 | 明确直接持有 `DataSet` 的 public 边界与 journal 完整性关系 | `dataset-operations.md`, `journal.md`, Rust/Python/FFI API docs/code | 外部写入是否必须经 Store/handle facade 有明确规则; 直接 DataSet 写入不会静默绕过 journal 或被标记为 internal |
 | [ ] | P2-4 | 收窄 correction 变长覆盖描述, 删除 "移动后续字节" 的过宽语义 | `data-segment.md`, `dataset-operations.md`, correction 代码/tests | correction 仅支持 tail-only resize; 若 record 后还有字节则返回错误/回退; 文档不再暗示移动后续 block/record |
 | [ ] | P2-5 | 澄清 queue 锁层级与 Condvar wait 协议 | `queue-overview.md`, queue 并发代码/tests | wait 前释放 dataset/state 的顺序明确; Condvar mutex 只保护通知 flag; 文档与实现无死锁/missed wakeup 误导 |
@@ -48,4 +48,7 @@
 | 2026-06-04 | P1-4 | 已完成 | append 创建新 timestamp 时普通 queue notify; append 修改已有 latest 不重新投递也不 notify; journal queue 继续按 journal sequence 投递每条 `0x13` | `cargo test test_append_notifies_queue_only_when_creating_new_timestamp -- --test-threads=1` |
 | 2026-06-04 | P1-5 | 已完成 | `.journal/logs` read-only public handle 的禁止操作补齐 `append`/`queue_push`; Store/FFI 经 Store append 路径保持拒绝 | `cargo test t28_9_public_journal_handle_rejects_append -- --test-threads=1` |
 | 2026-06-04 | P1-6 | 已完成 | Queue consumer `group_name` 复用 dataset 路径安全字符集, open/drop consumer 拼路径前校验 | `cargo test t27_2_4_consumer_group_name_must_be_path_safe -- --test-threads=1` |
+| 2026-06-04 | P1-7 | 已完成 | append 先执行 timestamp 顺序与 retention 校验, 再对合法空 data 做 no-op; 旧 timestamp 空 append 不再绕过契约 | `cargo test test_empty_append_old_timestamp_returns_error_before_noop -- --test-threads=1` |
+| 2026-06-04 | P2-1 | 已完成 | `SINGLE_RECORD` 语义调整为 exclusive/single-record block; 明确可由 >64KB record 或 append 已有 latest record 超过 70% 阈值产生, 且 70% 只作用于已有 record append 增长 | `cargo test test_append_new_timestamp_over_seventy_percent_uses_normal_write_path -- --test-threads=1` |
+| 2026-06-04 | P2-2 | 已完成 | Store Rust API 文档补齐 write/read/query/delete/append/queue; 代码补充 `read_dataset`、`query_dataset`、`latest_written_timestamp` 门面方法 | `cargo test t8_1_2b_store_read_query_latest_facade -- --test-threads=1` |
 | 2026-06-04 | ALL | 未完成 | 基于第二轮 design review 创建追踪清单, 后续仍需处理未完成项 | `rg -n "^### P[0-9]-" docs/review/design-review.md` |

@@ -17,11 +17,11 @@
 
 多条 record 聚合为一个 Block, 压缩仅针对单个 Block。
 
-**Block 大小限制**: 普通聚合 Block 的 payload 最大 64KB (65536 字节)。如果单条 record 的编码后大小超过 64KB, 则该 record **独占一个 Block**, Block 实际大小可超过 64KB。
+**Block 大小限制**: 普通聚合 Block 的 payload 最大 64KB (65536 字节)。如果单条 record 的编码后大小超过 64KB, 或 append 修改已有 latest record 后超过 70% 聚合阈值, 则该 record **独占一个 Block** (`SINGLE_RECORD`, exclusive/single-record block)。因此 `SINGLE_RECORD` 表示该 block 只服务一条 record, 不再等同于 record 一定超过 64KB。
 
 **单条 Record 上限**: `write` 与 `append` 都必须拒绝纯数据长度超过 4MiB 的单条 record。普通写入校验 `data.len() <= 4MiB`; append 校验追加后的逻辑 record 数据长度 `old_data_len + append_len <= 4MiB`。该限制独立于 `data_len:u32` 的磁盘编码上限, 是当前实现的资源保护边界。
 
-**Append 迁移阈值**: `DataSet::append` 修改最新 record 时, 如果追加后的 record 编码大小 (`12 + data_len`) 超过 `BLOCK_MAX_SIZE * 70 / 100`, 则不再把该 record 留在普通聚合 block 中, 而是把追加后的整条 record 迁移为独占 block, 并更新该 timestamp 的索引条目。该阈值按 block payload 字节计算, 当前固定为 `45875` 字节。
+**Append 迁移阈值**: `DataSet::append` 修改已存在的最新 record 时, 如果追加后的 record 编码大小 (`12 + data_len`) 超过 `BLOCK_MAX_SIZE * 70 / 100`, 则不再把该 record 留在普通聚合 block 中, 而是把追加后的整条 record 迁移为独占 block, 并更新该 timestamp 的索引条目。该阈值按 block payload 字节计算, 当前固定为 `45875` 字节。该阈值只作用于 `timestamp == latest_written_timestamp` 的追加增长场景; `timestamp > latest_written_timestamp` 创建新 record 时复用 normal write 路径。
 
 **纠正写入 (Correction Write)**: 当 `timestamp == latest_written_timestamp` 时触发纠正写入。该最大已写 timestamp 对应的记录只有在仍位于 **最新数据段最后一个 pending raw block (`flags=0`)** 的最末位置时, 才可通过 mmap 直接修改该 record 的 data 字节, **支持改变 data 长度** (增长或缩小)。索引条目保持不变 (`block_offset`/`in_block_offset` 不变, 其中 `block_offset` 是数据区逻辑全局偏移, 不含 header)。修改时 delta = new_data.len() - old_data_len, 需同步更新 5 个字段: block 头的 payload_size/uncompressed_size + 段的 pending_wrote_position / total_uncompressed_size / wrote_position。**回退行为**: 若目标 block 已经 `SEALED|COMPRESSED` 或不是可原地修改位置, 则自动回退为更新写入: 数据追加到最新数据段、更新索引值, 同时旧数据所在段的 `invalid_record_count` 加一, 并 invalidate 旧索引对应的全局缓存 key。compressed block 一旦写入后不允许再被修改, 这是全局 BlockCache 只缓存 compressed block 解压结果的前提。
 
@@ -48,7 +48,7 @@ Offset  Size  Field                    Description
 4-5     u16   flags
                   bit 0: 1=compressed, 0=uncompressed
                   bit 1: 1=sealed (不再写入)
-                  bit 2: 1=single_record (独占 record 的超大 block)
+                  bit 2: 1=single_record (exclusive/single-record block)
 6-7     u16   record_count             Block 内 record 数量
 8-11    u32   uncompressed_size        Block 内所有 record 的原始数据总大小 (含 data_len+timestamp)
 12-15   u32   reserved                 保留
@@ -91,7 +91,7 @@ Offset  Size  Field                    Description
 
 - `timestamp`: 秒级时间戳
 - `block_offset`: 对应 Block 在数据流中的**逻辑全局偏移** (相对各数据段数据区起点, 指向 BlockHeader 起始), 不包含任何数据段文件 header 长度。落到具体段后, 物理文件偏移 = `segment.header_len + (block_offset - segment.file_offset)`。
-- `in_block_offset`: record 在 Block Payload 中的**相对偏移** (从 payload 起始算, 指向该 record 的 data_len 字段)。普通聚合 Block 的 payload 受 64KB 上限约束, 因此真实 record 起始偏移不会达到 `0xFFFF` 哨兵值; 超大独占 Block 只包含一条 record, `in_block_offset` 固定为 0。
+- `in_block_offset`: record 在 Block Payload 中的**相对偏移** (从 payload 起始算, 指向该 record 的 data_len 字段)。普通聚合 Block 的 payload 受 64KB 上限约束, 因此真实 record 起始偏移不会达到 `0xFFFF` 哨兵值; exclusive/single-record block 只包含一条 record, `in_block_offset` 固定为 0。
 
 #### Block Offset 坐标系
 

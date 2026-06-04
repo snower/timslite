@@ -338,9 +338,6 @@ impl DataSet {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
         }
-        if data.is_empty() {
-            return Ok(None);
-        }
         validate_record_data_len(data.len())?;
         if self.is_timestamp_expired(timestamp) {
             return Err(self.expired_error(timestamp));
@@ -349,6 +346,9 @@ impl DataSet {
             return Err(TmslError::InvalidData(
                 "append timestamp is older than latest_written_timestamp".into(),
             ));
+        }
+        if data.is_empty() {
+            return Ok(None);
         }
         if timestamp > self.latest_written_timestamp {
             let outcome = self.write_with_cache_outcome(timestamp, data, cache)?;
@@ -1020,6 +1020,39 @@ mod tests {
 
         assert!(ds.append(100, b"x").is_err());
         assert_eq!(ds.read(100, None).unwrap().unwrap().1, b"a");
+    }
+
+    #[test]
+    fn test_empty_append_old_timestamp_returns_error_before_noop() {
+        let mut ds = make_cache_dataset("empty_append_old_timestamp");
+        ds.write(100, b"a").unwrap();
+        ds.write(200, b"b").unwrap();
+
+        assert!(
+            ds.append(100, b"").is_err(),
+            "empty append must still enforce timestamp ordering"
+        );
+        assert_eq!(ds.latest_written_timestamp(), 200);
+        assert_eq!(ds.read(100, None).unwrap().unwrap().1, b"a");
+    }
+
+    #[test]
+    fn test_append_new_timestamp_over_seventy_percent_uses_normal_write_path() {
+        let mut ds = make_cache_dataset("append_new_over_70_percent");
+        let data = vec![0x44; APPEND_MIGRATION_THRESHOLD + 1 - RECORD_HEADER_SIZE];
+
+        let outcome = ds
+            .append_with_cache_outcome(100, &data, None)
+            .unwrap()
+            .unwrap();
+
+        assert!(!outcome.migrated);
+        assert_eq!(outcome.data_offset, 0);
+        assert_eq!(outcome.data_len, data.len() as u32);
+        ds.write(200, b"tail").unwrap();
+        let next = ds.time_index.find_entry(200).unwrap().unwrap();
+        assert_eq!(next.block_offset, outcome.index_entry.block_offset);
+        assert!(next.in_block_offset > 0);
     }
 
     #[test]

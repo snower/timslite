@@ -39,11 +39,28 @@ impl Store {
         data_segment_size: u64, index_segment_size: u64, compress_level: u8,
         retention_window: u64,
     ) -> Result<DataSetHandle>;
+    pub fn create_dataset_with_config(&self, name: &str, dataset_type: &str,
+        config_builder: Option<DataSetConfigBuilder>,
+    ) -> Result<DataSetHandle>;
     pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
-    pub fn open_journal_queue(&self) -> Result<DatasetQueue>;
+    pub fn write_dataset(&self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
     pub fn append_dataset(&self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
+    pub fn delete_dataset_record(&self, handle: DataSetHandle, timestamp: i64) -> Result<()>;
+    pub fn read_dataset(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>;
+    pub fn query_dataset(&self, handle: DataSetHandle, start: i64, end: i64) -> Result<Vec<(i64, Vec<u8>)>>;
+    pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<i64>;
+    pub fn open_queue(&self, handle: DataSetHandle) -> Result<DatasetQueue>;
+    pub fn open_journal_queue(&self) -> Result<DatasetQueue>;
+    pub fn open_consumer(&self, queue: &DatasetQueue, group_name: &str) -> Result<DatasetQueueConsumer>;
+    pub fn drop_consumer(&self, queue: &DatasetQueue, group_name: &str) -> Result<()>;
+    pub fn queue_push(&self, queue: &DatasetQueue, data: &[u8]) -> Result<i64>;
+    pub fn queue_poll(&self, consumer: &DatasetQueueConsumer, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>;
+    pub fn queue_ack(&self, consumer: &DatasetQueueConsumer, timestamp: i64) -> Result<()>;
     pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>;
     pub fn drop_dataset(&self, handle: DataSetHandle) -> Result<()>;
+    pub fn drop_dataset_by_name(&self, name: &str, dataset_type: &str) -> Result<()>;
+    pub fn block_cache(&self) -> &Arc<BlockCache>;
+    pub fn config(&self) -> &StoreConfig;
     pub fn close(self) -> Result<()>;
 
     // 后台任务手动执行与查询 (详见 §17.10)
@@ -59,6 +76,12 @@ impl Store {
 | `Store::open` | 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs`, 再扫描 `{data_dir}/*/*` 加载已有普通数据集 | `.journal/logs` 是内部保留 dataset; 普通扫描跳过它 |
 | `Store::create_dataset` | 写入 `meta` 文件; 写入第一个空 data segment + index segment header; journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/data/` + `{name}/{type}/index/` |
 | `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments | 不创建新目录, 仅读取 |
+| `Store::write_dataset` | 经 Store 门面写入, 应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
+| `Store::append_dataset` | 经 Store 门面追加, 应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
+| `Store::delete_dataset_record` | 经 Store 门面删除索引可见性, invalidate 旧 cache key; 成功后 journal 写 `0x12` | 不删除物理 record, 仅标记 filler/invalid |
+| `Store::read_dataset` / `query_dataset` | 使用全局 `BlockCache` 读取 compressed block; retention 统一生效 | `.journal/logs` read-only handle 也允许读取 |
+| `Store::latest_written_timestamp` | 返回 dataset 已写入最大 timestamp | 删除 latest 后仍返回最大已写 timestamp |
+| `Store::open_queue` / `open_journal_queue` | 打开普通 dataset queue 或内置 journal queue | journal queue producer 只允许 `JournalManager` |
 | `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树; journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
 
 ### 11.3 Dataset name/type 校验

@@ -197,7 +197,7 @@ DataSet::write(timestamp, data):
 
 > **Journal hook**: 通过 Store 门面执行的成功写入需要返回最终 `IndexEntry(timestamp, block_offset, in_block_offset)` 给 `JournalManager`, 由 Store 在写入成功后向内置 `.journal/logs` 写入 `0x11` 日志。直接绕过 Store 调用 `DataSet::write` 的内部路径默认不具备 journal 语义, 除非显式传入 journal sink。
 
-**单条 record 上限**: `DataSet::write` 必须拒绝 `data.len() > 4MiB`。该限制适用于普通聚合 block 和超大独占 block, 与 `data_len:u32` 的磁盘编码能力无关。
+**单条 record 上限**: `DataSet::write` 必须拒绝 `data.len() > 4MiB`。该限制适用于普通聚合 block 和 exclusive/single-record block, 与 `data_len:u32` 的磁盘编码能力无关。
 
 **纠正写入**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
 
@@ -301,7 +301,7 @@ flush (配置化，默认10分钟):
       pending block 继续保持 raw 状态留在 mmap 中
 ```
 
-> **关键区别**: flush ≠ seal。flush 和 idle-close 都不改变 block 状态；密封/压缩只发生在 next write 导致 pending overflow 或超大独占 block 创建时。
+> **关键区别**: flush ≠ seal。flush 和 idle-close 都不改变 block 状态；密封/压缩只发生在 next write 导致 pending overflow 或 exclusive/single-record block 创建时。
 
 ### 9.3 追加操作 (DataSet::append)
 
@@ -312,11 +312,14 @@ DataSet::append(timestamp, data):
     │
     ├─ if timestamp <= 0 → Error("timestamp must be > 0")
     │
-    ├─ if data.len() == 0 → Ok(())
-    │      (空 append 不写数据、不写 journal)
-    │
     ├─ if timestamp < latest_written_timestamp
     │      └─ Error("append timestamp is older than latest")
+    │
+    ├─ if retention_window > 0 && timestamp < retention_threshold
+    │      └─ Error("timestamp expired")
+    │
+    ├─ if data.len() == 0 → Ok(())
+    │      (合法空 append 不写数据、不写 journal; timestamp 顺序/retention 校验必须先执行)
     │
     ├─ if timestamp > latest_written_timestamp
     │      ├─ 校验 data.len() <= 4MiB
@@ -344,7 +347,7 @@ DataSet::append(timestamp, data):
            │
            ├─ if 12 + final_data_len > BLOCK_MAX_SIZE * 70 / 100:
            │      ├─ 读取 old_data + append data 组成完整 record
-           │      ├─ 追加为独占 block (single_record)
+           │      ├─ 追加为独占 block (SINGLE_RECORD, exclusive/single-record block)
            │      ├─ 更新该 timestamp 的 index entry 指向新 block
            │      ├─ old block 所在数据段 invalid_record_count += 1
            │      ├─ invalidate 旧 index entry 对应的全局缓存 key
@@ -367,7 +370,7 @@ DataSet::append(timestamp, data):
 约束与说明:
 
 1. `timestamp < latest_written_timestamp` 不回退为乱序写入。append 的语义是“尾部追加”, 旧 timestamp 的 record 可能位于 compressed block、历史段或中间位置, 不具备稳定追加边界。
-2. `timestamp == latest_written_timestamp` 时, compressed block 一律返回错误, 即使追加后会超过迁移阈值也不迁移。迁移只发生在目标 block 仍是未压缩可验证末尾 record 时。
+2. `timestamp == latest_written_timestamp` 时, compressed block 一律返回错误, 即使追加后会超过迁移阈值也不迁移。70% 迁移阈值只在 append 修改已存在 latest record 且目标 block 仍是未压缩可验证末尾 record 时生效; `timestamp > latest_written_timestamp` 创建新 record 的 append 复用 normal write 路径, 不因 70% 阈值迁移。
 3. “record 在分段文件最末尾位置”定义为: `(block_offset - segment.file_offset) + BLOCK_HEADER_SIZE + in_block_offset + 12 + old_data_len == segment.data_wrote_position`。这里使用运行时数据区相对坐标; header state 中持久化的 `wrote_position` 必须保存为 `segment.header_len + segment.data_wrote_position`。实现需要同时校验它是 block 内最后一条 record, 防止 block 内部还有后续 record。
 4. 原地追加不修改索引, 因为 `block_offset` 和 `in_block_offset` 仍指向同一 record 起点。迁移追加必须更新索引, 因为 record 物理位置变化。
 5. 迁移后的旧 record 物理保留但不再可见, 与 correction 回退/乱序写入一致, 通过 `invalid_record_count` 统计无效记录。

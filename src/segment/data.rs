@@ -533,7 +533,9 @@ impl DataSegment {
         Ok(())
     }
 
-    /// Create an exclusive block for a single record > 64KB.
+    /// Create an exclusive block for a single record.
+    ///
+    /// Used for records larger than an aggregated block and for append migration.
     pub(crate) fn create_single_record_block(
         &mut self,
         timestamp: i64,
