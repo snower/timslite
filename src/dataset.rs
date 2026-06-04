@@ -42,8 +42,6 @@ pub struct DataSetKey {
     pub dataset_type: String,
 }
 
-// 鈹€鈹€鈹€ DataSet 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WriteBranch {
     Normal,
@@ -1807,8 +1805,6 @@ mod tests {
         assert_eq!(ds2.latest_written_timestamp, 150);
     }
 
-    // 鈹€鈹€鈹€ Retention tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
     #[test]
     fn test_retention_ms_no_reclaim_when_zero() {
         let dir = temp_dir("retention_no_reclaim");
@@ -2100,8 +2096,6 @@ mod tests {
         assert!(ds.read(100, None).unwrap().is_none());
     }
 
-    // 鈹€鈹€鈹€ Delete tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
     #[test]
     fn test_delete_existing_entry() {
         let dir = temp_dir("delete_existing");
@@ -2343,8 +2337,6 @@ mod tests {
         assert_eq!(seg2.invalid_record_count, 1);
     }
 
-    // 鈹€鈹€鈹€ Correction write across pending/compressed states 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
     #[test]
     fn test_correction_write_preserves_pending_after_reopen() {
         // close/open preserves pending raw state, so same-timestamp correction can
@@ -2532,8 +2524,6 @@ mod tests {
         }
     }
 
-    // 鈹€鈹€鈹€ read() tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
     #[test]
     fn test_read_found() {
         let dir = temp_dir("read_found");
@@ -2717,8 +2707,6 @@ mod tests {
             assert!(result.is_none());
         }
     }
-
-    // 鈹€鈹€鈹€ latest_written_timestamp() + read(-1) tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn test_latest_written_timestamp_after_writes() {
