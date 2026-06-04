@@ -2,7 +2,6 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::StoreConfig;
 use crate::dataset::{DataSet, DataSetKey};
@@ -417,12 +416,7 @@ fn next_journal_ts(last: i64) -> Result<i64> {
             "journal timestamp overflow at i64::MAX".into(),
         ));
     }
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let now = i64::try_from(now_ms).unwrap_or(i64::MAX);
-    Ok(now.max(last.saturating_add(1)).max(1))
+    Ok(last + 1)
 }
 
 pub(crate) fn meta_values_from_file(meta_path: &Path) -> Result<Vec<u8>> {
@@ -466,6 +460,17 @@ mod tests {
         let payload = [LOG_CREATE_DATASET, 10, 0, TLV_NAME];
         assert!(matches!(
             JournalRecord::decode(&payload),
+            Err(TmslError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn test_next_journal_ts_is_sequence() {
+        assert_eq!(next_journal_ts(0).unwrap(), 1);
+        assert_eq!(next_journal_ts(1).unwrap(), 2);
+        assert_eq!(next_journal_ts(42).unwrap(), 43);
+        assert!(matches!(
+            next_journal_ts(i64::MAX),
             Err(TmslError::InvalidData(_))
         ));
     }

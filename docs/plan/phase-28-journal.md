@@ -15,7 +15,7 @@
 
 ### Implemented Scope
 
-- [x] Added `src/journal/mod.rs` with journal record codec, metadata snapshot, monotonic journal timestamp, and `JournalManager`.
+- [x] Added `src/journal/mod.rs` with journal record codec, metadata snapshot, dense sequence journal timestamp, and `JournalManager`.
 - [x] Added `StoreConfig.enable_journal: bool`, default `true`, with Rust builder, FFI struct/header, and Python wrapper support.
 - [x] `Store::open` opens or creates the built-in `.journal/logs` dataset when journal is enabled.
 - [x] Successful normal dataset `create/drop/write/delete` appends journal records `0x01/0x02/0x11/0x12`.
@@ -151,18 +151,19 @@
 - [x] Store delete path appends `0x12`.
 - [x] FFI write/delete paths go through Store hooks.
 - [x] `enable_journal=false` makes hooks no-op.
-- [x] Journal timestamp is `max(now_ms, last + 1)` and remains strictly increasing.
+- [x] Journal timestamp is a dense sequence: first record is `1`, each later record is `last + 1`, with no wall-clock dependency.
 - [x] Append success notifies journal queue consumers.
 
 ### Tests
 
 - [x] `t28_4_create_write_delete_drop_are_recorded` covers normal write, correction write, delete, and decoded index timestamp.
+- [x] `t28_4b_journal_timestamps_are_dense_sequence` covers journal timestamp sequence `1..N`.
 - [x] `t28_6_journal_queue_polls_realtime_records` covers consumer wakeup for append.
 - [x] `t28_7_journal_read_query_iter_latest_and_ack_work` covers latest/read/query_iter/ack.
 - [ ] Add dedicated out-of-order write journal test.
 - [ ] Add dedicated failed delete no-journal test.
 - [ ] Add dedicated disabled journal write/delete no-record test.
-- [ ] Add dedicated monotonic journal timestamp stress test.
+- [ ] Add dedicated reopen/resume sequence test.
 
 ## 28.7 Read-Only Journal Dataset And Queue
 

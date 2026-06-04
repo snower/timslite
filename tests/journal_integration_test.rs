@@ -44,6 +44,19 @@ fn read_all_journal_records(store: &mut Store) -> Vec<JournalRecord> {
         .collect()
 }
 
+fn read_all_journal_entries(store: &mut Store) -> Vec<(i64, JournalRecord)> {
+    let journal = store
+        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
+        .unwrap();
+    let ds = store.get_dataset(&journal).unwrap();
+    let mut ds = ds.lock().unwrap();
+    ds.query(1, i64::MAX, Some(store.block_cache()))
+        .unwrap()
+        .into_iter()
+        .map(|(ts, payload)| (ts, JournalRecord::decode(&payload).unwrap()))
+        .collect()
+}
+
 #[test]
 fn t28_1_store_config_defaults_enable_journal() {
     assert!(StoreConfig::default().enable_journal);
@@ -115,6 +128,24 @@ fn t28_4_create_write_delete_drop_are_recorded() {
     assert!(records[0].metadata.as_ref().unwrap().len() > 8);
     assert_eq!(records[1].index_info.as_ref().unwrap().timestamp, 10);
     assert_eq!(records[3].index_info.as_ref().unwrap().timestamp, 10);
+}
+
+#[test]
+fn t28_4b_journal_timestamps_are_dense_sequence() {
+    let dir = temp_dir("sequence");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    let handle = store
+        .create_dataset("seq", "events", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    store.write_dataset(handle, 100, b"first").unwrap();
+    store.write_dataset(handle, 100, b"corrected").unwrap();
+    store.delete_dataset_record(handle, 100).unwrap();
+    store.drop_dataset(handle).unwrap();
+
+    let entries = read_all_journal_entries(&mut store);
+    let timestamps: Vec<i64> = entries.iter().map(|(ts, _)| *ts).collect();
+    assert_eq!(timestamps, vec![1, 2, 3, 4, 5]);
 }
 
 #[test]

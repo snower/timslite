@@ -69,27 +69,27 @@ Journal dataset 的创建参数:
 
 | 参数 | v1 选择 | 说明 |
 |------|---------|------|
-| `index_continuous` | `0` | journal timestamp 使用单调序列, 不需要连续 filler |
+| `index_continuous` | `0` | journal timestamp 使用连续递增 seq, 不需要连续 filler |
 | `retention_ms` | `0` | 默认不自动回收 journal; 未来可加独立保留策略 |
 | segment size / initial size / compress_level | 继承 `StoreConfig` dataset 默认值 | 保持与普通 dataset 相同存储能力 |
 
 ### 25.3 Journal Record 时间戳
 
-Journal 作为 dataset record 存储时, 仍需要 dataset timestamp。该 timestamp 是 journal sequence timestamp, 不是业务数据 timestamp。
+Journal 作为 dataset record 存储时, 仍需要 dataset timestamp。该 timestamp 是 journal sequence timestamp, 不是业务数据 timestamp, 与当前系统时间无关。
 
 生成规则:
 
 ```text
 last = journal_dataset.latest_written_timestamp()
-now  = current_unix_micros_or_millis()
-journal_ts = max(now, last + 1)
+journal_ts = last + 1
 ```
 
 要求:
 
-- `journal_ts > 0`。
-- 同一 Store 进程内严格递增。
-- 时钟回拨或同一时间单位内多次写入时使用 `last + 1`。
+- 第一条 journal record 的 `journal_ts = 1`。
+- 每追加一条 journal record, `journal_ts` 必须等于上一条 journal record 的 timestamp + 1。
+- 同一 journal dataset 内 timestamp 必须连续、有序、无 gap。
+- 不读取当前时间, 不使用 wall-clock/UNIX timestamp, 不受时钟回拨影响。
 - 如果 `last == i64::MAX`, 返回 `InvalidData`。
 
 业务数据 timestamp 只出现在 `0x11/0x12` 的索引信息 TLV 中。
