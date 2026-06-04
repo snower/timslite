@@ -48,6 +48,7 @@ mod dataset;
 mod ffi;
 mod header;
 mod index;
+mod journal;
 mod meta;
 #[allow(clippy::module_inception)]
 mod query;
@@ -61,6 +62,9 @@ pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBu
 pub use dataset::{DataSet, DataSetKey};
 pub use error::{Result, TmslError};
 pub use index::segment::{IndexEntry, BLOCK_OFFSET_FILLER};
+pub use journal::{
+    JournalIndexInfo, JournalRecord, JournalRecordKind, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
+};
 pub use query::hot_block::HotBlockCache;
 pub use query::iter::{QueryIterator, QuerySource, SourceIndex};
 pub use queue::{DatasetQueue, DatasetQueueConsumer, PendingEntry};

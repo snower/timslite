@@ -370,6 +370,7 @@ pub struct DatasetQueue {
     pub(crate) dataset: Arc<Mutex<DataSet>>,
     pub(crate) inner: Arc<Mutex<QueueInner>>,
     pub(crate) notify: Arc<(Mutex<bool>, Condvar)>,
+    pub(crate) allow_push: bool,
 }
 
 impl Clone for DatasetQueue {
@@ -378,6 +379,7 @@ impl Clone for DatasetQueue {
             dataset: Arc::clone(&self.dataset),
             inner: Arc::clone(&self.inner),
             notify: Arc::clone(&self.notify),
+            allow_push: self.allow_push,
         }
     }
 }
@@ -402,6 +404,20 @@ impl DatasetQueue {
             dataset,
             inner,
             notify,
+            allow_push: true,
+        }
+    }
+
+    pub(crate) fn new_readonly_producer(
+        dataset: Arc<Mutex<DataSet>>,
+        inner: Arc<Mutex<QueueInner>>,
+        notify: Arc<(Mutex<bool>, Condvar)>,
+    ) -> Self {
+        DatasetQueue {
+            dataset,
+            inner,
+            notify,
+            allow_push: false,
         }
     }
 
@@ -493,6 +509,11 @@ impl DatasetQueue {
     /// Assigns an auto-increment timestamp (latest_written_timestamp + 1),
     /// writes to the dataset, and notifies waiting consumers.
     pub fn push(&self, data: &[u8]) -> Result<i64> {
+        if !self.allow_push {
+            return Err(TmslError::InvalidData(
+                "queue producer is read-only for this dataset".into(),
+            ));
+        }
         if self
             .inner
             .lock()
@@ -616,49 +637,55 @@ impl DatasetQueueConsumer {
             }
         }
 
-        // No unacked pending — try to read next record from dataset
-        let next_ts = {
-            let sf = self
-                .state_file
-                .lock()
-                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-            sf.next_poll_ts()
+        if let Some(row) = self.try_poll_available()? {
+            Ok(Some(row))
+        } else {
+            self.wait_for_data(timeout)
+        }
+    }
+
+    fn try_poll_available(&self) -> Result<Option<(i64, Vec<u8>)>> {
+        let mut sf = self
+            .state_file
+            .lock()
+            .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+        let next_ts = sf.next_poll_ts();
+        let mut ds = self
+            .dataset
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+
+        let direct = ds.read(next_ts, None)?;
+        let row = if direct.is_some() {
+            direct
+        } else {
+            let entries = ds.query_index_entries(next_ts, i64::MAX)?;
+            let mut found = None;
+            for entry in entries {
+                if entry.is_filler() || sf.is_in_pending(entry.timestamp) {
+                    continue;
+                }
+                found = Some(ds.read_entry_at_index(&entry, None)?);
+                break;
+            }
+            found
         };
 
-        let ds_result = {
-            let mut ds = self
-                .dataset
-                .lock()
-                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.read(next_ts, None)
-        };
-
-        match ds_result {
-            Ok(Some((ts, data))) => {
-                // Add to pending
+        if let Some((ts, data)) = row {
+            if !sf.is_in_pending(ts) {
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs() as i64;
-                {
-                    let mut sf = self
-                        .state_file
-                        .lock()
-                        .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-                    let entry = PendingEntry {
-                        timestamp: ts,
-                        start_time: now,
-                        status: PENDING_STATUS_UNACKED,
-                    };
-                    sf.add_pending(entry)?;
-                }
-                Ok(Some((ts, data)))
+                sf.add_pending(PendingEntry {
+                    timestamp: ts,
+                    start_time: now,
+                    status: PENDING_STATUS_UNACKED,
+                })?;
             }
-            Ok(None) => {
-                // No data available — wait for notification or timeout
-                self.wait_for_data(timeout)
-            }
-            Err(e) => Err(e),
+            Ok(Some((ts, data)))
+        } else {
+            Ok(None)
         }
     }
 
@@ -692,48 +719,13 @@ impl DatasetQueueConsumer {
                     }
                 }
 
-                // Try to read next record
-                let next_ts = {
-                    let sf = self
-                        .state_file
+                if let Some(row) = self.try_poll_available()? {
+                    return Ok(Some(row));
+                } else {
+                    notified = lock
                         .lock()
-                        .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-                    sf.next_poll_ts()
-                };
-
-                let ds_result = {
-                    let mut ds = self
-                        .dataset
-                        .lock()
-                        .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-                    ds.read(next_ts, None)
-                };
-
-                match ds_result {
-                    Ok(Some((ts, data))) => {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs() as i64;
-                        {
-                            let mut sf = self.state_file.lock().map_err(|_| {
-                                TmslError::InvalidData("state file mutex poisoned".into())
-                            })?;
-                            sf.add_pending(PendingEntry {
-                                timestamp: ts,
-                                start_time: now,
-                                status: PENDING_STATUS_UNACKED,
-                            })?;
-                        }
-                        return Ok(Some((ts, data)));
-                    }
-                    Ok(None) => {
-                        notified = lock
-                            .lock()
-                            .map_err(|_| TmslError::InvalidData("notify mutex poisoned".into()))?;
-                        continue;
-                    }
-                    Err(e) => return Err(e),
+                        .map_err(|_| TmslError::InvalidData("notify mutex poisoned".into()))?;
+                    continue;
                 }
             }
 

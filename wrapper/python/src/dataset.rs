@@ -14,15 +14,22 @@ pub struct PyDataset {
     inner: Arc<Mutex<timslite::DataSet>>,
     id: u64,
     base_dir: String,
+    read_only: bool,
 }
 
 impl PyDataset {
     /// Create a new PyDataset from an Arc<Mutex<DataSet>>.
-    pub fn new(inner: Arc<Mutex<timslite::DataSet>>, id: u64, base_dir: String) -> Self {
+    pub fn new(
+        inner: Arc<Mutex<timslite::DataSet>>,
+        id: u64,
+        base_dir: String,
+        read_only: bool,
+    ) -> Self {
         Self {
             inner,
             id,
             base_dir,
+            read_only,
         }
     }
 
@@ -48,6 +55,11 @@ impl PyDataset {
     /// Raises:
     ///     TmslInvalidDataError: timestamp <= 0, out-of-order, or duplicate.
     fn write(&mut self, timestamp: i64, data: Vec<u8>) -> PyResult<()> {
+        if self.read_only {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Dataset is read-only",
+            ));
+        }
         let mut ds = self.inner.lock().unwrap();
         wrap(ds.write(timestamp, &data))
     }
@@ -80,6 +92,11 @@ impl PyDataset {
     ///     TmslNotFoundError: no real data exists at that timestamp.
     ///     TmslInvalidDataError: timestamp <= 0 or dataset is empty.
     fn delete(&mut self, timestamp: i64) -> PyResult<()> {
+        if self.read_only {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Dataset is read-only",
+            ));
+        }
         let mut ds = self.inner.lock().unwrap();
         wrap(ds.delete(timestamp))
     }

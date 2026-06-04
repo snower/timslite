@@ -21,6 +21,7 @@ use std::time::Duration;
 /// - `cache_idle_timeout`: 30 minutes (1800s)
 /// - `retention_check_hour`: 0 (daily at UTC 00:00)
 /// - `enable_background_thread`: true
+/// - `enable_journal`: true
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
     /// Interval between background flush cycles (mmap sync only).
@@ -46,6 +47,8 @@ pub struct StoreConfig {
     /// Whether to launch a background thread. When false, callers must invoke
     /// `Store::tick_background_tasks()` periodically to drive flush/idle/cache/retention.
     pub enable_background_thread: bool,
+    /// Whether to enable the built-in `.journal/logs` change log.
+    pub enable_journal: bool,
 }
 
 impl Default for StoreConfig {
@@ -62,6 +65,7 @@ impl Default for StoreConfig {
             cache_idle_timeout: Duration::from_secs(1800), // 30 min
             retention_check_hour: 0,             // UTC 00:00
             enable_background_thread: true,      // default: auto thread
+            enable_journal: true,                // default: change log enabled
         }
     }
 }
@@ -87,6 +91,7 @@ pub struct StoreConfigBuilder {
     cache_idle_timeout: Option<Duration>,
     retention_check_hour: Option<u8>,
     enable_background_thread: Option<bool>,
+    enable_journal: Option<bool>,
 }
 
 impl StoreConfigBuilder {
@@ -159,6 +164,12 @@ impl StoreConfigBuilder {
         self
     }
 
+    /// Whether to enable the built-in `.journal/logs` change log (default true).
+    pub fn enable_journal(mut self, enable: bool) -> Self {
+        self.enable_journal = Some(enable);
+        self
+    }
+
     /// Build the `StoreConfig`.
     pub fn build(self) -> StoreConfig {
         let defaults = StoreConfig::default();
@@ -186,6 +197,7 @@ impl StoreConfigBuilder {
             enable_background_thread: self
                 .enable_background_thread
                 .unwrap_or(defaults.enable_background_thread),
+            enable_journal: self.enable_journal.unwrap_or(defaults.enable_journal),
         }
     }
 }
@@ -350,6 +362,7 @@ mod tests {
         assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(1800));
         assert_eq!(cfg.retention_check_hour, 0);
         assert!(cfg.enable_background_thread);
+        assert!(cfg.enable_journal);
     }
 
     #[test]
@@ -365,6 +378,7 @@ mod tests {
             .cache_max_memory(128 * 1024 * 1024)
             .cache_idle_timeout(Duration::from_secs(600))
             .retention_check_hour(2)
+            .enable_journal(false)
             .build();
 
         assert_eq!(cfg.flush_interval, Duration::from_secs(1200));
@@ -377,6 +391,7 @@ mod tests {
         assert_eq!(cfg.cache_max_memory, 128 * 1024 * 1024);
         assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(600));
         assert_eq!(cfg.retention_check_hour, 2);
+        assert!(!cfg.enable_journal);
     }
 
     #[test]
@@ -414,6 +429,13 @@ mod tests {
         // default is true
         let default = StoreConfig::default();
         assert!(default.enable_background_thread);
+    }
+
+    #[test]
+    fn test_builder_disable_journal() {
+        let cfg = StoreConfig::builder().enable_journal(false).build();
+        assert!(!cfg.enable_journal);
+        assert!(StoreConfig::default().enable_journal);
     }
 
     #[test]

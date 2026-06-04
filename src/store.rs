@@ -1,6 +1,6 @@
 //! Store: facade that manages all datasets and background tasks.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -11,6 +11,9 @@ use crate::cache::BlockCache;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::dataset::{DataSet, DataSetKey};
 use crate::error::{Result, TmslError};
+use crate::journal::{
+    meta_values_from_file, JournalManager, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
+};
 use crate::queue::{DatasetQueue, DatasetQueueConsumer};
 
 fn is_valid_dataset_component(value: &str) -> bool {
@@ -45,9 +48,11 @@ pub struct Store {
     datasets: Arc<RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,
+    journal: JournalManager,
     bg_tasks: Option<BackgroundTasks>,
     next_handle_id: u64,
     handles: HashMap<u64, DataSetKey>,
+    read_only_handles: HashSet<u64>,
 }
 
 impl Store {
@@ -55,6 +60,7 @@ impl Store {
     pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&data_dir)?;
+        let journal = JournalManager::open_or_create(&data_dir, &config)?;
 
         let mut datasets = HashMap::new();
 
@@ -69,6 +75,9 @@ impl Store {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
+            if name == JOURNAL_DATASET_NAME {
+                continue;
+            }
             if !is_valid_dataset_component(&name) {
                 log::warn!(
                     "[store] skipping dataset directory with invalid name: {}",
@@ -119,9 +128,11 @@ impl Store {
             datasets: Arc::clone(&datasets),
             config: config.clone(),
             block_cache: Arc::clone(&block_cache),
+            journal,
             bg_tasks: None,
             next_handle_id: 0,
             handles: HashMap::new(),
+            read_only_handles: HashSet::new(),
         };
 
         // Start background tasks (or just the executor)
@@ -159,6 +170,9 @@ impl Store {
         dataset_type: &str,
         config_builder: Option<DataSetConfigBuilder>,
     ) -> Result<DataSetHandle> {
+        if name == JOURNAL_DATASET_NAME && dataset_type == JOURNAL_DATASET_TYPE {
+            return Err(TmslError::InvalidData("journal dataset is reserved".into()));
+        }
         validate_dataset_path_components(name, dataset_type)?;
 
         let key = DataSetKey {
@@ -201,6 +215,10 @@ impl Store {
             guard.insert(key.clone(), ds);
         }
 
+        let metadata =
+            meta_values_from_file(&self.data_dir.join(name).join(dataset_type).join("meta"))?;
+        self.journal.append_create(&key, &metadata)?;
+
         let id = self.next_handle_id;
         self.next_handle_id += 1;
         self.handles.insert(id, key);
@@ -236,6 +254,16 @@ impl Store {
 
     /// Open an existing dataset (errors if not found).
     pub fn open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetHandle> {
+        if name == JOURNAL_DATASET_NAME && dataset_type == JOURNAL_DATASET_TYPE {
+            if !self.journal.is_enabled() {
+                return Err(TmslError::NotFound("journal is disabled".into()));
+            }
+            let id = self.next_handle_id;
+            self.next_handle_id += 1;
+            self.handles.insert(id, JournalManager::key());
+            self.read_only_handles.insert(id);
+            return Ok(DataSetHandle(id));
+        }
         validate_dataset_path_components(name, dataset_type)?;
 
         let key = DataSetKey {
@@ -272,6 +300,10 @@ impl Store {
 
     /// Close a dataset by handle.
     pub fn close_dataset(&mut self, handle: DataSetHandle) -> Result<()> {
+        if self.read_only_handles.remove(&handle.0) {
+            self.handles.remove(&handle.0);
+            return Ok(());
+        }
         if let Some(key) = self.handles.remove(&handle.0) {
             if self.handles.values().any(|existing| *existing == key) {
                 return Ok(());
@@ -287,28 +319,39 @@ impl Store {
 
     /// Drop (delete) an entire dataset by handle.
     pub fn drop_dataset(&mut self, handle: DataSetHandle) -> Result<()> {
+        if self.read_only_handles.contains(&handle.0) {
+            return Err(TmslError::InvalidData(
+                "read-only internal dataset cannot be dropped".into(),
+            ));
+        }
         let key = self
             .handles
             .remove(&handle.0)
             .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?;
 
-        let base_dir = {
+        let (base_dir, metadata) = {
             let mut guard = self.datasets.write().unwrap();
             let ds_arc = guard
                 .remove(&key)
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?;
             let mut ds = ds_arc.lock().unwrap();
+            let metadata = meta_values_from_file(&ds.base_dir.join("meta"))?;
+            let base_dir = ds.base_dir.clone();
             ds.close()?;
-            ds.base_dir.clone()
+            (base_dir, metadata)
         };
 
         DataSet::drop_dataset(&base_dir)?;
+        self.journal.append_drop(&key, &metadata)?;
         log::info!("[store] dropped dataset: {}/{}", key.name, key.dataset_type);
         Ok(())
     }
 
     /// Drop (delete) an entire dataset by name and type.
     pub fn drop_dataset_by_name(&mut self, name: &str, dataset_type: &str) -> Result<()> {
+        if name == JOURNAL_DATASET_NAME && dataset_type == JOURNAL_DATASET_TYPE {
+            return Err(TmslError::InvalidData("journal dataset is reserved".into()));
+        }
         validate_dataset_path_components(name, dataset_type)?;
 
         let key = DataSetKey {
@@ -320,6 +363,7 @@ impl Store {
         self.handles.retain(|_id, k| *k != key);
 
         let base_dir = self.data_dir.join(name).join(dataset_type);
+        let metadata = meta_values_from_file(&base_dir.join("meta"))?;
 
         // Remove from open datasets if present
         {
@@ -331,6 +375,7 @@ impl Store {
         }
 
         DataSet::drop_dataset(&base_dir)?;
+        self.journal.append_drop(&key, &metadata)?;
         log::info!("[store] dropped dataset: {}/{}", name, dataset_type);
         Ok(())
     }
@@ -341,11 +386,78 @@ impl Store {
             .handles
             .get(&handle.0)
             .ok_or_else(|| crate::error::TmslError::NotFound("dataset handle not found".into()))?;
+        if JournalManager::is_journal_key(key) {
+            return self.journal.dataset();
+        }
         let guard = self.datasets.read().unwrap();
         let ds = guard.get(key).ok_or_else(|| {
             crate::error::TmslError::NotFound(format!("dataset {:?} not found", key))
         })?;
         Ok(Arc::clone(ds))
+    }
+
+    /// Write through the Store so journal and global cache hooks are applied.
+    pub fn write_dataset(
+        &mut self,
+        handle: DataSetHandle,
+        timestamp: i64,
+        data: &[u8],
+    ) -> Result<()> {
+        let key = self
+            .handles
+            .get(&handle.0)
+            .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?
+            .clone();
+        if JournalManager::is_journal_key(&key) || self.read_only_handles.contains(&handle.0) {
+            return Err(TmslError::InvalidData(
+                "read-only internal dataset cannot be written".into(),
+            ));
+        }
+        let ds_arc = {
+            let guard = self.datasets.read().unwrap();
+            guard
+                .get(&key)
+                .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
+                .clone()
+        };
+        let outcome = {
+            let mut ds = ds_arc
+                .lock()
+                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+            ds.write_with_cache_outcome(timestamp, data, Some(self.block_cache()))?
+        };
+        self.journal.append_data_write(&key, outcome.index_entry)?;
+        Ok(())
+    }
+
+    /// Delete through the Store so journal and global cache hooks are applied.
+    pub fn delete_dataset_record(&mut self, handle: DataSetHandle, timestamp: i64) -> Result<()> {
+        let key = self
+            .handles
+            .get(&handle.0)
+            .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?
+            .clone();
+        if JournalManager::is_journal_key(&key) || self.read_only_handles.contains(&handle.0) {
+            return Err(TmslError::InvalidData(
+                "read-only internal dataset cannot be deleted".into(),
+            ));
+        }
+        let ds_arc = {
+            let guard = self.datasets.read().unwrap();
+            guard
+                .get(&key)
+                .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
+                .clone()
+        };
+        let outcome = {
+            let mut ds = ds_arc
+                .lock()
+                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+            ds.delete_with_cache_outcome(timestamp, Some(self.block_cache()))?
+        };
+        self.journal
+            .append_data_delete(&key, outcome.old_index_entry)?;
+        Ok(())
     }
 
     /// Get a reference to the global block cache.
@@ -402,6 +514,7 @@ impl Store {
                 log::error!("[store] close failed: {}", e);
             }
         }
+        self.journal.close()?;
 
         Ok(())
     }
@@ -418,6 +531,9 @@ impl Store {
             .get(&handle.0)
             .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?
             .clone();
+        if JournalManager::is_journal_key(&key) {
+            return self.journal.open_queue();
+        }
         let ds_arc = self
             .datasets
             .read()
@@ -438,6 +554,7 @@ impl Store {
             dataset: ds_arc,
             inner,
             notify,
+            allow_push: true,
         })
     }
 
@@ -448,6 +565,11 @@ impl Store {
             .get(&handle.0)
             .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?
             .clone();
+        if JournalManager::is_journal_key(&key) {
+            return Err(TmslError::InvalidData(
+                "journal queue is managed by JournalManager".into(),
+            ));
+        }
         let ds_arc = self
             .datasets
             .read()
@@ -499,6 +621,11 @@ impl Store {
     pub fn queue_ack(&self, consumer: &DatasetQueueConsumer, timestamp: i64) -> Result<()> {
         consumer.ack(timestamp)
     }
+
+    /// Open the built-in journal queue.
+    pub fn open_journal_queue(&mut self) -> Result<DatasetQueue> {
+        self.journal.open_queue()
+    }
 }
 
 impl Drop for Store {
@@ -507,5 +634,6 @@ impl Drop for Store {
         if let Some(mut bg) = self.bg_tasks.take() {
             bg.stop();
         }
+        let _ = self.journal.flush();
     }
 }

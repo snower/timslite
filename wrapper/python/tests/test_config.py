@@ -17,6 +17,7 @@ class TestConfig:
         assert config.compress_level == 6
         assert config.cache_max_memory == 268435456
         assert config.cache_idle_timeout == 1800
+        assert config.enable_journal is True
 
     def test_store_config_custom(self):
         """Custom config sets all fields."""
@@ -30,6 +31,7 @@ class TestConfig:
             compress_level=9,
             cache_max_memory=512 * 1024 * 1024,
             cache_idle_timeout=600,
+            enable_journal=False,
         )
         assert config.flush_interval == 300
         assert config.idle_timeout == 900
@@ -40,6 +42,7 @@ class TestConfig:
         assert config.compress_level == 9
         assert config.cache_max_memory == 512 * 1024 * 1024
         assert config.cache_idle_timeout == 600
+        assert config.enable_journal is False
 
     def test_create_dataset_with_kwargs(self, tmpdir):
         """create_dataset kwargs override store defaults."""

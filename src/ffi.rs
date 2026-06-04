@@ -98,7 +98,7 @@ macro_rules! ffi_catch_usize {
 
 // ─── Opaque handle types ────────────────────────────────────────────────────
 
-pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 2;
+pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 3;
 pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 1;
 
 #[repr(C)]
@@ -116,6 +116,7 @@ pub struct TmslStoreConfigFFI {
     pub compress_level: u8,
     pub retention_check_hour: u8,
     pub enable_background_thread: u8,
+    pub enable_journal: u8,
 }
 
 impl Default for TmslStoreConfigFFI {
@@ -190,6 +191,7 @@ fn store_config_to_ffi(config: &StoreConfig) -> TmslStoreConfigFFI {
         compress_level: config.compress_level,
         retention_check_hour: config.retention_check_hour,
         enable_background_thread: u8::from(config.enable_background_thread),
+        enable_journal: u8::from(config.enable_journal),
     }
 }
 
@@ -220,6 +222,7 @@ fn store_config_from_ffi(
         .cache_idle_timeout(Duration::from_millis(raw.cache_idle_timeout_ms))
         .retention_check_hour(raw.retention_check_hour)
         .enable_background_thread(raw.enable_background_thread != 0)
+        .enable_journal(raw.enable_journal != 0)
         .build())
 }
 
@@ -646,9 +649,7 @@ pub extern "C" fn tmsl_dataset_write(
         };
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
-        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
-        let mut ds = ds_arc.lock().unwrap();
-        ds.write_with_cache(timestamp, data_slice, Some(store_inner.block_cache()))?;
+        store_inner.write_dataset(ffi_ds.handle, timestamp, data_slice)?;
         Ok(0)
     })
 }
@@ -670,9 +671,7 @@ pub extern "C" fn tmsl_dataset_delete(
         }
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
-        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
-        let mut ds = ds_arc.lock().unwrap();
-        ds.delete_with_cache(timestamp, Some(store_inner.block_cache()))?;
+        store_inner.delete_dataset_record(ffi_ds.handle, timestamp)?;
         Ok(0)
     })
 }

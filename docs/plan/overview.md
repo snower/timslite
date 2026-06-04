@@ -34,7 +34,7 @@ Phase 24: 连续索引稀疏 filler 分段            ✅ (P0-2 修复)
 Phase 25: Header 可变长度                   ✅ (P0-3 修复)
 Phase 26: GitHub Actions CI/CD               ✅
 Phase 27: Queue 模块 (DatasetQueue + Consumer) ✅ 完成
-Phase 28: Journal 变更日志 (.journal/logs)   📝 计划完成 / 待实现
+Phase 28: Journal 变更日志 (.journal/logs)   ✅ 完成
 ```
 
 ## 目录结构变更 (核心)
@@ -215,4 +215,4 @@ Phase 28 (Journal 变更日志: .journal/logs + Store hook + read/query/open_que
 | [phase-25-header-variable-length.md](phase-25-header-variable-length.md) | Header 可变长度 | ✅ |
 | [phase-26-github-actions-ci.md](phase-26-github-actions-ci.md) | GitHub Actions CI/CD | ✅ |
 | [phase-27-queue-module.md](phase-27-queue-module.md) | Queue 模块 | ✅ |
-| [phase-28-journal.md](phase-28-journal.md) | Journal 变更日志 | 📝 |
+| [phase-28-journal.md](phase-28-journal.md) | Journal 变更日志 | ✅ |

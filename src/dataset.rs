@@ -30,6 +30,24 @@ pub struct DataSetKey {
 
 // 鈹€鈹€鈹€ DataSet 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteBranch {
+    Normal,
+    Correction,
+    OutOfOrder,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteOutcome {
+    pub index_entry: IndexEntry,
+    pub branch: WriteBranch,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeleteOutcome {
+    pub old_index_entry: IndexEntry,
+}
+
 pub struct DataSet {
     pub id: DataSetKey,
     pub base_dir: PathBuf,
@@ -212,6 +230,16 @@ impl DataSet {
         data: &[u8],
         cache: Option<&BlockCache>,
     ) -> Result<()> {
+        self.write_with_cache_outcome(timestamp, data, cache)
+            .map(|_| ())
+    }
+
+    pub(crate) fn write_with_cache_outcome(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        cache: Option<&BlockCache>,
+    ) -> Result<WriteOutcome> {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
         }
@@ -236,21 +264,37 @@ impl DataSet {
         if self.config.index_continuous == 0 {
             let (seg_offset, block_rel_offset, in_block_offset) =
                 self.segments.append(timestamp, data)?;
+            let block_offset = seg_offset + block_rel_offset;
             self.time_index
-                .add_entry(timestamp, seg_offset + block_rel_offset, in_block_offset)?;
+                .add_entry(timestamp, block_offset, in_block_offset)?;
+            self.latest_written_timestamp = timestamp;
+            self.last_used_at = Instant::now();
+            self.notify_queue();
+            Ok(WriteOutcome {
+                index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
+                branch: WriteBranch::Normal,
+            })
         } else {
             let (seg_offset, block_rel_offset, in_block_offset) =
                 self.segments.append(timestamp, data)?;
+            let block_offset = seg_offset + block_rel_offset;
             self.time_index.add_sparse_continuous_entry(
                 self.latest_written_timestamp,
                 timestamp,
-                seg_offset + block_rel_offset,
+                block_offset,
                 in_block_offset,
             )?;
+            self.latest_written_timestamp = timestamp;
+            self.last_used_at = Instant::now();
+            self.notify_queue();
+            Ok(WriteOutcome {
+                index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
+                branch: WriteBranch::Normal,
+            })
         }
-        self.latest_written_timestamp = timestamp;
-        self.last_used_at = Instant::now();
-        // Notify queue consumers if queue is open (only on normal write)
+    }
+
+    fn notify_queue(&self) {
         if let Some(ref notify) = self.queue_notify {
             let (lock, cvar) = (&notify.0, &notify.1);
             if let Ok(mut guard) = lock.lock() {
@@ -258,7 +302,6 @@ impl DataSet {
                 cvar.notify_all();
             }
         }
-        Ok(())
     }
 
     /// Out-of-order write: timestamp < latest_written_timestamp (both modes).
@@ -275,7 +318,7 @@ impl DataSet {
         timestamp: i64,
         data: &[u8],
         cache: Option<&BlockCache>,
-    ) -> Result<()> {
+    ) -> Result<WriteOutcome> {
         let (seg_offset, block_rel_offset, in_block_offset) =
             self.segments.append(timestamp, data)?;
         let new_block_offset = seg_offset + block_rel_offset;
@@ -292,7 +335,10 @@ impl DataSet {
 
         // latest_written_timestamp unchanged
         self.last_used_at = Instant::now();
-        Ok(())
+        Ok(WriteOutcome {
+            index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
+            branch: WriteBranch::OutOfOrder,
+        })
     }
 
     /// Correction write: overwrite the data of an existing record in place.
@@ -309,7 +355,7 @@ impl DataSet {
         timestamp: i64,
         data: &[u8],
         cache: Option<&BlockCache>,
-    ) -> Result<()> {
+    ) -> Result<WriteOutcome> {
         match self.time_index.find_entry(timestamp)? {
             Some(entry) => {
                 match self.segments.overwrite_in_last_block(
@@ -322,7 +368,10 @@ impl DataSet {
                         // latest_written_timestamp unchanged; index unchanged.
                         self.invalidate_cache_for_entry(&entry, cache);
                         self.last_used_at = Instant::now();
-                        Ok(())
+                        Ok(WriteOutcome {
+                            index_entry: entry,
+                            branch: WriteBranch::Correction,
+                        })
                     }
                     Err(_) => {
                         // Target block cannot be modified in place (sealed/compressed or
@@ -355,6 +404,14 @@ impl DataSet {
 
     /// Delete a record and invalidate any global cache entry for the old block.
     pub fn delete_with_cache(&mut self, timestamp: i64, cache: Option<&BlockCache>) -> Result<()> {
+        self.delete_with_cache_outcome(timestamp, cache).map(|_| ())
+    }
+
+    pub(crate) fn delete_with_cache_outcome(
+        &mut self,
+        timestamp: i64,
+        cache: Option<&BlockCache>,
+    ) -> Result<DeleteOutcome> {
         if timestamp <= 0 {
             return Err(TmslError::InvalidData("timestamp must be > 0".into()));
         }
@@ -375,7 +432,9 @@ impl DataSet {
             .increment_invalid_record_count(old_entry.block_offset)?;
 
         self.last_used_at = Instant::now();
-        Ok(())
+        Ok(DeleteOutcome {
+            old_index_entry: old_entry,
+        })
     }
 
     fn invalidate_cache_for_entry(&self, entry: &IndexEntry, cache: Option<&BlockCache>) {

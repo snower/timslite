@@ -47,6 +47,7 @@ class TestBasic:
         assert config.index_segment_size == 4194304
         assert config.compress_level == 6
         assert config.cache_max_memory == 268435456
+        assert config.enable_journal is True
 
     def test_store_config_custom(self, tmpdir):
         """Custom StoreConfig overrides selected fields."""

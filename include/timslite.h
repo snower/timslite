@@ -18,7 +18,7 @@
 extern "C" {
 #endif
 
-#define TMSL_STORE_CONFIG_FFI_VERSION 2u
+#define TMSL_STORE_CONFIG_FFI_VERSION 3u
 #define TMSL_DATASET_CONFIG_FFI_VERSION 1u
 
 typedef struct TmslStoreConfigFFI {
@@ -34,6 +34,7 @@ typedef struct TmslStoreConfigFFI {
     uint8_t compress_level;
     uint8_t retention_check_hour; /* UTC hour, 0-23 */
     uint8_t enable_background_thread;
+    uint8_t enable_journal; /* 0=false, non-zero=true; default true */
 } TmslStoreConfigFFI;
 
 typedef struct TmslDatasetConfigFFI {

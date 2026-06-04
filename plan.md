@@ -36,7 +36,7 @@
 | 25 | Header 可变长度 (P0-3 修复) | ✅ 完成 | [phase-25-header-variable-length.md](docs/plan/phase-25-header-variable-length.md) |
 | 26 | GitHub Actions CI/CD | ✅ 完成 | [phase-26-github-actions-ci.md](docs/plan/phase-26-github-actions-ci.md) |
 | 27 | Queue 模块 (DatasetQueue + Consumer) | ✅ 完成 (含完整测试) | [phase-27-queue-module.md](docs/plan/phase-27-queue-module.md) |
-| 28 | Journal 变更日志 (`.journal/logs`) | 📝 计划完成, 待实现 | [phase-28-journal.md](docs/plan/phase-28-journal.md) |
+| 28 | Journal 变更日志 (`.journal/logs`) | ✅ 完成 | [phase-28-journal.md](docs/plan/phase-28-journal.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -51,12 +51,12 @@
 - [ ] 内存安全验证 — Windows 未 valgrind, 需 Linux/Valgrind 环境
 
 ### Phase 28: Journal 变更日志
-- [ ] `src/journal/mod.rs` — JournalManager + record encoder/decoder
-- [ ] `StoreConfig.enable_journal` — Rust/FFI/header/wrapper 配置同步
-- [ ] `.journal/logs` — 默认启用的内置只读 journal dataset
-- [ ] 操作 hook — create/drop/write/delete 成功后追加 `0x01/0x02/0x11/0x12`
-- [ ] 查询与实时消费 — read/query/query_iter/latest/open_queue + queue poll/ack
-- [ ] 验证 — journal/queue/ffi 集成测试、fmt、clippy、全量 cargo test
+- [x] `src/journal/mod.rs` — JournalManager + record encoder/decoder
+- [x] `StoreConfig.enable_journal` — Rust/FFI/header/wrapper 配置同步
+- [x] `.journal/logs` — 默认启用的内置只读 journal dataset
+- [x] 操作 hook — create/drop/write/delete 成功后追加 `0x01/0x02/0x11/0x12`
+- [x] 查询与实时消费 — read/query/query_iter/latest/open_queue + queue poll/ack
+- [x] 验证 — journal/queue/ffi 集成测试、fmt、clippy、全量 cargo test
 
 ---
 

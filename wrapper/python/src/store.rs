@@ -19,6 +19,7 @@ pub struct PyStore {
     /// Track open datasets: dataset_id -> Arc<Mutex<DataSet>>
     /// This runs parallel to Store's internal registry.
     datasets: std::collections::HashMap<u64, Arc<Mutex<timslite::DataSet>>>,
+    read_only_dataset_ids: std::collections::HashSet<u64>,
     next_id: u64,
 }
 
@@ -29,6 +30,7 @@ impl PyStore {
         Self {
             inner: None,
             datasets: std::collections::HashMap::new(),
+            read_only_dataset_ids: std::collections::HashSet::new(),
             next_id: 1,
         }
     }
@@ -52,6 +54,7 @@ impl PyStore {
         Ok(Self {
             inner: Some(store),
             datasets: std::collections::HashMap::new(),
+            read_only_dataset_ids: std::collections::HashSet::new(),
             next_id: 1,
         })
     }
@@ -84,6 +87,7 @@ impl PyStore {
             }
         }
         self.datasets.clear();
+        self.read_only_dataset_ids.clear();
 
         let store = self
             .inner
@@ -151,6 +155,8 @@ impl PyStore {
 
         let handle = wrap(store.open_dataset(name, dataset_type))?;
         let ds_arc = wrap(store.get_dataset(&handle))?;
+        let read_only =
+            name == timslite::JOURNAL_DATASET_NAME && dataset_type == timslite::JOURNAL_DATASET_TYPE;
 
         let id = self.next_id;
         self.next_id += 1;
@@ -159,8 +165,11 @@ impl PyStore {
             ds.base_dir().to_string_lossy().to_string()
         };
 
-        let py_ds = PyDataset::new(ds_arc, id, base_dir);
+        let py_ds = PyDataset::new(ds_arc, id, base_dir, read_only);
         self.datasets.insert(id, py_ds.inner_arc());
+        if read_only {
+            self.read_only_dataset_ids.insert(id);
+        }
         Ok(py_ds)
     }
 
@@ -174,6 +183,14 @@ impl PyStore {
     /// Raises:
     ///     TmslQueueAlreadyOpenError: Queue is already open for this dataset.
     fn open_queue(&mut self, dataset_id: u64) -> PyResult<PyDatasetQueue> {
+        if self.read_only_dataset_ids.contains(&dataset_id) {
+            let store = self
+                .inner
+                .as_mut()
+                .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
+            return Ok(PyDatasetQueue::new(wrap(store.open_journal_queue())?));
+        }
+
         let ds_arc = self
             .datasets
             .get(&dataset_id)

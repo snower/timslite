@@ -1799,7 +1799,10 @@ fn t27_4_3_acked_progress_persists() {
         let ts = store
             .queue_push(&q, format!("item{}", i).as_bytes())
             .unwrap();
-        store.queue_poll(&c, Duration::from_millis(100)).unwrap().unwrap();
+        store
+            .queue_poll(&c, Duration::from_millis(100))
+            .unwrap()
+            .unwrap();
         store.queue_ack(&c, ts).unwrap();
     }
     store.close().unwrap();
@@ -1833,7 +1836,7 @@ fn t27_5_2_multiple_producers() {
     let q2 = q.clone();
     let q3 = q.clone();
     let cc = qc.clone();
-    let barrier = Arc::new(Barrier::new(5));
+    let barrier = Arc::new(Barrier::new(4));
     let mut prod_handles = Vec::new();
     for (i, q_ref) in [q1, q2, q3].into_iter().enumerate() {
         let b = Arc::clone(&barrier);
@@ -1881,14 +1884,16 @@ fn t27_5_3_multiple_consumers_different_groups() {
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
     let q = store.open_queue(h).unwrap();
-    for i in 0..5 {
-        store.queue_push(&q, format!("msg_{}", i).as_bytes()).unwrap();
-    }
     let ca = store.open_consumer(&q, "group_a").unwrap();
     let cb = store.open_consumer(&q, "group_b").unwrap();
+    for i in 0..5 {
+        store
+            .queue_push(&q, format!("msg_{}", i).as_bytes())
+            .unwrap();
+    }
     let ca_clone = ca.clone();
     let cb_clone = cb.clone();
-    let barrier = Arc::new(Barrier::new(3));
+    let barrier = Arc::new(Barrier::new(2));
     let b1 = Arc::clone(&barrier);
     let b2 = Arc::clone(&barrier);
     let t1 = thread::spawn(move || {
@@ -1928,8 +1933,8 @@ fn t27_6_1_store_open_queue_valid() {
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
     let q = store.open_queue(h).unwrap();
-    store.queue_push(&q, b"data").unwrap();
     let c = store.open_consumer(&q, "g1").unwrap();
+    store.queue_push(&q, b"data").unwrap();
     assert!(store
         .queue_poll(&c, Duration::from_millis(100))
         .unwrap()
