@@ -2100,6 +2100,70 @@ mod tests {
     }
 
     #[test]
+    fn test_retention_reclaim_actually_deletes_expired_segments() {
+        let dir = temp_dir("retention_actual_reclaim");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        // data_segment_size=180, initial=180: each 32-byte record fills one segment.
+        // total_needed = BLOCK_HEADER_SIZE(16) + RECORD_OVERHEAD(12) + 32 = 60.
+        // Available = 180 - 116 = 64 >= 60 (fits), but 2nd record triggers rollover.
+        let data_segment_size = 180u64;
+        let mut ds = DataSet::create(
+            id,
+            dir.clone(),
+            data_segment_size,
+            4096,              // index_segment_size
+            0,                 // compress_level
+            0,                 // index_continuous
+            data_segment_size, // initial = segment_size
+            4096,              // initial_index_segment_size
+            15,                // retention_window: threshold = latest_ts - 15
+        )
+        .unwrap();
+
+        // Write 3 records, each forcing a new segment
+        ds.write(10, &[0xAA; 32]).unwrap();
+        ds.write(20, &[0xBB; 32]).unwrap();
+        ds.write(30, &[0xCC; 32]).unwrap();
+
+        let data_dir = dir.join("data");
+        let count_before = std::fs::read_dir(&data_dir).unwrap().count();
+        assert_eq!(count_before, 3, "should have 3 data segment files");
+
+        // retention_threshold = 30 - 15 = 15
+        // Segment 0 (max_ts=10): 10 < 15 → expired, deleted
+        // Segment 1 (max_ts=20): 20 >= 15 → kept
+        // Segment 2 (max_ts=30): 30 >= 15 → kept
+        let reclaimed = ds.reclaim_expired_segments().unwrap();
+        assert_eq!(reclaimed, 1, "exactly 1 segment should be reclaimed");
+
+        let count_after = std::fs::read_dir(&data_dir).unwrap().count();
+        assert_eq!(count_after, 2, "should have 2 data segment files after reclaim");
+
+        // Verify the correct segment was deleted (segment at offset 0)
+        let expired_path = data_dir.join(format!("{:020}", 0));
+        assert!(!expired_path.exists(), "expired segment file should be physically deleted");
+
+        // Verify remaining segments are still present
+        assert!(
+            data_dir
+                .join(format!("{:020}", data_segment_size))
+                .exists(),
+            "segment at offset {} should remain",
+            data_segment_size
+        );
+        assert!(
+            data_dir
+                .join(format!("{:020}", data_segment_size * 2))
+                .exists(),
+            "segment at offset {} should remain",
+            data_segment_size * 2
+        );
+    }
+
+    #[test]
     fn test_retention_query_clamped() {
         let dir = temp_dir("retention_clamped");
         let id = DataSetKey {

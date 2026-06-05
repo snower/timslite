@@ -15,12 +15,12 @@
 
 | # | 问题 | 位置 | 状态 | 完成日期 |
 |---|------|------|------|---------|
-| S-1 | 新增 retention 回收集成测试：跨多个段写入过期数据，验证 `reclaim_expired_segments()` 实际删除文件 | `tests/` 新增或 `src/dataset.rs` 修改 | [ ] | |
-| S-2 | 新增 Journal 集成测试：`enable_journal=true` 时自动创建 `.journal/logs` | `tests/` | [ ] | |
-| S-3 | 新增 Journal 集成测试：DataSet create/write/delete 时自动写入 Journal 记录 | `tests/` | [ ] | |
-| S-4 | 新增 Journal 集成测试：`.journal/logs` 只读强制，公开 write 应被拒绝 | `tests/` | [ ] | |
-| S-5 | 新增 Journal 集成测试：Journal open_queue 实时消费 | `tests/` | [ ] | |
-| S-6 | 新增 Consumer 组名校验测试：空字符串、路径分隔符、超长（>255字节）、特殊字符 | `src/queue/mod.rs` 或 `tests/queue_test.rs` | [ ] | |
+| S-1 | 新增 retention 回收集成测试：跨多个段写入过期数据，验证 `reclaim_expired_segments()` 实际删除文件 | `src/dataset.rs` `test_retention_reclaim_actually_deletes_expired_segments` | [x] | 2026-06-05 |
+| S-2 | 新增 Journal 集成测试：`enable_journal=true` 时自动创建 `.journal/logs` | `tests/journal_test.rs` t28_1, t28_2 | [x] | 已存在 |
+| S-3 | 新增 Journal 集成测试：DataSet create/write/delete 时自动写入 Journal 记录 | `tests/journal_test.rs` t28_4, t28_5, t28_11 | [x] | 已存在 |
+| S-4 | 新增 Journal 集成测试：`.journal/logs` 只读强制，公开 write 应被拒绝 | `tests/journal_test.rs` t28_9, t28_10 | [x] | 已存在 |
+| S-5 | 新增 Journal 集成测试：Journal open_queue 实时消费 | `tests/journal_test.rs` (11 tests cover journal lifecycle, but queue consumption not explicitly tested) | [ ] | |
+| S-6 | 新增 Consumer 组名校验测试：空字符串、路径分隔符、超长（>255字节）、特殊字符 | `tests/queue_test.rs` t27_2_4 | [x] | 已存在 |
 | S-7 | 扩展 FFI 测试覆盖：query iterator、delete、flush、drop、error 路径、Queue FFI | `src/ffi.rs` | [ ] | |
 | S-8 | 新增端到端崩溃恢复测试：partial block 写入 + 未密封 + reopen，验证 pending block 被安全密封 | `tests/` 或 `src/segment/data.rs` | [ ] | |
 
@@ -48,11 +48,11 @@
 
 | # | 问题 | 位置 | 状态 | 完成日期 |
 |---|------|------|------|---------|
-| M-1 | 修复 `test_next_delay_during_tick` 无意义断言（`delay >= 0.0` 恒为 true），替换为有意义的验证 | `src/bg/mod.rs` L676 | [ ] | |
+| M-1 | 修复 `test_next_delay_during_tick` 无意义断言（`delay >= 0.0` 恒为 true），替换为 `delay <= flush_interval` | `src/bg/mod.rs` | [x] | 2026-06-05 |
 | M-2 | 修复 `test_block_offset_routes_to_next_data_segment_after_rollover` 脆弱尺寸（180字节），加大余量或添加计算注释 | `src/dataset.rs` L1203 | [ ] | |
 | M-3 | 重命名 `test_clone_queue_for_threads`（实际未使用线程），或添加真正的多线程 push/poll | `wrapper/python/tests/test_queue.py` L245 | [ ] | |
 | M-4 | 收紧 `test_continuous_large_gap_filler_is_bounded_by_edge_segments` 断言边界至精确预期值 | `src/dataset.rs` L1267 | [ ] | |
-| M-5 | 修复 FFI 测试临时目录泄漏：每个测试末尾清理或改用共享目录 + drop 清理 | `src/ffi.rs` L1047 | [ ] | |
+| M-5 | 修复 FFI 测试临时目录泄漏：`cleanup_store_dir()` 在每个测试末尾清理 | `src/ffi.rs` | [x] | 2026-06-05 |
 | M-6 | 修复 `test_tick_bg_all_tasks_due_after_expiry` 时序脆弱：将 retention 与其他 3 个任务分开测试 | `src/bg/mod.rs` L581 | [ ] | |
 | M-7 | 修复 `test_continuous_large_gap_filler_is_bounded_by_edge_segments` filler 上界过于宽松 | `src/dataset.rs` L1267 | [ ] | |
 | M-8 | `test_retention_window_stored_and_roundtrip` 补充实际回收行为验证 | `src/dataset.rs` L1997 | [ ] | |
@@ -78,8 +78,8 @@
 
 | 严重程度 | 总数 | 已完成 | 进行中 | 待完成 |
 |---------|------|--------|--------|--------|
-| 严重 | 8 | 0 | 0 | 8 |
+| 严重 | 8 | 5 | 0 | 3 |
 | 高 | 11 | 0 | 0 | 11 |
-| 中 | 10 | 0 | 0 | 10 |
+| 中 | 10 | 2 | 0 | 8 |
 | 低 | 6 | 0 | 0 | 6 |
-| **合计** | **35** | **0** | **0** | **35** |
+| **合计** | **35** | **7** | **0** | **28** |

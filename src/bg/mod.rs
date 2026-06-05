@@ -673,7 +673,12 @@ mod tests {
         // This should eventually succeed (either returns immediately or
         // blocks briefly until tick completes)
         let delay = bg.next_delay();
-        assert!(delay.as_secs_f64() > 0.0 || delay.as_secs_f64() == 0.0);
+        // Verify next_delay completes without deadlock and returns a bounded value
+        assert!(
+            delay <= Duration::from_secs(600),
+            "next_delay should be bounded by flush_interval (600s), got {:?}",
+            delay
+        );
 
         let _ = tick_handle.join();
     }

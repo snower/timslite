@@ -1045,10 +1045,14 @@ mod tests {
     use std::ffi::CString;
 
     fn temp_store_dir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(name);
+        let dir = std::env::temp_dir().join("timslite_ffi_test").join(name);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn cleanup_store_dir(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn err_buf() -> ([c_char; 256], usize) {
@@ -1093,6 +1097,7 @@ mod tests {
         );
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
         assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
     }
 
     #[test]
@@ -1182,5 +1187,6 @@ mod tests {
 
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
         assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
     }
 }
