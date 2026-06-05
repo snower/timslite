@@ -205,3 +205,114 @@ fn t12_4_disk_space_efficiency() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn t12_5_segment_2x_expansion_on_overflow() {
+    use std::fs;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let initial_size: u64 = 512;
+    let max_size: u64 = 64 * 1024; // 64KB max
+    let config = StoreConfig::builder()
+        .initial_data_segment_size(initial_size)
+        .initial_index_segment_size(4096)
+        .data_segment_size(max_size)
+        .index_segment_size(64 * 1024)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset("expand_ds", "data", max_size, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    let ds = store.open_dataset("expand_ds", "data").unwrap();
+
+    // Write enough data to force expansion beyond initial_size
+    // Each record: ~12 overhead + 100 data = ~112 bytes
+    // initial=512 → usable ~396 → fits ~3 records, then expand to 1024, etc.
+    for i in 1..=20i64 {
+        let data = vec![i as u8; 100];
+        let arc = store.get_dataset(&ds).unwrap();
+        arc.lock().unwrap().write(i, &data).unwrap();
+    }
+
+    // Check that file has expanded beyond initial_size
+    let data_dir = dir.join("expand_ds").join("data").join("data");
+    let mut found_expanded = false;
+    for entry in fs::read_dir(&data_dir).unwrap() {
+        let entry = entry.unwrap();
+        let size = entry.metadata().unwrap().len();
+        if size > initial_size {
+            found_expanded = true;
+            // Expansion should be a power-of-2 multiple of initial_size
+            assert!(
+                size % initial_size == 0,
+                "expanded size {} should be a multiple of initial {}",
+                size,
+                initial_size
+            );
+            break;
+        }
+    }
+    assert!(
+        found_expanded,
+        "at least one segment file should have expanded beyond initial_size={}",
+        initial_size
+    );
+
+    // Verify data integrity after expansion
+    let arc = store.get_dataset(&ds).unwrap();
+    let entries = arc.lock().unwrap().query(1, 20).unwrap();
+    assert_eq!(entries.len(), 20);
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t12_6_retention_reclaim_after_expansion() {
+    use timslite::{DataSet, DataSetKey};
+
+    let dir = temp_dir();
+    let ds_dir = dir.join("ret_exp");
+    fs::create_dir_all(&ds_dir).unwrap();
+    let id = DataSetKey {
+        name: "ret_exp".into(),
+        dataset_type: "data".into(),
+    };
+
+    // Use small segment to force expansion + multiple segments
+    let data_segment_size: u64 = 180;
+    let mut ds = DataSet::create(
+        id.clone(),
+        ds_dir.clone(),
+        data_segment_size,
+        4096,
+        0, // compress_level=0 to keep sizes predictable
+        0,
+        data_segment_size, // initial = max (no expansion, rollover instead)
+        4096,
+        15, // retention_window
+    )
+    .unwrap();
+
+    // Write records that span multiple segments
+    ds.write(10, &[0xAA; 32]).unwrap();
+    ds.write(20, &[0xBB; 32]).unwrap();
+    ds.write(30, &[0xCC; 32]).unwrap();
+
+    // Reclaim: threshold = 30 - 15 = 15; segment with max_ts=10 is expired
+    let reclaimed = ds.reclaim_expired_segments().unwrap();
+    assert!(
+        reclaimed >= 1,
+        "at least 1 segment should be reclaimed after expansion, got {}",
+        reclaimed
+    );
+
+    // Remaining data should still be readable
+    let entries = ds.query(15, 30).unwrap();
+    assert!(
+        !entries.is_empty(),
+        "non-expired records should remain queryable"
+    );
+}

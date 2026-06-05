@@ -107,3 +107,62 @@ fn t13_4_query_empty_range() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn t13_5_cross_segment_query() {
+    use timslite::{DataSet, DataSetKey};
+
+    let dir = temp_dir();
+    let ds_dir = dir.join("cross_seg");
+    fs::create_dir_all(&ds_dir).unwrap();
+    let id = DataSetKey {
+        name: "cross_seg".into(),
+        dataset_type: "data".into(),
+    };
+
+    // Use small segment size to force data across multiple segments
+    let data_segment_size: u64 = 180;
+    let mut ds = DataSet::create(
+        id.clone(),
+        ds_dir.clone(),
+        data_segment_size,
+        4096,
+        0, // no compression for predictable sizing
+        0,
+        data_segment_size, // initial = max → rollover on overflow
+        4096,
+        0,
+    )
+    .unwrap();
+
+    // Write records that span multiple data segments
+    for i in 1..=6i64 {
+        let data = format!("record_{}", i);
+        ds.write(i * 10, data.as_bytes()).unwrap();
+    }
+
+    // Verify multiple segment files exist
+    let data_dir = ds_dir.join("data");
+    let seg_count = fs::read_dir(&data_dir).unwrap().count();
+    assert!(
+        seg_count >= 2,
+        "should have at least 2 data segment files, got {}",
+        seg_count
+    );
+
+    // Query across all segments
+    let entries = ds.query(1, 60).unwrap();
+    assert_eq!(
+        entries.len(),
+        6,
+        "cross-segment query should return all 6 records"
+    );
+    assert_eq!(entries[0].0, 10);
+    assert_eq!(entries[5].0, 60);
+
+    // Partial cross-segment query (middle range)
+    let partial = ds.query(20, 40).unwrap();
+    assert_eq!(partial.len(), 3);
+    assert_eq!(partial[0].0, 20);
+    assert_eq!(partial[2].0, 40);
+}

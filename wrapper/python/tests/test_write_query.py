@@ -125,3 +125,74 @@ class TestWriteQuery:
             ds.flush()
             results = ds.query_all(1, 1)
             assert len(results) == 1
+
+
+class TestExtendedAPI:
+    def test_delete_removes_record(self, tmpdir):
+        """ds.delete(timestamp) marks the record as deleted, query skips it."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("del_ds", "data")
+            ds = store.open_dataset("del_ds", "data")
+            ds.write(10, b"v1")
+            ds.write(20, b"v2")
+            ds.write(30, b"v3")
+            ds.delete(20)
+            results = ds.query_all(1, 100)
+            assert len(results) == 2
+            timestamps = [ts for ts, _ in results]
+            assert 20 not in timestamps
+
+    def test_delete_nonexistent_raises(self, tmpdir):
+        """Deleting a non-existent timestamp raises TmslNotFoundError."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("del_ne", "data")
+            ds = store.open_dataset("del_ne", "data")
+            ds.write(1, b"x")
+            with pytest.raises(timslite.TmslNotFoundError):
+                ds.delete(999)
+
+    def test_read_latest_record(self, tmpdir):
+        """ds.read(-1) returns the latest written record."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("latest", "data")
+            ds = store.open_dataset("latest", "data")
+            ds.write(10, b"first")
+            ds.write(20, b"second")
+            ds.write(30, b"third")
+            result = ds.read(-1)
+            assert result is not None
+            ts, data = result
+            assert ts == 30
+            assert data == b"third"
+
+    def test_read_latest_empty_dataset(self, tmpdir):
+        """ds.read(-1) on empty dataset returns None."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("latest_empty", "data")
+            ds = store.open_dataset("latest_empty", "data")
+            result = ds.read(-1)
+            assert result is None
+
+    def test_correction_write_non_continuous(self, tmpdir):
+        """Non-continuous mode: out-of-order write overwrites existing entry."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("correction", "data")
+            ds = store.open_dataset("correction", "data")
+            ds.write(10, b"original")
+            ds.write(20, b"other")
+            # Correction write: overwrite ts=10 with new data
+            ds.write(10, b"corrected")
+            result = ds.read(10)
+            assert result is not None
+            assert result[1] == b"corrected"
+
+    def test_append_to_old_timestamp_fails(self, tmpdir):
+        """Appending to an older timestamp in non-continuous mode should fail."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("old_append", "data")
+            ds = store.open_dataset("old_append", "data")
+            ds.write(10, b"first")
+            ds.write(20, b"second")
+            # append to ts=10 which is not the latest — should fail
+            with pytest.raises(Exception):
+                ds.append(10, b"should_fail")

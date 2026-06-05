@@ -260,3 +260,32 @@ fn t28_11_direct_dataset_mutations_use_store_context_journal() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn t28_12_journal_queue_rejects_external_push() {
+    let dir = temp_dir("journal_queue_push_reject");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    // Create a dataset to ensure journal is active
+    store
+        .create_dataset("jq_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    // Open the journal queue via the public Store API
+    let journal_handle = store
+        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
+        .unwrap();
+    let journal_queue = store.open_queue(journal_handle).unwrap();
+
+    // External push should be rejected (journal queue is read-only producer)
+    let result = journal_queue.push(b"forged_record");
+    assert!(result.is_err(), "journal queue must reject external push()");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("read-only"),
+        "error should mention read-only, got: {}",
+        err_msg
+    );
+
+    store.close().unwrap();
+}

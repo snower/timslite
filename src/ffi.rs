@@ -1,4 +1,4 @@
-﻿//! FFI interface (extern "C" API) for C and other language bindings.
+//! FFI interface (extern "C" API) for C and other language bindings.
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -1184,6 +1184,232 @@ mod tests {
         let out_slice = unsafe { std::slice::from_raw_parts(out_data, out_len) };
         assert_eq!(out_slice, &[1, 2, 3, 4, 5, 6]);
         tmsl_data_free(out_data as *mut c_void);
+
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_store_open_no_config() {
+        let dir = temp_store_dir("ffi_store_open_no_config");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+
+        let store = tmsl_store_open(dir_c.as_ptr(), err.as_mut_ptr(), err_len);
+        assert!(
+            !store.is_null(),
+            "tmsl_store_open with null config should succeed"
+        );
+
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_ffi_query_iterator_and_delete() {
+        let dir = temp_store_dir("ffi_query_iter_delete");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+        config.enable_journal = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("qid").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        // Write 5 records
+        for i in 1i64..=5 {
+            let data = format!("rec_{}", i);
+            assert_eq!(
+                tmsl_dataset_write(
+                    dataset,
+                    i,
+                    data.as_ptr(),
+                    data.len(),
+                    err.as_mut_ptr(),
+                    err_len,
+                ),
+                0
+            );
+        }
+
+        // Flush
+        assert_eq!(tmsl_dataset_flush(dataset, err.as_mut_ptr(), err_len), 0);
+
+        // Delete record at ts=3
+        assert_eq!(
+            tmsl_dataset_delete(dataset, 3, err.as_mut_ptr(), err_len),
+            0
+        );
+
+        // Query ts 1..5 via iterator
+        let iter = tmsl_dataset_query(dataset, 1, 5, err.as_mut_ptr(), err_len);
+        assert!(!iter.is_null());
+
+        let mut collected_ts: Vec<i64> = Vec::new();
+        loop {
+            let mut ts: c_longlong = 0;
+            let mut data: *mut c_uchar = std::ptr::null_mut();
+            let mut data_len: usize = 0;
+            let rc = tmsl_iter_next(
+                iter,
+                &mut ts,
+                &mut data,
+                &mut data_len,
+                err.as_mut_ptr(),
+                err_len,
+            );
+            if rc == 1 {
+                break; // done
+            }
+            assert_eq!(rc, 0, "iter_next should return 0 or 1");
+            collected_ts.push(ts);
+            tmsl_iter_free_data(data);
+        }
+        // ts=3 deleted, should get 1,2,4,5
+        assert_eq!(collected_ts, vec![1, 2, 4, 5]);
+
+        tmsl_iter_close(iter);
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_ffi_tick_and_next_delay() {
+        let dir = temp_store_dir("ffi_tick_delay");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+        config.enable_journal = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let mut executed: u32 = 99;
+        let mut delay_ms: u64 = 99;
+        assert_eq!(
+            tmsl_store_tick_background_tasks(
+                store,
+                &mut executed,
+                &mut delay_ms,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert!(executed <= 4, "executed tasks bounded by 4");
+
+        assert_eq!(
+            tmsl_store_next_background_delay(store, &mut delay_ms, err.as_mut_ptr(), err_len),
+            0
+        );
+        assert!(
+            delay_ms <= 600_000,
+            "delay bounded by flush_interval (600s)"
+        );
+
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_ffi_error_path_err_buf_output() {
+        let dir = temp_store_dir("ffi_error_path");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+        config.enable_journal = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        // Try to open non-existent dataset → should fail and write err_buf
+        let bad_name = CString::new("nonexistent").unwrap();
+        let bad_ty = CString::new("data").unwrap();
+        let (mut err2, err_len2) = err_buf();
+        let null_ds = tmsl_dataset_open(
+            store,
+            bad_name.as_ptr(),
+            bad_ty.as_ptr(),
+            err2.as_mut_ptr(),
+            err_len2,
+        );
+        assert!(
+            null_ds.is_null(),
+            "opening non-existent dataset should return null"
+        );
+        // err_buf should contain a non-empty error message
+        let err_str = unsafe { std::ffi::CStr::from_ptr(err2.as_ptr()) }
+            .to_str()
+            .unwrap_or("");
+        assert!(
+            !err_str.is_empty(),
+            "err_buf should contain an error message"
+        );
+
+        // Try to drop with outstanding child handle → should fail
+        let name = CString::new("errds").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+        // store close with outstanding handle → error
+        let (mut err3, err_len3) = err_buf();
+        assert_eq!(
+            tmsl_store_close(store, err3.as_mut_ptr(), err_len3),
+            -1,
+            "store close must reject outstanding dataset handles"
+        );
+        let close_err = unsafe { std::ffi::CStr::from_ptr(err3.as_ptr()) }
+            .to_str()
+            .unwrap_or("");
+        assert!(
+            close_err.contains("outstanding"),
+            "err_buf should mention outstanding handles, got: {}",
+            close_err
+        );
 
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
         assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
