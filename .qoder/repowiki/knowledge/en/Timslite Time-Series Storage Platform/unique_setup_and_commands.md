@@ -1,1 +1,0 @@
-The build hierarchy enforces Rust tests and linting before executing Python wrapper tests across multiple versions via `.github/workflows/ci.yml`.

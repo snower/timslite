@@ -1,5 +1,0 @@
-- **Core Facade**: `Store` (`src/store.rs`) manages dataset lifecycles, background tasks (flush, idle-close, retention), and global resources like the `BlockCache` and `JournalManager`.
-- **Dataset Layer**: `DataSet` (`src/dataset.rs`) handles write dispatching (normal, correction, out-of-order) and read/query operations, coordinating between `DataSegmentSet` and `TimeIndex`.
-- **Storage Subsystems**: `segment/` manages mmap-backed data blocks with delayed compression; `index/` maintains time-indexed binary search structures; `journal/` provides a change log for durability.
-- **FFI Boundary**: `ffi.rs` exposes a C-compatible API (`include/timslite.h`) using opaque handles and panic-catching macros to ensure safe cross-language interoperability.
-- **Concurrency**: Uses `Arc<Mutex<DataSet>>` for dataset-level locking and `RwLock<HashMap>` for store-level dataset registry, with optional background threads for maintenance tasks.

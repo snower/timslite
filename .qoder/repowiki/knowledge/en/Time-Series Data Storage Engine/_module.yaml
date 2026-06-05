@@ -1,9 +1,0 @@
-schema_version: 1
-module_path: core_library
-title: Time-Series Data Storage Engine
-scope:
-    - src/
-    - include/
-source_files: []
-depends_on: []
-related_to: []

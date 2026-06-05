@@ -1,4 +1,0 @@
-- The root `Cargo.toml` configures the core library as both a `cdylib` for C ABI stability and an `rlib` for internal reuse, while the Python wrapper consumes it as a path dependency.
-- Cross-language integration is enforced by `include/timslite.h`, which defines the stable contract implemented in `src/ffi.rs` and bridged to Python via `PyO3`.
-- Resource isolation is maintained through reference-counted opaque handles (`FfiStore`, `FfiDataset`) that track child dependencies to prevent premature closure of memory-mapped segments.
-- Background maintenance (flushing, retention, cache eviction) is orchestrated by a dual-mode executor that supports both auto-spawned threads and manual caller-driven ticks via the `tmsl_store_tick_background_tasks` API.
