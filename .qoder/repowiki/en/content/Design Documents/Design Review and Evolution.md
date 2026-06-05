@@ -16,7 +16,18 @@
 - [phase-29-dataset-append.md](file://docs/plan/phase-29-dataset-append.md)
 - [design-review.md](file://docs/review/design-review.md)
 - [design-review-todo.md](file://docs/review/design-review-todo.md)
+- [queue/mod.rs](file://src/queue/mod.rs)
+- [journal/mod.rs](file://src/journal/mod.rs)
+- [dataset.rs](file://src/dataset.rs)
+- [ffi.rs](file://src/ffi.rs)
 </cite>
+
+## Update Summary
+**Changes Made**
+- Added new design review items covering path safety validation for queue group names
+- Enhanced journal encoding validation with strict TLV field length limits
+- Improved queue coordination validation with proper ordering constraints
+- Updated troubleshooting guidance to include path safety and encoding validation requirements
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -31,7 +42,7 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document explains TimSLite’s design review process and architectural evolution. It documents formal procedures for initiating, iterating, and approving design changes; how stakeholder feedback is incorporated; and how decisions are validated against requirements, technical feasibility, and long-term maintainability. It covers design review cycles, validation criteria, alternatives considered, trade-offs, and final decision rationales. It also describes the relationship between design reviews and implementation changes, version control of design artifacts, and knowledge transfer to development teams. Finally, it outlines lessons learned, recurring design patterns, best practices, and archival/retrieval of design review materials.
+This document explains TimSLite's design review process and architectural evolution. It documents formal procedures for initiating, iterating, and approving design changes; how stakeholder feedback is incorporated; and how decisions are validated against requirements, technical feasibility, and long-term maintainability. It covers design review cycles, validation criteria, alternatives considered, trade-offs, and final decision rationales. It also describes the relationship between design reviews and implementation changes, version control of design artifacts, and knowledge transfer to development teams. Finally, it outlines lessons learned, recurring design patterns, best practices, and archival/retrieval of design review materials.
 
 ## Project Structure
 TimSLite organizes design and evolution through:
@@ -76,7 +87,7 @@ L["docs/design/queue-overview.md<br/>Queue design"] --> M["src/store.rs<br/>Queu
 - [design-review-todo.md:1-55](file://docs/review/design-review-todo.md#L1-L55)
 
 ## Architecture Overview
-TimSLite’s architecture centers on a Store facade managing datasets, background tasks, caching, and optional journaling. The design emphasizes:
+TimSLite's architecture centers on a Store facade managing datasets, background tasks, caching, and optional journaling. The design emphasizes:
 - Mmap-backed segments with variable-length headers and block-level aggregation
 - Time-indexed queries and lazy lifecycle management
 - Optional journal dataset for change logging and queue consumption
@@ -153,17 +164,22 @@ Examples:
 - Wrote position coordinate system unification separates on-disk absolute offsets from runtime relative positions.
 - Journal v1 boundary clarified as pointer-based auxiliary log, not a self-contained redo log.
 - Append semantics integrated with queue notifications and read-only restrictions on internal journal dataset.
+- **Updated** Path safety validation now enforces strict naming rules for queue group names and dataset identifiers to prevent path traversal and security vulnerabilities.
+- **Updated** Journal encoding validation implements comprehensive TLV field length limits and structural validation to ensure data integrity.
+- **Updated** Queue coordination validation establishes proper ordering constraints between append operations and queue notifications.
 
 **Section sources**
 - [design-review.md:16-290](file://docs/review/design-review.md#L16-L290)
 - [meta-format.md:40-72](file://docs/design/meta-format.md#L40-L72)
 - [dataset-operations.md:14-196](file://docs/design/dataset-operations.md#L14-L196)
 - [journal.md:5-24](file://docs/design/journal.md#L5-L24)
+- [queue-overview.md:32-34](file://docs/design/queue-overview.md#L32-L34)
 
 ### Design Alternatives and Trade-offs
 - Journal format: Pointer-based vs. self-contained change log. Trade-off: Simpler implementation vs. stronger portability and auditability.
 - Single-record flag semantics: Tie to payload size vs. exclusive placement rationale. Trade-off: Consistency vs. clarity of intent.
 - Queue notification policy for append: Notify on creation vs. no-op on update. Trade-off: Visibility vs. avoiding redundant delivery.
+- **Updated** Path safety validation: Strict validation vs. lenient validation. Trade-off: Security vs. flexibility in naming schemes.
 
 **Section sources**
 - [design-review.md:159-180](file://docs/review/design-review.md#L159-L180)
@@ -174,6 +190,8 @@ Examples:
 - Store facade centralizes hooks for journaling and caching, ensuring all public write-like operations traverse the same path.
 - Append API integrates with Store/FFI and journal hooks; tests validate behavior and migration thresholds.
 - Queue integration respects append semantics and maintains isolation of internal journal dataset.
+- **Updated** Queue operations now include comprehensive path safety validation through dedicated validation functions.
+- **Updated** Journal encoding includes strict TLV validation with configurable length limits for different field types.
 
 ```mermaid
 sequenceDiagram
@@ -228,6 +246,9 @@ Store-->>Dev : "Result"
 - Maintain naming consistency: Disambiguate flags and coordinates to prevent misinterpretation.
 - Validate concurrency protocols: Document and test lock/unlock sequences and condition variable usage.
 - Protect internal datasets: Enforce read-only constraints across all public entry points.
+- **Updated** Implement comprehensive input validation: Enforce strict naming rules and length limits for all external inputs.
+- **Updated** Validate data encoding: Implement structured validation for binary formats with configurable limits.
+- **Updated** Establish ordering guarantees: Define clear precedence between operations to prevent inconsistent states.
 
 **Section sources**
 - [design-review.md:16-290](file://docs/review/design-review.md#L16-L290)
@@ -259,8 +280,7 @@ Lib --> Queue["Queue types"]
 - Append threshold and migration: Balances in-place growth with single-record block overhead.
 - Journal overhead: Pointer-based records minimize payload duplication while preserving auditability.
 - Queue wait protocol: Optimizes lock acquisition and condition variable usage to reduce contention.
-
-[No sources needed since this section provides general guidance]
+- **Updated** Validation overhead: Input validation adds minimal performance cost compared to the benefits of preventing security vulnerabilities and data corruption.
 
 ## Troubleshooting Guide
 Common issues and resolutions derived from design reviews:
@@ -270,6 +290,9 @@ Common issues and resolutions derived from design reviews:
 - Append queue behavior: Define notification semantics for new vs. updated latest timestamps; ensure consistency across journal and dataset queues.
 - Read-only protection: Extend prohibited operations to include append for internal journal dataset across all public entry points.
 - Group name safety: Apply dataset path safety rules to queue group names to prevent path traversal and invalid identifiers.
+- **Updated** Path safety violations: Queue operations now validate group names against strict regex patterns and reject potentially dangerous characters.
+- **Updated** Journal encoding errors: TLV field validation ensures all encoded data meets length and format requirements before processing.
+- **Updated** Queue coordination failures: Proper ordering validation prevents race conditions between append operations and queue notifications.
 
 **Section sources**
 - [design-review.md:16-290](file://docs/review/design-review.md#L16-L290)
@@ -277,9 +300,7 @@ Common issues and resolutions derived from design reviews:
 - [queue-overview.md:32-34](file://docs/design/queue-overview.md#L32-L34)
 
 ## Conclusion
-TimSLite’s design review process ensures rigorous validation of changes against requirements, feasibility, and maintainability. By linking reviews to implementation, enforcing explicit boundaries, and documenting trade-offs, the project sustains architectural coherence while evolving rapidly. The archival of review outcomes and action tracking provides historical continuity and facilitates knowledge transfer across teams.
-
-[No sources needed since this section summarizes without analyzing specific files]
+TimSLite's design review process ensures rigorous validation of changes against requirements, feasibility, and maintainability. By linking reviews to implementation, enforcing explicit boundaries, and documenting trade-offs, the project sustains architectural coherence while evolving rapidly. The archival of review outcomes and action tracking provides historical continuity and facilitates knowledge transfer across teams. Recent enhancements in path safety validation, journal encoding validation, and queue coordination improvements strengthen the system's security posture and operational reliability.
 
 ## Appendices
 
@@ -296,6 +317,7 @@ TimSLite’s design review process ensures rigorous validation of changes agains
 - Journal format: Pointer-based auxiliary log with explicit limitations.
 - Single-record semantics: Exclusive placement rationale independent of payload size.
 - Queue notification: Distinct policies for new creation and latest updates.
+- **Updated** Path safety validation: Strict enforcement of naming rules for all external inputs.
 
 **Section sources**
 - [design-review.md:159-180](file://docs/review/design-review.md#L159-L180)
@@ -313,3 +335,34 @@ TimSLite’s design review process ensures rigorous validation of changes agains
 - [plan.md:70-122](file://plan.md#L70-L122)
 - [design-review.md:1-290](file://docs/review/design-review.md#L1-L290)
 - [design-review-todo.md:1-55](file://docs/review/design-review-todo.md#L1-L55)
+
+### Appendix D: Updated Validation Specifications
+
+#### Path Safety Validation
+Queue group names and dataset identifiers now undergo strict validation:
+- Non-empty string validation
+- Maximum length enforcement (255 bytes)
+- Character set restriction: `^[0-9A-Za-z_-]+$`
+- Path traversal prevention: Rejects `.`, `..`, `/`, `\` characters
+- Control character filtering: Prevents whitespace and non-printable characters
+- Windows reserved name protection: Blocks reserved filenames
+
+#### Journal Encoding Validation
+TLV (Type-Length-Value) encoding includes comprehensive validation:
+- Text field length limits: Configurable maximum per field type
+- TLV value length constraints: Prevents oversized payloads
+- TLV list size limits: Controls total encoded record size
+- Binary field validation: Ensures proper fixed-length encoding
+- Field presence requirements: Validates mandatory fields for each record type
+
+#### Queue Coordination Validation
+Operation ordering and state validation:
+- Append operation precedence: Timestamp validation before data processing
+- Queue state consistency: Prevents concurrent access violations
+- Notification ordering: Ensures proper sequencing between operations
+- Resource cleanup: Validates proper queue shutdown and resource release
+
+**Section sources**
+- [queue/mod.rs:59](file://src/queue/mod.rs#L59)
+- [journal/mod.rs:328-356](file://src/journal/mod.rs#L328-L356)
+- [store.rs:31-33](file://src/store.rs#L31-L33)

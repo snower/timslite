@@ -1,0 +1,3 @@
+- FFI functions use `extern "C"` with `#[no_mangle]` and return opaque pointers or integer status codes.
+- Error handling in FFI boundaries utilizes `ffi_catch_int` and `ffi_catch_ptr` macros to convert Rust panics into safe C-compatible error states.
+- Configuration structs are versioned (e.g., `TmslStoreConfigFFI`) to ensure forward compatibility across language boundaries.

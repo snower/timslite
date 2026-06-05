@@ -23,11 +23,11 @@
 
 ## Update Summary
 **Changes Made**
-- Updated DataSet struct documentation to reflect new DataSetRuntimeContext architecture
-- Removed cache parameter documentation from all public API methods (write(), append(), delete(), read(), query(), query_iter())
-- Added documentation for centralized cache and journal management through Store integration
-- Updated architecture diagrams to show runtime context injection pattern
-- Revised examples to demonstrate Store-managed cache behavior
+- Updated correction write documentation to clarify in-place overwrite behavior and constraints
+- Enhanced documentation for correction write fallback scenarios when targeting compressed blocks
+- Added documentation for correction write preservation across dataset reopen operations
+- Updated examples to demonstrate correction write behavior in both continuous and non-continuous modes
+- Clarified that correction writes maintain latest_written_timestamp without modification
 
 ## Table of Contents
 1. [Introduction](#introduction)
@@ -235,6 +235,34 @@ SparseFiller --> Done
 - [dataset.rs:376-455](file://src/dataset.rs#L376-L455)
 - [phase-17-correction-write.md:197-251](file://docs/plan/phase-17-correction-write.md#L197-L251)
 
+### Correction Write Operations: In-Place Overwrite Behavior
+Correction writes provide in-place overwrite capabilities when the target record is the latest unsealed record in the last pending raw block:
+
+**In-Place Overwrite Constraints:**
+- Target record must be the last record in the latest segment's last pending raw block
+- Block must be unsealed and uncompressed (pending raw state)
+- Record must be at the tail position of the block
+- Data length can vary (same-size or resize operations)
+
+**Fallback Scenarios:**
+- Compressed sealed blocks: correction write falls back to out-of-order write
+- Non-pending blocks: overwrite fails and falls back to out-of-order write
+- Non-tail records: overwrite fails and falls back to out-of-order write
+
+**Behavioral Characteristics:**
+- latest_written_timestamp remains unchanged after successful correction
+- Index entry remains at the same location (no index churn)
+- Invalidates cache keys for the overwritten location
+- Preserves pending state across dataset reopen operations
+
+**Section sources**
+- [segment/mod.rs:285-328](file://src/segment/mod.rs#L285-L328)
+- [dataset.rs:569-580](file://src/dataset.rs#L569-L580)
+- [dataset.rs:1479-1511](file://src/dataset.rs#L1479-L1511)
+- [dataset.rs:1546-1544](file://src/dataset.rs#L1546-L1544)
+- [dataset.rs:2493-2535](file://src/dataset.rs#L2493-L2535)
+- [dataset.rs:2537-2573](file://src/dataset.rs#L2537-L2573)
+
 ### Append Operation
 DataSet::append() tail-appends to the latest record under strict constraints:
 - timestamp must be ≥ latest_written_timestamp
@@ -439,7 +467,7 @@ Recommendations:
 ## Troubleshooting Guide
 Common issues and resolutions:
 - Out-of-order write rejected: ensure index_continuous mode allows sparse filler updates or adjust timestamp ordering
-- Correction write fails: verify the latest record is unsealed and at the tail of the last pending raw block
+- Correction write fails: verify the latest record is unsealed, at the tail of the last pending raw block, and not in a compressed sealed block
 - Expired timestamp errors: check retention_window and latest_written_timestamp; adjust window or reissue within bounds
 - Read-only context errors: external callers cannot perform write operations; use Store-managed datasets for write access
 - Empty queries: confirm timestamps overlap with actual data; remember filler entries are skipped

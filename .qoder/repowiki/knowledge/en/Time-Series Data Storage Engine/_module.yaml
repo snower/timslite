@@ -1,6 +1,6 @@
 schema_version: 1
 module_path: core_library
-title: Background Task Execution & Lifecycle Management
+title: Time-Series Data Storage Engine
 scope:
     - src/
     - include/

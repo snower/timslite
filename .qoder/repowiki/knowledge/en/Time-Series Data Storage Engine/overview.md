@@ -1,0 +1,1 @@
+A high-performance, mmap-backed time-series storage engine supporting block-level aggregation, delayed compression, and lazy segment lifecycle management.

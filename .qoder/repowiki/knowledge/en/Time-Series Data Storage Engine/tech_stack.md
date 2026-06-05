@@ -1,0 +1,1 @@
+Rust with `mmap`-based I/O for zero-copy reads, `libc` for FFI memory management, and `deflate` compression via standard libraries.

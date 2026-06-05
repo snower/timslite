@@ -1,5 +1,0 @@
-- **Dual-Mode Executor**: Supports both an auto-spawned background thread (`BackgroundTasks::start`) and a manual caller-driven loop (`BackgroundTasks::new` with `tick()`), sharing the same `ExecutorState` via `Arc<Mutex>`.
-- **Task Serialization**: Uses a `reserve_due_tasks` -> `execute_reserved_tasks` -> `finish_reserved_tasks` pattern to ensure only one instance of each task type (flush, idle, cache, retention) runs at a time, preventing race conditions.
-- **Dependency Injection**: Receives shared references to the global `DatasetMap` (`Arc<RwLock<HashMap>>`) and `BlockCache` (`Arc<BlockCache>`) to perform cross-cutting maintenance without owning the data.
-- **Scheduling Logic**: Implements fixed-interval scheduling for flush/idle/cache tasks and UTC-aligned daily scheduling for retention checks, calculated via `next_retention_time`.
-- **Integration Point**: Instantiated and configured by the `Store` facade (`src/store.rs`) based on `StoreConfig` settings, acting as the central hub for background I/O and resource cleanup.

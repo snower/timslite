@@ -1,2 +1,0 @@
-- FFI functions use `extern "C"` with `#[no_mangle]` and return `c_int` or opaque pointers, utilizing `err_buf` for error propagation instead of Rust's `Result` type.
-- Cross-language configuration structs (e.g., `TmslStoreConfigFFI`) include a `version` field to ensure forward/backward compatibility between the Rust core and external consumers.

@@ -1,1 +1,0 @@
-Uses Rust standard library concurrency primitives (`std::sync::mpsc`, `std::thread`, `std::sync::{Arc, Mutex, RwLock}`) for task orchestration and shutdown signaling.

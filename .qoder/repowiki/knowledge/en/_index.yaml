@@ -2,11 +2,11 @@
 schema_version: 1
 locale: en-US
 branch: main
-exported_at: "2026-06-05T02:12:19Z"
+exported_at: "2026-06-05T02:41:16Z"
 modules:
     "":
-        dir_name: Time-Series Storage Engine & FFI Platform
-        title: Time-Series Storage Engine & FFI Platform
+        dir_name: Timslite Time-Series Storage Platform
+        title: Timslite Time-Series Storage Platform
         scope:
             - .github\workflows\ci.yml
             - .gitignore
@@ -82,16 +82,17 @@ modules:
             - .qoder\repowiki\en\content\Storage Management\Storage Management.md
             - .qoder\repowiki\en\content\Storage Management\Storage Optimization.md
             - .qoder\repowiki\en\meta\repowiki-metadata.json
-            - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\_module.yaml
-            - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\architecture_design.md
-            - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\coding_conventions.md
-            - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\overview.md
-            - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\tech_stack.md
+            - .qoder\repowiki\knowledge\en\Background Task Execution & Lifecycle Management\_module.yaml
+            - .qoder\repowiki\knowledge\en\Background Task Execution & Lifecycle Management\architecture_design.md
+            - .qoder\repowiki\knowledge\en\Background Task Execution & Lifecycle Management\coding_conventions.md
+            - .qoder\repowiki\knowledge\en\Background Task Execution & Lifecycle Management\overview.md
+            - .qoder\repowiki\knowledge\en\Background Task Execution & Lifecycle Management\tech_stack.md
             - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\_module.yaml
             - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\architecture_design.md
             - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\coding_conventions.md
             - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\overview.md
             - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\tech_stack.md
+            - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\unique_setup_and_commands.md
             - .qoder\repowiki\knowledge\en\_index.yaml
             - .sisyphus\run-continuation\ses_1b1675dc8ffeYSRa5Jr39ZJuJb.json
             - AGENTS.md
@@ -218,8 +219,8 @@ modules:
         depends_on: []
         related_to: []
     core_library:
-        dir_name: Background Task Execution & Lifecycle Management
-        title: Background Task Execution & Lifecycle Management
+        dir_name: Time-Series Data Storage Engine
+        title: Time-Series Data Storage Engine
         scope:
             - src/
             - include/

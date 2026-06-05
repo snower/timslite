@@ -1,4 +1,0 @@
-- The root `Cargo.toml` defines the core `timslite` library as both a `cdylib` (for C FFI) and `rlib` (for internal/Python use), while `wrapper/python/Cargo.toml` consumes it as a path dependency.
-- Cross-language integration is mediated by `include/timslite.h`, which defines the stable C ABI contract implemented in `src/ffi.rs` and consumed by the Python `maturin` wrapper.
-- CI workflows (`.github/workflows/ci.yml`) enforce a strict build hierarchy: Rust tests and linting must pass before Python wrapper tests are executed across multiple Python versions.
-- Resource isolation is enforced via reference-counted opaque handles (`FfiStore`, `FfiDataset`) that track child dependencies to prevent premature closure of the underlying memory-mapped store.
