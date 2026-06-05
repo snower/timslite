@@ -26,6 +26,8 @@
 └─────────────────────────────────────────────────────┘
 ```
 
+`meta_data_length` 是 `u16 LE`, 因此 meta_values 最大 65535 字节。当前 v1 固定 meta_values 长度为 74 字节。journal enabled 时, create/drop 日志会把 meta 文件固定 8 字节头之后的 meta_values 作为 metadata TLV value; Store 必须在主 create/drop 操作前校验该 snapshot 可被 journal TLV 编码。
+
 ### TLV (Type-Length-Value) 编码
 
 ```rust

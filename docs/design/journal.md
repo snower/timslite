@@ -121,7 +121,9 @@ TLV entry:
 
 - outer `length` 是所有 TLV entry 的总字节数, 不包含 `log_type` 和 outer `length` 自身。
 - TLV `length` 使用 `u16 LE`, 单个 value 最大 65535 字节。
-- `name` 和 `dataset_type` value 是 UTF-8 字节, 不包含 `\0` 结尾。
+- outer `length` 同样使用 `u16 LE`, 因此整条 TLV list 最大 65535 字节。
+- `name` 和 `dataset_type` value 是 UTF-8 字节, 不包含 `\0` 结尾; 普通 dataset 复用路径安全规则, 必须非空、最长 255 字节且匹配 `^[0-9A-Za-z_-]+$`。
+- `metadata` value 最大 65535 字节, 且还必须满足 `(3+name_len)+(3+type_len)+(3+metadata_len) <= 65535`。
 - 所有多字节整数沿用文件格式统一规则: Little Endian。
 - 解析器遇到未知 TLV type 可跳过, 但必须拒绝越界 length。
 
@@ -152,6 +154,7 @@ TLV:
 - 去掉 DataSetMeta 固定 8 字节 header: `magic[4] + version[u16 LE] + meta_data_length[u16 LE]`。
 - value 内容是后续 TLV meta_values 的原始字节。
 - metadata value 长度必须等于 meta 文件 header 中的 `meta_data_length`。
+- journal enabled 时, create/drop 主操作执行前必须预校验 name/type/metadata snapshot 可编码性; create 使用当前 DataSetMeta v1 的 meta_values 长度预估, drop 在删除目录前读取 metadata snapshot 后校验。
 
 创建日志记录应在普通 dataset 的 meta/data/index 初始结构创建成功后写入。若 journal 写入失败, 已创建 dataset 不做回滚; API 应返回 journal 失败错误, 调用方需按“主操作可能已生效”处理。
 
@@ -292,10 +295,11 @@ Store::open(data_dir):
 ```text
 create_dataset(name, type, config):
   1. 校验 name/type 是普通合法名称, 且不是保留 journal 标识
-  2. 创建普通 dataset
-  3. 从 meta 文件提取 meta_values bytes
-  4. if enable_journal: journal.append_create(name, type, meta_values)
-  5. 返回 dataset handle
+  2. if enable_journal: 预校验 0x01 create journal record 的 name/type/meta_values 长度可编码
+  3. 创建普通 dataset
+  4. 从 meta 文件提取 meta_values bytes
+  5. if enable_journal: journal.append_create(name, type, meta_values)
+  6. 返回 dataset handle
 ```
 
 #### Store::drop_dataset
@@ -304,9 +308,10 @@ create_dataset(name, type, config):
 drop_dataset(name, type):
   1. 校验不是 journal dataset
   2. 读取并缓存 meta_values bytes
-  3. 关闭并删除普通 dataset
-  4. if enable_journal: journal.append_drop(name, type, meta_values)
-  5. 返回
+  3. if enable_journal: 预校验 0x02 drop journal record 的 name/type/meta_values 长度可编码
+  4. 关闭并删除普通 dataset
+  5. if enable_journal: journal.append_drop(name, type, meta_values)
+  6. 返回
 ```
 
 #### DataSet runtime context

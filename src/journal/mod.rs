@@ -8,6 +8,7 @@ use crate::dataset::{DataSet, DataSetJournalSink, DataSetKey, DataSetRuntimeCont
 use crate::error::{Result, TmslError};
 use crate::index::segment::IndexEntry;
 use crate::queue::DatasetQueue;
+use crate::util::PATH_COMPONENT_MAX_LEN;
 
 pub const JOURNAL_DATASET_NAME: &str = ".journal";
 pub const JOURNAL_DATASET_TYPE: &str = "logs";
@@ -22,6 +23,10 @@ const TLV_NAME: u8 = 0x01;
 const TLV_TYPE: u8 = 0x02;
 const TLV_META_OR_INDEX: u8 = 0x03;
 const TLV_APPEND_INFO: u8 = 0x04;
+
+pub(crate) const JOURNAL_TLV_VALUE_MAX_LEN: usize = u16::MAX as usize;
+pub(crate) const JOURNAL_TLV_LIST_MAX_LEN: usize = u16::MAX as usize;
+pub(crate) const JOURNAL_TEXT_MAX_LEN: usize = PATH_COMPONENT_MAX_LEN;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JournalRecordKind {
@@ -156,6 +161,8 @@ impl JournalRecord {
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
+        validate_journal_text_field("journal name", &self.name)?;
+        validate_journal_text_field("journal dataset type", &self.dataset_type)?;
         let mut tlv = Vec::new();
         push_tlv(&mut tlv, TLV_NAME, self.name.as_bytes())?;
         push_tlv(&mut tlv, TLV_TYPE, self.dataset_type.as_bytes())?;
@@ -191,8 +198,8 @@ impl JournalRecord {
             JournalRecordKind::Unknown(_) => {}
         }
 
-        let len = u16::try_from(tlv.len())
-            .map_err(|_| TmslError::InvalidData("journal TLV list too large".into()))?;
+        validate_tlv_list_len(tlv.len())?;
+        let len = tlv.len() as u16;
         let mut out = Vec::with_capacity(3 + tlv.len());
         out.push(self.kind.to_log_type());
         out.extend_from_slice(&len.to_le_bytes());
@@ -310,12 +317,53 @@ impl JournalRecord {
 }
 
 fn push_tlv(out: &mut Vec<u8>, t: u8, value: &[u8]) -> Result<()> {
-    let len = u16::try_from(value.len())
-        .map_err(|_| TmslError::InvalidData("journal TLV value too large".into()))?;
+    validate_tlv_value_len("journal TLV value", value.len())?;
+    let len = value.len() as u16;
     out.push(t);
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(value);
     Ok(())
+}
+
+fn validate_journal_text_field(label: &str, value: &str) -> Result<()> {
+    if value.len() <= JOURNAL_TEXT_MAX_LEN {
+        Ok(())
+    } else {
+        Err(TmslError::InvalidData(format!(
+            "{label} must be at most {JOURNAL_TEXT_MAX_LEN} bytes"
+        )))
+    }
+}
+
+fn validate_tlv_value_len(label: &str, len: usize) -> Result<()> {
+    if len <= JOURNAL_TLV_VALUE_MAX_LEN {
+        Ok(())
+    } else {
+        Err(TmslError::InvalidData(format!(
+            "{label} must be at most {JOURNAL_TLV_VALUE_MAX_LEN} bytes"
+        )))
+    }
+}
+
+fn validate_tlv_list_len(len: usize) -> Result<()> {
+    if len <= JOURNAL_TLV_LIST_MAX_LEN {
+        Ok(())
+    } else {
+        Err(TmslError::InvalidData(format!(
+            "journal TLV list must be at most {JOURNAL_TLV_LIST_MAX_LEN} bytes"
+        )))
+    }
+}
+
+pub(crate) fn validate_create_drop_record_inputs(
+    key: &DataSetKey,
+    metadata_len: usize,
+) -> Result<()> {
+    validate_journal_text_field("journal name", &key.name)?;
+    validate_journal_text_field("journal dataset type", &key.dataset_type)?;
+    validate_tlv_value_len("journal metadata", metadata_len)?;
+    let tlv_list_len = (3 + key.name.len()) + (3 + key.dataset_type.len()) + (3 + metadata_len);
+    validate_tlv_list_len(tlv_list_len)
 }
 
 pub(crate) enum JournalManager {
@@ -567,6 +615,29 @@ mod tests {
             JournalRecord::decode(&payload),
             Err(TmslError::InvalidData(_))
         ));
+    }
+
+    #[test]
+    fn test_journal_encode_rejects_text_field_over_255_bytes() {
+        let long_name = "a".repeat(256);
+        let record = JournalRecord::create(&long_name, "logs", vec![]);
+
+        let err = record
+            .encode()
+            .expect_err("journal text fields over 255 bytes must be rejected");
+
+        assert!(err.to_string().contains("at most 255 bytes"));
+    }
+
+    #[test]
+    fn test_journal_encode_rejects_outer_tlv_list_over_u16() {
+        let record = JournalRecord::create("a", "b", vec![0; JOURNAL_TLV_VALUE_MAX_LEN]);
+
+        let err = record
+            .encode()
+            .expect_err("journal outer TLV list over u16 must be rejected");
+
+        assert!(err.to_string().contains("TLV list"));
     }
 
     #[test]

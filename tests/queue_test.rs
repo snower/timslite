@@ -223,6 +223,11 @@ fn t27_2_4_consumer_group_name_must_be_path_safe() {
             "group name {group_name:?} must be rejected"
         );
     }
+    let too_long_group = "a".repeat(256);
+    assert!(
+        store.open_consumer(&q, &too_long_group).is_err(),
+        "group name longer than 255 bytes must be rejected"
+    );
 
     store.open_consumer(&q, "A-z_09").unwrap();
     store.close().unwrap();

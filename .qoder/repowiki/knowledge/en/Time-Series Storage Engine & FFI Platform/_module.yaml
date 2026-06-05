@@ -2,18 +2,97 @@ schema_version: 1
 module_path: ""
 title: Time-Series Storage Engine & FFI Platform
 scope:
-    - design.md
-    - plan.md
-    - AGENTS.md
-    - .gitignore
-    - Cargo.toml
-    - Cargo.lock
-    - docs/
-    - tests/
-    - .github/
     - .github\workflows\ci.yml
+    - .gitignore
+    - .qoder\repowiki\en\content\API Reference\API Reference.md
+    - .qoder\repowiki\en\content\API Reference\C ABI FFI API.md
+    - .qoder\repowiki\en\content\API Reference\Python Bindings.md
+    - .qoder\repowiki\en\content\API Reference\Rust API\Configuration Builders.md
+    - .qoder\repowiki\en\content\API Reference\Rust API\Dataset Operations.md
+    - .qoder\repowiki\en\content\API Reference\Rust API\Error Handling.md
+    - .qoder\repowiki\en\content\API Reference\Rust API\Rust API.md
+    - .qoder\repowiki\en\content\API Reference\Rust API\Store Management.md
+    - .qoder\repowiki\en\content\Architecture Overview\Architecture Overview.md
+    - .qoder\repowiki\en\content\Architecture Overview\Component Interactions.md
+    - .qoder\repowiki\en\content\Architecture Overview\Data Flow Patterns.md
+    - .qoder\repowiki\en\content\Architecture Overview\Design Patterns.md
+    - .qoder\repowiki\en\content\Architecture Overview\System Architecture.md
+    - .qoder\repowiki\en\content\Background Processing\Background Processing.md
+    - .qoder\repowiki\en\content\Background Processing\Background Task Coordination.md
+    - .qoder\repowiki\en\content\Background Processing\Cache Management.md
+    - .qoder\repowiki\en\content\Background Processing\Retention Policies.md
+    - .qoder\repowiki\en\content\Configuration Guide\Configuration Guide.md
+    - .qoder\repowiki\en\content\Configuration Guide\Dataset Configuration.md
+    - .qoder\repowiki\en\content\Configuration Guide\Operational Configuration.md
+    - .qoder\repowiki\en\content\Configuration Guide\Performance Tuning.md
+    - .qoder\repowiki\en\content\Configuration Guide\Store Configuration.md
+    - .qoder\repowiki\en\content\Core Concepts\Block-Level Data Aggregation.md
+    - .qoder\repowiki\en\content\Core Concepts\Core Concepts.md
+    - .qoder\repowiki\en\content\Core Concepts\Indexing Strategies and Time-Index Architecture.md
+    - .qoder\repowiki\en\content\Core Concepts\Lazy Evaluation and Deferred Processing.md
+    - .qoder\repowiki\en\content\Core Concepts\Memory-Mapped I_O Architecture.md
+    - .qoder\repowiki\en\content\Core Concepts\Time-Series Data Fundamentals.md
+    - .qoder\repowiki\en\content\Core Concepts\Transparent Compression System.md
+    - .qoder\repowiki\en\content\Cross-Language Integration\Cross-Language Integration.md
+    - .qoder\repowiki\en\content\Cross-Language Integration\FFI C Interface.md
+    - .qoder\repowiki\en\content\Cross-Language Integration\Integration Patterns.md
+    - .qoder\repowiki\en\content\Cross-Language Integration\Python Bindings.md
+    - .qoder\repowiki\en\content\Data Operations\Data Operations.md
+    - .qoder\repowiki\en\content\Data Operations\Delete Operations.md
+    - .qoder\repowiki\en\content\Data Operations\Read Operations.md
+    - .qoder\repowiki\en\content\Data Operations\Write Operations.md
+    - .qoder\repowiki\en\content\Deployment and Operations\Deployment and Operations.md
+    - .qoder\repowiki\en\content\Deployment and Operations\Maintenance Operations.md
+    - .qoder\repowiki\en\content\Deployment and Operations\Monitoring and Metrics.md
+    - .qoder\repowiki\en\content\Deployment and Operations\Production Deployment.md
+    - .qoder\repowiki\en\content\Deployment and Operations\Troubleshooting Guide.md
+    - .qoder\repowiki\en\content\Design Documents\Design Documents.md
+    - .qoder\repowiki\en\content\Design Documents\Design Review and Evolution.md
+    - .qoder\repowiki\en\content\Design Documents\Implementation Plans and Roadmap.md
+    - .qoder\repowiki\en\content\Design Documents\Technical Design Specifications.md
+    - .qoder\repowiki\en\content\Development Guide\Build System.md
+    - .qoder\repowiki\en\content\Development Guide\Coding Standards.md
+    - .qoder\repowiki\en\content\Development Guide\Contribution Workflow.md
+    - .qoder\repowiki\en\content\Development Guide\Development Guide.md
+    - .qoder\repowiki\en\content\Development Guide\Getting Started.md
+    - .qoder\repowiki\en\content\Development Guide\Testing Strategy.md
+    - .qoder\repowiki\en\content\Getting Started.md
+    - .qoder\repowiki\en\content\Indexing System\Index Architecture.md
+    - .qoder\repowiki\en\content\Indexing System\Index Operations.md
+    - .qoder\repowiki\en\content\Indexing System\Index Optimization.md
+    - .qoder\repowiki\en\content\Indexing System\Indexing System.md
+    - .qoder\repowiki\en\content\Performance and Tuning\Configuration Tuning.md
+    - .qoder\repowiki\en\content\Performance and Tuning\Monitoring and Metrics.md
+    - .qoder\repowiki\en\content\Performance and Tuning\Performance Characteristics.md
+    - .qoder\repowiki\en\content\Performance and Tuning\Performance and Tuning.md
+    - .qoder\repowiki\en\content\Project Overview.md
+    - .qoder\repowiki\en\content\Query Engine\Query Architecture.md
+    - .qoder\repowiki\en\content\Query Engine\Query Engine.md
+    - .qoder\repowiki\en\content\Query Engine\Query Optimization.md
+    - .qoder\repowiki\en\content\Query Engine\Query Types and Operations.md
+    - .qoder\repowiki\en\content\Storage Management\Block Organization.md
+    - .qoder\repowiki\en\content\Storage Management\Queue Coordination.md
+    - .qoder\repowiki\en\content\Storage Management\Segment Management.md
+    - .qoder\repowiki\en\content\Storage Management\Storage Management.md
+    - .qoder\repowiki\en\content\Storage Management\Storage Optimization.md
+    - .qoder\repowiki\en\meta\repowiki-metadata.json
+    - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\_module.yaml
+    - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\architecture_design.md
+    - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\coding_conventions.md
+    - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\overview.md
+    - .qoder\repowiki\knowledge\en\Time-Series Data Storage Engine\tech_stack.md
+    - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\_module.yaml
+    - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\architecture_design.md
+    - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\coding_conventions.md
+    - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\overview.md
+    - .qoder\repowiki\knowledge\en\Time-Series Storage Engine & FFI Platform\tech_stack.md
+    - .qoder\repowiki\knowledge\en\_index.yaml
     - .sisyphus\run-continuation\ses_1b1675dc8ffeYSRa5Jr39ZJuJb.json
+    - AGENTS.md
+    - Cargo.lock
+    - Cargo.toml
     - README.md
+    - design.md
     - docs\design\architecture.md
     - docs\design\background-and-cache.md
     - docs\design\cargo-and-config.md
@@ -67,6 +146,7 @@ scope:
     - docs\review\design-review-todo.md
     - docs\review\design-review.md
     - include\timslite.h
+    - plan.md
     - src\bg\mod.rs
     - src\block.rs
     - src\cache.rs

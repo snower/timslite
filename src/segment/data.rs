@@ -1204,6 +1204,21 @@ mod tests {
     }
 
     #[test]
+    fn test_overwrite_in_last_block_rejects_non_tail_record() {
+        let (mut seg, _path) = make_segment("test_overwrite_non_tail");
+        let (off0, ib0) = seg.append_record(1000, b"aaa", 6).unwrap();
+        let (off1, ib1) = seg.append_record(2000, b"bbb", 6).unwrap();
+        assert_eq!(off0, off1);
+        assert!(ib1 > ib0);
+
+        let err = seg
+            .overwrite_in_last_block(off0, ib0, b"longer")
+            .expect_err("correction resize must not move following record bytes");
+
+        assert!(err.to_string().contains("not the last in block"));
+    }
+
+    #[test]
     fn test_block_overflow_triggers_seal() {
         let (mut seg, _path) = make_segment("test_overflow");
         let data1 = vec![0xAAu8; 65_520]; // record_size = 12 + 65520 = 65532

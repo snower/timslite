@@ -86,7 +86,7 @@ impl Store {
 
 ### 11.3 Dataset name/type 校验
 
-`name` 和 `dataset_type` 直接作为目录名使用, 不做转义。两者必须非空且整体匹配 `^[0-9A-Za-z_-]+$`。
+`name` 和 `dataset_type` 直接作为目录名使用, 不做转义。两者必须非空、最长 255 字节且整体匹配 `^[0-9A-Za-z_-]+$`。
 
 允许字符:
 - `0-9`
@@ -95,7 +95,7 @@ impl Store {
 - `-`
 - `_`
 
-不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。
+不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。该 255 字节上限也用于 journal name/type TLV value, 避免主操作成功后才发现 journal 字段不可编码。
 
 内部保留 dataset `.journal/logs` 不适用公共命名规则。`enable_journal=true` 时, public `open_dataset(".journal", "logs")` 允许返回只读 handle, 支持 `read/query/query_iter/latest_timestamp/open_queue`; public create/write/append/delete/drop/queue_push 仍必须拒绝 `.journal`。`enable_journal=false` 时, 所有 `.journal/logs` public open/read/query/open_queue 请求返回 `NotFound`。
 

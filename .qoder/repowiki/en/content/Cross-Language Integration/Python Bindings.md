@@ -18,6 +18,13 @@
 - [test_write_query.py](file://wrapper/python/tests/test_write_query.py)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated Dataset.read() method signature to remove explicit cache parameter
+- Updated QueryIterator.read_entry_at_index() method signature to remove explicit cache parameter
+- Revised performance considerations to reflect simplified API design
+- Updated examples and troubleshooting guidance to match new method signatures
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -82,7 +89,7 @@ F --> H
 - Store: Main entry point, context manager, dataset lifecycle, queue management, and background task control.
 - StoreConfig: Configuration object for store behavior and defaults for datasets.
 - Dataset: Per-dataset operations: write, append, read, delete, flush, query, and metadata accessors.
-- QueryIterator: Lazy iterator over query results, implementing Python’s iterator protocol.
+- QueryIterator: Lazy iterator over query results, implementing Python's iterator protocol.
 - DatasetQueue and DatasetQueueConsumer: Producer/consumer queue semantics for datasets.
 - Exception hierarchy: A set of Python exceptions mapped from Rust error variants.
 
@@ -247,13 +254,15 @@ Operations:
 Thread safety:
 - Internally guarded by a mutex; methods lock around operations.
 
+**Updated** Removed explicit cache parameter from read() method signature as part of API simplification.
+
 **Section sources**
 - [dataset.rs:12-175](file://wrapper/python/src/dataset.rs#L12-L175)
 
 ### QueryIterator
 Behavior:
 - Pre-fetches index entries (cheap) and lazily fetches payloads on demand.
-- Implements Python’s iterator protocol: __iter__, __next__, __len__.
+- Implements Python's iterator protocol: __iter__, __next__, __len__.
 - Skips filler entries automatically.
 - Provides close() to release resources early.
 
@@ -274,6 +283,8 @@ Yield --> CheckIdx
 
 **Diagram sources**
 - [query.rs:40-54](file://wrapper/python/src/query.rs#L40-L54)
+
+**Updated** Removed explicit cache parameter from read_entry_at_index() method signature as part of API simplification.
 
 **Section sources**
 - [query.rs:11-68](file://wrapper/python/src/query.rs#L11-L68)
@@ -344,8 +355,7 @@ PY --> CORE["timslite (Rust)"]
 - Continuous indexing: Enable index_continuous for datasets requiring logical gaps; it affects write semantics and query coverage.
 - Background tasks: In manual mode, schedule periodic tick_background_tasks calls based on next_background_delay to keep housekeeping active.
 - Memory cache: Tune cache_max_memory and cache_idle_timeout via StoreConfig to balance throughput and memory usage.
-
-[No sources needed since this section provides general guidance]
+- API simplicity: The simplified API eliminates the need for explicit cache parameter management, reducing overhead and improving developer experience.
 
 ## Troubleshooting Guide
 Common issues and resolutions:
@@ -354,6 +364,7 @@ Common issues and resolutions:
 - Out-of-order writes: In non-continuous mode, out-of-order updates overwrite existing entries; verify dataset mode and timestamps.
 - Empty queries: query and query_all return no results for ranges with no data; confirm timestamp ranges and dataset contents.
 - Queue closed: Polling on a closed queue raises a queue-specific error; ensure queue is open and consumers are valid.
+- Simplified API: The removal of explicit cache parameters means cache management is now handled internally, eliminating cache-related configuration errors.
 
 **Section sources**
 - [dataset.rs:58-113](file://wrapper/python/src/dataset.rs#L58-L113)
@@ -423,4 +434,4 @@ Example test coverage areas:
 - [queue.rs:26-109](file://wrapper/python/src/queue.rs#L26-L109)
 
 ## Conclusion
-The Python bindings provide a clean, Pythonic interface over TimSLite’s high-performance time-series storage. They expose robust configuration, dataset operations, lazy query iteration, and queue semantics, with precise error mapping from Rust to Python. By following the recommended usage patterns and performance guidelines, developers can integrate TimSLite into Python applications and data science workflows effectively.
+The Python bindings provide a clean, Pythonic interface over TimSLite's high-performance time-series storage. They expose robust configuration, dataset operations, lazy query iteration, and queue semantics, with precise error mapping from Rust to Python. The recent API simplification removes the need for explicit cache parameter management while maintaining performance and reliability. By following the recommended usage patterns and performance guidelines, developers can integrate TimSLite into Python applications and data science workflows effectively.

@@ -31,7 +31,7 @@
 
 `.journal/logs` 也可打开 queue, 用于实时 poll 消费 journal record。该 queue 是只读消费队列: producer 只能是 `JournalManager.append_*`, 外部 `queue.push()` 必须返回错误, 但 `open_consumer/poll/ack/drop_consumer` 语义与普通 dataset queue 相同。journal queue 以 journal sequence timestamp 作为独立递增消费序列, 每条成功写入的 `0x13` append journal record 都必须投递。
 
-`group_name` 直接作为 `queue/{group_name}` 状态文件名, 因此必须复用 dataset name/type 的路径安全规则: 非空且整体匹配 `^[0-9A-Za-z_-]+$`, 只允许数字、大小写英文字母、`-`、`_`; `open_consumer` 和 `drop_consumer` 必须在拼接路径前校验。
+`group_name` 直接作为 `queue/{group_name}` 状态文件名, 因此必须复用 dataset name/type 的路径安全规则: 非空、最长 255 字节, 且整体匹配 `^[0-9A-Za-z_-]+$`, 只允许数字、大小写英文字母、`-`、`_`; `open_consumer` 和 `drop_consumer` 必须在拼接路径前校验。
 
 ### 28.3 核心类型
 
@@ -300,11 +300,11 @@ Dataset (Arc<Mutex<DataSet>>)
 QueueInner (Arc<Mutex<QueueInner>>)
     ↓
 ConsumerStateFile (Arc<Mutex<ConsumerStateFile>>)
-    ↓
-Condvar pair: (Mutex<bool>, Condvar)
 ```
 
 **严格遵循**: 外层锁未释放时, 不能获取内层锁。避免死锁。
+
+`Condvar pair: (Mutex<bool>, Condvar)` 不属于上述 dataset/state 锁层级。它的 mutex 只保护一个通知 flag, `Condvar::wait_timeout` 只会释放并重新获取这个 notify mutex, 不会释放 `Dataset` 或 `ConsumerStateFile` 锁。进入 wait 前必须已经释放 dataset/state 相关锁。
 
 ### 30.2 Push 流程
 
@@ -378,18 +378,8 @@ pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
             return Ok(Some((ts, data)));
         }
 
-        // 5. 无数据: 持有 dataset lock 进入 Condvar wait
-        //    Condvar::wait_timeout 自动释放 dataset lock, 唤醒后重新获取
-        drop(state);  // 先释放 state lock
-
-        let (ref guard_mutex, ref condvar) = *self.notify;
-        let notify_guard = guard_mutex.lock().unwrap();
-
-        // 释放 dataset lock 让 write 可以进入
-        // 注意: 这里不能直接 drop dataset_guard, 因为 Condvar 绑定的是 guard_mutex
-        // 所以改用 wait_timeout_while 模式:
-
-        // 先释放 dataset lock, 进入 condvar wait
+        // 5. 无数据: 先释放 state 和 dataset 锁, 再进入 notify condvar wait
+        drop(state);
         drop(dataset_guard);
 
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -397,6 +387,8 @@ pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
             return Ok(None);  // 超时
         }
 
+        let (ref guard_mutex, ref condvar) = *self.notify;
+        let notify_guard = guard_mutex.lock().unwrap();
         let (guard, _timeout_result) = condvar
             .wait_timeout(notify_guard, remaining)
             .unwrap();
@@ -421,9 +413,9 @@ fn find_next_available_ts(state: &ConsumerStateFile, latest: i64) -> Option<i64>
 }
 ```
 
-**关键设计**: poll 先检查数据可用性, 无数据时释放 dataset lock 进入 Condvar wait。write 完成后 notify_all 唤醒所有等待 consumer。唤醒后循环重新检查数据可用性。
+**关键设计**: poll 先检查数据可用性, 无数据时释放 state/dataset 锁后只持有 notify mutex 进入 Condvar wait。write 完成后 notify_all 唤醒所有等待 consumer。唤醒后循环重新检查 pending entry 和数据可用性。
 
-**Condvar 竞态处理**: poll 在释放 dataset lock 和进入 condvar wait 之间有窗口, write 可能在此窗口内完成 notify_all。但由于 poll 在循环中, 下一轮会检查到新数据。最坏情况: poll 多等一个 timeout 周期。
+**Condvar 竞态处理**: notify mutex 只保护通知 flag。poll 在释放 dataset/state 锁后进入 wait; 如果 write 在窗口内完成并设置 flag/notify, poll 唤醒后或下一轮都会重新检查数据。实现必须在 wait 超时后做最后一次 pending 检查, 避免 missed wakeup 造成可见 pending entry 被漏读。
 
 ### 30.4 Ack 流程
 

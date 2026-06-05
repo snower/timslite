@@ -23,7 +23,10 @@ use memmap2::MmapMut;
 
 use crate::dataset::DataSet;
 use crate::error::{Result, TmslError};
-use crate::util::{read_i64_from_mmap, read_u16_from_mmap, read_u32_from_mmap};
+use crate::util::{
+    is_path_safe_component, read_i64_from_mmap, read_u16_from_mmap, read_u32_from_mmap,
+    PATH_COMPONENT_MAX_LEN,
+};
 
 // 鈹€鈹€鈹€ Constants 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
@@ -55,16 +58,12 @@ pub const STATE_HEADER_SIZE: usize = 21;
 pub const DEFAULT_PENDING_TIMEOUT_SECS: u64 = 300;
 
 fn validate_consumer_group_name(group_name: &str) -> Result<()> {
-    if !group_name.is_empty()
-        && group_name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
+    if is_path_safe_component(group_name) {
         Ok(())
     } else {
-        Err(TmslError::InvalidData(
-            "queue consumer group_name must match ^[0-9A-Za-z_-]+$".into(),
-        ))
+        Err(TmslError::InvalidData(format!(
+            "queue consumer group_name must match ^[0-9A-Za-z_-]+$ and be at most {PATH_COMPONENT_MAX_LEN} bytes"
+        )))
     }
 }
 

@@ -167,7 +167,7 @@ impl DataSegment {
     fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> io::Result<(u64, u16)>;
     fn create_single_record_block(&mut self, timestamp: i64, data: &[u8], compress_level: u8) -> io::Result<(u64, u16)>;
 
-    /// 纠正写入: 在该段最后一个 pending raw block 的最末 record 位置原地覆盖 data 字节, 支持变 size
+    /// 纠正写入: 在该段最后一个 pending raw block 的最末 record 位置原地覆盖 data 字节, 支持 tail-only 变 size
     /// 若最后一个 block 含 SEALED 或 COMPRESSED flag → 返回错误 (不可原地修改)
     /// 若该 record 不是 block 最末 record → 返回错误
     /// 修改后需更新: block.payload_size/uncompressed_size + 段 wrote_position/total_uncompressed_size/pending_wrote_position(仅 pending)
@@ -201,7 +201,7 @@ impl DataSegment {
 
 #### overwrite_in_last_block: 纠正写入 (In-Place Overwrite, 支持变 size)
 
-纠正写入场景下 (`timestamp == latest_written_timestamp`), 该最大已写 timestamp 对应的记录只有在仍位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置** 时, 才可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化。只要 block 已经 sealed/compressed, 就不能再原地修改, 由 `DataSet::correct_write` 回退为乱序追加并更新索引:
+纠正写入场景下 (`timestamp == latest_written_timestamp`), 该最大已写 timestamp 对应的记录只有在仍位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置** 时, 才可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化。该能力是 tail-only resize: 仅改写当前 record header/data 和尾部计数, 不移动任何后续 block/record 字节; 如果校验发现 record 后仍有字节, 直接返回错误并由 `DataSet::correct_write` 回退为乱序追加并更新索引。只要 block 已经 sealed/compressed, 也不能再原地修改:
 
 ```rust
 fn overwrite_in_last_block(

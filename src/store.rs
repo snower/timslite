@@ -12,23 +12,19 @@ use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::dataset::{DataSet, DataSetJournalSink, DataSetKey, DataSetRuntimeContext};
 use crate::error::{Result, TmslError};
 use crate::journal::{
-    meta_values_from_file, JournalManager, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
+    meta_values_from_file, validate_create_drop_record_inputs, JournalManager,
+    JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
+use crate::meta::META_VALUES_LEN_V1;
 use crate::queue::{DatasetQueue, DatasetQueueConsumer};
-
-fn is_valid_dataset_component(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-}
+use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
 fn validate_dataset_component(label: &str, value: &str) -> Result<()> {
-    if is_valid_dataset_component(value) {
+    if is_path_safe_component(value) {
         Ok(())
     } else {
         Err(TmslError::InvalidData(format!(
-            "{label} must match ^[0-9A-Za-z_-]+$"
+            "{label} must match ^[0-9A-Za-z_-]+$ and be at most {PATH_COMPONENT_MAX_LEN} bytes"
         )))
     }
 }
@@ -88,7 +84,7 @@ impl Store {
             if name == JOURNAL_DATASET_NAME {
                 continue;
             }
-            if !is_valid_dataset_component(&name) {
+            if !is_path_safe_component(&name) {
                 log::warn!(
                     "[store] skipping dataset directory with invalid name: {}",
                     name
@@ -105,7 +101,7 @@ impl Store {
                 if type_name == "data" || type_name == "index" {
                     continue; // Internal subdirectory, not a dataset type
                 }
-                if !is_valid_dataset_component(type_name) {
+                if !is_path_safe_component(type_name) {
                     log::warn!(
                         "[store] skipping dataset type directory with invalid name: {}/{}",
                         name,
@@ -204,6 +200,9 @@ impl Store {
         let config = config_builder
             .unwrap_or_else(|| DataSetConfigBuilder::from_store(&self.config))
             .build();
+        if self.journal.is_enabled() {
+            validate_create_drop_record_inputs(&key, META_VALUES_LEN_V1)?;
+        }
 
         // Create new dataset
         let dir = self.data_dir.join(name).join(dataset_type);
@@ -354,6 +353,9 @@ impl Store {
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?;
             let mut ds = ds_arc.lock().unwrap();
             let metadata = meta_values_from_file(&ds.base_dir.join("meta"))?;
+            if self.journal.is_enabled() {
+                validate_create_drop_record_inputs(&key, metadata.len())?;
+            }
             let base_dir = ds.base_dir.clone();
             ds.close()?;
             (base_dir, metadata)
@@ -382,6 +384,9 @@ impl Store {
 
         let base_dir = self.data_dir.join(name).join(dataset_type);
         let metadata = meta_values_from_file(&base_dir.join("meta"))?;
+        if self.journal.is_enabled() {
+            validate_create_drop_record_inputs(&key, metadata.len())?;
+        }
 
         // Remove from open datasets if present
         {

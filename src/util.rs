@@ -2,6 +2,16 @@
 //!
 //! All multi-byte values in timslite are stored in little-endian format.
 
+pub const PATH_COMPONENT_MAX_LEN: usize = 255;
+
+pub fn is_path_safe_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= PATH_COMPONENT_MAX_LEN
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 /// Read a little-endian u16 from a 2-byte buffer.
 #[inline]
 pub fn read_u16_le(buf: &[u8; 2]) -> u16 {

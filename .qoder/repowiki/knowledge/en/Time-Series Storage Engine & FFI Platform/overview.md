@@ -1,1 +1,1 @@
-Orchestrates a high-performance Rust storage core and its Python bindings through a unified C-compatible FFI contract, ensuring consistent data model enforcement across language boundaries.
+Orchestrates a high-performance Rust storage core with C ABI and Python bindings, enforcing cross-language contracts and unified lifecycle management.

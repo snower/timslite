@@ -1,0 +1,1 @@
+The project uses a multi-stage CI pipeline where `cargo clippy` and `cargo test` gate the `maturin develop` build of the Python extension module.

@@ -210,3 +210,20 @@ fn t8_2_5_dataset_name_type_validation() {
     let invalid_drop = store.drop_dataset_by_name("..", "data");
     assert!(matches!(invalid_drop, Err(TmslError::InvalidData(_))));
 }
+
+#[test]
+fn t8_2_6_dataset_name_type_length_must_fit_journal_tlv_policy() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let long_name = "a".repeat(256);
+
+    let err = match store.create_dataset(&long_name, "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0) {
+        Ok(_) => panic!("dataset name longer than journal text limit must fail"),
+        Err(err) => err,
+    };
+
+    assert!(err.to_string().contains("at most 255 bytes"));
+    assert!(!dir.join(&long_name).exists());
+}

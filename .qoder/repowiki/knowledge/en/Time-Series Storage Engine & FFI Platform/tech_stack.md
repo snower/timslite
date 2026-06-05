@@ -1,1 +1,1 @@
-Rust (2021 Edition) with `cdylib` output for cross-language interoperability; `pyo3` for Python extension module generation.
+Rust (2021 edition) for the core engine, C ABI for cross-language interoperability, and Python (via PyO3/Maturin) for high-level bindings.

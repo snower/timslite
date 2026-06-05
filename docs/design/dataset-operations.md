@@ -223,7 +223,7 @@ DataSet::write(timestamp, data):
 
 1. **前提**: 最新写入的记录必须仍位于 **最新数据段** 的 **最后一个 pending raw block (`flags=0`)** 的最后一条位置。
 2. **回退 (非错误)**: 如果最后一个 block 已经 `SEALED|COMPRESSED`、record 不是最后一条, 或最新数据段无打开的映射 — 无法原地修改时, 自动回退为**乱序写入**: 新数据追加到最新数据段 (新的 pending block), 索引条目原地更新为新的 (block_offset, in_block_offset), 同时旧数据所在段的 `invalid_record_count += 1`, 并 invalidate 旧索引对应的全局缓存 key
-3. **支持变 size**: 新 data 可以比原 data 大或小, 只需移动后续字节并更新相关计数字段
+3. **支持 tail-only 变 size**: 新 data 可以比原 data 大或小, 但仅限 record 已经是 block payload 的最后一段字节; 不移动任何后续 block/record 字节。若校验发现 record 后仍有字节, 原地覆盖返回错误并由 correction 路径回退为乱序写入。
 4. **索引不变**: block_offset + in_block_offset 仍指向同一 record 起始位置, data_len (u32) 更新为新长度
 5. **索引条目不变**: 索引中的 block_offset/in_block_offset 字段无需修改
 6. **latest_written_timestamp**: 不变

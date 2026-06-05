@@ -1,0 +1,3 @@
+- Guard-based state locking: Acquires `Mutex<ExecutorState>` only for short durations to check/update scheduling flags, releasing it before executing long-running I/O tasks to avoid blocking external callers.
+- Non-blocking dataset access: Iterates over datasets using `try_lock` or short-lived locks during background tasks to prevent deadlocks with foreground write/read operations.
+- Graceful error handling: Background tasks log errors (`log::error!`) but do not propagate them, ensuring that a single failed dataset operation does not halt the entire background loop.

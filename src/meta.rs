@@ -20,6 +20,8 @@ const META_INITIAL_DATA_SEGMENT_SIZE: u8 = 0x06; // u64 LE
 const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 const META_RETENTION_WINDOW: u8 = 0x08; // u64 LE (0 = no limit)
 
+pub(crate) const META_VALUES_LEN_V1: usize = 74;
+
 /// Immutable dataset configuration. Written once at creation.
 #[derive(Debug, Clone)]
 pub struct DataSetMeta {
@@ -67,14 +69,18 @@ impl DataSetMeta {
         //               + retention_window(11) = 74
         // Each u64 TLV: type(1) + length(2) + value(8) = 11 bytes
         // Each u8 TLV:  type(1) + length(2) + value(1) = 4 bytes
-        let meta_data_length: u16 = (1 + 2 + 8)
-            + (1 + 2 + 8)
-            + (1 + 2 + 1)
-            + (1 + 2 + 8)
-            + (1 + 2 + 1)
-            + (1 + 2 + 8)
-            + (1 + 2 + 8)
-            + (1 + 2 + 8); // retention_window
+        let meta_data_length: u16 = META_VALUES_LEN_V1 as u16;
+        debug_assert_eq!(
+            META_VALUES_LEN_V1,
+            (1 + 2 + 8)
+                + (1 + 2 + 8)
+                + (1 + 2 + 1)
+                + (1 + 2 + 8)
+                + (1 + 2 + 1)
+                + (1 + 2 + 8)
+                + (1 + 2 + 8)
+                + (1 + 2 + 8)
+        );
 
         let mut buf = Vec::with_capacity(8 + meta_data_length as usize);
         buf.extend_from_slice(&META_MAGIC);

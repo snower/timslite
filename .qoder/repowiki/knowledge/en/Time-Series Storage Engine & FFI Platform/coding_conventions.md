@@ -1,2 +1,2 @@
-- Dual crate-type configuration (`cdylib`, `rlib`) in the core to support both static internal usage and dynamic FFI exposure.
-- Synchronized semantic versioning and metadata alignment between the core `Cargo.toml` and the Python wrapper's `pyproject.toml`.
+- FFI functions use `extern "C"` with `#[no_mangle]` and return `c_int` or opaque pointers, utilizing `err_buf` for error propagation instead of Rust's `Result` type.
+- Cross-language configuration structs (e.g., `TmslStoreConfigFFI`) include a `version` field to ensure forward/backward compatibility between the Rust core and external consumers.

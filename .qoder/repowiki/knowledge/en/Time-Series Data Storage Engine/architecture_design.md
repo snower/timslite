@@ -1,6 +1,0 @@
-- Entry point: `src/lib.rs` re-exports the public API (`Store`, `DataSet`, `StoreConfig`) and defines core constants.
-- Facade layer: `src/store.rs` (`Store`) manages dataset lifecycle, background tasks (flush, retention, cache eviction), and coordinates the global `BlockCache` and `JournalManager`.
-- Dataset layer: `src/dataset.rs` (`DataSet`) orchestrates writes, reads, and queries by delegating to `DataSegmentSet` and `TimeIndex`.
-- Storage engines: `src/segment/` handles data persistence using memory-mapped files with block aggregation (max 64KB) and lazy compression; `src/index/` manages time-based indexing with support for both strict and continuous (sparse) modes.
-- Interface boundary: `src/ffi.rs` exposes a comprehensive C ABI (`extern "C"`) mapped to `include/timslite.h`, using opaque handles and registry patterns for safe cross-language usage.
-- Supporting modules: `src/cache.rs` (read-block caching), `src/journal/` (change logging), and `src/queue/` (pub-sub style data streaming).
