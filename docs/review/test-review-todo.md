@@ -22,7 +22,7 @@
 | S-5 | 新增 Journal 集成测试：Journal open_queue 实时消费 | `tests/journal_test.rs` (11 tests cover journal lifecycle, but queue consumption not explicitly tested) | [ ] | |
 | S-6 | 新增 Consumer 组名校验测试：空字符串、路径分隔符、超长（>255字节）、特殊字符 | `tests/queue_test.rs` t27_2_4 | [x] | 已存在 |
 | S-7 | 扩展 FFI 测试覆盖：query iterator、delete、flush、drop、error 路径、Queue FFI | `src/ffi.rs` | [x] | 2026-06-05 |
-| S-8 | 新增端到端崩溃恢复测试：partial block 写入 + 未密封 + reopen，验证 pending block 被安全密封 | `tests/crash_recovery_test.rs` | [x] | 2026-06-05 (tests written; `#[ignore]` pending DataSet Drop mmap sync fix) |
+| S-8 | 新增端到端崩溃恢复测试：partial block 写入 + 未密封 + reopen，验证 pending block 被安全密封 | `tests/crash_recovery_test.rs` | [x] | 2026-06-05 |
 
 ---
 

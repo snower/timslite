@@ -844,6 +844,16 @@ impl TimeIndex {
     }
 }
 
+impl Drop for TimeIndex {
+    fn drop(&mut self) {
+        if !self.in_memory_buffer.is_empty() {
+            if let Err(e) = self.flush_to_disk() {
+                log::error!("[TimeIndex drop] flush_to_disk failed: {}", e);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

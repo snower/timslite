@@ -553,6 +553,16 @@ impl IndexSegment {
     }
 }
 
+impl Drop for IndexSegment {
+    fn drop(&mut self) {
+        if let Some(ref mut m) = self.mmap {
+            if let Err(e) = m.flush() {
+                log::error!("[IndexSegment drop] mmap flush failed: {}", e);
+            }
+        }
+    }
+}
+
 pub(crate) struct IndexSegmentMeta {
     pub path: std::path::PathBuf,
     pub start_timestamp: i64,

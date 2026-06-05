@@ -313,6 +313,16 @@ impl DataSegment {
     }
 }
 
+impl Drop for DataSegment {
+    fn drop(&mut self) {
+        if let Some(ref mut m) = self.mmap {
+            if let Err(e) = m.flush() {
+                log::error!("[DataSegment drop] mmap flush failed: {}", e);
+            }
+        }
+    }
+}
+
 // ─── Write Operations ────────────────────────────────────────────────────────
 
 /// The size overhead of a single record in a block:

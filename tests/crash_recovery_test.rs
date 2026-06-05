@@ -17,11 +17,7 @@ fn temp_dir(name: &str) -> PathBuf {
     dir
 }
 
-// NOTE: DataSet has no Drop impl that syncs mmap, so pending block data is lost
-// when DataSet goes out of scope without close(). These tests are ignored until
-// the source code adds mmap sync on Drop or explicit flush before drop.
 #[test]
-#[ignore = "DataSet Drop does not sync mmap; pending blocks not recoverable"]
 fn t_crash_recover_pending_block_after_drop_without_close() {
     use timslite::{DataSet, DataSetKey};
 
@@ -88,7 +84,6 @@ fn t_crash_recover_pending_block_after_drop_without_close() {
 }
 
 #[test]
-#[ignore = "DataSet Drop does not sync mmap; pending blocks not recoverable"]
 fn t_crash_recover_multiple_pending_records_after_drop() {
     use timslite::{DataSet, DataSetKey};
 
