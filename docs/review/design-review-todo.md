@@ -33,7 +33,7 @@
 |------|----|------|----------|----------|
 | [x] | P2-1 | 将 `single_record` 语义从 "超大 record" 调整为 "exclusive/single-record block" | `data-model.md`, `compression.md`, `design-decisions.md`, `dataset-operations.md`, block flag docs/code comments | 文档说明 single-record block 可由 >64KB write 或 append 70% 迁移产生; 校验逻辑不假设其一定大于 64KB |
 | [x] | P2-2 | 补齐 Store Rust API 文档, 明确 write/read/query/delete/append/queue 的门面职责 | `store-and-ffi.md`, `journal.md`, public API docs | Store 与 FFI 操作表完整; 每个 write-like API 的 journal/cache/queue 责任清晰 |
-| [ ] | P2-3 | 明确直接持有 `DataSet` 的 public 边界与 journal 完整性关系 | `dataset-operations.md`, `journal.md`, Rust/Python/FFI API docs/code | 外部写入是否必须经 Store/handle facade 有明确规则; 直接 DataSet 写入不会静默绕过 journal 或被标记为 internal |
+| [x] | P2-3 | 明确直接持有 `DataSet` 的 public 边界与 journal 完整性关系 | `dataset-operations.md`, `journal.md`, Rust/Python/FFI API docs/code | 外部写入是否必须经 Store/handle facade 有明确规则; 直接 DataSet 写入不会静默绕过 journal 或被标记为 internal |
 | [ ] | P2-4 | 收窄 correction 变长覆盖描述, 删除 "移动后续字节" 的过宽语义 | `data-segment.md`, `dataset-operations.md`, correction 代码/tests | correction 仅支持 tail-only resize; 若 record 后还有字节则返回错误/回退; 文档不再暗示移动后续 block/record |
 | [ ] | P2-5 | 澄清 queue 锁层级与 Condvar wait 协议 | `queue-overview.md`, queue 并发代码/tests | wait 前释放 dataset/state 的顺序明确; Condvar mutex 只保护通知 flag; 文档与实现无死锁/missed wakeup 误导 |
 | [ ] | P2-6 | 为 Journal TLV `u16 length` 相关字段定义最大长度和预校验 | `journal.md`, `store-and-ffi.md`, `meta-format.md`, journal encoder/decoder, create/drop path | dataset name/type/meta snapshot/group name 等可编码长度在主操作前校验; journal enabled 时避免可预见的编码失败 |
@@ -51,4 +51,5 @@
 | 2026-06-04 | P1-7 | 已完成 | append 先执行 timestamp 顺序与 retention 校验, 再对合法空 data 做 no-op; 旧 timestamp 空 append 不再绕过契约 | `cargo test test_empty_append_old_timestamp_returns_error_before_noop -- --test-threads=1` |
 | 2026-06-04 | P2-1 | 已完成 | `SINGLE_RECORD` 语义调整为 exclusive/single-record block; 明确可由 >64KB record 或 append 已有 latest record 超过 70% 阈值产生, 且 70% 只作用于已有 record append 增长 | `cargo test test_append_new_timestamp_over_seventy_percent_uses_normal_write_path -- --test-threads=1` |
 | 2026-06-04 | P2-2 | 已完成 | Store Rust API 文档补齐 write/read/query/delete/append/queue; 代码补充 `read_dataset`、`query_dataset`、`latest_written_timestamp` 门面方法 | `cargo test t8_1_2b_store_read_query_latest_facade -- --test-threads=1` |
+| 2026-06-05 | P2-3 | 已完成 | DataSet 增加 Store 注入的 runtime context, public `write/append/delete/read/query/read_entry_at_index` 自动使用内部 BlockCache/JournalSink; Store 门面不再重复追加 write/append/delete journal, 直接持有 Store 管理的普通 DataSet 调用 mutation 也会写 journal; `.journal/logs` DataSet public mutation 保持只读拒绝 | `cargo test t28_1 -- --test-threads=1` |
 | 2026-06-04 | ALL | 未完成 | 基于第二轮 design review 创建追踪清单, 后续仍需处理未完成项 | `rg -n "^### P[0-9]-" docs/review/design-review.md` |

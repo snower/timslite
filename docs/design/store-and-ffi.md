@@ -8,7 +8,7 @@
 > - `create_dataset`: 显式创建新数据集, 需传入 `data_segment_size`, `index_segment_size`, `compress_level`; 已存在返回错误
 > - `open_dataset`: 仅打开已有数据集, 参数从 meta 文件读取
 > - `drop_dataset`: 删除数据集并清除所有关联文件
-> - Store 持有 `BlockCache` (全局共享; 读取 compressed block 时自动使用缓存, correction/delete/out-of-order 写入负责失效旧 key)
+> - Store 持有 `BlockCache` 和 JournalManager, 并把二者注入每个 Store 管理的业务 DataSet; DataSet public API 自行使用全局缓存和 journal hook
 
 ```rust
 /// FFI 数据集句柄 (不透明指针)
@@ -27,7 +27,7 @@ pub struct Store {
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,
-    journal: JournalManager,        // 内置 .journal/logs 变更日志, 可配置启用/禁用
+    journal: Arc<JournalManager>,   // 内置 .journal/logs 变更日志, 可配置启用/禁用
     // 内部共享的执行器 (详见 §17.9), 由 BackgroundTasks 持有
     bg_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
@@ -73,13 +73,13 @@ impl Store {
 
 | 操作 | 文件操作 | 目录操作 |
 |------|---------|---------|
-| `Store::open` | 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs`, 再扫描 `{data_dir}/*/*` 加载已有普通数据集 | `.journal/logs` 是内部保留 dataset; 普通扫描跳过它 |
-| `Store::create_dataset` | 写入 `meta` 文件; 写入第一个空 data segment + index segment header; journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/data/` + `{name}/{type}/index/` |
-| `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments | 不创建新目录, 仅读取 |
-| `Store::write_dataset` | 经 Store 门面写入, 应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
-| `Store::append_dataset` | 经 Store 门面追加, 应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
-| `Store::delete_dataset_record` | 经 Store 门面删除索引可见性, invalidate 旧 cache key; 成功后 journal 写 `0x12` | 不删除物理 record, 仅标记 filler/invalid |
-| `Store::read_dataset` / `query_dataset` | 使用全局 `BlockCache` 读取 compressed block; retention 统一生效 | `.journal/logs` read-only handle 也允许读取 |
+| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs`; 再扫描 `{data_dir}/*/*` 加载已有普通数据集并注入 runtime context | `.journal/logs` 是内部保留 dataset; 普通扫描跳过它 |
+| `Store::create_dataset` | 写入 `meta` 文件; 写入第一个空 data segment + index segment header; 注入 runtime context; journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/data/` + `{name}/{type}/index/` |
+| `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments; 注入 runtime context | 不创建新目录, 仅读取 |
+| `Store::write_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
+| `Store::append_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
+| `Store::delete_dataset_record` | 调用 DataSet public API; DataSet 自行 invalidate 旧 cache key 并写 `0x12` journal | 不删除物理 record, 仅标记 filler/invalid |
+| `Store::read_dataset` / `query_dataset` | 调用 DataSet public API; DataSet 自动使用 runtime context 中的全局 `BlockCache`; retention 统一生效 | `.journal/logs` read-only handle 也允许读取 |
 | `Store::latest_written_timestamp` | 返回 dataset 已写入最大 timestamp | 删除 latest 后仍返回最大已写 timestamp |
 | `Store::open_queue` / `open_journal_queue` | 打开普通 dataset queue 或内置 journal queue | journal queue producer 只允许 `JournalManager` |
 | `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树; journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |

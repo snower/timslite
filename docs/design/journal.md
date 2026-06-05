@@ -309,9 +309,24 @@ drop_dataset(name, type):
   5. 返回
 ```
 
+#### DataSet runtime context
+
+Store 管理的业务 DataSet 必须持有运行时上下文:
+
+```rust
+struct DataSetRuntimeContext {
+    block_cache: Option<Arc<BlockCache>>,
+    journal: Option<Arc<dyn DataSetJournalSink>>,
+    read_only: bool,
+}
+```
+
+`Store::open/create/open_dataset` 在 DataSet 放入 registry 或返回 handle 前注入该上下文。此后调用方无论通过 `Store::write_dataset/append_dataset/delete_dataset_record` 门面, 还是通过 `Store::get_dataset` 取得 `Arc<Mutex<DataSet>>` 后直接调用 `DataSet::write/append/delete/read/query`, 都应得到一致的 cache 和 journal 语义。独立绕过 Store 直接 `DataSet::create/open` 的低层实例没有 Store 运行时上下文, journal hook 为 no-op。
+`.journal/logs` 使用 `read_only=true` 的 runtime context; public DataSet mutation 必须拒绝, JournalManager 内部追加日志时走 crate-level 写入路径, 避免递归 journal 且不暴露写权限。
+
 #### DataSet::write
 
-业务 DataSet 写入需要把最终 `IndexEntry` 返回给 Store 层或 journal hook:
+业务 DataSet 写入需要把最终 `IndexEntry` 返回给自身 journal hook:
 
 ```rust
 struct WriteOutcome {
@@ -320,7 +335,7 @@ struct WriteOutcome {
 }
 ```
 
-Store/FFI 层在写入成功后调用:
+`DataSet::write` 在主写入和 index 发布成功后调用:
 
 ```text
 journal.append_data_write(dataset_key, outcome.index_entry)
@@ -328,19 +343,17 @@ journal.append_data_write(dataset_key, outcome.index_entry)
 
 当 `enable_journal=false` 时, 该 hook 是 no-op, 不影响主写入返回结果。
 
-如果未来仍允许直接持有 `DataSet` 调用 `write`, 则直接调用路径默认不写 journal; 需要通过 Store 门面或传入 `JournalSink` 才能获得完整 journal 语义。
-
 #### DataSet::append
 
 ```text
-Store::append_dataset(handle, timestamp, data):
-  1. 获取目标 DataSet mutex
-  2. dataset.append_with_cache(timestamp, data, Some(&block_cache))
+DataSet::append(timestamp, data):
+  1. 从 DataSetRuntimeContext 取得 BlockCache / JournalSink
+  2. 执行内部 append_with_cache_outcome(timestamp, data, cache)
        -> AppendOutcome { index_entry, data_offset, data_len, migrated }
-  3. 释放或保持目标锁后, 按既有锁顺序追加 journal
+  3. 若 journal sink 存在且本次 append 非空 no-op, 追加 0x13 journal record
 ```
 
-Store/FFI 层在 append 成功后调用:
+`DataSet::append` 在 append 成功后调用:
 
 ```text
 journal.append_data_append(dataset_key, outcome.index_entry, outcome.data_offset, outcome.data_len)
@@ -358,7 +371,7 @@ struct DeleteOutcome {
 }
 ```
 
-Store/FFI 层在删除成功后调用:
+`DataSet::delete` 在删除成功后调用:
 
 ```text
 journal.append_data_delete(dataset_key, outcome.old_index_entry)

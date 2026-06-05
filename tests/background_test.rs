@@ -1,4 +1,4 @@
-//! Manual background execution tests.
+﻿//! Manual background execution tests.
 use std::fs;
 use std::path::PathBuf;
 
@@ -52,7 +52,7 @@ fn t21_1_manual_bg_lifecycle() {
 
     // Verify data is queryable after tick
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 1, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"bg_test");
 
@@ -106,14 +106,14 @@ fn t21_3_manual_bg_concurrent_with_thread() {
     arc.lock().unwrap().write(1, b"concurrent").unwrap();
     drop(arc);
 
-    // Manual tick alongside background thread — should not deadlock
+    // Manual tick alongside background thread 鈥?should not deadlock
     std::thread::sleep(Duration::from_millis(200));
     let result = store.tick_background_tasks().unwrap();
-    // executed_tasks may be 0 if bg thread already ran — that's fine
+    // executed_tasks may be 0 if bg thread already ran 鈥?that's fine
     assert!(result.executed_tasks <= 2);
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 1, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"concurrent");
 

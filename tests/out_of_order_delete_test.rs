@@ -1,4 +1,4 @@
-//! Out-of-order writes, continuous index, delete lifecycle, and mixed operations tests.
+﻿//! Out-of-order writes, continuous index, delete lifecycle, and mixed operations tests.
 use std::fs;
 use std::path::PathBuf;
 
@@ -33,12 +33,12 @@ fn t18_1_out_of_order_write() {
         lock.write(200, b"v2").unwrap();
         lock.write(300, b"v3").unwrap();
 
-        // Out-of-order writes — each replaces a real entry
+        // Out-of-order writes 鈥?each replaces a real entry
         lock.write(100, b"v1_updated").unwrap();
         lock.write(200, b"v2_updated").unwrap();
 
         // Query should reflect latest data
-        let entries = lock.query(100, 300, None).unwrap();
+        let entries = lock.query(100, 300).unwrap();
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].1, b"v1_updated");
         assert_eq!(entries[1].1, b"v2_updated");
@@ -70,7 +70,7 @@ fn t18_1b_out_of_order_write_continuous() {
         // Out-of-order: replace real entry at 100
         lock.write(100, b"v1_new").unwrap();
 
-        let entries = lock.query(100, 150, None).unwrap();
+        let entries = lock.query(100, 150).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].1, b"v1_new");
         assert_eq!(entries[1].1, b"v2");
@@ -103,7 +103,7 @@ fn t18_2_delete_lifecycle() {
         lock.delete(2).unwrap();
 
         // Deleted entry should not appear in query
-        let entries = lock.query(1, 3, None).unwrap();
+        let entries = lock.query(1, 3).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].1, b"keep");
         assert_eq!(entries[1].1, b"also_keep");
@@ -148,7 +148,7 @@ fn t18_3_mixed_operations() {
 
         // Delete ts=1 and verify query returns only ts=3 and ts=5
         lock.delete(1).unwrap();
-        let entries_after_del = lock.query(1, 5, None).unwrap();
+        let entries_after_del = lock.query(1, 5).unwrap();
         assert_eq!(entries_after_del.len(), 2);
     }
     drop(arc);

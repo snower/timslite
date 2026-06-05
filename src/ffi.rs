@@ -726,7 +726,7 @@ pub extern "C" fn tmsl_dataset_read(
         let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
         let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
         let mut ds = ds_arc.lock().unwrap();
-        match ds.read(timestamp, Some(store_inner.block_cache()))? {
+        match ds.read(timestamp)? {
             Some((ts, data)) => {
                 unsafe { *out_ts = ts as c_longlong };
                 let ptr = unsafe { libc::malloc(data.len()) as *mut c_uchar };
@@ -818,7 +818,7 @@ pub extern "C" fn tmsl_iter_next(
         let store_inner = unsafe { &mut *(ffi_iter.store_ptr) };
         let ds_arc = store_inner.get_dataset(&ffi_iter.handle)?;
         let mut ds = ds_arc.lock().unwrap();
-        let (ts, data) = ds.read_entry_at_index(&entry, Some(store_inner.block_cache()))?;
+        let (ts, data) = ds.read_entry_at_index(&entry)?;
 
         unsafe { *out_ts = ts as c_longlong };
 

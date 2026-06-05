@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::config::StoreConfig;
-use crate::dataset::{DataSet, DataSetKey};
+use crate::dataset::{DataSet, DataSetJournalSink, DataSetKey, DataSetRuntimeContext};
 use crate::error::{Result, TmslError};
 use crate::index::segment::IndexEntry;
 use crate::queue::DatasetQueue;
@@ -335,7 +335,7 @@ impl JournalManager {
         let base_dir = data_dir
             .join(JOURNAL_DATASET_NAME)
             .join(JOURNAL_DATASET_TYPE);
-        let ds = if base_dir.join("meta").exists() {
+        let mut ds = if base_dir.join("meta").exists() {
             DataSet::open(key, base_dir)?
         } else {
             DataSet::create(
@@ -350,6 +350,7 @@ impl JournalManager {
                 0,
             )?
         };
+        ds.set_runtime_context(DataSetRuntimeContext::read_only());
         Ok(Self::Enabled {
             dataset: Arc::new(Mutex::new(ds)),
             queue: Mutex::new(None),
@@ -486,10 +487,31 @@ impl JournalManager {
                     .lock()
                     .map_err(|_| TmslError::InvalidData("journal dataset poisoned".into()))?;
                 let ts = next_journal_ts(ds.latest_written_timestamp())?;
-                ds.write(ts, &payload)?;
+                ds.write_with_cache(ts, &payload, None)?;
                 Ok(Some(ts))
             }
         }
+    }
+}
+
+impl DataSetJournalSink for JournalManager {
+    fn record_write(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()> {
+        self.append_data_write(key, entry).map(|_| ())
+    }
+
+    fn record_delete(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()> {
+        self.append_data_delete(key, entry).map(|_| ())
+    }
+
+    fn record_append(
+        &self,
+        key: &DataSetKey,
+        entry: IndexEntry,
+        data_offset: u32,
+        data_len: u32,
+    ) -> Result<()> {
+        self.append_data_append(key, entry, data_offset, data_len)
+            .map(|_| ())
     }
 }
 

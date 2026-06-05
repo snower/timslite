@@ -9,7 +9,7 @@ use crate::bg::BackgroundTasks;
 use crate::bg::TickResult;
 use crate::cache::BlockCache;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
-use crate::dataset::{DataSet, DataSetKey};
+use crate::dataset::{DataSet, DataSetJournalSink, DataSetKey, DataSetRuntimeContext};
 use crate::error::{Result, TmslError};
 use crate::journal::{
     meta_values_from_file, JournalManager, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
@@ -48,7 +48,7 @@ pub struct Store {
     datasets: Arc<RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,
-    journal: JournalManager,
+    journal: Arc<JournalManager>,
     bg_tasks: Option<BackgroundTasks>,
     next_handle_id: u64,
     handles: HashMap<u64, DataSetKey>,
@@ -56,11 +56,21 @@ pub struct Store {
 }
 
 impl Store {
+    fn dataset_runtime_context(
+        block_cache: &Arc<BlockCache>,
+        journal: &Arc<JournalManager>,
+    ) -> DataSetRuntimeContext {
+        let sink: Arc<dyn DataSetJournalSink> = journal.clone();
+        DataSetRuntimeContext::new(Some(Arc::clone(block_cache)), Some(sink))
+    }
+
     /// Open a store at the given directory.
     pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self> {
         let data_dir = data_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&data_dir)?;
-        let journal = JournalManager::open_or_create(&data_dir, &config)?;
+        let block_cache = Arc::new(BlockCache::new(config.cache_max_memory));
+        let journal = Arc::new(JournalManager::open_or_create(&data_dir, &config)?);
+        let runtime_context = Self::dataset_runtime_context(&block_cache, &journal);
 
         let mut datasets = HashMap::new();
 
@@ -114,14 +124,14 @@ impl Store {
                     name: name.clone(),
                     dataset_type: dataset_type.clone(),
                 };
-                let ds = DataSet::open(key.clone(), type_path.clone())?;
+                let mut ds = DataSet::open(key.clone(), type_path.clone())?;
+                ds.set_runtime_context(runtime_context.clone());
                 log::info!("[store] loaded existing dataset: {}/{}", name, dataset_type);
                 datasets.insert(key, Arc::new(Mutex::new(ds)));
             }
         }
 
         let datasets = Arc::new(RwLock::new(datasets));
-        let block_cache = Arc::new(BlockCache::new(config.cache_max_memory));
 
         let mut store = Self {
             data_dir,
@@ -197,7 +207,7 @@ impl Store {
 
         // Create new dataset
         let dir = self.data_dir.join(name).join(dataset_type);
-        let ds = DataSet::create(
+        let mut ds = DataSet::create(
             key.clone(),
             dir,
             config.data_segment_size,
@@ -208,6 +218,10 @@ impl Store {
             config.initial_index_segment_size,
             config.retention_window,
         )?;
+        ds.set_runtime_context(Self::dataset_runtime_context(
+            &self.block_cache,
+            &self.journal,
+        ));
 
         let ds = Arc::new(Mutex::new(ds));
         {
@@ -284,7 +298,11 @@ impl Store {
 
         // Open existing dataset
         let dir = self.data_dir.join(name).join(dataset_type);
-        let ds = DataSet::open(key.clone(), dir)?;
+        let mut ds = DataSet::open(key.clone(), dir)?;
+        ds.set_runtime_context(Self::dataset_runtime_context(
+            &self.block_cache,
+            &self.journal,
+        ));
 
         let ds = Arc::new(Mutex::new(ds));
         {
@@ -420,13 +438,12 @@ impl Store {
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
                 .clone()
         };
-        let outcome = {
+        {
             let mut ds = ds_arc
                 .lock()
                 .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.write_with_cache_outcome(timestamp, data, Some(self.block_cache()))?
-        };
-        self.journal.append_data_write(&key, outcome.index_entry)?;
+            ds.write(timestamp, data)?;
+        }
         Ok(())
     }
 
@@ -454,19 +471,11 @@ impl Store {
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
                 .clone()
         };
-        let outcome = {
+        {
             let mut ds = ds_arc
                 .lock()
                 .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.append_with_cache_outcome(timestamp, data, Some(self.block_cache()))?
-        };
-        if let Some(outcome) = outcome {
-            self.journal.append_data_append(
-                &key,
-                outcome.index_entry,
-                outcome.data_offset,
-                outcome.data_len,
-            )?;
+            ds.append(timestamp, data)?;
         }
         Ok(())
     }
@@ -490,14 +499,12 @@ impl Store {
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
                 .clone()
         };
-        let outcome = {
+        {
             let mut ds = ds_arc
                 .lock()
                 .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.delete_with_cache_outcome(timestamp, Some(self.block_cache()))?
-        };
-        self.journal
-            .append_data_delete(&key, outcome.old_index_entry)?;
+            ds.delete(timestamp)?;
+        }
         Ok(())
     }
 
@@ -511,7 +518,7 @@ impl Store {
         let mut ds = ds_arc
             .lock()
             .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.read(timestamp, Some(self.block_cache()))
+        ds.read(timestamp)
     }
 
     /// Query through the Store so global cache and read-only internal handles are honored.
@@ -525,7 +532,7 @@ impl Store {
         let mut ds = ds_arc
             .lock()
             .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.query(start_ts, end_ts, Some(self.block_cache()))
+        ds.query(start_ts, end_ts)
     }
 
     /// Return the highest successfully written timestamp for a dataset handle.

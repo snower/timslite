@@ -1,4 +1,4 @@
-//! Lazy allocation integration tests.
+﻿//! Lazy allocation integration tests.
 use std::fs;
 use std::path::PathBuf;
 
@@ -50,7 +50,7 @@ fn t12_1_lazy_create_write_query_small_data() {
     }
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 100, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 100).unwrap();
     assert_eq!(entries.len(), 100);
     assert_eq!(entries[0].0, 1);
     assert_eq!(entries[99].0, 100);
@@ -93,12 +93,12 @@ fn t12_2_lazy_write_until_max_then_new_segment() {
             .unwrap()
             .write(i + 1, &data);
         if write_result.is_err() {
-            break; // May fail at segment boundary — that's fine
+            break; // May fail at segment boundary 鈥?that's fine
         }
     }
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 200, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 200).unwrap();
     assert!(!entries.is_empty(), "should have some data");
 
     store.close().unwrap();
@@ -141,7 +141,7 @@ fn t12_3_open_legacy_full_allocated_dataset() {
     let ds = store.open_dataset("legacy_full", "data").unwrap();
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 50, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 50).unwrap();
     assert_eq!(entries.len(), 50);
 
     store.close().unwrap();
@@ -200,7 +200,7 @@ fn t12_4_disk_space_efficiency() {
 
     // Verify data integrity
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 100, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 100).unwrap();
     assert_eq!(entries.len(), 100);
 
     store.close().unwrap();

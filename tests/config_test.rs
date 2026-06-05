@@ -1,4 +1,4 @@
-//! StoreConfig and DataSetConfig builder API tests.
+﻿//! StoreConfig and DataSetConfig builder API tests.
 use std::fs;
 use std::path::PathBuf;
 
@@ -35,7 +35,7 @@ fn t14_1_create_with_none_config_uses_store_defaults() {
     let arc = store.get_dataset(&ds).unwrap();
     arc.lock().unwrap().write(1, b"hello").unwrap();
 
-    let entries = arc.lock().unwrap().query(1, 1, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"hello");
 
@@ -69,7 +69,7 @@ fn t14_2_create_with_builder_override() {
         arc.lock().unwrap().write(i + 1, &data).unwrap();
     }
 
-    let entries = arc.lock().unwrap().query(1, 10, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 10).unwrap();
     assert_eq!(entries.len(), 10);
 
     store.close().unwrap();
@@ -100,7 +100,7 @@ fn t14_3_backward_compat_existing_api() {
     let arc = store.get_dataset(&ds).unwrap();
     arc.lock().unwrap().write(1, b"compat_test").unwrap();
 
-    let entries = arc.lock().unwrap().query(1, 1, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
 
     store.close().unwrap();

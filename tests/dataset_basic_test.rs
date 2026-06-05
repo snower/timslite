@@ -1,4 +1,4 @@
-//! Dataset basic lifecycle tests: create, open, close, persistence, flush.
+﻿//! Dataset basic lifecycle tests: create, open, close, persistence, flush.
 use std::fs;
 use std::path::PathBuf;
 
@@ -49,7 +49,7 @@ fn t8_1_1_basic_lifecycle() {
     let mut ds = ds_arc.lock().unwrap();
     ds.flush().unwrap();
 
-    let entries = ds.query(1, 100, None).unwrap();
+    let entries = ds.query(1, 100).unwrap();
     assert_eq!(entries.len(), 100);
     for (i, (ts, data)) in entries.iter().enumerate() {
         assert_eq!(*ts, (i + 1) as i64);
@@ -108,7 +108,7 @@ fn t8_1_2_multi_dataset_isolation() {
     {
         let ds_arc = store.get_dataset(&ds1).unwrap();
         let mut ds = ds_arc.lock().unwrap();
-        let entries = ds.query(1, 50, None).unwrap();
+        let entries = ds.query(1, 50).unwrap();
         assert_eq!(entries.len(), 50);
         for (i, (ts, data)) in entries.iter().enumerate() {
             assert_eq!(*ts, (i + 1) as i64);
@@ -120,7 +120,7 @@ fn t8_1_2_multi_dataset_isolation() {
     {
         let ds_arc = store.get_dataset(&ds2).unwrap();
         let mut ds = ds_arc.lock().unwrap();
-        let entries = ds.query(1, 30, None).unwrap();
+        let entries = ds.query(1, 30).unwrap();
         assert_eq!(entries.len(), 30);
         for (i, (ts, data)) in entries.iter().enumerate() {
             assert_eq!(*ts, (i + 1) as i64);
@@ -192,7 +192,7 @@ fn t8_1_3_block_aggregation() {
     }
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 200, None).unwrap();
+    let entries = arc.lock().unwrap().query(1, 200).unwrap();
     assert_eq!(entries.len(), 200);
 
     store.close().unwrap();
@@ -233,7 +233,7 @@ fn t8_1_6_persistence() {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
         let arc = store.get_dataset(&ds).unwrap();
-        let entries = arc.lock().unwrap().query(1, 50, None).unwrap();
+        let entries = arc.lock().unwrap().query(1, 50).unwrap();
         assert_eq!(entries.len(), 50);
         for (i, (ts, data)) in entries.iter().enumerate() {
             assert_eq!(*ts, (i + 1) as i64);
@@ -277,7 +277,7 @@ fn t8_1_7_flush_does_not_seal() {
     std::thread::sleep(std::time::Duration::from_secs(2));
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(999, 1001, None).unwrap();
+    let entries = arc.lock().unwrap().query(999, 1001).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, data);
 

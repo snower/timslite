@@ -38,7 +38,7 @@ fn read_all_journal_records(store: &mut Store) -> Vec<JournalRecord> {
         .unwrap();
     let ds = store.get_dataset(&journal).unwrap();
     let mut ds = ds.lock().unwrap();
-    ds.query(1, i64::MAX, Some(store.block_cache()))
+    ds.query(1, i64::MAX)
         .unwrap()
         .into_iter()
         .map(|(_, payload)| JournalRecord::decode(&payload).unwrap())
@@ -200,6 +200,63 @@ fn t28_9_public_journal_handle_rejects_append() {
         .append_dataset(journal, 1, b"forged")
         .expect_err("public journal handle must be read-only for append");
     assert!(err.to_string().contains("read-only internal dataset"));
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t28_10_direct_journal_dataset_mutations_are_read_only() {
+    let dir = temp_dir("direct_journal_read_only");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    let journal = store
+        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
+        .unwrap();
+
+    {
+        let ds = store.get_dataset(&journal).unwrap();
+        let mut ds = ds.lock().unwrap();
+        assert!(ds.write(1, b"x").is_err());
+        assert!(ds.append(1, b"x").is_err());
+        assert!(ds.delete(1).is_err());
+    }
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t28_11_direct_dataset_mutations_use_store_context_journal() {
+    let dir = temp_dir("direct_dataset_context");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    let handle = store
+        .create_dataset("ctx_ds", "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    {
+        let ds = store.get_dataset(&handle).unwrap();
+        let mut ds = ds.lock().unwrap();
+        ds.write(10, b"direct").unwrap();
+        ds.append(20, b"append").unwrap();
+        ds.delete(10).unwrap();
+    }
+
+    let records = read_all_journal_records(&mut store);
+    let direct_records: Vec<_> = records
+        .iter()
+        .filter(|record| record.name == "ctx_ds" && record.dataset_type == "metrics")
+        .collect();
+
+    assert!(direct_records.iter().any(|record| {
+        record.kind == JournalRecordKind::DataWrite && record.index_info.unwrap().timestamp == 10
+    }));
+    assert!(direct_records.iter().any(|record| {
+        record.kind == JournalRecordKind::DataAppend
+            && record.index_info.unwrap().timestamp == 20
+            && record.append_info.unwrap().data_len == 6
+    }));
+    assert!(direct_records.iter().any(|record| {
+        record.kind == JournalRecordKind::DataDelete && record.index_info.unwrap().timestamp == 10
+    }));
 
     store.close().unwrap();
 }

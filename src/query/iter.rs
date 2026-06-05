@@ -3,6 +3,7 @@
 use crate::cache::BlockCache;
 use crate::error::Result;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::index::segment::{IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::segment::data::ReadIndexEntry;
@@ -117,19 +118,19 @@ pub struct SourceIndex {
 }
 
 /// Lazy query iterator
-pub struct QueryIterator<'a, 'b> {
+pub struct QueryIterator<'a> {
     sources: Vec<QuerySource>,
     current_source: usize,
     segments: &'a mut DataSegmentSet,
-    cache: Option<&'b BlockCache>,
+    cache: Option<Arc<BlockCache>>,
     hot_block: HotBlockCache,
 }
 
-impl<'a, 'b> QueryIterator<'a, 'b> {
+impl<'a> QueryIterator<'a> {
     pub fn new(
         entries: Vec<IndexEntry>,
         segments: &'a mut DataSegmentSet,
-        cache: Option<&'b BlockCache>,
+        cache: Option<Arc<BlockCache>>,
     ) -> Self {
         Self::new_with_sources(
             vec![QuerySource::InMemory {
@@ -144,7 +145,7 @@ impl<'a, 'b> QueryIterator<'a, 'b> {
     pub fn new_with_sources(
         sources: Vec<QuerySource>,
         segments: &'a mut DataSegmentSet,
-        cache: Option<&'b BlockCache>,
+        cache: Option<Arc<BlockCache>>,
     ) -> Self {
         Self {
             sources,
@@ -187,7 +188,7 @@ impl<'a, 'b> QueryIterator<'a, 'b> {
             in_block_offset: entry.in_block_offset,
         };
         self.segments
-            .read_at_index_with_hot_cache(&re, self.cache, &mut self.hot_block)
+            .read_at_index_with_hot_cache(&re, self.cache.as_deref(), &mut self.hot_block)
     }
 
     /// Collect all remaining records as Vec (backward compatible).
@@ -247,8 +248,8 @@ mod tests {
             IndexEntry::new(150, BLOCK_OFFSET_FILLER, 0xFFFF),
         ];
 
-        let cache = BlockCache::new(1024);
-        let iter = QueryIterator::new(entries, &mut segments, Some(&cache));
+        let cache = Arc::new(BlockCache::new(1024));
+        let iter = QueryIterator::new(entries, &mut segments, Some(cache));
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 100);

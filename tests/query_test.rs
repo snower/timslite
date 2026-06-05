@@ -1,4 +1,4 @@
-//! Query iterator and empty range tests.
+﻿//! Query iterator and empty range tests.
 use std::fs;
 use std::path::PathBuf;
 
@@ -42,7 +42,7 @@ fn t13_1_iterator_small_range() {
 
     let arc = store.get_dataset(&ds).unwrap();
     // Query small range: ts 50..120 (should return items at 60,70,80,90,100,110)
-    let entries = arc.lock().unwrap().query(50, 120, None).unwrap();
+    let entries = arc.lock().unwrap().query(50, 120).unwrap();
     assert!(!entries.is_empty());
     for (ts, _) in &entries {
         assert!(*ts >= 50 && *ts <= 120);
@@ -73,7 +73,7 @@ fn t13_3_query_backward_compat() {
     let ds = store.open_dataset("back_compat", "data").unwrap();
     // ts_start > ts_end should return empty
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(100, 1, None).unwrap();
+    let entries = arc.lock().unwrap().query(100, 1).unwrap();
     assert_eq!(entries.len(), 0);
 
     store.close().unwrap();
@@ -101,8 +101,8 @@ fn t13_4_query_empty_range() {
     let ds = store.open_dataset("empty_range", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
 
-    // Query before any writes — should return empty
-    let entries = arc.lock().unwrap().query(1, 100, None).unwrap();
+    // Query before any writes 鈥?should return empty
+    let entries = arc.lock().unwrap().query(1, 100).unwrap();
     assert_eq!(entries.len(), 0);
 
     store.close().unwrap();

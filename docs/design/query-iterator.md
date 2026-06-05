@@ -42,11 +42,12 @@ DataSet::query_iter(start_ts, end_ts)
 `DataSet::query()` 仅是兼容包装:
 
 ```rust
-let iter = self.query_iter(start_ts, end_ts, cache)?;
+let iter = self.query_iter(start_ts, end_ts)?;
 iter.collect_all()
 ```
 
 因此 `query()` 的返回集合仍由调用方一次性持有; 需要流式消费时必须使用 `query_iter()` 或 FFI iterator。
+Store 管理的 DataSet 创建 `QueryIterator` 时会从 `DataSetRuntimeContext` 克隆 `Arc<BlockCache>` 并交给 iterator 持有, 因此 public `query_iter()` 不需要调用方传入 cache, 且 iterator 返回后仍可安全使用全局 compressed block 缓存。
 
 ---
 

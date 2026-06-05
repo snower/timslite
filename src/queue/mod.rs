@@ -25,7 +25,7 @@ use crate::dataset::DataSet;
 use crate::error::{Result, TmslError};
 use crate::util::{read_i64_from_mmap, read_u16_from_mmap, read_u32_from_mmap};
 
-// ─── Constants ───────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ Constants 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Queue state file magic bytes.
 pub const QUEUE_STATE_MAGIC: &[u8; 4] = b"QSTF";
@@ -68,7 +68,7 @@ fn validate_consumer_group_name(group_name: &str) -> Result<()> {
     }
 }
 
-// ─── PendingEntry ────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ PendingEntry 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// A single pending entry tracked in the consumer state file.
 #[derive(Clone, Debug)]
@@ -94,7 +94,7 @@ impl PendingEntry {
     }
 }
 
-// ─── ConsumerStateFile ───────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ ConsumerStateFile 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// 4KB mmap-backed state file for a single consumer group.
 ///
@@ -190,7 +190,7 @@ impl ConsumerStateFile {
         })
     }
 
-    /// Write in-memory state back to mmap (no fsync — unified with bg flush).
+    /// Write in-memory state back to mmap (no fsync 鈥?unified with bg flush).
     pub fn sync_to_mmap(&mut self) -> Result<()> {
         // Update header processed_ts
         write_i64_at(&mut self.mmap, 10, self.processed_ts);
@@ -217,7 +217,7 @@ impl ConsumerStateFile {
         Ok(())
     }
 
-    /// Flush mmap to disk (MS_SYNC) — called by background flush task.
+    /// Flush mmap to disk (MS_SYNC) 鈥?called by background flush task.
     pub fn flush(&self) -> Result<()> {
         self.mmap.flush()?;
         Ok(())
@@ -344,7 +344,7 @@ fn write_i64_at(mmap: &mut MmapMut, offset: usize, val: i64) {
     mmap[offset..offset + 8].copy_from_slice(&val.to_le_bytes());
 }
 
-// ─── QueueInner ──────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ QueueInner 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Shared internal state for a dataset queue.
 pub struct QueueInner {
@@ -377,7 +377,7 @@ impl QueueInner {
     }
 }
 
-// ─── DatasetQueue ────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ DatasetQueue 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Queue handle for a dataset (Clone-safe, singleton per dataset).
 pub struct DatasetQueue {
@@ -594,7 +594,7 @@ impl DatasetQueue {
     }
 }
 
-// ─── DatasetQueueConsumer ────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ DatasetQueueConsumer 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Consumer handle for a specific consumer group.
 ///
@@ -673,7 +673,7 @@ impl DatasetQueueConsumer {
             .lock()
             .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
 
-        let direct = ds.read(next_ts, None)?;
+        let direct = ds.read(next_ts)?;
         let row = if direct.is_some() {
             direct
         } else {
@@ -683,7 +683,7 @@ impl DatasetQueueConsumer {
                 if entry.is_filler() || sf.is_in_pending(entry.timestamp) {
                     continue;
                 }
-                found = Some(ds.read_entry_at_index(&entry, None)?);
+                found = Some(ds.read_entry_at_index(&entry)?);
                 break;
             }
             found
@@ -778,7 +778,7 @@ impl DatasetQueueConsumer {
             .dataset
             .lock()
             .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.read(timestamp, None)
+        ds.read(timestamp)
     }
 
     /// Ack a previously polled record.
@@ -798,7 +798,7 @@ impl DatasetQueueConsumer {
     }
 }
 
-// ─── DataSet integration helpers ─────────────────────────────────────────────
+// 鈹€鈹€鈹€ DataSet integration helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Queue directory path for a dataset.
 pub(crate) fn queue_dir_for(base_dir: &Path) -> PathBuf {
@@ -842,7 +842,7 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    // ─── PendingEntry ────────────────────────────────────────────────────
+    // 鈹€鈹€鈹€ PendingEntry 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn pending_entry_round_trip() {
@@ -873,7 +873,7 @@ mod tests {
         assert_eq!(restored.status, PENDING_STATUS_ACKED);
     }
 
-    // ─── ConsumerStateFile: create / open ─────────────────────────────────
+    // 鈹€鈹€鈹€ ConsumerStateFile: create / open 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn csf_create_and_reopen() {
@@ -990,7 +990,7 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ─── ConsumerStateFile: add_pending / ack_pending ─────────────────────
+    // 鈹€鈹€鈹€ ConsumerStateFile: add_pending / ack_pending 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn csf_add_pending_increments_count() {
@@ -1060,7 +1060,7 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ─── ConsumerStateFile: find helpers ──────────────────────────────────
+    // 鈹€鈹€鈹€ ConsumerStateFile: find helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn csf_find_first_unacked() {
@@ -1101,7 +1101,7 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ─── ConsumerStateFile: cleanup_acked ─────────────────────────────────
+    // 鈹€鈹€鈹€ ConsumerStateFile: cleanup_acked 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn csf_cleanup_acked_consecutive() {
@@ -1169,7 +1169,7 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ─── ConsumerStateFile: cleanup_timeout ───────────────────────────────
+    // 鈹€鈹€鈹€ ConsumerStateFile: cleanup_timeout 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn csf_cleanup_timeout_removes_expired() {
@@ -1211,7 +1211,7 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ─── ConsumerStateFile: next_poll_ts ──────────────────────────────────
+    // 鈹€鈹€鈹€ ConsumerStateFile: next_poll_ts 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn csf_next_poll_ts_positive() {
@@ -1233,7 +1233,7 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ─── ConsumerStateFile: sync / flush ──────────────────────────────────
+    // 鈹€鈹€鈹€ ConsumerStateFile: sync / flush 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn csf_sync_persists_data() {
@@ -1258,7 +1258,7 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ─── ConsumerStateFile: is_in_pending / find_pending ──────────────────
+    // 鈹€鈹€鈹€ ConsumerStateFile: is_in_pending / find_pending 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn csf_is_in_pending_and_find() {
@@ -1279,7 +1279,7 @@ mod tests {
         cleanup(&dir);
     }
 
-    // ─── QueueInner ──────────────────────────────────────────────────────
+    // 鈹€鈹€鈹€ QueueInner 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     #[test]
     fn qi_new_empty() {

@@ -14,8 +14,15 @@ struct DataSet {
     retention_window: u64,     // 数据保留窗口 (timestamp unit, 0=不限)
     segments: DataSegmentSet,
     time_index: TimeIndex,
+    runtime_context: DataSetRuntimeContext, // Store 注入的 BlockCache + JournalSink
     last_used_at: Instant,
     latest_written_timestamp: i64,  // 写入过的最大 timestamp, 不是最新有效 record, 同时作为回收基准
+}
+
+struct DataSetRuntimeContext {
+    block_cache: Option<Arc<BlockCache>>,
+    journal: Option<Arc<dyn DataSetJournalSink>>,
+    read_only: bool,
 }
 
 impl DataSet {
@@ -39,10 +46,9 @@ impl DataSet {
     fn drop_dataset(base_dir: &Path) -> io::Result<()>;
 
     fn write(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
-    fn write_with_cache(&mut self, timestamp: i64, data: &[u8], cache: Option<&BlockCache>) -> io::Result<()>;
-    fn read(&mut self, timestamp: i64, cache: Option<&BlockCache>) -> io::Result<Option<(i64, Vec<u8>)>>;
-    fn query(&mut self, start_ts: i64, end_ts: i64, cache: Option<&BlockCache>) -> io::Result<Vec<(i64, Vec<u8>)>>;
-    fn query_iter(&mut self, start_ts: i64, end_ts: i64, cache: Option<&BlockCache>) -> io::Result<QueryIterator<'_>>;
+    fn read(&mut self, timestamp: i64) -> io::Result<Option<(i64, Vec<u8>)>>;
+    fn query(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<(i64, Vec<u8>)>>;
+    fn query_iter(&mut self, start_ts: i64, end_ts: i64) -> io::Result<QueryIterator<'_>>;
     fn flush(&mut self) -> io::Result<()>;
     fn config(&self) -> &DataSetConfig;
 
@@ -52,11 +58,9 @@ impl DataSet {
 
     /// 删除指定时间戳的记录 (索引标记为哨兵, 数据段 invalid_record_count++)
     fn delete(&mut self, timestamp: i64) -> io::Result<()>;
-    fn delete_with_cache(&mut self, timestamp: i64, cache: Option<&BlockCache>) -> io::Result<()>;
 
     /// 向记录追加数据: 不存在则按正序写入创建; 仅允许追加到最新未压缩末尾记录
     fn append(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
-    fn append_with_cache(&mut self, timestamp: i64, data: &[u8], cache: Option<&BlockCache>) -> io::Result<()>;
 
     /// 回收超过有效期的分段文件 (需先 close)
     /// retention_window=0 时跳过; retention_window > 0 时计算过期阈值并删除过期分段
@@ -66,6 +70,8 @@ impl DataSet {
     fn retention_window(&self) -> u64;
 }
 ```
+
+`DataSet::create/open` 直接构造的独立实例默认没有全局 cache 和 journal sink。由 `Store` 创建、打开或扫描加载的实例必须在放入 registry 前注入 `DataSetRuntimeContext`, 因此外部即使通过 `Store::get_dataset` 直接持有 `Arc<Mutex<DataSet>>`, 再调用 `DataSet::write/append/delete/read/query` 也应获得与 Store 门面一致的 cache/journal 行为。`.journal/logs` 的 runtime context 标记为 `read_only=true`, public `DataSet::write/append/delete` 必须拒绝, 只有 JournalManager 内部 crate-level 写入路径可追加日志。`*_with_cache`、`*_with_cache_outcome` 等只作为 crate 内部辅助接口存在, 不属于 public 边界。
 
 ## 九、写入流程详解 (Block 聚合 + 延迟压缩)
 
@@ -195,7 +201,7 @@ DataSet::write(timestamp, data):
     └─ latest_written_timestamp = timestamp (仅正序写入时更新)
 ```
 
-> **Journal hook**: 通过 Store 门面执行的成功写入需要返回最终 `IndexEntry(timestamp, block_offset, in_block_offset)` 给 `JournalManager`, 由 Store 在写入成功后向内置 `.journal/logs` 写入 `0x11` 日志。直接绕过 Store 调用 `DataSet::write` 的内部路径默认不具备 journal 语义, 除非显式传入 journal sink。
+> **Journal hook**: 成功写入需要返回最终 `IndexEntry(timestamp, block_offset, in_block_offset)`。`DataSet::write` 在主写入和 index 发布成功后通过自身 `DataSetRuntimeContext.journal` 向内置 `.journal/logs` 写入 `0x11` 日志; Store 门面只负责调用 DataSet public API, 不再重复追加 journal。若该 DataSet 是独立创建且未注入 journal sink, hook 为 no-op。
 
 **单条 record 上限**: `DataSet::write` 必须拒绝 `data.len() > 4MiB`。该限制适用于普通聚合 block 和 exclusive/single-record block, 与 `data_len:u32` 的磁盘编码能力无关。
 
@@ -376,7 +382,7 @@ DataSet::append(timestamp, data):
 5. 迁移后的旧 record 物理保留但不再可见, 与 correction 回退/乱序写入一致, 通过 `invalid_record_count` 统计无效记录。
 6. 全局 `BlockCache` 只缓存 compressed block。原地 append 目标是 pending raw block, 正常不会在全局缓存中; 迁移时仍对旧 index key 执行幂等 invalidate。
 7. 普通 DatasetQueue 只按 timestamp 递增投递。`timestamp > latest` 创建新 record 的 append 必须 notify, 与 normal write 等价; `timestamp == latest` 修改已有 latest record 不重新投递、不 notify。
-8. Store 门面成功执行 append 后写 journal `0x13`。`timestamp > latest` 创建新 record 的 append 也写 `0x13`, 其中 `data_offset=0`。journal queue 使用独立递增 journal sequence timestamp, 因此每条 `0x13` 都会投递给 journal queue consumer。
+8. `DataSet::append` 成功后通过自身 `DataSetRuntimeContext.journal` 写 journal `0x13`。`timestamp > latest` 创建新 record 的 append 也写 `0x13`, 其中 `data_offset=0`。journal queue 使用独立递增 journal sequence timestamp, 因此每条 `0x13` 都会投递给 journal queue consumer。
 
 建议新增内部返回值:
 
@@ -423,7 +429,7 @@ DataSet::delete(timestamp):
     └─ return Ok(())
 ```
 
-> **Journal hook**: 通过 Store 门面执行的成功删除需要返回删除前的真实 `IndexEntry` 给 `JournalManager`, 由 Store 在删除成功后向 `.journal/logs` 写入 `0x12` 日志。不存在、已删除 filler 或过期不可操作的删除失败路径不写 journal。
+> **Journal hook**: 成功删除需要返回删除前的真实 `IndexEntry`。`DataSet::delete` 在索引标记为 filler 且 cache 失效完成后通过自身 `DataSetRuntimeContext.journal` 向 `.journal/logs` 写入 `0x12` 日志。不存在、已删除 filler 或过期不可操作的删除失败路径不写 journal。
 
 > **查询影响**: 删除后, 查询路径自动跳过 `block_offset == 0xFFFFFFFFFFFFFFFF` 的哨兵条目, 被删除的记录不会出现在查询结果中。无需修改查询逻辑。
 >

@@ -1,4 +1,4 @@
-//! Correction write tests: overwrite same-size and resize.
+﻿//! Correction write tests: overwrite same-size and resize.
 use std::fs;
 use std::path::PathBuf;
 
@@ -37,7 +37,7 @@ fn t17_1_correction_write_same_size() {
         // Correction write: same size
         lock.write(200, b"BETA.").unwrap();
 
-        let entries = lock.query(100, 200, None).unwrap();
+        let entries = lock.query(100, 200).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].1, b"alpha");
         assert_eq!(entries[1].1, b"BETA.");
@@ -80,7 +80,7 @@ fn t17_2_correction_write_resize_reopen() {
         // Correction: resize back to smaller
         lock.write(100, b"x").unwrap();
 
-        let entries = lock.query(100, 100, None).unwrap();
+        let entries = lock.query(100, 100).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1, b"x");
     }

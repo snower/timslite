@@ -1,4 +1,4 @@
-//! Dataset lifecycle tests: create/open/drop error handling and validation.
+﻿//! Dataset lifecycle tests: create/open/drop error handling and validation.
 use std::fs;
 use std::path::PathBuf;
 
@@ -147,7 +147,7 @@ fn t8_2_4_create_after_drop() {
 
     // Data from first creation should be gone
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(0, 10, None).unwrap();
+    let entries = arc.lock().unwrap().query(0, 10).unwrap();
     assert_eq!(entries.len(), 0);
 
     store.close().unwrap();
