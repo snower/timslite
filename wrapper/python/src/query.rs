@@ -47,7 +47,7 @@ impl PyQueryIterator {
             }
             // Lock → read → release
             let mut ds = self.dataset_arc.lock().unwrap();
-            let (ts, data) = wrap(ds.read_entry_at_index(&entry, None))?;
+            let (ts, data) = wrap(ds.read_entry_at_index(&entry))?;
             return Ok(Some((ts, data)));
         }
         Ok(None) // Triggers StopIteration in Python

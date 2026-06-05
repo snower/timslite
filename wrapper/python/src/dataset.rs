@@ -87,7 +87,7 @@ impl PyDataset {
     ///         or `-1` is passed on an empty dataset.
     fn read(&mut self, timestamp: i64) -> PyResult<Option<(i64, Vec<u8>)>> {
         let mut ds = self.inner.lock().unwrap();
-        wrap(ds.read(timestamp, None))
+        wrap(ds.read(timestamp))
     }
 
     /// Delete the record at the given timestamp.
@@ -141,7 +141,7 @@ impl PyDataset {
                 continue;
             }
             let mut ds = ds_arc.lock().unwrap();
-            let (ts, data) = wrap(ds.read_entry_at_index(&entry, None))?;
+            let (ts, data) = wrap(ds.read_entry_at_index(&entry))?;
             results.push((ts, data));
         }
         Ok(results)
