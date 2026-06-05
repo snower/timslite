@@ -2140,17 +2140,21 @@ mod tests {
         assert_eq!(reclaimed, 1, "exactly 1 segment should be reclaimed");
 
         let count_after = std::fs::read_dir(&data_dir).unwrap().count();
-        assert_eq!(count_after, 2, "should have 2 data segment files after reclaim");
+        assert_eq!(
+            count_after, 2,
+            "should have 2 data segment files after reclaim"
+        );
 
         // Verify the correct segment was deleted (segment at offset 0)
         let expired_path = data_dir.join(format!("{:020}", 0));
-        assert!(!expired_path.exists(), "expired segment file should be physically deleted");
+        assert!(
+            !expired_path.exists(),
+            "expired segment file should be physically deleted"
+        );
 
         // Verify remaining segments are still present
         assert!(
-            data_dir
-                .join(format!("{:020}", data_segment_size))
-                .exists(),
+            data_dir.join(format!("{:020}", data_segment_size)).exists(),
             "segment at offset {} should remain",
             data_segment_size
         );
