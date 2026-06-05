@@ -1,498 +1,179 @@
 # timslite
 
-> 高性能 Rust 时序数据存储动态库 — mmap-backed, Block 级聚合, 延迟压缩, C ABI FFI
+> 高性能 Rust 时序数据存储动态库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、C ABI FFI。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-244%20passing-brightgreen.svg)](#)
 
----
+timslite 是一个可嵌入使用的 Rust 时序数据存储库，也可编译为 `cdylib` 通过稳定 C ABI 被 C/C++/Go/Python 等语言调用。它以 `(dataset_name, dataset_type)` 为物理隔离单元，使用 mmap 数据段和索引段保存记录，支持时间索引、延迟压缩、后台维护、持久化队列消费，以及用于热迁移/辅助恢复的内置 Journal 数据集。
 
-## 特性
+## 当前状态
 
-- **内存映射存储**: 基于 `memmap2` 的 mmap I/O, 零拷贝读写
-- **Block 级聚合**: 多条 record 聚合成 Block (最大 64KB), 减少元数据开销
-- **延迟压缩**: pending Block 保持原始格式, 溢出时 seal + deflate 压缩 (miniz_oxide)
-- **懒加载生命周期**: segment 按需打开, 空闲 30 分钟后自动 unmap + close, 降低文件句柄占用
-- **时间索引**: 每数据集专属时间索引, 二分查找定位, 18 字节/条目
-- **显式生命周期**: `create` / `open` / `close` / `drop` 分离, 参数创建后不可变
-- **数据保留策略**: 按数据集配置 `retention_ms` 有效期, 每日定时回收过期分段, 查询自动排除过期数据
-- **C ABI FFI**: 提供完整的 `extern "C"` 接口, 可被 C/C++/Go/Python 等语言调用
-- **消息队列**: 基于持久化状态文件的 Consumer Group 队列, 支持超时重投递、多消费组独立进度
-- **后台任务**: 单线程统一循环执行定期 flush (mmap sync)、idle 检查和数据保留回收
-- **Python 绑定**: 基于 PyO3 + maturin 的完整 Python 封装, 类型安全, context manager 支持
-- **纯 Rust 依赖**: 无 C 库依赖, 跨平台编译简单
+- Rust 核心存储引擎已实现。
+- C ABI 头文件维护在 [include/timslite.h](include/timslite.h)。
+- Python 绑定位于 [wrapper/python](wrapper/python)。
+- 详细设计入口为 [design.md](design.md)，专题文档位于 [docs/design](docs/design)。
+- 开发计划入口为 [plan.md](plan.md)，阶段计划位于 [docs/plan](docs/plan)。
 
-## 项目结构
+## 核心特性
 
-```
-timslite/
-├── src/                    # 核心 Rust 源码
-│   ├── lib.rs              # 入口, 公共 API 导出
-│   ├── config.rs           # StoreConfig 配置构建器
-│   ├── error.rs            # TmslError 错误类型
-│   ├── store.rs            # Store 门面 (数据集注册表 + 后台任务)
-│   ├── dataset.rs          # DataSet 操作 (create/open/write/query/close/drop)
-│   ├── ffi.rs              # extern "C" FFI 接口
-│   ├── segment/            # DataSegmentSet + DataSegment (mmap 生命周期)
-│   ├── index/              # TimeIndex + IndexSegment (二分查找)
-│   ├── bg/                 # BackgroundTasks (flush + idle check + retention)
-│   ├── queue/              # DatasetQueue + Consumer State File
-│   └── ...                 # block/cache/compress/header/meta/util
-├── include/
-│   └── timslite.h          # C 头文件 (FFI 函数声明)
-├── wrapper/
-│   └── python/             # Python PyO3 绑定 + tests
-├── tests/                  # 集成测试
-├── benches/                # 性能基准测试 (待创建)
-├── docs/
-│   ├── design/             # 详细设计文档 (14 个专题)
-│   └── plan/               # 开发计划文档 (overview + 12 phases)
-├── plan.md                 # 计划状态总览 + 待完成清单
-├── design.md               # 设计文档索引
-└── Cargo.toml
-```
+- **mmap 分段存储**: 数据和索引文件按需打开并通过 `memmap2` 映射。
+- **Block 级聚合**: 多条 record 聚合进 64 KiB payload block，降低索引和元数据开销。
+- **延迟压缩**: pending block 保持 raw 可写状态，直到下一次写入溢出时 seal 并压缩。
+- **可变文件头**: 数据段和索引段持久化 `header_len`，物理偏移由逻辑数据偏移和段 header 长度共同计算。
+- **时间索引**: 每个 dataset 拥有独立的 18 字节 index entry，支持稀疏模式和连续模式。
+- **写入修正能力**: 支持 correction、out-of-order rewrite、delete、append 等写路径。
+- **单 record 上限**: 普通 write 和 append 都限制单条逻辑 record 最大 4 MiB。
+- **Retention window**: 保留窗口使用与 timestamp 相同的单位，后台回收调度按 UTC hour 执行。
+- **读缓存**: 全局 `BlockCache` 只缓存不可变 compressed block，不缓存 mutable pending/raw block。
+- **持久化队列**: Queue consumer 使用 4 KiB mmap 状态文件保存 ack 进度和 pending 超时重投递状态。
+- **Journal 变更日志**: `.journal/logs` 记录 create/drop/write/delete/append，timestamp 为连续递增 sequence。
+- **FFI 与 Python**: C ABI 和 PyO3 wrapper 覆盖主要 Store、DataSet、Query、Queue 工作流。
 
-## 数据集目录格式
+## 数据模型要点
 
-```
+- Dataset name、dataset type、queue consumer group name 必须匹配 `^[0-9A-Za-z_-]+$`，且最多 255 字节。
+- `.journal/logs` 是保留的内部 dataset。Journal 开启时可以受控只读打开，但 public create/write/append/delete/drop 会被拒绝。
+- Record payload 编码为 `data_len: u32`、`timestamp: i64`、原始数据 bytes。
+- `block_offset` 是相对数据区起点的逻辑全局偏移，指向 `BlockHeader`。
+- 路由到具体段后，物理文件偏移为 `segment.header_len + (block_offset - segment.file_offset)`。
+- on-disk integer 使用 little-endian；各字段 signed/unsigned 和边界校验见详细设计文档。
+- `read(-1)` 读取 `latest_written_timestamp` 对应的 timestamp；如果该 timestamp 已删除或过期，返回 `None`。
+
+## 目录结构
+
+```text
 {data_dir}/
-├── {dataset_name_1}/
-│   ├── {dataset_type_A}/
-│   │   ├── meta                     # 不可变配置 (magic+version+TLV, 仅创建时写入)
-│   │   ├── data/                    # 数据段目录
-│   │   │   ├── 00000000000000000000  # 起始 offset=0 (20 位十进制, 零填充)
-│   │   │   ├── 00000000000067108864  # 起始 offset=64MB
-│   │   │   └── 000000000000134217728
-│   │   └── index/                   # 索引段目录
-│   │       ├── 00000000000000000000  # 起始 timestamp=0 (20 位十进制)
-│   │       └── 0000000000001700000000
-│   │
-│   └── {dataset_type_B}/
+├── {dataset_name}/
+│   └── {dataset_type}/
 │       ├── meta
 │       ├── data/
-│       └── index/
-│
-└── {dataset_name_2}/
-    └── {dataset_type_C}/
+│       │   ├── 00000000000000000000
+│       │   └── 00000000000067108864
+│       ├── index/
+│       │   ├── 00000000000000000000
+│       │   └── 0000000000001700000000
+│       └── queue/
+│           └── {group_name}
+└── .journal/
+    └── logs/
+        ├── meta
+        ├── data/
+        ├── index/
+        └── queue/
 ```
 
-### 隔离保证
+每个业务 dataset 按 `(name, type)` 物理隔离。数据段文件名是逻辑数据区起始 offset，索引段文件名是该段 base timestamp。连续索引模式下，中间跨度较大的空洞段不需要提前创建，只有真实写入落入该段时才创建。
 
-- 每个 `(dataset_name, dataset_type)` 拥有完全独立的 `data/` 和 `index/` 目录
-- 不同数据集名称/类型之间文件物理隔离
-- `meta` 文件记录不可变参数, 打开时校验一致性
-
-## 快速开始
-
-### Rust API
-
-```toml
-# Cargo.toml
-[dependencies]
-timslite = { path = "path/to/timslite" }
-```
+## Rust 快速示例
 
 ```rust
-use timslite::{Store, StoreConfig, DataSetConfigBuilder};
+use timslite::{DataSetConfigBuilder, Store, StoreConfig};
+
+fn main() -> timslite::Result<()> {
+    let store_config = StoreConfig::builder()
+        .enable_background_thread(true)
+        .enable_journal(true)
+        .retention_check_hour(0) // UTC hour
+        .build();
+
+    let mut store = Store::open("./tmp/timslite", store_config.clone())?;
+
+    let dataset_config = DataSetConfigBuilder::from_store(&store_config)
+        .index_continuous(1)
+        .retention_window(86_400)
+        .build();
+
+    let sensor = store.create_dataset_with_config("sensor", "logs", Some(dataset_config))?;
+
+    store.write_dataset(sensor, 1_700_000_000, b"first")?;
+    store.append_dataset(sensor, 1_700_000_000, b"+tail")?;
+
+    let latest = store.read_dataset(sensor, -1)?;
+    assert_eq!(latest.unwrap().1, b"first+tail");
+
+    let rows = store.query_dataset(sensor, 1_700_000_000, 1_700_000_010)?;
+    assert_eq!(rows.len(), 1);
+
+    let _ = store.tick_background_tasks()?;
+    Ok(())
+}
+```
+
+## Queue 示例
+
+```rust
 use std::time::Duration;
 
-// 1. 打开存储
-let config = StoreConfig::builder()
-    .flush_interval(Duration::from_secs(600))     // 10 分钟 flush
-    .idle_timeout(Duration::from_secs(1800))       // 30 分钟 idle-close
-    .data_segment_size(64 * 1024 * 1024)           // 64MB
-    .index_segment_size(4 * 1024 * 1024)           // 4MB
-    .compress_level(6)
-    .retention_check_hour(2)                       // 每日凌晨 2 点执行回收
-    .build();
+# use timslite::{DataSetHandle, Store};
+# fn demo(mut store: Store, handle: DataSetHandle) -> timslite::Result<()> {
+let queue = store.open_queue(handle)?;
+let consumer = queue.open_consumer("worker_1")?;
 
-let mut store = Store::open("/data/timslite", config)?;
+let ts = queue.push(b"job payload")?;
 
-// 2. 创建新数据集 (参数写入 meta 文件, 之后不可修改)
-let handle = store.create_dataset_with_config(
-    "patient_001", "waveform",
-    Some(
-        DataSetConfigBuilder::from_store(&config)
-            .retention_ms(30 * 86400 * 1000) // 30 天有效期 (ms timestamps)
-    ),
-)?;
-
-// 3. 写入数据
-{
-    let ds = store.get_dataset(&handle)?;
-    let mut ds = ds.lock().unwrap();
-    ds.write(1700000000, &[1, 2, 3, 4])?;
-    ds.write(1700000001, &[5, 6, 7, 8])?;
+if let Some((polled_ts, payload)) = consumer.poll(Duration::from_secs(1))? {
+    assert_eq!(polled_ts, ts);
+    assert_eq!(payload, b"job payload");
+    consumer.ack(polled_ts)?;
 }
-
-// 4. 查询时间范围
-{
-    let ds = store.get_dataset(&handle)?;
-    let mut ds = ds.lock().unwrap();
-    let records = ds.query(1700000000, 1700000060)?;
-    for (ts, data) in &records {
-        println!("ts={}, data={:?}", ts, data);
-    }
-}
-
-// 5. 关闭存储 (触发 flush + 关闭所有数据集)
-store.close()?;
+# Ok(())
+# }
 ```
 
-### C FFI API
+如果消费者需要接收后续 push 的数据，应先打开 consumer 再 push。新 consumer 的初始进度会从当前 `latest_written_timestamp()` 开始。
 
-```c
-#include "timslite.h"
-#include <stdio.h>
+## Journal 说明
 
-int main() {
-    char err[512];
+Journal 由 `StoreConfig.enable_journal` 控制，默认开启。
 
-    // 1. 打开存储
-    void* store = tmsl_store_open("/data/timslite", err, sizeof(err));
-    if (!store) { printf("Error: %s\n", err); return 1; }
+- 内置 dataset 固定为 `.journal/logs`。
+- Journal timestamp 是从 `1` 开始的连续 sequence，不是系统时间。
+- 记录类型: `0x01` create dataset、`0x02` drop dataset、`0x11` write data、`0x12` delete data、`0x13` append data。
+- Journal v1 是辅助变更日志，不是严格 WAL，不保证 journal 页和业务 dataset 页以事务顺序落盘。
+- 消费 `0x11/0x12/0x13` 时，应将日志里的 index pointer 作为源 dataset 读取指针，在源数据仍可访问时通过 `read_entry_at_index` 拉取数据。
+- `store.open_journal_queue()` 可打开 journal queue 进行实时消费。
 
-    // 2. 创建数据集
-    void* ds = tmsl_dataset_create(store, "sensor", "temp",
-        64ULL * 1024 * 1024,   // data_segment_size = 64MB
-        4ULL * 1024 * 1024,    // index_segment_size = 4MB
-        6,                     // compress_level
-        0,                     // index_continuous (non-continuous)
-        0,                     // retention_ms (0=no limit)
-        err, sizeof(err));
-    if (!ds) { printf("Error: %s\n", err); return 1; }
-
-    // 3. 写入
-    unsigned char data[] = {1, 2, 3, 4};
-    tmsl_dataset_write(ds, 1700000000, data, 4, err, sizeof(err));
-
-    // 4. 查询
-    void* iter = tmsl_dataset_query(ds, 1700000000, 1700000060, err, sizeof(err));
-    long ts;
-    unsigned char* buf;
-    size_t len;
-    while (tmsl_iter_next(iter, &ts, &buf, &len, err, sizeof(err)) == 0) {
-        // 处理 buf[0..len]
-        tmsl_iter_free_data(buf);
-    }
-    tmsl_iter_close(iter);
-
-    // 5. 关闭
-    tmsl_dataset_close(ds, err, sizeof(err));
-    tmsl_store_close(store, err, sizeof(err));
-    return 0;
-}
-```
-
-### FFI 函数列表
-
-| 函数 | 说明 | 返回值 |
-|------|------|--------|
-| `tmsl_store_open` | 打开存储实例 | `*mut c_void` (NULL=失败) |
-| `tmsl_store_close` | 关闭存储实例 | `0`=成功, `-1`=失败 |
-| `tmsl_store_tick_background_tasks` | 手动执行一次后台任务 (可与后台线程共存; `out_executed` 写入已执行任务数, `out_next_delay_ms` 写入下一次任务到期等待时间) | `0`=成功, `-1`=失败 |
-| `tmsl_store_next_background_delay` | 查询下一次后台任务剩余等待时间 (ms, 不执行任何任务) | `0`=成功, `-1`=失败; `out_next_delay_ms` 写入 |
-| `tmsl_dataset_create` | 创建新数据集 | `*mut c_void` (NULL=失败) |
-| `tmsl_dataset_open` | 打开已有数据集 | `*mut c_void` (NULL=失败) |
-| `tmsl_dataset_close` | 关闭数据集 | `0`=成功, `-1`=失败 |
-| `tmsl_dataset_drop` | 删除整个数据集 | `0`=成功, `-1`=失败 |
-| `tmsl_dataset_flush` | 手动 flush 数据集 | `0`=成功, `-1`=失败 |
-| `tmsl_dataset_latest_timestamp` | 获取数据集最新写入时间戳 (0=空) | `0`=成功, `-1`=失败 |
-| `tmsl_dataset_write` | 写入一条记录 | `0`=成功, `-1`=失败 |
-| `tmsl_dataset_delete` | 删除指定时间戳的记录 (索引标哨兵, invalid_record_count++) | `0`=成功, `-1`=失败 |
-| `tmsl_dataset_read` | 读取单个时间戳的记录 (`timestamp=-1` 读最新) | `0`=成功, `1`=未找到, `-1`=失败 |
-| `tmsl_dataset_query` | 查询时间范围, 返回迭代器 | `*mut c_void` (NULL=失败) |
-| `tmsl_iter_next` | 获取下一条记录 | `0`=成功, `1`=无数据, `-1`=失败 |
-| `tmsl_iter_free_data` | 释放 `tmsl_iter_next` / `tmsl_dataset_read` 分配的数据 | void |
-| `tmsl_iter_close` | 关闭并释放迭代器 | void |
-
-> **内存所有权**: `tmsl_iter_next` 和 `tmsl_dataset_read` 返回的数据由 `libc::malloc` 分配, C 侧必须调用 `tmsl_iter_free_data` 释放。
-
-## 数据集生命周期
-
-```
-create → open → write/query → close
-  │        │
-  │        └── 从 meta 读取参数 (不可变)
-  └── 写入 meta 文件 (一次性, 之后不可修改)
-
-drop → 删除整个目录 (不可恢复)
-```
-
-| 操作 | 参数 | 行为 |
-|------|------|------|
-| `create` | 需传入 `data_segment_size`, `index_segment_size`, `compress_level` | 写入 meta 文件, 创建 data/ + index/ 目录; 已存在返回错误 |
-| `open` | 仅 `block_max_size` (运行时参数) | 读取 meta 文件加载参数; meta 不存在返回错误 |
-| `close` | 无 | flush + seal pending + unmap + close 所有 segment |
-| `drop` | 无 | `remove_dir_all` 删除整个目录, 不可恢复 |
-
-## 后台任务
-
-单一线程统一执行四个周期性任务:
-
-| 任务 | 默认间隔 | 行为 |
-|------|----------|------|
-| **Flush** | 10 分钟 | 遍历所有打开的 segment, 执行 `mmap.flush()` (MS_SYNC); 不密封/不压缩 |
-| **Idle Check** | 60 秒 | 扫描 `last_used_at`, ≥30 分钟 → sync + 密封 pending + unmap + close |
-| **Cache Eviction** | 60 秒 | 扫描缓存池, 超 idle 阈值的 entry → 回收 + 释放内存 → LRU 检查 |
-| **Retention Reclaim** | 每日 0 点 | 扫描 retention_ms > 0 的 dataset, 删除过期分段文件 |
-
-**设计优势**: 动态计算下一次唤醒时间 (`min(next_flush, next_idle, next_cache, next_retention) - now`), 无固定轮询浪费, 单一 shutdown channel 简化资源管理。
-
-## 数据保留策略
-
-### retention_ms (数据集级)
-
-每个数据集可在创建时指定 `retention_ms` (数据有效期, 单位与 timestamp 一致, 0=不限):
-
-```
-过期阈值 = latest_written_timestamp.saturating_sub(retention_ms)
-```
-
-**回收规则**:
-- **数据分段**: `closed_segments[].max_timestamp < 过期阈值` → 删除文件
-- **索引分段**: `last_entry_timestamp() < 过期阈值` → 删除文件
-- **查询约束**: `query` 自动钳制 start_ts 到有效期范围
-
-### retention_check_hour (Store 级)
-
-Store 配置 `retention_check_hour` (0-23, 默认 0=午夜), 每日在该时间点执行回收任务:
-
-```rust
-let config = StoreConfig::builder()
-    .retention_check_hour(2)   // 每日凌晨 2 点执行回收
-    .build();
-```
-
-**约束**: 回收期间打开的文件 (读索引最后一个 ts) 检查完成后立即释放, 不依赖 idle-close。
-
-## 消息队列
-
-基于数据集的持久化队列, 支持 Consumer Group 语义和超时重投递。
-
-### 核心概念
-
-| 概念 | 说明 |
-|------|------|
-| **DatasetQueue** | 绑定到一个 `(name, type)` 数据集, 按写入时间戳顺序消费 |
-| **Consumer Group** | 命名组, 组内消费者共享消费进度, 不同组独立 |
-| **Pending Entry** | 已推送给消费者但未 ACK 的条目, 超时后自动重投递 |
-| **Consumer State File** | 持久化当前组的消费进度 (processed_ts + pending entries) |
-
-### 基本流程
-
-```
-push → poll → ack        # 正常流程
-push → poll → (timeout) → poll (重新获取)   # 超时重投递
-```
-
-### Rust API
-
-```rust
-use timslite::{Store, StoreConfig};
-
-let mut store = Store::open("/data/timslite", StoreConfig::default())?;
-
-// 创建数据集
-store.create_dataset_with_config("tasks", "events", None)?;
-let h = store.open_dataset("tasks", "events")?;
-
-// 打开队列
-let q = store.open_queue(h)?;
-
-// 生产者: push
-store.queue_push(&q, b"{\"cmd\": \"process\", \"id\": 1}")?;
-
-// 消费者: poll + ack
-let c = store.open_consumer(&q, "workers")?;
-if let Some((ts, data)) = store.queue_poll(&c, Duration::from_secs(5))? {
-    println!("got: {:?}", data);
-    store.queue_ack(&c, ts)?;  // 确认消费
-}
-
-store.close()?;
-```
-
-> 打开 Consumer 的时机: Consumer 须在 push 数据**之前**打开, 因为其 `processed_ts` 初始化为 `latest_written_timestamp()`, 之后打开将跳过已有数据。
-
-## Block 设计
-
-### Block Layout (磁盘)
-
-```
-┌─────────────────────────────────────────┐
-│ BlockHeader (16 bytes)                  │
-│  - block_payload_size: u32              │
-│  - flags: u16 (compressed, sealed, ...) │
-│  - record_count: u16                    │
-│  - uncompressed_size: u32               │
-│  - reserved: u32                        │
-├─────────────────────────────────────────┤
-│ Block Payload (compressed 或 raw)       │
-│  [data_len:2][ts:8][data:N] (record 1)  │
-│  [data_len:2][ts:8][data:N] (record 2)  │
-│  ...                                    │
-└─────────────────────────────────────────┘
-```
-
-### 压缩策略
-
-- **Pending Block**: 写入时保持原始格式, 不压缩
-- **Seal 时机**: Block 溢出 (>64KB) 时, 或 idle-close 时
-- **压缩判断**: 压缩后体积 < 原始体积 → 写入压缩数据 + set `COMPRESSED` flag; 否则保留原始数据
-- **超大 record**: 单条 record > 64KB → 独占 Block, 立即 seal + 压缩
-
-### IndexEntry (18 字节)
-
-```
-┌────────────────────┬────────────────────┬──────────────┐
-│ timestamp: i64 (8) │ block_offset: u64  │ in_block: u16│
-└────────────────────┴────────────────────┴──────────────┘
-```
-
-- `block_offset`: Block 在数据段中的绝对偏移 (相对 DATA_HEADER_SIZE)
-- `in_block_offset`: record 在 Block Payload 中的相对偏移
-
-## 文件格式
-
-### 数据段文件头 (116 字节)
-
-```
-┌──────────────────────────────────────────────────────────┐
-│ 固定前缀 (9 bytes): magic(4) + version(2) + type(1) +    │
-│                     meta_length(2)                        │
-├──────────────────────────────────────────────────────────┤
-│ Meta 不可变 TLV 区 (33 bytes): created_at, file_offset,   │
-│   file_size, compress_level                              │
-├──────────────────────────────────────────────────────────┤
-│ state_length: u16 (2 bytes)                              │
-├──────────────────────────────────────────────────────────┤
-│ State 可变区 (72 bytes): 9×8 bytes                       │
-│   min_timestamp, max_timestamp, wrote_position,          │
-│   record_count, total_uncompressed_size,                 │
-│   pending_block_offset, pending_wrote_position,          │
-│   pending_record_count, invalid_record_count             │
-└──────────────────────────────────────────────────────────┘
-```
-
-### 索引段文件头 (52 字节)
-
-```
-┌──────────────────────────────────────────────────────────┐
-│ 固定前缀 (9 bytes): magic(4) + version(2) + type(1) +    │
-│                     meta_length(2)                        │
-├──────────────────────────────────────────────────────────┤
-│ Meta 不可变 TLV 区 (33 bytes): created_at, file_offset,   │
-│   file_size, compress_level                              │
-├──────────────────────────────────────────────────────────┤
-│ state_length: u16 (2 bytes)                              │
-├──────────────────────────────────────────────────────────┤
-│ State 可变区 (8 bytes): 1×8 bytes                        │
-│   wrote_position                                         │
-└──────────────────────────────────────────────────────────┘
-```
-
-> **DATA_HEADER_SIZE = 116 bytes, INDEX_HEADER_SIZE = 52 bytes**. Meta/State 分离, 支持向前兼容 (未知 TLV type 通过 length 跳过)。数据段额外维护 min/max_timestamp 用于段级范围过滤。
-
-### 数据集元数据 (meta 文件)
-
-每个数据集目录下固定存在 `meta` 文件, 记录**不可变**配置参数。
-
-```
-┌────────────────────────────────────────────────────┐
-│ magic: 4 bytes = "TMSM"                            │
-│ version: u16 = 1                                   │
-│ meta_data_length: u16                              │
-├────────────────────────────────────────────────────┤
-│ TLV values:                                        │
-│   0x01: data_segment_size (u64 LE, 8 bytes)        │
-│   0x02: index_segment_size (u64 LE, 8 bytes)       │
-│   0x03: compress_level (u8, 1 byte)                │
-│   0x04: create_time (i64 LE, unix ms, 8 bytes)     │
-│   0x05: index_continuous (u8, 1 byte)              │
-│   0x06: initial_data_segment_size (u64 LE, 8B)     │
-│   0x07: initial_index_segment_size (u64 LE, 8B)    │
-│   0x08: retention_ms (u64 LE, 8 bytes, 0=不限)     │
-└────────────────────────────────────────────────────┘
-```
-
-## 构建
-
-### 依赖
-
-- Rust 2021 edition
-- `memmap2` 0.9 — 内存映射
-- `miniz_oxide` 0.8 — 纯 Rust deflate 压缩
-- `log` 0.4 — 日志
-- `libc` 0.2 — C 标准库绑定 (malloc/free)
-
-### 编译动态库
+## 构建与测试
 
 ```bash
-# Debug
 cargo build
-
-# Release
 cargo build --release
-# 输出: target/release/libtimslite.so (Linux) / timslite.dll (Windows) / libtimslite.dylib (macOS)
-```
 
-### 运行测试
-
-```bash
+# 必须单线程运行，文件系统测试会共享 tmp 路径。
 cargo test -- --test-threads=1
-# 244 tests passing (200 unit + 44 integration)
-```
 
-### Clippy
-
-```bash
+cargo fmt -- --check
 cargo clippy -- -D warnings
 ```
 
-### 格式化
+修改 Python wrapper 时，还需要在 [wrapper/python](wrapper/python) 下执行对应 wrapper 检查和 Python 测试。
 
-```bash
-cargo fmt -- --check
-```
+## FFI
 
-## 文档
+C ABI 声明位于 [include/timslite.h](include/timslite.h)。主要入口包括:
 
-- **[设计文档索引](design.md)** — 14 个专题设计文档 (`docs/design/`)，覆盖架构、数据模型、FFI、并发、压缩等
-- **[开发计划](plan.md)** — 计划状态总览 + 待完成清单，详细 phase 文档在 `docs/plan/`
-- **[Python 绑定](wrapper/python/)** — PyO3 + maturin Python 封装, 含 Queue 支持
+- `tmsl_store_open`、`tmsl_store_open_with_config`、`tmsl_store_close`
+- `tmsl_dataset_create`、`tmsl_dataset_create_with_config`、`tmsl_dataset_open`、`tmsl_dataset_close`、`tmsl_dataset_drop`
+- `tmsl_dataset_write`、`tmsl_dataset_append`、`tmsl_dataset_delete`、`tmsl_dataset_read`、`tmsl_dataset_query`
+- Queue open/poll/ack 相关函数
+- 后台 tick 与配置辅助函数
 
-## 并发控制
+所有 FFI 函数通过返回值和调用方提供的 error buffer 报告错误。read/query 返回的 buffer 必须通过匹配的 timslite FFI free 函数释放。
 
-```
-Store: RwLock<HashMap>              (多读少写, 数据集注册表)
-DataSet: Arc<Mutex<DataSet>>        (读写互斥, 数据集内部操作)
-不同 DataSet: 完全并行               (无交叉锁)
-```
+## 设计文档导航
 
-- 后台线程通过读锁遍历, 写锁获取后 double-check `last_used_at` 防止竞态
-- 前台写操作更新 `last_used_at` 可自动"唤醒"即将 idle-close 的数据集
+从 [design.md](design.md) 开始阅读。常用专题:
 
-## 崩溃安全
+- [architecture.md](docs/design/architecture.md)
+- [data-model.md](docs/design/data-model.md)
+- [data-segment.md](docs/design/data-segment.md)
+- [dataset-operations.md](docs/design/dataset-operations.md)
+- [time-index.md](docs/design/time-index.md)
+- [background-and-cache.md](docs/design/background-and-cache.md)
+- [queue-overview.md](docs/design/queue-overview.md)
+- [queue-state-file.md](docs/design/queue-state-file.md)
+- [journal.md](docs/design/journal.md)
+- [store-and-ffi.md](docs/design/store-and-ffi.md)
 
-- mmap 写入已有 OS page cache 保护, crash 时最多损失 10 分钟 (flush 间隔) 内未 sync 的数据
-- reopen 时检测 pending block 并安全密封 (FLAGS=SEALED, 不压缩), 不会损坏已有数据
-- meta 文件创建时一次性写入, 不存在部分写入问题
-- 索引和数据段独立文件, 单个文件损坏不影响其他段
-
-## 与 TimeStore (Java) 的差异
-
-| 对比项 | TimeStore (Java) | timslite (Rust) |
-|--------|------------------|-----------------|
-| 存储单元 | 单条 record | Block (多条聚合, ≤64KB) |
-| 压缩粒度 | record | Block |
-| 压缩时机 | 立即 | 延迟 (pending→sealed, 溢出时) |
-| 内存映射 | MappedByteBuffer | memmap2::MmapMut, 懒加载/超时关闭(30min) |
-| 元数据 | Protobuf | 100字节 header (meta/state 分离) |
-| 索引目录 | 同级子目录 | `data/` + `index/` 独立子目录 |
-| 后台线程 | 多个 | 单一线程统一循环 |
-
-## License
-
-MIT
+修改存储行为时，应同步更新对应设计文档和计划清单。
