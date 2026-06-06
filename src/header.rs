@@ -3,7 +3,7 @@
 //! Data segment: DataFileMetadata (v1 default 116 bytes)
 //!   Layout: fixed_prefix(9B) + meta_tlv + state_length(2B) + state
 //!
-//! Index segment: IndexFileMetadata (v1 default 52 bytes)
+//! Index segment: IndexFileMetadata (fixed 128-byte entry area start)
 //!   Layout: fixed_prefix(9B) + meta_tlv + state_length(2B) + state
 //!
 //! Meta is immutable (written once at creation). State is mutable (updated on every write).
@@ -18,8 +18,9 @@ use memmap2::MmapMut;
 /// Data segment v1 default header size: 9 + 41 + 2 + 72 = 124 bytes.
 pub const DATA_HEADER_SIZE: u64 = 124;
 
-/// Index segment v1 default header size: 9 + 41 + 2 + 8 = 60 bytes.
-pub const INDEX_HEADER_SIZE: u64 = 60;
+/// Index segment entry area starts at a fixed offset. The bytes before this
+/// offset are reserved for metadata, mutable state, and future extensions.
+pub const INDEX_HEADER_SIZE: u64 = 128;
 
 pub const MAGIC: [u8; 4] = *b"TMSL";
 pub const VERSION: u16 = 1;
@@ -154,9 +155,19 @@ pub fn index_header_size_from_mmap(mmap: &[u8]) -> Result<u64> {
     let state_len_off = state_length_offset(meta_length);
     ensure_len(mmap, state_len_off + STATE_LENGTH_SIZE, "state_length")?;
     let state_length = read_u16_from_mmap(mmap, state_len_off);
-    let size = header_size(meta_length, state_length);
-    ensure_len(mmap, size as usize, "index header")?;
-    Ok(size)
+    let dynamic_size = header_size(meta_length, state_length);
+    if dynamic_size > INDEX_HEADER_SIZE {
+        return Err(TmslError::InvalidData(format!(
+            "index header content length {} exceeds reserved entry start {}",
+            dynamic_size, INDEX_HEADER_SIZE
+        )));
+    }
+    ensure_len(
+        mmap,
+        INDEX_HEADER_SIZE as usize,
+        "index header reserved area",
+    )?;
+    Ok(INDEX_HEADER_SIZE)
 }
 
 pub fn write_data_core_state_to_mmap(
@@ -571,8 +582,15 @@ impl IndexFileMetadata {
             )));
         }
         let state_start = state_start(meta_length);
-        let header_size = header_size(meta_length, state_length);
-        ensure_len(mmap, header_size as usize, "index header")?;
+        let dynamic_header_size = header_size(meta_length, state_length);
+        if dynamic_header_size > INDEX_HEADER_SIZE {
+            return Err(TmslError::InvalidData(format!(
+                "index header content length {} exceeds reserved entry start {}",
+                dynamic_header_size, INDEX_HEADER_SIZE
+            )));
+        }
+        let header_size = INDEX_HEADER_SIZE;
+        ensure_len(mmap, header_size as usize, "index header reserved area")?;
         let wrote_position = read_u64_from_mmap(mmap, state_start + IS_WROTE_POSITION);
 
         Ok(Self {
@@ -837,6 +855,20 @@ mod tests {
     }
 
     #[test]
+    fn test_index_entries_start_at_reserved_128_bytes() {
+        let meta = IndexFileMetadata::create_default(
+            1700000000,
+            4 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
+
+        assert_eq!(meta.header_size, 128);
+        assert_eq!(meta.wrote_position, 128);
+        assert_eq!(INDEX_HEADER_SIZE, 128);
+    }
+
+    #[test]
     fn test_data_header_reads_state_after_extended_meta() {
         let extra_meta = [0xEE, 4, 0, 1, 2, 3, 4];
         let meta_length = META_LENGTH_V1 + extra_meta.len() as u16;
@@ -887,8 +919,8 @@ mod tests {
         let meta_length = META_LENGTH_V1 + extra_meta.len() as u16;
         let state_length_offset = META_START + meta_length as usize;
         let state_start = state_length_offset + 2;
-        let header_size = state_start as u64 + INDEX_STATE_LENGTH_V1 as u64;
-        let (mut mmap, _path) = create_test_mmap(header_size);
+        let dynamic_header_size = state_start as u64 + INDEX_STATE_LENGTH_V1 as u64;
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
 
         write_shared_prefix(&mut mmap, MAGIC, VERSION, FILE_TYPE_INDEX, meta_length);
         write_meta_tlv(
@@ -902,13 +934,19 @@ mod tests {
         let extra_start = META_START + META_LENGTH_V1 as usize;
         mmap[extra_start..extra_start + extra_meta.len()].copy_from_slice(&extra_meta);
         write_u16_to_mmap(&mut mmap, state_length_offset, INDEX_STATE_LENGTH_V1);
-        write_u64_to_mmap(&mut mmap, state_start + IS_WROTE_POSITION, header_size);
+        write_u64_to_mmap(
+            &mut mmap,
+            state_start + IS_WROTE_POSITION,
+            INDEX_HEADER_SIZE,
+        );
 
         let read = IndexFileMetadata::read_from(&mmap).unwrap();
         assert_eq!(read.meta_length, meta_length);
         assert_eq!(read.state_length, INDEX_STATE_LENGTH_V1);
         assert_eq!(read.file_offset, 1700000000);
-        assert_eq!(read.wrote_position, header_size);
+        assert!(dynamic_header_size < INDEX_HEADER_SIZE);
+        assert_eq!(read.header_size, INDEX_HEADER_SIZE);
+        assert_eq!(read.wrote_position, INDEX_HEADER_SIZE);
     }
 
     #[test]
@@ -995,10 +1033,10 @@ mod tests {
             crate::compress::COMPRESS_TYPE_ZSTD,
         );
         meta.write_to(&mut mmap);
-        meta.write_wrote_position(&mut mmap, 100);
+        meta.write_wrote_position(&mut mmap, INDEX_HEADER_SIZE + 18);
         assert_eq!(
             read_u64_from_mmap(&mmap, STATE_START + IS_WROTE_POSITION),
-            100
+            INDEX_HEADER_SIZE + 18
         );
     }
 
@@ -1022,6 +1060,6 @@ mod tests {
     #[test]
     fn test_header_sizes() {
         assert_eq!(DATA_HEADER_SIZE, 124);
-        assert_eq!(INDEX_HEADER_SIZE, 60);
+        assert_eq!(INDEX_HEADER_SIZE, 128);
     }
 }

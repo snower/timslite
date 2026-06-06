@@ -23,7 +23,8 @@
 
 ```text
 index_entry_size      = 18
-segment_capacity      = floor((index_segment_size - index_header_len) / index_entry_size)
+index_entry_area_start = 128
+segment_capacity      = floor((index_segment_size - index_entry_area_start) / index_entry_size)
 time_step             = 1
 base_timestamp        = 第一次真实写入的 timestamp
 segment_ordinal(ts)   = floor((ts - base_timestamp) / (segment_capacity * time_step))
@@ -34,7 +35,8 @@ entry_index(ts)       = (ts - segment_start(ts)) / time_step
 约束:
 - `base_timestamp` 只在连续模式下有意义, 由第一次成功真实写入确定。
 - 不新增单独的 `base_timestamp` 文件。第一次 flush 生成的首个数值 index segment 文件名就是 `base_timestamp`; reopen 时从现有最小数值分段文件名恢复。
-- `segment_capacity` 基于配置的 `index_segment_size` 最大分段大小和该格式的 `index_header_len` 计算, 不随懒分配的当前文件大小变化。当前 v1 新建文件的 `index_header_len` 为 52。
+- `segment_capacity` 基于配置的 `index_segment_size` 最大分段大小和固定 `index_entry_area_start=128` 计算, 不随懒分配的当前文件大小、meta/state 实际长度或未来 128 字节保留区内的 header 扩展变化。
+- index segment 文件前 128 字节统一保留给 fixed prefix、Meta TLV、state 与未来扩展; 所有 index entry 无论连续/非连续模式都从文件内绝对偏移 128 开始。
 - index segment 文件名仍使用 `segment_start` 的 20 位十进制格式。
 - 每个 index segment 的 `start_timestamp` 表示该 segment 的逻辑起点, 不一定表示第一条真实数据的时间戳。
 
@@ -180,7 +182,7 @@ entry_index = entry_index(ts)
 if entry_index >= segment.wrote_count:
     return None
 
-read entry at index_header_len + entry_index * INDEX_ENTRY_SIZE
+read entry at 128 + entry_index * INDEX_ENTRY_SIZE
 validate entry.timestamp == ts
 ```
 

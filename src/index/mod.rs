@@ -927,6 +927,21 @@ mod tests {
     }
 
     #[test]
+    fn test_continuous_segment_capacity_uses_fixed_index_area_start() {
+        let dir = temp_dir();
+        let sub = dir.join("continuous_fixed_index_area_start");
+        let _ = fs::remove_dir_all(&sub);
+        fs::create_dir_all(&sub).unwrap();
+
+        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        idx.ensure_base_timestamp(1000).unwrap();
+
+        assert_eq!(idx.segment_capacity().unwrap(), 4);
+        assert_eq!(idx.segment_start_for(1003).unwrap(), 1000);
+        assert_eq!(idx.segment_start_for(1004).unwrap(), 1004);
+    }
+
+    #[test]
     fn test_index_segment_append_and_query() {
         let dir = temp_dir();
         let sub = dir.join("append_query");

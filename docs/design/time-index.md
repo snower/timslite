@@ -144,15 +144,16 @@ impl IndexSegment {
 
 ```
 ┌──────────────────────────────────────────────┐
-│ IndexFileHeader (variable, v1 default 52B)   │
+│ IndexFileHeader reserved area (fixed 128B)   │
 │ - 固定前缀(9B): magic(4)+version(2)+         │
 │   fileType(1)+meta_length(2)                 │
-│ - Meta TLV(33B): created_at, file_offset,    │
-│   file_size, compress_level                  │
+│ - Meta TLV: created_at, file_offset,         │
+│   file_size, compress_level, compress_type   │
 │ - state_length(2B): 8                        │
 │ - State(8B): wrote_position (1×8B)          │
+│ - Reserved padding to byte 128               │
 ├──────────────────────────────────────────────┤
-│ Index Area                                   │
+│ Index Area (starts at absolute offset 128)   │
 │ ┌──────────┬──────────┬──────┐               │
 │ │ ts:8     │ block:8  │ ib:2 │ entry 1       │
 │ └──────────┴──────────┴──────┘               │
@@ -163,7 +164,7 @@ impl IndexSegment {
 └──────────────────────────────────────────────┘
 ```
 
-> **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - header_len) / 18`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。
+> **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - 128) / 18`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。索引段的 Meta TLV/state 仍按可变 header 解析, 但 entry area 起点固定为 128, 不随已知 header 内容长度变化。
 
 > **发布边界**: `IndexEntry` 是 record 对查询可见的发布点。Data segment append 必须先写 payload 与 block/header state, 最后才追加或覆盖 index entry。若 crash 发生在 index 写入前, data segment 中的孤儿 payload 不可见并按丢失处理。若 crash/reopen 后出现已持久化 index 指向不完整 data 的情况, 读取路径必须通过 block 边界和 record timestamp 校验拒绝返回错误数据; 本库不通过索引事务恢复该写入。
 
@@ -183,7 +184,7 @@ impl IndexSegment {
 连续模式仍保持 O(1) 定位, 但不再要求所有缺失 timestamp 都落盘为 filler。它使用固定逻辑网格:
 
 ```text
-segment_capacity = floor((index_segment_size - index_header_len) / 18)
+segment_capacity = floor((index_segment_size - 128) / 18)
 time_step        = 1
 base_timestamp   = first real write timestamp
 segment_ordinal  = floor((ts - base_timestamp) / segment_capacity)
@@ -217,7 +218,7 @@ reclaim_expired_segments(expiration_threshold: i64):
 
 **`last_entry_timestamp` 实现**:
 - 仅打开文件一次 (read-only mmap, 不使用 `MmapMut::map_mut` 避免 Windows 锁定)
-- 从文件 header 的 `wrote_position` 推算最后条目位置: `header_len + (wrote_count - 1) * 18`
+- 从文件 header 的 `wrote_position` 推算最后条目位置: `128 + (wrote_count - 1) * 18`
 - 立即 drop(mmap) + drop(file), 检查完成后不保持打开状态
 - 返回 `Ok(Some(last_ts))`, `Ok(None)` 或 `Err`; 空段/`wrote_count==0` 返回 `Ok(None)`
 - `DataSet::open` 恢复 `latest_written_timestamp` 时, 只需要读取最新非空 index segment 文件的最后一条 entry; delete/filler entry 的 timestamp 仍计入 latest, 因此 `read(-1)` 不会回退到更早有效记录

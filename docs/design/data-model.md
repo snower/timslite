@@ -131,7 +131,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 读取已有文件时必须执行以下校验:
 
 - `meta_length + state_length` 计算 `header_len` 时不得溢出, 且 `header_len <= file_len`; v1 已知 state 长度不得短于对应最小值。
-- data/index segment 的 `wrote_position` 必须满足 `header_len <= wrote_position <= file_len`, 且 index `wrote_position - header_len` 必须是 `INDEX_ENTRY_SIZE` 的整数倍。
+- data segment 的 `wrote_position` 必须满足 `header_len <= wrote_position <= file_len`。index segment 的 entry area 固定从文件内绝对偏移 128 开始, 因此 index `wrote_position` 必须满足 `128 <= wrote_position <= file_len`, 且 `wrote_position - 128` 必须是 `INDEX_ENTRY_SIZE` 的整数倍。
 - `block_payload_size` 必须完全落在所属 segment 文件内; compressed block 解压后的长度必须等于 `uncompressed_size`。
 - 遍历 record 时, 每个 `data_len` 必须满足 `record_pos + 12 + data_len <= block_payload_len`; `timestamp` 直接按 `i64 LE` 读取。
 - real `IndexEntry` 不得使用 filler sentinel: `block_offset != u64::MAX` 且 `in_block_offset != 0xFFFF`; filler 必须同时使用 `block_offset = u64::MAX` 与 `in_block_offset = 0xFFFF`。
@@ -202,14 +202,14 @@ Offset  (相对 state 起始)    Size  Field                       Description
 
 ```
 Offset  (相对 state 起始)    Size  Field                    Description
-0       u64(8)  wrote_position           当前写入位置(文件内绝对偏移, 含动态 header_len)
+0       u64(8)  wrote_position           当前写入位置(文件内绝对偏移, index entry area 固定从 128 开始)
 ```
 
-> `wrote_count` 可从 `wrote_position` 计算: `wrote_count = (wrote_position - header_len) / INDEX_ENTRY_SIZE`。不再单独持久化 `record_count`、`total_uncompressed_size` 等数据段相关字段。
+> `wrote_count` 可从 `wrote_position` 计算: `wrote_count = (wrote_position - 128) / INDEX_ENTRY_SIZE`。不再单独持久化 `record_count`、`total_uncompressed_size` 等数据段相关字段。
 
 #### Header 长度与数据区起点
 
-Header 采用可变长度设计。`DATA_HEADER_SIZE=116` 和 `INDEX_HEADER_SIZE=52` 仅表示当前 v1 格式在默认 meta/state 下的最小/默认 header 长度, 不能作为读已有文件时的固定数据区起点。
+Header 采用可变长度设计。Data segment 的 Block 区从动态 `header_len` 开始。Index segment 为保持连续模式 timestamp 路由稳定, 文件前 128 字节固定保留给 fixed prefix、Meta TLV、state 和未来扩展, 所有 index entry 无论连续/非连续模式都从文件内绝对偏移 128 开始。
 
 运行时必须从文件自身读取长度并计算:
 
@@ -220,39 +220,40 @@ state_start         = state_length_offset + 2
 header_len          = state_start + state_length
 ```
 
-所有 state 字段偏移均以 `state_start` 为基准; 数据段 Block 区和索引段 Entry 区均从 `header_len` 开始。未来新增 meta TLV 或 state 字段时, 旧字段相对 state 起点的顺序保持不变, 但 `state_start` 和 `header_len` 会随 `meta_length/state_length` 变化。
+所有 state 字段偏移均以 `state_start` 为基准。数据段 Block 区从动态 `header_len` 开始; 索引段 Entry 区固定从 128 开始。未来新增 index meta TLV 或 state 字段必须仍放入 128 字节保留区, 不能改变 entry area 起点或连续索引 `segment_capacity`。
 
 #### v1 默认 Header 长度计算
 
 **数据段 (DataSegment):**
 ```
 固定前缀:     4 + 2 + 1 + 2     = 9 bytes
-Meta TLV:     11 + 11 + 7 + 4  = 33 bytes  (4 个 TLV 条目)
+Meta TLV:     11 + 11 + 11 + 4 + 4 = 41 bytes  (5 个 TLV 条目)
 state_length: 2                 = 2 bytes
 State 值:     9 × 8            = 72 bytes   (9 个字段)
 ────────────────────────────────────────────
-DATA_HEADER_SIZE = 116 bytes
+DATA_HEADER_SIZE = 124 bytes
 ```
 
 **索引段 (IndexSegment):**
 ```
 固定前缀:     4 + 2 + 1 + 2     = 9 bytes
-Meta TLV:     11 + 11 + 7 + 4  = 33 bytes  (4 个 TLV 条目)
+Meta TLV:     11 + 11 + 11 + 4 + 4 = 41 bytes  (5 个 TLV 条目)
 state_length: 2                 = 2 bytes
 State 值:     1 × 8            = 8 bytes    (1 个字段)
+Reserved:      68               = 68 bytes   (padding to fixed entry area)
 ────────────────────────────────────────────
-INDEX_HEADER_SIZE = 52 bytes
+INDEX_HEADER_SIZE = 128 bytes
 ```
 
 #### 常量定义
 
 ```rust
-pub const DATA_HEADER_SIZE: u64 = 116;   // v1 默认 data header_len
-pub const INDEX_HEADER_SIZE: u64 = 52;   // v1 默认 index header_len
+pub const DATA_HEADER_SIZE: u64 = 124;   // v1 默认 data header_len
+pub const INDEX_HEADER_SIZE: u64 = 128;   // index entry area fixed start
 ```
 
-> 新建 v1 文件时数据区起点分别为 116/52。打开已有文件时, 数据区起点必须使用文件 header 中计算出的 `header_len`。
-> `wrote_position` 是文件内绝对偏移, 必须满足 `wrote_position >= header_len`。运行时可派生 `data_wrote_position = wrote_position - header_len` 作为数据区相对已用字节数; 该派生值不得直接写入 header。
+> 新建 v1 文件时 data Block 区起点为 124, index Entry 区起点为 128。打开已有 data 文件时, Block 区起点必须使用文件 header 中计算出的 `header_len`; 打开 index 文件时仍解析可变 header 内容, 但 Entry 区起点固定为 128。
+> `wrote_position` 是文件内绝对偏移。data 运行时可派生 `data_wrote_position = wrote_position - header_len` 作为数据区相对已用字节数; index 运行时可派生 `wrote_count = (wrote_position - 128) / INDEX_ENTRY_SIZE`。
 
 #### 兼容性设计
 
@@ -365,7 +366,7 @@ const META_TYPE_FILE_OFFSET:    u8 = 0x02;  // i64 LE
 const META_TYPE_FILE_SIZE:      u8 = 0x03;  // u32 LE
 const META_TYPE_COMPRESS_LEVEL: u8 = 0x04;  // u8
 
-/// 数据段文件元数据头 (DataFileHeader, v1 默认 116 bytes)
+/// 数据段文件元数据头 (DataFileHeader, v1 默认 124 bytes)
 struct DataFileMetadata {
     // === 固定前缀 (所有版本必须可读, 9 bytes) ===
     magic: [u8; 4],
@@ -391,7 +392,7 @@ struct DataFileMetadata {
     invalid_record_count: u64,  // 段内无效记录数 (仅统计, 不触发 compaction)
 }
 
-/// 索引段文件元数据头 (IndexFileHeader, v1 默认 52 bytes)
+/// 索引段文件元数据头 (IndexFileHeader, entry area 固定从 128 bytes 开始)
 struct IndexFileMetadata {
     // === 固定前缀 (所有版本必须可读, 9 bytes) ===
     magic: [u8; 4],
@@ -409,8 +410,8 @@ struct IndexFileMetadata {
     wrote_position: u64,
 }
 
-const DATA_HEADER_SIZE: u64 = 116;   // v1 默认数据段 header_len
-const INDEX_HEADER_SIZE: u64 = 52;   // v1 默认索引段 header_len
+const DATA_HEADER_SIZE: u64 = 124;   // v1 默认数据段 header_len
+const INDEX_HEADER_SIZE: u64 = 128;   // index entry area 固定起点
 
 /// 索引条目
 #[derive(Clone, Copy, Debug)]

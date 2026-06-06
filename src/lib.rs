@@ -120,7 +120,7 @@ mod tests {
     #[test]
     fn test_constants_nonzero() {
         assert_eq!(crate::DATA_HEADER_SIZE, 124);
-        assert_eq!(crate::INDEX_HEADER_SIZE, 60);
+        assert_eq!(crate::INDEX_HEADER_SIZE, 128);
         assert_eq!(crate::BLOCK_HEADER_SIZE, 16);
         assert_eq!(crate::BLOCK_MAX_SIZE, 65_536);
         assert_eq!(crate::INDEX_ENTRY_SIZE, 18);

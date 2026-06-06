@@ -664,16 +664,13 @@ mod tests {
 
     fn rewrite_segment_with_extended_header(seg: &mut IndexSegment) {
         let extra_meta = [0xEF, 3, 0, 7, 8, 9];
-        let old_header = INDEX_HEADER_SIZE as usize;
-        let new_header = old_header + extra_meta.len();
         let used = seg.wrote_count * INDEX_ENTRY_SIZE;
         let mmap = seg.mmap.as_mut().unwrap();
 
-        let entries = mmap[old_header..old_header + used].to_vec();
-        let base_meta_len = (INDEX_HEADER_SIZE - 9 - 2 - 8) as u16;
+        let entries = mmap[INDEX_HEADER_SIZE as usize..INDEX_HEADER_SIZE as usize + used].to_vec();
+        let base_meta_len = 41u16;
         let old_state_start = 9 + base_meta_len as usize + 2;
-        let old_state = mmap[old_state_start..old_header].to_vec();
-        mmap[new_header..new_header + used].copy_from_slice(&entries);
+        let old_state = mmap[old_state_start..old_state_start + 8].to_vec();
 
         let meta_length = base_meta_len + extra_meta.len() as u16;
         mmap[7..9].copy_from_slice(&meta_length.to_le_bytes());
@@ -684,10 +681,12 @@ mod tests {
         mmap[state_length_offset..state_length_offset + 2].copy_from_slice(&8u16.to_le_bytes());
         mmap[state_start..state_start + old_state.len()].copy_from_slice(&old_state);
         mmap[state_start..state_start + 8]
-            .copy_from_slice(&((new_header + used) as u64).to_le_bytes());
+            .copy_from_slice(&(INDEX_HEADER_SIZE + used as u64).to_le_bytes());
+        mmap[INDEX_HEADER_SIZE as usize..INDEX_HEADER_SIZE as usize + used]
+            .copy_from_slice(&entries);
         mmap.flush().unwrap();
 
-        seg.header_size = new_header as u64;
+        seg.header_size = INDEX_HEADER_SIZE;
     }
 
     #[test]
@@ -727,7 +726,7 @@ mod tests {
         drop(seg);
 
         let reopened = IndexSegment::open(&path, 0, 4096).unwrap();
-        assert!(reopened.header_size > INDEX_HEADER_SIZE);
+        assert_eq!(reopened.header_size, INDEX_HEADER_SIZE);
         assert_eq!(reopened.wrote_count, 2);
         assert_eq!(reopened.find_exact(10).unwrap().block_offset, 100);
         assert_eq!(reopened.find_exact(20).unwrap().in_block_offset, 2);
