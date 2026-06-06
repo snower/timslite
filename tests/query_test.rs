@@ -175,7 +175,7 @@ fn t13_6_query_iterator_full_lifecycle() {
     // 3. Lazy-open data segments (segments reopened after close)
     // 4. HotBlockCache (same-block sequential reads via QueryIterator)
     // 5. Global BlockCache (via Store + cache_max_memory)
-    use timslite::{DataSet, DataSetKey, Store, StoreConfig};
+    use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
 

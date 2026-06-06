@@ -682,7 +682,6 @@ fn t27_7_push_notification_wakes_blocking_consumer_poll() {
     // End-to-end: consumer is blocked in poll() when push() fires.
     // The Condvar notification in notify_queue() should wake the consumer
     // well before the poll timeout expires.
-    use std::sync::Arc;
     use std::thread;
     use timslite::{Store, StoreConfig};
 
