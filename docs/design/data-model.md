@@ -424,3 +424,24 @@ struct IndexEntry {
 ---
 
 **相关**: [架构概览](architecture.md) | [元数据格式](meta-format.md) | [数据段管理](data-segment.md)
+
+## P1-2 Active Contract: Segment Size And Compression Type
+
+- All on-disk multi-byte integers use little-endian encoding.
+- Dataset meta `data_segment_size` / `index_segment_size` are `u64 LE`.
+- Data/index segment header immutable meta `file_size` is `u64 LE`; it records the configured max segment size, not the current lazy-allocated physical file length.
+- The active format no longer has segment header `file_size:u32`. The project is still in initial development, so no old-layout compatibility shim is required.
+- Dataset meta and data/index segment header immutable meta both store `compress_type:u8`.
+- `compress_type = 0` means zstd and is the default for new stores, datasets, and segments. `compress_type = 1` means deflate.
+- Unknown `compress_type` values must be rejected on open and before compress/decompress.
+- `compress_level` remains `u8` and is interpreted by the selected compression algorithm.
+
+Active segment header immutable TLV set:
+
+| Meta Type (hex) | Name | Length | Type | Description |
+|-----------------|------|--------|------|-------------|
+| 0x01 | created_at | 8 | i64 LE | Creation time in unix milliseconds |
+| 0x02 | file_offset | 8 | i64 LE | Data segment logical base offset or index segment base timestamp |
+| 0x03 | file_size | 8 | u64 LE | Configured max segment size |
+| 0x04 | compress_level | 1 | u8 | Compression level |
+| 0x05 | compress_type | 1 | u8 | Compression algorithm: 0=zstd, 1=deflate |

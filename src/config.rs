@@ -5,6 +5,8 @@
 
 use std::time::Duration;
 
+use crate::compress::COMPRESS_TYPE_ZSTD;
+
 /// Store-level configuration.
 ///
 /// Existing datasets do not compare against these defaults when reopened.
@@ -17,6 +19,7 @@ use std::time::Duration;
 /// - `initial_data_segment_size`: 256 KiB
 /// - `initial_index_segment_size`: 4 KiB
 /// - `compress_level`: 6
+/// - `compress_type`: 0 (zstd)
 /// - `cache_max_memory`: 256 MiB (0 = disabled)
 /// - `cache_idle_timeout`: 30 minutes (1800s)
 /// - `retention_check_hour`: 0 (daily at UTC 00:00)
@@ -38,6 +41,8 @@ pub struct StoreConfig {
     pub initial_index_segment_size: u64,
     /// Default deflate compression level for newly created datasets (0-9).
     pub compress_level: u8,
+    /// Default compression algorithm for newly created datasets (0=zstd, 1=deflate).
+    pub compress_type: u8,
     /// Maximum memory for the read block cache (bytes, 0 = disabled).
     pub cache_max_memory: usize,
     /// Idle timeout for cache entries (eviction by background thread).
@@ -61,6 +66,7 @@ impl Default for StoreConfig {
             initial_data_segment_size: 256 * 1024,    // 256 KiB
             initial_index_segment_size: 4 * 1024,     // 4 KiB
             compress_level: 6,
+            compress_type: COMPRESS_TYPE_ZSTD,
             cache_max_memory: 256 * 1024 * 1024, // 256 MiB
             cache_idle_timeout: Duration::from_secs(1800), // 30 min
             retention_check_hour: 0,             // UTC 00:00
@@ -87,6 +93,7 @@ pub struct StoreConfigBuilder {
     initial_data_segment_size: Option<u64>,
     initial_index_segment_size: Option<u64>,
     compress_level: Option<u8>,
+    compress_type: Option<u8>,
     cache_max_memory: Option<usize>,
     cache_idle_timeout: Option<Duration>,
     retention_check_hour: Option<u8>,
@@ -134,6 +141,12 @@ impl StoreConfigBuilder {
     /// Set the deflate compression level (0-9).
     pub fn compress_level(mut self, level: u8) -> Self {
         self.compress_level = Some(level.min(9));
+        self
+    }
+
+    /// Set the compression algorithm (0=zstd, 1=deflate).
+    pub fn compress_type(mut self, compress_type: u8) -> Self {
+        self.compress_type = Some(compress_type);
         self
     }
 
@@ -187,6 +200,7 @@ impl StoreConfigBuilder {
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
             compress_level: self.compress_level.unwrap_or(defaults.compress_level),
+            compress_type: self.compress_type.unwrap_or(defaults.compress_type),
             cache_max_memory: self.cache_max_memory.unwrap_or(defaults.cache_max_memory),
             cache_idle_timeout: self
                 .cache_idle_timeout
@@ -208,6 +222,7 @@ pub struct DataSetConfig {
     pub data_segment_size: u64,
     pub index_segment_size: u64,
     pub compress_level: u8,
+    pub compress_type: u8,
     pub index_continuous: u8,
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
@@ -222,6 +237,7 @@ impl DataSetConfig {
             data_segment_size: config.data_segment_size,
             index_segment_size: config.index_segment_size,
             compress_level: config.compress_level,
+            compress_type: config.compress_type,
             index_continuous: 0,
             initial_data_segment_size: config.initial_data_segment_size,
             initial_index_segment_size: config.initial_index_segment_size,
@@ -260,6 +276,7 @@ pub struct DataSetConfigBuilder {
     data_segment_size: Option<u64>,
     index_segment_size: Option<u64>,
     compress_level: Option<u8>,
+    compress_type: Option<u8>,
     index_continuous: Option<u8>,
     initial_data_segment_size: Option<u64>,
     initial_index_segment_size: Option<u64>,
@@ -274,6 +291,7 @@ impl DataSetConfigBuilder {
             data_segment_size: Some(store.data_segment_size),
             index_segment_size: Some(store.index_segment_size),
             compress_level: Some(store.compress_level),
+            compress_type: Some(store.compress_type),
             index_continuous: Some(0),
             initial_data_segment_size: Some(store.initial_data_segment_size),
             initial_index_segment_size: Some(store.initial_index_segment_size),
@@ -296,6 +314,12 @@ impl DataSetConfigBuilder {
     /// Set the deflate compression level (0-9).
     pub fn compress_level(mut self, level: u8) -> Self {
         self.compress_level = Some(level.min(9));
+        self
+    }
+
+    /// Set the compression algorithm (0=zstd, 1=deflate).
+    pub fn compress_type(mut self, compress_type: u8) -> Self {
+        self.compress_type = Some(compress_type);
         self
     }
 
@@ -332,6 +356,7 @@ impl DataSetConfigBuilder {
                 .index_segment_size
                 .unwrap_or(defaults.index_segment_size),
             compress_level: self.compress_level.unwrap_or(defaults.compress_level),
+            compress_type: self.compress_type.unwrap_or(defaults.compress_type),
             index_continuous: self.index_continuous.unwrap_or(0),
             initial_data_segment_size: self
                 .initial_data_segment_size
@@ -358,6 +383,7 @@ mod tests {
         assert_eq!(cfg.initial_data_segment_size, 256 * 1024);
         assert_eq!(cfg.initial_index_segment_size, 4 * 1024);
         assert_eq!(cfg.compress_level, 6);
+        assert_eq!(cfg.compress_type, crate::compress::COMPRESS_TYPE_ZSTD);
         assert_eq!(cfg.cache_max_memory, 256 * 1024 * 1024);
         assert_eq!(cfg.cache_idle_timeout, Duration::from_secs(1800));
         assert_eq!(cfg.retention_check_hour, 0);

@@ -18,8 +18,8 @@
 extern "C" {
 #endif
 
-#define TMSL_STORE_CONFIG_FFI_VERSION 3u
-#define TMSL_DATASET_CONFIG_FFI_VERSION 1u
+#define TMSL_STORE_CONFIG_FFI_VERSION 4u
+#define TMSL_DATASET_CONFIG_FFI_VERSION 2u
 
 typedef struct TmslStoreConfigFFI {
     uint32_t version;
@@ -32,6 +32,7 @@ typedef struct TmslStoreConfigFFI {
     uint64_t cache_max_memory;
     uint64_t cache_idle_timeout_ms;
     uint8_t compress_level;
+    uint8_t compress_type; /* 0=zstd (default), 1=deflate */
     uint8_t retention_check_hour; /* UTC hour, 0-23 */
     uint8_t enable_background_thread;
     uint8_t enable_journal; /* 0=false, non-zero=true; default true */
@@ -45,6 +46,7 @@ typedef struct TmslDatasetConfigFFI {
     uint64_t initial_index_segment_size;
     uint64_t retention_window;
     uint8_t compress_level;
+    uint8_t compress_type; /* 0=zstd (default), 1=deflate */
     uint8_t index_continuous;
 } TmslDatasetConfigFFI;
 

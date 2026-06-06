@@ -21,6 +21,8 @@ pub struct TimeIndex {
     pub base_dir: std::path::PathBuf,
     pub segment_size: u64,
     pub initial_segment_size: u64,
+    pub compress_level: u8,
+    pub compress_type: u8,
     pub index_segments: Vec<IndexSegment>,
     pub closed_index_segments: Vec<IndexSegmentMeta>,
     pub in_memory_buffer: Vec<IndexEntry>,
@@ -38,11 +40,31 @@ impl TimeIndex {
         initial_segment_size: u64,
         index_continuous: bool,
     ) -> Result<Self> {
+        Self::new_with_compression(
+            base_dir,
+            segment_size,
+            initial_segment_size,
+            index_continuous,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+    }
+
+    pub fn new_with_compression(
+        base_dir: &Path,
+        segment_size: u64,
+        initial_segment_size: u64,
+        index_continuous: bool,
+        compress_level: u8,
+        compress_type: u8,
+    ) -> Result<Self> {
         std::fs::create_dir_all(base_dir)?;
         Ok(Self {
             base_dir: base_dir.to_path_buf(),
             segment_size,
             initial_segment_size,
+            compress_level,
+            compress_type,
             index_segments: Vec::new(),
             closed_index_segments: Vec::new(),
             in_memory_buffer: Vec::new(),
@@ -569,11 +591,13 @@ impl TimeIndex {
             let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
             self.index_segments.push(seg);
         } else {
-            let seg = IndexSegment::create(
+            let seg = IndexSegment::create_with_compression(
                 &self.base_dir,
                 start_ts,
                 self.initial_segment_size,
                 self.segment_size,
+                self.compress_level,
+                self.compress_type,
             )?;
             self.index_segments.push(seg);
         }
@@ -600,11 +624,13 @@ impl TimeIndex {
             let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
             self.index_segments.push(seg);
         } else {
-            let seg = IndexSegment::create(
+            let seg = IndexSegment::create_with_compression(
                 &self.base_dir,
                 segment_start,
                 self.initial_segment_size,
                 self.segment_size,
+                self.compress_level,
+                self.compress_type,
             )?;
             self.index_segments.push(seg);
         }
@@ -778,6 +804,24 @@ impl TimeIndex {
         initial_segment_size: u64,
         index_continuous: bool,
     ) -> Result<Self> {
+        Self::load_existing_with_compression(
+            base_dir,
+            segment_size,
+            initial_segment_size,
+            index_continuous,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+    }
+
+    pub fn load_existing_with_compression(
+        base_dir: &Path,
+        segment_size: u64,
+        initial_segment_size: u64,
+        index_continuous: bool,
+        compress_level: u8,
+        compress_type: u8,
+    ) -> Result<Self> {
         let mut metas: Vec<IndexSegmentMeta> = Vec::new();
         if base_dir.exists() {
             for entry in std::fs::read_dir(base_dir)? {
@@ -818,6 +862,8 @@ impl TimeIndex {
             base_dir: base_dir.to_path_buf(),
             segment_size,
             initial_segment_size,
+            compress_level,
+            compress_type,
             index_segments: Vec::new(),
             closed_index_segments: metas,
             in_memory_buffer: Vec::new(),

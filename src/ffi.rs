@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::bg::TickResult;
+use crate::compress::validate_compress_type;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
@@ -97,8 +98,8 @@ macro_rules! ffi_catch_usize {
 
 // 鈹€鈹€鈹€ Opaque handle types 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 3;
-pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 1;
+pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 4;
+pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -113,6 +114,7 @@ pub struct TmslStoreConfigFFI {
     pub cache_max_memory: u64,
     pub cache_idle_timeout_ms: u64,
     pub compress_level: u8,
+    pub compress_type: u8,
     pub retention_check_hour: u8,
     pub enable_background_thread: u8,
     pub enable_journal: u8,
@@ -134,6 +136,7 @@ pub struct TmslDatasetConfigFFI {
     pub initial_index_segment_size: u64,
     pub retention_window: u64,
     pub compress_level: u8,
+    pub compress_type: u8,
     pub index_continuous: u8,
 }
 
@@ -197,6 +200,7 @@ fn store_config_to_ffi(config: &StoreConfig) -> TmslStoreConfigFFI {
         cache_max_memory: config.cache_max_memory as u64,
         cache_idle_timeout_ms: config.cache_idle_timeout.as_millis() as u64,
         compress_level: config.compress_level,
+        compress_type: config.compress_type,
         retention_check_hour: config.retention_check_hour,
         enable_background_thread: u8::from(config.enable_background_thread),
         enable_journal: u8::from(config.enable_journal),
@@ -218,6 +222,7 @@ fn store_config_from_ffi(
     }
     let cache_max_memory = usize::try_from(raw.cache_max_memory)
         .map_err(|_| TmslError::InvalidData("cache_max_memory is too large".into()))?;
+    validate_compress_type(raw.compress_type)?;
     Ok(StoreConfig::builder()
         .flush_interval(Duration::from_millis(raw.flush_interval_ms))
         .idle_timeout(Duration::from_millis(raw.idle_timeout_ms))
@@ -226,6 +231,7 @@ fn store_config_from_ffi(
         .initial_data_segment_size(raw.initial_data_segment_size)
         .initial_index_segment_size(raw.initial_index_segment_size)
         .compress_level(raw.compress_level)
+        .compress_type(raw.compress_type)
         .cache_max_memory(cache_max_memory)
         .cache_idle_timeout(Duration::from_millis(raw.cache_idle_timeout_ms))
         .retention_check_hour(raw.retention_check_hour)
@@ -248,12 +254,14 @@ fn dataset_config_from_ffi(
             raw.version
         )));
     }
+    validate_compress_type(raw.compress_type)?;
     Ok(DataSetConfigBuilder::from_store(store_config)
         .data_segment_size(raw.data_segment_size)
         .index_segment_size(raw.index_segment_size)
         .initial_data_segment_size(raw.initial_data_segment_size)
         .initial_index_segment_size(raw.initial_index_segment_size)
         .compress_level(raw.compress_level)
+        .compress_type(raw.compress_type)
         .index_continuous(raw.index_continuous)
         .retention_window(raw.retention_window))
 }
@@ -1334,6 +1342,7 @@ mod tests {
             initial_index_segment_size: 4 * 1024,
             retention_window: 0,
             compress_level: 6,
+            compress_type: crate::compress::COMPRESS_TYPE_ZSTD,
             index_continuous: 0,
         };
         let name = CString::new("sensor").unwrap();

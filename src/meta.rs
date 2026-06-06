@@ -5,6 +5,7 @@
 
 use std::path::Path;
 
+use crate::compress::validate_compress_type;
 use crate::error::{Result, TmslError};
 use crate::util::{read_i64_le, read_u64_le};
 
@@ -19,8 +20,9 @@ const META_INDEX_CONTINUOUS: u8 = 0x05; // u8
 const META_INITIAL_DATA_SEGMENT_SIZE: u8 = 0x06; // u64 LE
 const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 const META_RETENTION_WINDOW: u8 = 0x08; // u64 LE (0 = no limit)
+const META_COMPRESS_TYPE: u8 = 0x09; // u8
 
-pub(crate) const META_VALUES_LEN_V1: usize = 74;
+pub(crate) const META_VALUES_LEN_V1: usize = 78;
 
 /// Immutable dataset configuration. Written once at creation.
 #[derive(Debug, Clone)]
@@ -28,6 +30,7 @@ pub struct DataSetMeta {
     pub data_segment_size: u64,
     pub index_segment_size: u64,
     pub compress_level: u8,
+    pub compress_type: u8,
     pub create_time: i64, // unix ms
     pub index_continuous: u8,
     pub initial_data_segment_size: u64, // 0 = uninitialized (backward compat)
@@ -41,6 +44,7 @@ impl DataSetMeta {
         data_segment_size: u64,
         index_segment_size: u64,
         compress_level: u8,
+        compress_type: u8,
         index_continuous: u8,
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
@@ -50,6 +54,7 @@ impl DataSetMeta {
             data_segment_size,
             index_segment_size,
             compress_level,
+            compress_type,
             index_continuous,
             initial_data_segment_size,
             initial_index_segment_size,
@@ -64,9 +69,10 @@ impl DataSetMeta {
     /// Serialize: magic(4) + version(2) + meta_data_length(2) + TLV values
     pub fn to_bytes(&self) -> Vec<u8> {
         // Calculate meta_data_length:
-        // 8 TLV entries: data_seg_size(11) + idx_seg_size(11) + compress(4) + create_time(11)
+        // 9 TLV entries: data_seg_size(11) + idx_seg_size(11) + compress_level(4)
+        //               + compress_type(4) + create_time(11)
         //               + index_continuous(4) + initial_data_seg_size(11) + initial_idx_seg_size(11)
-        //               + retention_window(11) = 74
+        //               + retention_window(11) = 78
         // Each u64 TLV: type(1) + length(2) + value(8) = 11 bytes
         // Each u8 TLV:  type(1) + length(2) + value(1) = 4 bytes
         let meta_data_length: u16 = META_VALUES_LEN_V1 as u16;
@@ -74,6 +80,7 @@ impl DataSetMeta {
             META_VALUES_LEN_V1,
             (1 + 2 + 8)
                 + (1 + 2 + 8)
+                + (1 + 2 + 1)
                 + (1 + 2 + 1)
                 + (1 + 2 + 8)
                 + (1 + 2 + 1)
@@ -100,6 +107,10 @@ impl DataSetMeta {
         buf.push(META_COMPRESS_LEVEL);
         buf.extend_from_slice(&1u16.to_le_bytes());
         buf.push(self.compress_level);
+        // compress_type
+        buf.push(META_COMPRESS_TYPE);
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.push(self.compress_type);
         // create_time
         buf.push(META_CREATE_TIME);
         buf.extend_from_slice(&8u16.to_le_bytes());
@@ -149,6 +160,7 @@ impl DataSetMeta {
         let mut data_segment_size = 0u64;
         let mut index_segment_size = 0u64;
         let mut compress_level = 0u8;
+        let mut compress_type = None;
         let mut create_time = 0i64;
         let mut index_continuous = 0u8;
         let mut initial_data_segment_size = 0u64;
@@ -174,6 +186,9 @@ impl DataSetMeta {
                 }
                 META_COMPRESS_LEVEL if len == 1 => {
                     compress_level = buf[off];
+                }
+                META_COMPRESS_TYPE if len == 1 => {
+                    compress_type = Some(buf[off]);
                 }
                 META_CREATE_TIME if len == 8 => {
                     create_time = read_i64_le(buf[off..off + 8].try_into().unwrap());
@@ -215,6 +230,9 @@ impl DataSetMeta {
                 "meta compress_level must be <= 9".into(),
             ));
         }
+        let compress_type = compress_type
+            .ok_or_else(|| TmslError::InvalidData("meta missing compress_type".into()))?;
+        validate_compress_type(compress_type)?;
         if index_continuous > 1 {
             return Err(TmslError::InvalidData(
                 "meta index_continuous must be 0 or 1".into(),
@@ -241,6 +259,7 @@ impl DataSetMeta {
             data_segment_size,
             index_segment_size,
             compress_level,
+            compress_type,
             create_time,
             index_continuous,
             initial_data_segment_size,
@@ -271,6 +290,7 @@ mod tests {
             64 * 1024 * 1024,
             4 * 1024 * 1024,
             6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
             0,
             256 * 1024,
             4 * 1024,
@@ -282,6 +302,7 @@ mod tests {
         assert_eq!(parsed.data_segment_size, 64 * 1024 * 1024);
         assert_eq!(parsed.index_segment_size, 4 * 1024 * 1024);
         assert_eq!(parsed.compress_level, 6);
+        assert_eq!(parsed.compress_type, crate::compress::COMPRESS_TYPE_ZSTD);
         assert_eq!(parsed.index_continuous, 0);
         assert_eq!(parsed.initial_data_segment_size, 256 * 1024);
         assert_eq!(parsed.initial_index_segment_size, 4 * 1024);
@@ -289,31 +310,59 @@ mod tests {
     }
 
     #[test]
-    fn test_meta_old_format_compat() {
-        // Simulate old format meta (without TLV 0x06/0x07/0x08) by manually constructing bytes
-        let meta_with = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 0);
-        let mut bytes = meta_with.to_bytes();
-        // Remove last three TLV entries (0x06, 0x07, 0x08) from the end
-        // Each u64 TLV is 1(type) + 2(len) + 8(value) = 11 bytes
-        let old_len = bytes.len() - 33;
-        bytes.truncate(old_len);
-        // Fix meta_data_length header
-        let new_meta_len: u16 = (old_len - 8) as u16;
-        bytes[6..8].copy_from_slice(&new_meta_len.to_le_bytes());
+    fn test_meta_rejects_invalid_compress_type() {
+        let invalid = DataSetMeta::new(1024, 512, 6, 99, 0, 256, 128, 0);
 
-        let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
-        assert_eq!(parsed.data_segment_size, 1024);
-        assert_eq!(parsed.index_segment_size, 512);
-        assert_eq!(parsed.compress_level, 6);
-        // Missing initial_* means old full-allocation format; use segment sizes.
-        assert_eq!(parsed.initial_data_segment_size, 1024);
-        assert_eq!(parsed.initial_index_segment_size, 512);
-        assert_eq!(parsed.retention_window, 0);
+        assert!(matches!(
+            DataSetMeta::from_bytes(&invalid.to_bytes()),
+            Err(TmslError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn test_meta_rejects_missing_compress_type() {
+        let meta_with = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+        );
+        let mut bytes = meta_with.to_bytes();
+        let mut off = 8;
+        while off + 3 <= bytes.len() {
+            let t = bytes[off];
+            let len = u16::from_le_bytes([bytes[off + 1], bytes[off + 2]]) as usize;
+            let entry_len = 3 + len;
+            if t == META_COMPRESS_TYPE {
+                bytes.drain(off..off + entry_len);
+                let meta_len = (bytes.len() - 8) as u16;
+                bytes[6..8].copy_from_slice(&meta_len.to_le_bytes());
+                break;
+            }
+            off += entry_len;
+        }
+
+        let result = DataSetMeta::from_bytes(&bytes);
+
+        assert!(matches!(result, Err(TmslError::InvalidData(_))));
     }
 
     #[test]
     fn test_meta_rejects_missing_required_segment_size() {
-        let meta = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 0);
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+        );
         let mut bytes = meta.to_bytes();
         let mut off = 8;
         while off + 3 <= bytes.len() {
@@ -336,19 +385,46 @@ mod tests {
 
     #[test]
     fn test_meta_rejects_invalid_create_parameters() {
-        let invalid_compress = DataSetMeta::new(1024, 512, 10, 0, 256, 128, 0);
+        let invalid_compress = DataSetMeta::new(
+            1024,
+            512,
+            10,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+        );
         assert!(matches!(
             DataSetMeta::from_bytes(&invalid_compress.to_bytes()),
             Err(TmslError::InvalidData(_))
         ));
 
-        let invalid_continuous = DataSetMeta::new(1024, 512, 6, 2, 256, 128, 0);
+        let invalid_continuous = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            2,
+            256,
+            128,
+            0,
+        );
         assert!(matches!(
             DataSetMeta::from_bytes(&invalid_continuous.to_bytes()),
             Err(TmslError::InvalidData(_))
         ));
 
-        let invalid_initial = DataSetMeta::new(1024, 512, 6, 0, 2048, 128, 0);
+        let invalid_initial = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            2048,
+            128,
+            0,
+        );
         assert!(matches!(
             DataSetMeta::from_bytes(&invalid_initial.to_bytes()),
             Err(TmslError::InvalidData(_))
@@ -357,26 +433,62 @@ mod tests {
 
     #[test]
     fn test_meta_index_continuous_roundtrip() {
-        let meta = DataSetMeta::new(1024, 512, 6, 1, 256, 128, 0);
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            1,
+            256,
+            128,
+            0,
+        );
         let bytes = meta.to_bytes();
 
         let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.index_continuous, 1);
 
         // Also verify 0 works
-        let meta_zero = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 0);
+        let meta_zero = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+        );
         let parsed_zero = DataSetMeta::from_bytes(&meta_zero.to_bytes()).unwrap();
         assert_eq!(parsed_zero.index_continuous, 0);
     }
 
     #[test]
     fn test_meta_retention_window_roundtrip() {
-        let meta = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 7 * 86400);
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            7 * 86400,
+        );
         let parsed = DataSetMeta::from_bytes(&meta.to_bytes()).unwrap();
         assert_eq!(parsed.retention_window, 7 * 86400);
 
         // Zero = no limit
-        let meta_zero = DataSetMeta::new(1024, 512, 6, 0, 256, 128, 0);
+        let meta_zero = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+        );
         let parsed_zero = DataSetMeta::from_bytes(&meta_zero.to_bytes()).unwrap();
         assert_eq!(parsed_zero.retention_window, 0);
     }
@@ -388,7 +500,17 @@ mod tests {
 
     #[test]
     fn test_meta_invalid_magic() {
-        let mut bytes = DataSetMeta::new(100, 200, 3, 0, 100, 200, 0).to_bytes();
+        let mut bytes = DataSetMeta::new(
+            100,
+            200,
+            3,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            100,
+            200,
+            0,
+        )
+        .to_bytes();
         bytes[0..4].copy_from_slice(b"XXXX");
         let result = DataSetMeta::from_bytes(&bytes);
         assert!(result.is_err());
@@ -401,7 +523,16 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test_meta");
 
-        let meta = DataSetMeta::new(1024, 512, 9, 0, 256, 128, 86400);
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            9,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            86400,
+        );
         meta.write_to_file(&path).unwrap();
         let loaded = DataSetMeta::read_from_file(&path).unwrap();
         assert_eq!(loaded.data_segment_size, 1024);
@@ -417,7 +548,7 @@ mod tests {
     fn test_meta_roundtrip_zero_values() {
         // from_bytes backward compat: initial_data_segment_size=0 defaults to data_segment_size.
         // So passing 0 for init_data and data_seg=1 → parsed.initial_data_segment_size = 1.
-        let meta = DataSetMeta::new(1, 1, 0, 0, 1, 1, 0);
+        let meta = DataSetMeta::new(1, 1, 0, crate::compress::COMPRESS_TYPE_ZSTD, 0, 1, 1, 0);
         let bytes = meta.to_bytes();
         let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.initial_data_segment_size, 1);
@@ -443,7 +574,7 @@ mod tests {
             let init_data = init_data % data_seg + 1;
             let init_idx = init_idx % idx_seg + 1;
             let meta = DataSetMeta::new(
-                data_seg, idx_seg, compress, continuous,
+                data_seg, idx_seg, compress, crate::compress::COMPRESS_TYPE_ZSTD, continuous,
                 init_data, init_idx, retention,
             );
             let bytes = meta.to_bytes();
@@ -451,6 +582,7 @@ mod tests {
             assert_eq!(parsed.data_segment_size, data_seg);
             assert_eq!(parsed.index_segment_size, idx_seg);
             assert_eq!(parsed.compress_level, compress);
+            assert_eq!(parsed.compress_type, crate::compress::COMPRESS_TYPE_ZSTD);
             assert_eq!(parsed.index_continuous, continuous);
             assert_eq!(parsed.initial_data_segment_size, init_data);
             assert_eq!(parsed.initial_index_segment_size, init_idx);

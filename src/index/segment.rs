@@ -100,7 +100,31 @@ impl IndexSegment {
         initial_size: u64,
         max_file_size: u64,
     ) -> Result<Self> {
-        let metadata = IndexFileMetadata::create_default(start_timestamp, max_file_size as u32);
+        Self::create_with_compression(
+            base_dir,
+            start_timestamp,
+            initial_size,
+            max_file_size,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+    }
+
+    pub fn create_with_compression(
+        base_dir: &Path,
+        start_timestamp: i64,
+        initial_size: u64,
+        max_file_size: u64,
+        compress_level: u8,
+        compress_type: u8,
+    ) -> Result<Self> {
+        crate::compress::validate_compress_type(compress_type)?;
+        let metadata = IndexFileMetadata::create_default(
+            start_timestamp,
+            max_file_size,
+            compress_level,
+            compress_type,
+        );
         let header_size = metadata.header_size;
         if initial_size < header_size {
             return Err(TmslError::InvalidData(format!(
@@ -646,12 +670,15 @@ mod tests {
         let mmap = seg.mmap.as_mut().unwrap();
 
         let entries = mmap[old_header..old_header + used].to_vec();
-        let old_state = mmap[44..old_header].to_vec();
+        let base_meta_len = (INDEX_HEADER_SIZE - 9 - 2 - 8) as u16;
+        let old_state_start = 9 + base_meta_len as usize + 2;
+        let old_state = mmap[old_state_start..old_header].to_vec();
         mmap[new_header..new_header + used].copy_from_slice(&entries);
 
-        let meta_length = 33u16 + extra_meta.len() as u16;
+        let meta_length = base_meta_len + extra_meta.len() as u16;
         mmap[7..9].copy_from_slice(&meta_length.to_le_bytes());
-        mmap[42..42 + extra_meta.len()].copy_from_slice(&extra_meta);
+        let extra_start = 9 + base_meta_len as usize;
+        mmap[extra_start..extra_start + extra_meta.len()].copy_from_slice(&extra_meta);
         let state_length_offset = 9 + meta_length as usize;
         let state_start = state_length_offset + 2;
         mmap[state_length_offset..state_length_offset + 2].copy_from_slice(&8u16.to_le_bytes());

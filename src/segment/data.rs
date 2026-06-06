@@ -12,7 +12,7 @@ use crate::block::{
     BlockHeader, BLOCK_FLAG_COMPRESSED, BLOCK_FLAG_SEALED, BLOCK_FLAG_SINGLE_RECORD,
 };
 use crate::cache::{BlockCache, CacheKey, HotBlockCache};
-use crate::compress::{deflate_compress, deflate_decompress};
+use crate::compress::{compress, decompress, validate_compress_type, COMPRESS_TYPE_ZSTD};
 use crate::error::{Result, TmslError};
 use crate::header::{
     clear_pending_from_mmap, write_data_core_state_to_mmap,
@@ -55,6 +55,7 @@ pub struct DataSegment {
     pub min_timestamp: i64,
     pub max_timestamp: i64,
     pub created_at: i64,
+    pub compress_type: u8,
     pub mmap: Option<MmapMut>,
     pub lifecycle: SegmentLifecycle,
     pub last_accessed_at: Instant,
@@ -79,7 +80,33 @@ impl DataSegment {
         initial_size: u64,
         max_file_size: u64,
     ) -> Result<Self> {
-        let metadata = DataFileMetadata::create_default(file_offset as i64, max_file_size as u32);
+        Self::create_with_compression(
+            path,
+            file_offset,
+            initial_size,
+            max_file_size,
+            6,
+            COMPRESS_TYPE_ZSTD,
+        )
+    }
+
+    pub fn create_with_compression(
+        path: &Path,
+        file_offset: u64,
+        initial_size: u64,
+        max_file_size: u64,
+        compress_level: u8,
+        compress_type: u8,
+    ) -> Result<Self> {
+        validate_compress_type(compress_type)?;
+        let file_offset = i64::try_from(file_offset)
+            .map_err(|_| TmslError::InvalidData("data segment file_offset exceeds i64".into()))?;
+        let metadata = DataFileMetadata::create_default(
+            file_offset,
+            max_file_size,
+            compress_level,
+            compress_type,
+        );
         let header_size = metadata.header_size;
         if initial_size < header_size {
             return Err(TmslError::InvalidData(format!(
@@ -101,7 +128,7 @@ impl DataSegment {
         let now = Instant::now();
         Ok(Self {
             path: path.to_path_buf(),
-            file_offset,
+            file_offset: file_offset as u64,
             file_size: initial_size,
             max_file_size,
             header_size,
@@ -111,6 +138,7 @@ impl DataSegment {
             min_timestamp: TIMESTAMP_MIN_SENTINEL,
             max_timestamp: TIMESTAMP_MAX_SENTINEL,
             created_at: metadata.created_at,
+            compress_type,
             mmap: Some(mmap),
             lifecycle: SegmentLifecycle::OpenReady,
             last_accessed_at: now,
@@ -158,6 +186,7 @@ impl DataSegment {
             min_timestamp: metadata.min_timestamp,
             max_timestamp: metadata.max_timestamp,
             created_at: metadata.created_at,
+            compress_type: metadata.compress_type,
             mmap: Some(mmap),
             lifecycle: SegmentLifecycle::OpenReady,
             last_accessed_at: now,
@@ -246,6 +275,7 @@ impl DataSegment {
         self.min_timestamp = metadata.min_timestamp;
         self.max_timestamp = metadata.max_timestamp;
         self.invalid_record_count = metadata.invalid_record_count;
+        self.compress_type = metadata.compress_type;
 
         self.mmap = Some(mmap);
         self.lifecycle = SegmentLifecycle::OpenReady;
@@ -518,7 +548,7 @@ impl DataSegment {
             mmap[payload_start..payload_start + payload_len].to_vec()
         };
 
-        let compressed = deflate_compress(&raw, compress_level)?;
+        let compressed = compress(&raw, compress_level, self.compress_type)?;
         let compressed_len = u32::try_from(compressed.len())
             .map_err(|_| TmslError::InvalidData("compressed block exceeds u32".into()))?;
         let new_wrote_position =
@@ -565,7 +595,7 @@ impl DataSegment {
         raw.extend_from_slice(&timestamp.to_le_bytes());
         raw.extend_from_slice(data);
 
-        let payload = deflate_compress(&raw, compress_level)?;
+        let payload = compress(&raw, compress_level, self.compress_type)?;
         let payload_len = u32::try_from(payload.len())
             .map_err(|_| TmslError::InvalidData("compressed block exceeds u32".into()))?;
         let total_needed = crate::block::BLOCK_HEADER_SIZE + payload.len() as u64;
@@ -1016,7 +1046,7 @@ impl DataSegment {
         let payload = &mmap[pay_start..pay_start + payload_size];
 
         let block_data: Vec<u8> = if is_compressed {
-            deflate_decompress(payload)?
+            decompress(payload, self.compress_type)?
         } else {
             payload.to_vec()
         };
@@ -1087,7 +1117,7 @@ impl DataSegment {
         let payload = &mmap[pay_start..pay_start + payload_size];
 
         let block_data: Vec<u8> = if is_compressed {
-            deflate_decompress(payload)?
+            decompress(payload, self.compress_type)?
         } else {
             payload.to_vec()
         };
@@ -1154,12 +1184,15 @@ mod tests {
         let mmap = seg.mmap.as_mut().unwrap();
 
         let data = mmap[old_header..old_header + used].to_vec();
-        let old_state = mmap[44..old_header].to_vec();
+        let base_meta_len = (DATA_HEADER_SIZE - 9 - 2 - 72) as u16;
+        let old_state_start = 9 + base_meta_len as usize + 2;
+        let old_state = mmap[old_state_start..old_header].to_vec();
         mmap[new_header..new_header + used].copy_from_slice(&data);
 
-        let meta_length = 33u16 + extra_meta.len() as u16;
+        let meta_length = base_meta_len + extra_meta.len() as u16;
         mmap[7..9].copy_from_slice(&meta_length.to_le_bytes());
-        mmap[42..42 + extra_meta.len()].copy_from_slice(&extra_meta);
+        let extra_start = 9 + base_meta_len as usize;
+        mmap[extra_start..extra_start + extra_meta.len()].copy_from_slice(&extra_meta);
         let state_length_offset = 9 + meta_length as usize;
         let state_start = state_length_offset + 2;
         mmap[state_length_offset..state_length_offset + 2].copy_from_slice(&72u16.to_le_bytes());

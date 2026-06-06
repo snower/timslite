@@ -1,4 +1,4 @@
-# timslite 设计审查 TODO（第 4 轮）
+﻿# timslite 设计审查 TODO（第 4 轮）
 
 来源: [design-review.md](design-review.md)
 
@@ -25,7 +25,7 @@
 | [x] | P0-1 | P0 | 闭合 FFI 句柄线程安全与 Rust aliasing 契约 | `docs/design/memory-and-concurrency.md`, `docs/design/store-and-ffi.md`, `src/ffi.rs`, `include/timslite.h`, README/AGENTS 如需 | 明确 FFI 单线程/外部同步或内部同步模型；代码不再从同一 raw store 并发构造未受保护的 `&mut Store`；C header 与文档一致 |
 | [x] | P0-2 | P0 | 修正 Queue FFI ABI 缺失与 store 指针类型错误 | `docs/design/store-and-ffi.md`, `docs/design/queue-overview.md`, `src/ffi.rs`, `include/timslite.h`, queue/journal queue tests | 决定 Queue 是否正式进入 C ABI；若进入，所有 queue FFI 使用正确 opaque handle/lifecycle；若不进入，移除或隐藏未完成导出 |
 | [x] | P1-1 | P1 | 重新定义 FFI QueryIterator 的 retention/snapshot/lazy 一致性语义 | `docs/design/query-iterator.md`, `docs/design/background-and-cache.md`, `src/ffi.rs`, `src/query/iter.rs`, iterator tests | 文档与实现一致；若强一致则持有快照或 guard；若弱一致则明确错误/跳过语义并安全处理 segment 删除 |
-| [ ] | P1-2 | P1 | 为 segment size 的 `u64` API 与 `u32` on-disk header 建立统一边界校验 | `docs/design/data-model.md`, `docs/design/meta-format.md`, `docs/design/store-and-ffi.md`, `src/config.rs`, `src/meta.rs`, `src/segment/*`, FFI config decode | v1 明确 segment size 上限；builder/meta/FFI/open/create 均拒绝超过 `u32::MAX` 或 initial > max；不再存在 `as u32` 静默截断 |
+| [x] | P1-2 | P1 | 为 segment size 的 `u64` API 与 `u32` on-disk header 建立统一边界校验 | `docs/design/data-model.md`, `docs/design/meta-format.md`, `docs/design/store-and-ffi.md`, `src/config.rs`, `src/meta.rs`, `src/segment/*`, FFI config decode | v1 明确 segment size 上限；builder/meta/FFI/open/create 均拒绝超过 `u32::MAX` 或 initial > max；不再存在 `as u32` 静默截断 |
 | [ ] | P1-3 | P1 | 冻结连续索引 grid capacity/header_len 契约 | `docs/design/index-continuous.md`, `docs/design/time-index.md`, `docs/design/meta-format.md`, `src/index/*`, `src/meta.rs`, continuous index tests | 连续索引 dataset 的 `segment_capacity` 不会随未来 header 变化而改变路由；必要时持久化 `index_grid_capacity` 或明确 v1 header_len 不变 |
 | [ ] | P1-4 | P1 | 清除 correction 变长覆盖“移动后续字节”的残留矛盾 | `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `src/segment/data.rs`, correction/append tests | 文档和实现统一为 tail-only/no byte-shift；非 tail/压缩/需要移动字节场景走 fallback append + index update |
 | [ ] | P1-5 | P1 | 统一 Queue consumer state 与 gap/filler poll 语义 | `docs/design/queue-overview.md`, `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue tests | 明确每组一个共享 state file；poll 对 gap/filler 的推进与 `processed_ts` 语义清晰；复杂度说明与实现一致 |
@@ -45,4 +45,5 @@
 | 2026-06-06 | P0-1 | [x] | FFI Store 改为 `Arc<Mutex<Store>>` 内部同步, dataset/iterator/queue/consumer 子句柄共享同步入口; 移除 raw `Store*` aliasing 路径 | `cargo test ffi::tests -- --test-threads=1`; `cargo check`; `cargo test -- --test-threads=1`; `cargo clippy -- -D warnings`; `cargo fmt -- --check` |
 | 2026-06-06 | P0-2 | [x] | Queue 正式进入 C ABI: `tmsl_queue_open(dataset)`、queue/consumer registry lifecycle、header 声明、普通/journal queue close/push 语义已同步 | `cargo test ffi::tests -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo clippy -- -D warnings` |
 | 2026-06-06 | P1-1 | [x] | FFI iterator 改为 query 时复制 `IndexEntry` snapshot, `next` 不再打开 index segment; 文档和 header 补充 snapshot/retention 边界 | `cargo test ffi::tests -- --test-threads=1`; `cargo test -- --test-threads=1` |
+| 2026-06-06 | P1-2 | [x] | Segment header `file_size` 改为 `u64`, dataset/segment meta 增加 `compress_type`, 默认压缩算法改为 zstd, 保留 deflate 支持并同步 FFI 配置/header | `cargo test -- --test-threads=1`; `cargo check`; `cargo clippy -- -D warnings`; `cargo fmt -- --check` |
 | 2026-06-06 | ALL | [ ] | 基于第 4 轮 `design-review.md` 创建初始 TODO 追踪表，尚未执行修复 | `Test-Path docs/review/design-review-todo.md`; `git diff --check -- docs/review/design-review-todo.md` |

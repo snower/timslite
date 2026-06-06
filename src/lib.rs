@@ -119,8 +119,8 @@ pub const FILE_TYPE_INDEX: u8 = header::FILE_TYPE_INDEX;
 mod tests {
     #[test]
     fn test_constants_nonzero() {
-        assert_eq!(crate::DATA_HEADER_SIZE, 116);
-        assert_eq!(crate::INDEX_HEADER_SIZE, 52);
+        assert_eq!(crate::DATA_HEADER_SIZE, 124);
+        assert_eq!(crate::INDEX_HEADER_SIZE, 60);
         assert_eq!(crate::BLOCK_HEADER_SIZE, 16);
         assert_eq!(crate::BLOCK_MAX_SIZE, 65_536);
         assert_eq!(crate::INDEX_ENTRY_SIZE, 18);

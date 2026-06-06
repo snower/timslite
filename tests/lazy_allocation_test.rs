@@ -282,7 +282,7 @@ fn t12_6_retention_reclaim_after_expansion() {
     };
 
     // Use small segment to force expansion + multiple segments
-    let data_segment_size: u64 = 180;
+    let data_segment_size: u64 = 188;
     let mut ds = DataSet::create(
         id.clone(),
         ds_dir.clone(),

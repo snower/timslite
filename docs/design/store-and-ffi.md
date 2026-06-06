@@ -418,3 +418,13 @@ tmsl_store_close(store, err_buf, sizeof(err_buf));
 ---
 
 **相关**: [架构概览](architecture.md) | [数据集操作](dataset-operations.md) | [内存与并发](memory-and-concurrency.md)
+
+## P1-2 Active Contract: FFI Compression Type
+
+`TmslStoreConfigFFI` and `TmslDatasetConfigFFI` include `compress_type:u8`.
+
+- `compress_type = 0` selects zstd and is the default returned by `tmsl_store_config_default`.
+- `compress_type = 1` selects deflate.
+- Unknown values are rejected during FFI config decode.
+- `tmsl_dataset_create(...)` without an explicit config uses the store default compression type.
+- `tmsl_dataset_create_with_config(...)` stores the supplied dataset compression type in dataset meta, and new segment headers copy it into their immutable TLV meta.

@@ -138,6 +138,33 @@ impl DataSet {
         initial_index_segment_size: u64,
         retention_window: u64,
     ) -> Result<Self> {
+        Self::create_with_compression(
+            id,
+            base_dir,
+            data_segment_size,
+            index_segment_size,
+            compress_level,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            index_continuous,
+            initial_data_segment_size,
+            initial_index_segment_size,
+            retention_window,
+        )
+    }
+
+    pub fn create_with_compression(
+        id: DataSetKey,
+        base_dir: PathBuf,
+        data_segment_size: u64,
+        index_segment_size: u64,
+        compress_level: u8,
+        compress_type: u8,
+        index_continuous: u8,
+        initial_data_segment_size: u64,
+        initial_index_segment_size: u64,
+        retention_window: u64,
+    ) -> Result<Self> {
+        crate::compress::validate_compress_type(compress_type)?;
         let meta_path = base_dir.join("meta");
         if meta_path.exists() {
             return Err(TmslError::AlreadyExists(format!(
@@ -158,6 +185,7 @@ impl DataSet {
             data_segment_size,
             index_segment_size,
             compress_level,
+            compress_type,
             index_continuous,
             initial_data_segment_size,
             initial_index_segment_size,
@@ -165,17 +193,20 @@ impl DataSet {
         );
         meta.write_to_file(&meta_path)?;
 
-        let segments = DataSegmentSet::new(
+        let segments = DataSegmentSet::new_with_compression(
             &base_dir,
             data_segment_size,
             initial_data_segment_size,
             compress_level,
+            compress_type,
         )?;
-        let time_index = TimeIndex::new(
+        let time_index = TimeIndex::new_with_compression(
             &index_dir,
             index_segment_size,
             initial_index_segment_size,
             index_continuous != 0,
+            compress_level,
+            compress_type,
         )?;
 
         Ok(Self {
@@ -185,6 +216,7 @@ impl DataSet {
                 data_segment_size,
                 index_segment_size,
                 compress_level,
+                compress_type,
                 index_continuous,
                 initial_data_segment_size,
                 initial_index_segment_size,
@@ -221,6 +253,7 @@ impl DataSet {
             data_segment_size: meta.data_segment_size,
             index_segment_size: meta.index_segment_size,
             compress_level: meta.compress_level,
+            compress_type: meta.compress_type,
             index_continuous: meta.index_continuous,
             initial_data_segment_size: meta.initial_data_segment_size,
             initial_index_segment_size: meta.initial_index_segment_size,
@@ -228,18 +261,21 @@ impl DataSet {
         };
         let retention_window = meta.retention_window;
 
-        let segments = DataSegmentSet::load_existing(
+        let segments = DataSegmentSet::load_existing_with_compression(
             &base_dir,
             config.data_segment_size,
             meta.initial_data_segment_size,
             config.compress_level,
+            config.compress_type,
         )?;
         let index_dir = base_dir.join("index");
-        let time_index = TimeIndex::load_existing(
+        let time_index = TimeIndex::load_existing_with_compression(
             &index_dir,
             config.index_segment_size,
             meta.initial_index_segment_size,
             config.index_continuous != 0,
+            config.compress_level,
+            config.compress_type,
         )?;
 
         // Recover latest_written_timestamp from index segments
@@ -2017,9 +2053,9 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        // data_segment_size=180 forces one record per segment (same as reclaim test).
+        // data_segment_size=188 forces one record per segment (same as reclaim test).
         // retention_window=15 → threshold = latest_ts(30) - 15 = 15.
-        let data_segment_size = 180u64;
+        let data_segment_size = 188u64;
         let ret = 15u64;
         let mut ds = DataSet::create(
             id.clone(),
@@ -2144,10 +2180,10 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        // data_segment_size=180, initial=180: each 32-byte record fills one segment.
+        // data_segment_size=188, initial=188: each 32-byte record fills one segment.
         // total_needed = BLOCK_HEADER_SIZE(16) + RECORD_OVERHEAD(12) + 32 = 60.
-        // Available = 180 - 116 = 64 >= 60 (fits), but 2nd record triggers rollover.
-        let data_segment_size = 180u64;
+        // Available = 188 - 124 = 64 >= 60 (fits), but 2nd record triggers rollover.
+        let data_segment_size = 188u64;
         let mut ds = DataSet::create(
             id,
             dir.clone(),
@@ -3153,7 +3189,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let data_segment_size = 180u64;
+        let data_segment_size = 188u64;
         let retention_window = 86_400u64; // 1 day in seconds
         let mut ds = DataSet::create(
             id.clone(),

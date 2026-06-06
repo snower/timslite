@@ -1,6 +1,9 @@
-//! Compression utilities (miniz_oxide deflate wrapper).
+//! Compression utilities.
 
 use crate::error::{Result, TmslError};
+
+pub const COMPRESS_TYPE_ZSTD: u8 = 0;
+pub const COMPRESS_TYPE_DEFLATE: u8 = 1;
 
 /// Compress data using deflate.
 ///
@@ -13,6 +16,45 @@ pub fn deflate_compress(data: &[u8], level: u8) -> Result<Vec<u8>> {
 pub fn deflate_decompress(data: &[u8]) -> Result<Vec<u8>> {
     miniz_oxide::inflate::decompress_to_vec(data)
         .map_err(|e| TmslError::DecompressionError(format!("miniz_oxide inflate error: {e:?}")))
+}
+
+pub fn zstd_compress(data: &[u8], level: u8) -> Result<Vec<u8>> {
+    zstd::stream::encode_all(data, i32::from(level.min(22)))
+        .map_err(|e| TmslError::CompressionError(format!("zstd encode error: {e}")))
+}
+
+pub fn zstd_decompress(data: &[u8]) -> Result<Vec<u8>> {
+    zstd::stream::decode_all(data)
+        .map_err(|e| TmslError::DecompressionError(format!("zstd decode error: {e}")))
+}
+
+pub fn validate_compress_type(compress_type: u8) -> Result<()> {
+    match compress_type {
+        COMPRESS_TYPE_ZSTD | COMPRESS_TYPE_DEFLATE => Ok(()),
+        _ => Err(TmslError::InvalidData(format!(
+            "unknown compress_type {compress_type}"
+        ))),
+    }
+}
+
+pub fn compress(data: &[u8], level: u8, compress_type: u8) -> Result<Vec<u8>> {
+    match compress_type {
+        COMPRESS_TYPE_ZSTD => zstd_compress(data, level),
+        COMPRESS_TYPE_DEFLATE => deflate_compress(data, level),
+        _ => Err(TmslError::InvalidData(format!(
+            "unknown compress_type {compress_type}"
+        ))),
+    }
+}
+
+pub fn decompress(data: &[u8], compress_type: u8) -> Result<Vec<u8>> {
+    match compress_type {
+        COMPRESS_TYPE_ZSTD => zstd_decompress(data),
+        COMPRESS_TYPE_DEFLATE => deflate_decompress(data),
+        _ => Err(TmslError::InvalidData(format!(
+            "unknown compress_type {compress_type}"
+        ))),
+    }
 }
 
 /// Determine if compression was worthwhile.
@@ -35,6 +77,21 @@ mod tests {
 
         let decompressed = deflate_decompress(&compressed).unwrap();
         assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_default_zstd_roundtrip_via_compress_type() {
+        let original = b"zstd should be the default compression algorithm ".repeat(200);
+        let compressed = compress(original.as_slice(), 6, COMPRESS_TYPE_ZSTD).unwrap();
+        let decompressed = decompress(&compressed, COMPRESS_TYPE_ZSTD).unwrap();
+
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_rejects_unknown_compress_type() {
+        let err = compress(b"data", 6, 99).expect_err("unknown compress_type must be rejected");
+        assert!(matches!(err, TmslError::InvalidData(_)));
     }
 
     #[test]

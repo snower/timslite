@@ -8,17 +8,18 @@
 //!
 //! Meta is immutable (written once at creation). State is mutable (updated on every write).
 
+use crate::compress::{validate_compress_type, COMPRESS_TYPE_ZSTD};
 use crate::error::{Result, TmslError};
 use crate::util::*;
 use memmap2::MmapMut;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-/// Data segment v1 default header size: 9 + 33 + 2 + 72 = 116 bytes.
-pub const DATA_HEADER_SIZE: u64 = 116;
+/// Data segment v1 default header size: 9 + 41 + 2 + 72 = 124 bytes.
+pub const DATA_HEADER_SIZE: u64 = 124;
 
-/// Index segment v1 default header size: 9 + 33 + 2 + 8 = 52 bytes.
-pub const INDEX_HEADER_SIZE: u64 = 52;
+/// Index segment v1 default header size: 9 + 41 + 2 + 8 = 60 bytes.
+pub const INDEX_HEADER_SIZE: u64 = 60;
 
 pub const MAGIC: [u8; 4] = *b"TMSL";
 pub const VERSION: u16 = 1;
@@ -30,11 +31,12 @@ pub const FILE_TYPE_DATA: u8 = 2;
 /// Meta TLV type codes (immutable, written once at creation)
 const META_TYPE_CREATED_AT: u8 = 0x01; // i64 LE, unix ms
 const META_TYPE_FILE_OFFSET: u8 = 0x02; // i64 LE
-const META_TYPE_FILE_SIZE: u8 = 0x03; // u32 LE
+const META_TYPE_FILE_SIZE: u8 = 0x03; // u64 LE
 const META_TYPE_COMPRESS_LEVEL: u8 = 0x04; // u8
+const META_TYPE_COMPRESS_TYPE: u8 = 0x05; // u8
 
-/// Meta TLV total length for v1: (1+2+8)+(1+2+8)+(1+2+4)+(1+2+1) = 33
-const META_LENGTH_V1: u16 = 33;
+/// Meta TLV total length for v1: (1+2+8)+(1+2+8)+(1+2+8)+(1+2+1)+(1+2+1) = 41
+const META_LENGTH_V1: u16 = 41;
 
 /// Data state: 9 fields × 8 bytes = 72 bytes
 const DATA_STATE_LENGTH_V1: u16 = 72;
@@ -52,9 +54,9 @@ const OFF_META_LENGTH: usize = 7;
 const META_START: usize = 9;
 pub const FIXED_PREFIX_SIZE: usize = META_START;
 const STATE_LENGTH_SIZE: usize = 2;
-// v1 state fields start at offset 44
+// v1 state fields start at offset 52
 #[cfg(test)]
-const STATE_START: usize = 44;
+const STATE_START: usize = 52;
 
 // ─── Data segment state field offsets (relative to dynamic state start) ──
 const DS_MIN_TIMESTAMP: usize = 0;
@@ -228,8 +230,9 @@ pub struct DataFileMetadata {
     // === Meta (immutable TLV, written at creation) ===
     pub created_at: i64,
     pub file_offset: i64,
-    pub file_size: u32,
+    pub file_size: u64,
     pub compress_level: u8,
+    pub compress_type: u8,
     pub meta_length: u16,
     pub header_size: u64,
 
@@ -248,7 +251,12 @@ pub struct DataFileMetadata {
 
 impl DataFileMetadata {
     /// Create a new default metadata for a fresh data segment.
-    pub fn create_default(file_offset: i64, file_size: u32) -> Self {
+    pub fn create_default(
+        file_offset: i64,
+        file_size: u64,
+        compress_level: u8,
+        compress_type: u8,
+    ) -> Self {
         Self {
             magic: MAGIC,
             version: VERSION,
@@ -259,7 +267,8 @@ impl DataFileMetadata {
                 .unwrap_or(0),
             file_offset,
             file_size,
-            compress_level: 6,
+            compress_level,
+            compress_type,
             meta_length: META_LENGTH_V1,
             header_size: DATA_HEADER_SIZE,
             min_timestamp: TIMESTAMP_MIN_SENTINEL,
@@ -294,6 +303,7 @@ impl DataFileMetadata {
             self.file_offset,
             self.file_size,
             self.compress_level,
+            self.compress_type,
         );
 
         let state_length_offset = state_length_offset(self.meta_length);
@@ -335,8 +345,9 @@ impl DataFileMetadata {
     /// Read DataFileMetadata from a byte slice.
     pub fn read_from(mmap: &[u8]) -> Result<Self> {
         let (magic, version, file_type, meta_length) = read_shared_prefix(mmap)?;
-        let (created_at, file_offset, file_size, compress_level) =
+        let (created_at, file_offset, file_size, compress_level, compress_type) =
             parse_meta_tlv(mmap, META_START, meta_length as usize)?;
+        validate_compress_type(compress_type)?;
         let state_length_offset = state_length_offset(meta_length);
         ensure_len(
             mmap,
@@ -373,6 +384,7 @@ impl DataFileMetadata {
             file_offset,
             file_size,
             compress_level,
+            compress_type,
             meta_length,
             header_size,
             min_timestamp,
@@ -472,8 +484,9 @@ pub struct IndexFileMetadata {
     // === Meta (immutable TLV, written at creation) ===
     pub created_at: i64,
     pub file_offset: i64,
-    pub file_size: u32,
+    pub file_size: u64,
     pub compress_level: u8,
+    pub compress_type: u8,
     pub meta_length: u16,
     pub header_size: u64,
 
@@ -484,7 +497,12 @@ pub struct IndexFileMetadata {
 
 impl IndexFileMetadata {
     /// Create a new default metadata for a fresh index segment.
-    pub fn create_default(file_offset: i64, file_size: u32) -> Self {
+    pub fn create_default(
+        file_offset: i64,
+        file_size: u64,
+        compress_level: u8,
+        compress_type: u8,
+    ) -> Self {
         Self {
             magic: MAGIC,
             version: VERSION,
@@ -495,7 +513,8 @@ impl IndexFileMetadata {
                 .unwrap_or(0),
             file_offset,
             file_size,
-            compress_level: 6,
+            compress_level,
+            compress_type,
             meta_length: META_LENGTH_V1,
             header_size: INDEX_HEADER_SIZE,
             wrote_position: INDEX_HEADER_SIZE,
@@ -522,6 +541,7 @@ impl IndexFileMetadata {
             self.file_offset,
             self.file_size,
             self.compress_level,
+            self.compress_type,
         );
 
         let state_length_offset = state_length_offset(self.meta_length);
@@ -534,8 +554,9 @@ impl IndexFileMetadata {
     /// Read IndexFileMetadata from a byte slice.
     pub fn read_from(mmap: &[u8]) -> Result<Self> {
         let (magic, version, file_type, meta_length) = read_shared_prefix(mmap)?;
-        let (created_at, file_offset, file_size, compress_level) =
+        let (created_at, file_offset, file_size, compress_level, compress_type) =
             parse_meta_tlv(mmap, META_START, meta_length as usize)?;
+        validate_compress_type(compress_type)?;
         let state_length_offset = state_length_offset(meta_length);
         ensure_len(
             mmap,
@@ -562,6 +583,7 @@ impl IndexFileMetadata {
             file_offset,
             file_size,
             compress_level,
+            compress_type,
             meta_length,
             header_size,
             wrote_position,
@@ -602,8 +624,9 @@ fn write_meta_tlv(
     mmap: &mut MmapMut,
     created_at: i64,
     file_offset: i64,
-    file_size: u32,
+    file_size: u64,
     compress_level: u8,
+    compress_type: u8,
 ) {
     let mut off = META_START;
     // created_at
@@ -623,16 +646,23 @@ fn write_meta_tlv(
     // file_size
     mmap[off] = META_TYPE_FILE_SIZE;
     off += 1;
-    write_u16_to_mmap(mmap, off, 4);
+    write_u16_to_mmap(mmap, off, 8);
     off += 2;
-    write_u32_to_mmap(mmap, off, file_size);
-    off += 4;
+    write_u64_to_mmap(mmap, off, file_size);
+    off += 8;
     // compress_level
     mmap[off] = META_TYPE_COMPRESS_LEVEL;
     off += 1;
     write_u16_to_mmap(mmap, off, 1);
     off += 2;
     mmap[off] = compress_level;
+    off += 1;
+    // compress_type
+    mmap[off] = META_TYPE_COMPRESS_TYPE;
+    off += 1;
+    write_u16_to_mmap(mmap, off, 1);
+    off += 2;
+    mmap[off] = compress_type;
 }
 
 fn read_shared_prefix(mmap: &[u8]) -> Result<([u8; 4], u16, u8, u16)> {
@@ -657,11 +687,12 @@ fn read_shared_prefix(mmap: &[u8]) -> Result<([u8; 4], u16, u8, u16)> {
 }
 
 /// Parse Meta TLV entries from mmap. Unknown type codes are skipped.
-fn parse_meta_tlv(mmap: &[u8], start: usize, total_len: usize) -> Result<(i64, i64, u32, u8)> {
+fn parse_meta_tlv(mmap: &[u8], start: usize, total_len: usize) -> Result<(i64, i64, u64, u8, u8)> {
     let mut created_at = 0i64;
     let mut file_offset = 0i64;
-    let mut file_size = 0u32;
+    let mut file_size = 0u64;
     let mut compress_level = 0u8;
+    let mut compress_type = COMPRESS_TYPE_ZSTD;
 
     let mut off = start;
     let end = start
@@ -683,18 +714,27 @@ fn parse_meta_tlv(mmap: &[u8], start: usize, total_len: usize) -> Result<(i64, i
             META_TYPE_FILE_OFFSET if len == 8 => {
                 file_offset = read_i64_from_mmap(mmap, off);
             }
-            META_TYPE_FILE_SIZE if len == 4 => {
-                file_size = read_u32_from_mmap(mmap, off);
+            META_TYPE_FILE_SIZE if len == 8 => {
+                file_size = read_u64_from_mmap(mmap, off);
             }
             META_TYPE_COMPRESS_LEVEL if len == 1 => {
                 compress_level = mmap[off];
+            }
+            META_TYPE_COMPRESS_TYPE if len == 1 => {
+                compress_type = mmap[off];
             }
             _ => {} // Skip unknown type
         }
         off += len;
     }
 
-    Ok((created_at, file_offset, file_size, compress_level))
+    Ok((
+        created_at,
+        file_offset,
+        file_size,
+        compress_level,
+        compress_type,
+    ))
 }
 
 /// Clear pending state directly in an mmap slice (without a struct).
@@ -735,7 +775,12 @@ mod tests {
     #[test]
     fn test_data_write_read_roundtrip() {
         let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
-        let meta = DataFileMetadata::create_default(0, 64 * 1024 * 1024);
+        let meta = DataFileMetadata::create_default(
+            0,
+            64 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
         meta.write_to(&mut mmap);
 
         let read = DataFileMetadata::read_from(&mmap).unwrap();
@@ -744,15 +789,45 @@ mod tests {
         assert_eq!(read.file_type, FILE_TYPE_DATA);
         assert_eq!(read.file_offset, 0);
         assert_eq!(read.file_size, 64 * 1024 * 1024);
+        assert_eq!(read.compress_type, crate::compress::COMPRESS_TYPE_ZSTD);
         assert_eq!(read.pending_block_offset, PENDING_NONE);
         assert_eq!(read.min_timestamp, TIMESTAMP_MIN_SENTINEL);
         assert_eq!(read.max_timestamp, TIMESTAMP_MAX_SENTINEL);
     }
 
     #[test]
+    fn test_header_file_size_roundtrips_u64() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let large_size = u32::MAX as u64 + 4096;
+        let meta =
+            DataFileMetadata::create_default(0, large_size, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+
+        assert_eq!(read.file_size, large_size);
+    }
+
+    #[test]
+    fn test_header_rejects_invalid_compress_type() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta = DataFileMetadata::create_default(0, 4096, 6, 99);
+        meta.write_to(&mut mmap);
+
+        let result = DataFileMetadata::read_from(&mmap);
+
+        assert!(matches!(result, Err(TmslError::InvalidData(_))));
+    }
+
+    #[test]
     fn test_index_segment_roundtrip() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta = IndexFileMetadata::create_default(1700000000, 4 * 1024 * 1024);
+        let meta = IndexFileMetadata::create_default(
+            1700000000,
+            4 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
         meta.write_to(&mut mmap);
 
         let read = IndexFileMetadata::read_from(&mmap).unwrap();
@@ -771,7 +846,14 @@ mod tests {
         let (mut mmap, _path) = create_test_mmap(header_size);
 
         write_shared_prefix(&mut mmap, MAGIC, VERSION, FILE_TYPE_DATA, meta_length);
-        write_meta_tlv(&mut mmap, 1000, 0, 1024, 6);
+        write_meta_tlv(
+            &mut mmap,
+            1000,
+            0,
+            1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
         let extra_start = META_START + META_LENGTH_V1 as usize;
         mmap[extra_start..extra_start + extra_meta.len()].copy_from_slice(&extra_meta);
         write_u16_to_mmap(&mut mmap, state_length_offset, DATA_STATE_LENGTH_V1);
@@ -809,7 +891,14 @@ mod tests {
         let (mut mmap, _path) = create_test_mmap(header_size);
 
         write_shared_prefix(&mut mmap, MAGIC, VERSION, FILE_TYPE_INDEX, meta_length);
-        write_meta_tlv(&mut mmap, 1000, 1700000000, 4096, 6);
+        write_meta_tlv(
+            &mut mmap,
+            1000,
+            1700000000,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
         let extra_start = META_START + META_LENGTH_V1 as usize;
         mmap[extra_start..extra_start + extra_meta.len()].copy_from_slice(&extra_meta);
         write_u16_to_mmap(&mut mmap, state_length_offset, INDEX_STATE_LENGTH_V1);
@@ -837,7 +926,12 @@ mod tests {
     #[test]
     fn test_data_update_state() {
         let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
-        let mut meta = DataFileMetadata::create_default(0, 64 * 1024 * 1024);
+        let mut meta = DataFileMetadata::create_default(
+            0,
+            64 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
         meta.write_to(&mut mmap);
         meta.write_state_full(&mut mmap, 100, 200, 256, 10, 2000);
 
@@ -859,7 +953,12 @@ mod tests {
     #[test]
     fn test_data_pending_state() {
         let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
-        let mut meta = DataFileMetadata::create_default(0, 64 * 1024 * 1024);
+        let mut meta = DataFileMetadata::create_default(
+            0,
+            64 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
         meta.write_to(&mut mmap);
         meta.pending_block_offset = 128;
         meta.pending_wrote_position = 1000;
@@ -889,7 +988,12 @@ mod tests {
     #[test]
     fn test_index_update_wrote_position() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let mut meta = IndexFileMetadata::create_default(0, 4 * 1024 * 1024);
+        let mut meta = IndexFileMetadata::create_default(
+            0,
+            4 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
         meta.write_to(&mut mmap);
         meta.write_wrote_position(&mut mmap, 100);
         assert_eq!(
@@ -901,7 +1005,12 @@ mod tests {
     #[test]
     fn test_future_version_parse() {
         let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
-        let meta = DataFileMetadata::create_default(0, 64 * 1024 * 1024);
+        let meta = DataFileMetadata::create_default(
+            0,
+            64 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
         meta.write_to(&mut mmap);
         write_u16_to_mmap(&mut mmap, OFF_VERSION, 5);
 
@@ -912,7 +1021,7 @@ mod tests {
 
     #[test]
     fn test_header_sizes() {
-        assert_eq!(DATA_HEADER_SIZE, 116);
-        assert_eq!(INDEX_HEADER_SIZE, 52);
+        assert_eq!(DATA_HEADER_SIZE, 124);
+        assert_eq!(INDEX_HEADER_SIZE, 60);
     }
 }

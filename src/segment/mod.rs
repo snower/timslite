@@ -45,6 +45,7 @@ pub struct DataSegmentSet {
     pub segment_size: u64,
     pub initial_segment_size: u64,
     pub compress_level: u8,
+    pub compress_type: u8,
     pub segments: Vec<DataSegment>,
     #[allow(private_interfaces)]
     pub closed_segments: Vec<DataSegmentMeta>,
@@ -60,6 +61,22 @@ impl DataSegmentSet {
         initial_segment_size: u64,
         compress_level: u8,
     ) -> Result<Self> {
+        Self::new_with_compression(
+            base_dir,
+            segment_size,
+            initial_segment_size,
+            compress_level,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+    }
+
+    pub fn new_with_compression(
+        base_dir: &Path,
+        segment_size: u64,
+        initial_segment_size: u64,
+        compress_level: u8,
+        compress_type: u8,
+    ) -> Result<Self> {
         let data_dir = base_dir.join("data");
         std::fs::create_dir_all(&data_dir)?;
         Ok(Self {
@@ -67,6 +84,7 @@ impl DataSegmentSet {
             segment_size,
             initial_segment_size,
             compress_level,
+            compress_type,
             segments: Vec::new(),
             closed_segments: Vec::new(),
             next_offset: 0,
@@ -131,6 +149,22 @@ impl DataSegmentSet {
         initial_segment_size: u64,
         compress_level: u8,
     ) -> Result<Self> {
+        Self::load_existing_with_compression(
+            base_dir,
+            segment_size,
+            initial_segment_size,
+            compress_level,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+    }
+
+    pub fn load_existing_with_compression(
+        base_dir: &Path,
+        segment_size: u64,
+        initial_segment_size: u64,
+        compress_level: u8,
+        compress_type: u8,
+    ) -> Result<Self> {
         let mut metas: Vec<DataSegmentMeta> = Vec::new();
         // Data files are in `base_dir/data/`
         let data_dir = base_dir.join("data");
@@ -168,6 +202,7 @@ impl DataSegmentSet {
             segment_size,
             initial_segment_size,
             compress_level,
+            compress_type,
             segments: Vec::new(),
             closed_segments: metas,
             next_offset,
@@ -198,6 +233,7 @@ impl DataSegmentSet {
 
         // Extract config values
         let compress_level = self.compress_level;
+        let compress_type = self.compress_type;
 
         // Try to open existing segment, or create a new one
         let seg = match self.lazy_open(current_offset) {
@@ -206,11 +242,13 @@ impl DataSegmentSet {
                 // Create new segment with initial_size
                 let file_name = format!("{:020}", current_offset);
                 let path = self.base_dir.join(&file_name);
-                let new_seg = DataSegment::create(
+                let new_seg = DataSegment::create_with_compression(
                     &path,
                     current_offset,
                     self.initial_segment_size,
                     self.segment_size,
+                    compress_level,
+                    compress_type,
                 )?;
                 self.segments.push(new_seg);
                 self.next_offset += self.segment_size;
@@ -239,11 +277,13 @@ impl DataSegmentSet {
                     let new_offset = self.next_offset;
                     let file_name = format!("{:020}", new_offset);
                     let path = self.base_dir.join(&file_name);
-                    let new_seg = DataSegment::create(
+                    let new_seg = DataSegment::create_with_compression(
                         &path,
                         new_offset,
                         self.initial_segment_size,
                         self.segment_size,
+                        compress_level,
+                        compress_type,
                     )?;
                     self.segments.push(new_seg);
                     self.next_offset = new_offset + self.segment_size;
@@ -376,6 +416,7 @@ impl DataSegmentSet {
 
     pub fn append_single_record(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u64, u16)> {
         let compress_level = self.compress_level;
+        let compress_type = self.compress_type;
         let seg = self
             .segments
             .last_mut()
@@ -390,11 +431,13 @@ impl DataSegmentSet {
                 let new_offset = self.next_offset;
                 let file_name = format!("{:020}", new_offset);
                 let path = self.base_dir.join(&file_name);
-                let new_seg = DataSegment::create(
+                let new_seg = DataSegment::create_with_compression(
                     &path,
                     new_offset,
                     self.initial_segment_size,
                     self.segment_size,
+                    compress_level,
+                    compress_type,
                 )?;
                 self.segments.push(new_seg);
                 self.next_offset += self.segment_size;

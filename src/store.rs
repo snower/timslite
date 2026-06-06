@@ -206,12 +206,13 @@ impl Store {
 
         // Create new dataset
         let dir = self.data_dir.join(name).join(dataset_type);
-        let mut ds = DataSet::create(
+        let mut ds = DataSet::create_with_compression(
             key.clone(),
             dir,
             config.data_segment_size,
             config.index_segment_size,
             config.compress_level,
+            config.compress_type,
             config.index_continuous,
             config.initial_data_segment_size,
             config.initial_index_segment_size,

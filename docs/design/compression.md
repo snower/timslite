@@ -80,3 +80,21 @@ const BLOCK_FLAG_SINGLE_RECORD: u16  = 0x0004;  // exclusive/single-record block
 ---
 
 **相关**: [数据模型](data-model.md) | [数据集操作](dataset-operations.md) | [设计决策](design-decisions.md)
+
+## P1-2 Active Contract: Compression Algorithm Type
+
+Compression is selected by immutable `compress_type` stored in both dataset meta and segment header meta.
+
+| Value | Algorithm | Default | Notes |
+|-------|-----------|---------|-------|
+| 0 | zstd | Yes | New datasets and segments use zstd by default. |
+| 1 | deflate | No | Kept as a supported built-in algorithm. |
+
+Rules:
+
+- Pending blocks remain raw and mutable regardless of compression type.
+- When a pending block is sealed, the selected algorithm compresses the raw payload and the block is written as `SEALED | COMPRESSED`.
+- Exclusive/single-record blocks are compressed immediately with the selected algorithm.
+- Reads must use the segment header `compress_type` for decompression; this lets mixed future segment algorithms remain decodable if a later version permits them.
+- Unknown `compress_type` values are invalid.
+- The default `StoreConfig` / `DataSetConfig` value is zstd (`0`).

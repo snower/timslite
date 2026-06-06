@@ -386,12 +386,13 @@ impl JournalManager {
         let mut ds = if base_dir.join("meta").exists() {
             DataSet::open(key, base_dir)?
         } else {
-            DataSet::create(
+            DataSet::create_with_compression(
                 key,
                 base_dir,
                 config.data_segment_size,
                 config.index_segment_size,
                 config.compress_level,
+                config.compress_type,
                 0,
                 config.initial_data_segment_size,
                 config.initial_index_segment_size,

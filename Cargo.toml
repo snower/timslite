@@ -12,6 +12,7 @@ memmap2 = "0.9"
 miniz_oxide = "0.8"
 log = "0.4"
 libc = "0.2"
+zstd = "0.13"
 
 [dev-dependencies]
 criterion = "0.5"

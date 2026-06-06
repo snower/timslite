@@ -126,3 +126,29 @@ impl DataSetMeta {
 ---
 
 **返回**: [架构概览](architecture.md) | [数据模型](data-model.md)
+
+## P1-2 Active Contract: `compress_type` And u64 Segment Size
+
+The active dataset meta format is not backward-compatible with earlier draft files because the project is still in initial development.
+
+- `data_segment_size` and `index_segment_size` are `u64 LE` and remain required.
+- `compress_type` is a required immutable TLV for new dataset meta files.
+- `compress_type = 0` means zstd and is the default.
+- `compress_type = 1` means deflate.
+- Unknown `compress_type` values are invalid.
+- Segment file headers must copy the dataset `compress_type` into their immutable meta TLV so a segment can be decoded according to its own header.
+- `compress_level` remains a per-dataset immutable level and is interpreted by the selected algorithm.
+
+Active dataset meta TLV set:
+
+| Type (hex) | Name | Length | Type | Description |
+|------------|------|--------|------|-------------|
+| 0x01 | data_segment_size | 8 | u64 LE | Data segment max size |
+| 0x02 | index_segment_size | 8 | u64 LE | Index segment max size |
+| 0x03 | compress_level | 1 | u8 | Compression level |
+| 0x04 | create_time | 8 | i64 LE | Dataset creation time in unix milliseconds |
+| 0x05 | index_continuous | 1 | u8 | 0=non-continuous, 1=continuous |
+| 0x06 | initial_data_segment_size | 8 | u64 LE | Initial lazy allocation size for data segments |
+| 0x07 | initial_index_segment_size | 8 | u64 LE | Initial lazy allocation size for index segments |
+| 0x08 | retention_window | 8 | u64 LE | Retention window in timestamp units, 0=no limit |
+| 0x09 | compress_type | 1 | u8 | Compression algorithm: 0=zstd, 1=deflate |
