@@ -84,7 +84,8 @@ void* tmsl_store_open_with_config(const char* data_dir,
 
 /**
  * Close a store and release all resources.
- * Fails if any dataset or iterator handle created from this store is still open.
+ * Fails if any dataset, iterator, queue, or consumer handle created from this
+ * store is still open.
  * @param store        Opaque store pointer.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
@@ -308,6 +309,9 @@ int tmsl_dataset_read(void* dataset, int64_t timestamp,
 
 /**
  * Query records in a time range.
+ *
+ * The iterator owns a snapshot of matching index entries captured at query
+ * creation time. Data payload is still read lazily by tmsl_iter_next.
  * @param dataset      Opaque dataset pointer.
  * @param start_ts     Start timestamp (inclusive).
  * @param end_ts       End timestamp (inclusive).
@@ -332,8 +336,8 @@ int tmsl_iter_next(void* iter, int64_t* out_ts, unsigned char** out_data,
                    size_t* out_data_len, char* err_buf, size_t err_buf_len);
 
 /**
- * Free data returned by tmsl_dataset_read or tmsl_iter_next.
- * @param data         Pointer returned by a timslite FFI read/query API.
+ * Free data returned by tmsl_dataset_read, tmsl_iter_next, or tmsl_queue_poll.
+ * @param data         Pointer returned by a timslite FFI read/query/queue API.
  */
 void tmsl_data_free(void* data);
 
@@ -349,6 +353,110 @@ void tmsl_iter_free_data(unsigned char* data);
  * @param iter         Opaque iterator pointer.
  */
 void tmsl_iter_close(void* iter);
+
+/* Queue API */
+
+/**
+ * Open the queue subsystem for a dataset.
+ *
+ * The dataset argument is the opaque pointer returned by tmsl_dataset_create or
+ * tmsl_dataset_open. This function also works for the read-only .journal/logs
+ * dataset when journal is enabled.
+ *
+ * @param dataset      Opaque dataset pointer.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque queue handle (>0), or 0 on error.
+ */
+size_t tmsl_queue_open(void* dataset, char* err_buf, size_t err_buf_len);
+
+/**
+ * Close a queue handle.
+ *
+ * For normal dataset queues, this closes the underlying dataset queue. For the
+ * journal queue, this only releases the FFI handle because the queue is owned by
+ * the internal JournalManager. All FFI consumer handles opened from this queue
+ * are invalidated.
+ *
+ * @param queue_handle Queue handle returned by tmsl_queue_open.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_queue_close(size_t queue_handle, char* err_buf, size_t err_buf_len);
+
+/**
+ * Open or create a queue consumer group.
+ *
+ * group_name must match ^[0-9A-Za-z_-]+$ and be at most 255 bytes.
+ *
+ * @param queue_handle Queue handle returned by tmsl_queue_open.
+ * @param group_name   Consumer group name.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque consumer handle (>0), or 0 on error.
+ */
+size_t tmsl_queue_consumer_open(size_t queue_handle, const char* group_name,
+                                char* err_buf, size_t err_buf_len);
+
+/**
+ * Drop a consumer group and invalidate matching FFI consumer handles.
+ *
+ * @param queue_handle    Queue handle returned by tmsl_queue_open.
+ * @param consumer_handle Consumer handle returned by tmsl_queue_consumer_open.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_queue_consumer_drop(size_t queue_handle, size_t consumer_handle,
+                             char* err_buf, size_t err_buf_len);
+
+/**
+ * Push data into a normal dataset queue.
+ *
+ * This assigns timestamp = latest_written_timestamp + 1. Journal queues reject
+ * external push and return -1.
+ *
+ * @param queue_handle Queue handle returned by tmsl_queue_open.
+ * @param data         Data bytes.
+ * @param data_len     Data length.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Assigned timestamp on success, -1 on error.
+ */
+int64_t tmsl_queue_push(size_t queue_handle, const unsigned char* data,
+                        size_t data_len, char* err_buf, size_t err_buf_len);
+
+/**
+ * Poll data from a queue consumer.
+ *
+ * On success, allocates out_data via malloc. Caller must free it with
+ * tmsl_data_free.
+ *
+ * @param consumer_handle Consumer handle returned by tmsl_queue_consumer_open.
+ * @param timeout_ms      Timeout in milliseconds. <=0 performs a nonblocking poll.
+ * @param out_timestamp   Output timestamp.
+ * @param out_data        Output data pointer.
+ * @param out_data_len    Output data length.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 = success, -2 = timeout/no data, -1 = error.
+ */
+int tmsl_queue_poll(size_t consumer_handle, int64_t timeout_ms,
+                    int64_t* out_timestamp, unsigned char** out_data,
+                    size_t* out_data_len, char* err_buf, size_t err_buf_len);
+
+/**
+ * Ack a previously polled queue record.
+ *
+ * @param consumer_handle Consumer handle returned by tmsl_queue_consumer_open.
+ * @param timestamp       Timestamp to ack.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_queue_ack(size_t consumer_handle, int64_t timestamp,
+                   char* err_buf, size_t err_buf_len);
 
 #ifdef __cplusplus
 }

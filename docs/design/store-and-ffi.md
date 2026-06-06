@@ -231,6 +231,13 @@ loop {
 
 ## 十二、FFI API
 
+C ABI 句柄内部同步:
+
+- `FfiStore` 内部持有 `Arc<Mutex<Store>>`, 不直接暴露或保存可被多个入口恢复成 `&mut Store` 的 raw `Store*`。
+- `FfiDataset`、`FfiIterator`、FFI queue handle、FFI consumer handle 均作为子句柄持有同一个 store `Arc<Mutex<Store>>` 或由 queue/consumer registry 间接关联。
+- 所有需要访问 Store handle registry、read-only handle set 或 Store mutating API 的 FFI 入口必须先锁定该 Store mutex。
+- `tmsl_store_close` 在存在任一 dataset、iterator、queue 或 consumer 子句柄时返回错误, 不释放 store。
+
 ```rust
 #[repr(C)]
 pub struct TmslStoreConfigFFI {
@@ -330,6 +337,15 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_data_free(data: *mut c_void);
 #[no_mangle] pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar);
 #[no_mangle] pub extern "C" fn tmsl_iter_close(iter: *mut c_void);
+
+// Queue C ABI
+#[no_mangle] pub extern "C" fn tmsl_queue_open(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> usize;
+#[no_mangle] pub extern "C" fn tmsl_queue_close(queue_handle: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_queue_consumer_open(queue_handle: usize, group_name: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> usize;
+#[no_mangle] pub extern "C" fn tmsl_queue_consumer_drop(queue_handle: usize, consumer_handle: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_queue_push(queue_handle: usize, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_longlong;
+#[no_mangle] pub extern "C" fn tmsl_queue_poll(consumer_handle: usize, timeout_ms: c_longlong, out_timestamp: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_queue_ack(consumer_handle: usize, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 ```
 
 `block_max_size` 不在 Store/Dataset/FFI 配置中暴露。普通聚合 Block 的 payload 上限固定为 `BLOCK_MAX_SIZE=65536`, 是文件格式常量。`write` 与 `append` 的单条 record 纯数据上限固定为 4MiB, 也不作为运行期配置暴露。
@@ -337,15 +353,25 @@ pub struct TmslDatasetConfigFFI {
 > **内存所有权**:
 > - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_dataset_read` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
+> - `tmsl_queue_poll` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_iter_free_data` 保留为兼容别名, 内部等价于 `tmsl_data_free`
 > - `tmsl_iter_close` 释放迭代器本身 (Rust `Box::from_raw` + drop)
 > - 所有 FFI 函数用 `catch_unwind` 包裹, panic 时返回 -1/null + err_buf 写错误信息
 
 > **句柄生命周期**:
-> - `store` 是父句柄; `dataset` 和 `iterator` 是子句柄。`tmsl_store_close` 在存在任一未关闭子句柄时返回 -1, 不释放 store。
+> - `store` 是父句柄; `dataset`、`iterator`、`queue`、`consumer` 是子句柄。`tmsl_store_close` 在存在任一未关闭子句柄时返回 -1, 不释放 store。
 > - `iterator` 必须先于创建它的 `dataset` 关闭; `tmsl_dataset_close` 在该 dataset 仍有活动 iterator 时返回 -1。
-> - `tmsl_dataset_drop` 通过 FFI 调用时要求该 store 下没有活动 dataset/iterator 子句柄, 避免删除仍被 C 侧持有的对象。
-> - `tmsl_dataset_close` / `tmsl_iter_close` 成功后对应指针立即失效, 之后不得再次传入任何 FFI 函数。
+> - `queue` 必须先于创建它的 `dataset` 关闭; `tmsl_dataset_close` 在该 dataset 仍有活动 queue handle 时返回 -1。
+> - `consumer` 必须先于或随所属 `queue` 关闭; `tmsl_queue_close` 会关闭并移除该 queue 下所有 FFI consumer handle。
+> - `tmsl_dataset_drop` 通过 FFI 调用时要求该 store 下没有活动 dataset/iterator/queue/consumer 子句柄, 避免删除仍被 C 侧持有的对象。
+> - `tmsl_dataset_close` / `tmsl_iter_close` / `tmsl_queue_close` / `tmsl_queue_consumer_drop` 成功后对应句柄立即失效, 之后不得再次传入任何 FFI 函数。
+
+> **Queue FFI 语义**:
+> - `tmsl_queue_open(dataset)` 以 FFI dataset 句柄为入口, 内部使用该 dataset 对应的 Store handle id 调用 `Store::open_queue`。C 侧不直接持有或传入 `DataSetHandle` 数值。
+> - `tmsl_queue_close(queue_handle)` 对普通 dataset queue 调用 `Store::close_queue` 并移除 registry entry; 对 `.journal/logs` queue 只释放 FFI queue/consumer handle, journal queue 本体由 `JournalManager` 管理。
+> - `tmsl_queue_push` 对普通 queue 自动分配 `latest_written_timestamp + 1`; 对 `.journal/logs` queue 返回错误。
+> - `tmsl_queue_poll` 返回值: `0=成功并写出数据`, `-2=超时无数据`, `-1=错误`。成功返回的数据必须用 `tmsl_data_free` 释放。
+> - `tmsl_queue_consumer_drop(queue_handle, consumer_handle)` 删除对应消费组状态并使同一 queue/group 下的 FFI consumer handle 全部失效。
 
 ## 十三、C 侧调用示例
 

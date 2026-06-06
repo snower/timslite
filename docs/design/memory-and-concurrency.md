@@ -21,6 +21,17 @@ DataSet: Arc<Mutex<DataSet>>        (读写互斥)
 - 后台线程通过读锁遍历, 写锁获取后 double-check `last_used_at` 防止竞态
 - 前台写操作更新 `last_used_at` 可自动"唤醒"即将 idle-close 的数据集
 
+### FFI 句柄同步边界
+
+C ABI 暴露的 `store` / `dataset` / `iterator` / `queue` / `consumer` 均是不透明句柄。FFI 层不能把同一个 raw `Store*` 在多个入口中直接恢复成多个 `&mut Store`。正式契约为:
+
+- `FfiStore` 内部持有 `Arc<Mutex<Store>>`。
+- `FfiDataset`、`FfiIterator`、FFI queue handle 均克隆同一个 `Arc<Mutex<Store>>`, 需要访问 Store registry 或 mutating Store API 时先获取该 mutex。
+- 该 mutex 是 FFI facade 的入口串行化锁, 用于保护 Store handle registry、read-only handle set、queue open/close 等 Store 级状态, 也避免 Rust aliasing UB。
+- 获取顺序为 `FfiStore.store_mutex` → `Store.datasets` → `DataSet mutex` → segment/index/queue 内部锁。不得在持有 DataSet/queue/state 锁时反向获取 `FfiStore.store_mutex`。
+- Queue poll/push/ack 在拿到 `DatasetQueue` / `DatasetQueueConsumer` clone 后不需要持有 `FfiStore.store_mutex`; 它们只使用 queue 自身的 `Arc<Mutex<DataSet>>`、`QueueInner` 和 consumer state 锁。
+- `tmsl_store_close` 在存在任何 dataset、iterator、queue 或 consumer 子句柄时返回错误; 子句柄必须先 close/drop。
+
 ## 十七.6 mmap 生命周期
 
 ```

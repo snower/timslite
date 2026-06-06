@@ -121,6 +121,22 @@ impl DataSet {
 | `poll(timeout)` | 拉取下一条数据 (无数据时等待) | `Option<(timestamp, data)>` |
 | `ack(timestamp)` | 标记已处理 (更新进度) | `Result<()>` |
 
+#### C ABI Queue 方法
+
+Queue 正式进入 C ABI, 但 C 侧不直接持有 Rust `DatasetQueue` 或 `DataSetHandle`:
+
+| 函数 | 说明 | 返回值 |
+|------|------|--------|
+| `tmsl_queue_open(dataset)` | 从 FFI dataset 句柄打开普通 queue 或 `.journal/logs` queue | `usize` queue handle, `0` 表示失败 |
+| `tmsl_queue_close(queue_handle)` | 释放 FFI queue handle; 普通 queue 同时关闭 dataset queue, journal queue 仅释放 FFI handle | `0` 成功, `-1` 错误 |
+| `tmsl_queue_consumer_open(queue_handle, group_name)` | 打开消费组, group_name 复用路径安全规则 | `usize` consumer handle, `0` 表示失败 |
+| `tmsl_queue_consumer_drop(queue_handle, consumer_handle)` | 删除该 consumer 对应消费组并使同组 FFI consumer handle 失效 | `0` 成功, `-1` 错误 |
+| `tmsl_queue_push(queue_handle, data, data_len)` | 普通 queue 写入数据并返回自动分配 timestamp; journal queue 返回错误 | `timestamp`, `-1` 错误 |
+| `tmsl_queue_poll(consumer_handle, timeout_ms, ...)` | poll 下一条数据; 成功数据由 `malloc` 分配 | `0` 成功, `-2` 超时, `-1` 错误 |
+| `tmsl_queue_ack(consumer_handle, timestamp)` | ack 已 poll 的 timestamp | `0` 成功, `-1` 错误 |
+
+FFI queue/consumer 是 Store 的子句柄。`tmsl_store_close` 在存在 queue 或 consumer handle 时必须失败; `tmsl_dataset_close` 在该 dataset 仍有 queue handle 时必须失败。`tmsl_queue_close` 会移除该 queue 下所有 FFI consumer handle, 防止 C 侧继续 poll/ack 已关闭 queue。
+
 ### 28.5 生命周期
 
 ```

@@ -419,6 +419,14 @@ impl Store {
         Ok(Arc::clone(ds))
     }
 
+    pub(crate) fn is_journal_handle(&self, handle: DataSetHandle) -> Result<bool> {
+        let key = self
+            .handles
+            .get(&handle.0)
+            .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?;
+        Ok(JournalManager::is_journal_key(key))
+    }
+
     /// Write through the Store so journal and global cache hooks are applied.
     pub fn write_dataset(
         &mut self,

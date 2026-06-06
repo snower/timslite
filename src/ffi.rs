@@ -11,7 +11,6 @@ use crate::bg::TickResult;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
-use crate::query::iter::QuerySource;
 use crate::queue::{DatasetQueue, DatasetQueueConsumer};
 use crate::store::{DataSetHandle, Store};
 
@@ -20,11 +19,11 @@ use std::sync::LazyLock;
 // 鈹€鈹€鈹€ Queue handle registry (FFI-safe opaque handles) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 static NEXT_QUEUE_ID: AtomicUsize = AtomicUsize::new(1);
-static QUEUE_REGISTRY: LazyLock<Mutex<HashMap<usize, DatasetQueue>>> =
+static QUEUE_REGISTRY: LazyLock<Mutex<HashMap<usize, FfiQueueEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 static NEXT_CONSUMER_ID: AtomicUsize = AtomicUsize::new(1);
-static CONSUMER_REGISTRY: LazyLock<Mutex<HashMap<usize, DatasetQueueConsumer>>> =
+static CONSUMER_REGISTRY: LazyLock<Mutex<HashMap<usize, FfiConsumerEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 // 鈹€鈹€鈹€ FFI error handling helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -151,31 +150,40 @@ impl FfiStoreState {
 }
 
 struct FfiStore {
-    inner: *mut Store,
+    inner: Arc<Mutex<Store>>,
     state: Arc<FfiStoreState>,
 }
-unsafe impl Send for FfiStore {}
-unsafe impl Sync for FfiStore {}
 
 struct FfiDataset {
-    store_ptr: *mut Store,
+    store: Arc<Mutex<Store>>,
     handle: DataSetHandle,
     state: Arc<FfiStoreState>,
     iterator_count: Arc<AtomicUsize>,
 }
-unsafe impl Send for FfiDataset {}
-unsafe impl Sync for FfiDataset {}
 
 struct FfiIterator {
-    store_ptr: *mut Store,
+    store: Arc<Mutex<Store>>,
     handle: DataSetHandle,
     state: Arc<FfiStoreState>,
     dataset_iterator_count: Arc<AtomicUsize>,
-    sources: Vec<QuerySource>,
-    current_source: usize,
+    entries: Vec<IndexEntry>,
+    position: usize,
 }
-unsafe impl Send for FfiIterator {}
-unsafe impl Sync for FfiIterator {}
+
+struct FfiQueueEntry {
+    store: Arc<Mutex<Store>>,
+    handle: DataSetHandle,
+    queue: DatasetQueue,
+    state: Arc<FfiStoreState>,
+    is_journal: bool,
+}
+
+struct FfiConsumerEntry {
+    queue_handle: usize,
+    group_name: String,
+    consumer: DatasetQueueConsumer,
+    state: Arc<FfiStoreState>,
+}
 
 fn store_config_to_ffi(config: &StoreConfig) -> TmslStoreConfigFFI {
     TmslStoreConfigFFI {
@@ -253,24 +261,53 @@ fn dataset_config_from_ffi(
 fn register_dataset_child(ffi_store: &FfiStore, handle: DataSetHandle) -> Box<FfiDataset> {
     ffi_store.state.child_handles.fetch_add(1, Ordering::SeqCst);
     Box::new(FfiDataset {
-        store_ptr: ffi_store.inner,
+        store: Arc::clone(&ffi_store.inner),
         handle,
         state: Arc::clone(&ffi_store.state),
         iterator_count: Arc::new(AtomicUsize::new(0)),
     })
 }
 
-fn next_iter_index_entry(iter: &mut FfiIterator) -> crate::error::Result<Option<IndexEntry>> {
-    while iter.current_source < iter.sources.len() {
-        match iter.sources[iter.current_source].next_entry()? {
-            Some(entry) if entry.block_offset == crate::index::segment::BLOCK_OFFSET_FILLER => {
-                continue;
-            }
-            Some(entry) => return Ok(Some(entry)),
-            None => iter.current_source += 1,
-        }
+fn dataset_has_queue_handle(handle: DataSetHandle) -> crate::error::Result<bool> {
+    let registry = QUEUE_REGISTRY
+        .lock()
+        .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
+    Ok(registry.values().any(|entry| entry.handle.0 == handle.0))
+}
+
+fn remove_consumers_for_queue(queue_handle: usize) -> crate::error::Result<usize> {
+    let mut consumers = CONSUMER_REGISTRY
+        .lock()
+        .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
+    let ids: Vec<usize> = consumers
+        .iter()
+        .filter_map(|(id, entry)| (entry.queue_handle == queue_handle).then_some(*id))
+        .collect();
+    let count = ids.len();
+    for id in ids {
+        consumers.remove(&id);
     }
-    Ok(None)
+    Ok(count)
+}
+
+fn remove_consumers_for_group(
+    queue_handle: usize,
+    group_name: &str,
+) -> crate::error::Result<usize> {
+    let mut consumers = CONSUMER_REGISTRY
+        .lock()
+        .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
+    let ids: Vec<usize> = consumers
+        .iter()
+        .filter_map(|(id, entry)| {
+            (entry.queue_handle == queue_handle && entry.group_name == group_name).then_some(*id)
+        })
+        .collect();
+    let count = ids.len();
+    for id in ids {
+        consumers.remove(&id);
+    }
+    Ok(count)
 }
 
 // 鈹€鈹€鈹€ Store Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -322,7 +359,7 @@ pub extern "C" fn tmsl_store_open_with_config(
         let store = Store::open(dir, config)
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
         let boxed = Box::new(FfiStore {
-            inner: Box::into_raw(Box::new(store)),
+            inner: Arc::new(Mutex::new(store)),
             state: Arc::new(FfiStoreState::new()),
         });
         Ok(Box::into_raw(boxed) as *mut c_void)
@@ -349,7 +386,10 @@ pub extern "C" fn tmsl_store_close(
             )));
         }
         let ffi_store = unsafe { Box::from_raw(store as *mut FfiStore) };
-        let inner = unsafe { Box::from_raw(ffi_store.inner) };
+        let inner = Arc::try_unwrap(ffi_store.inner)
+            .map_err(|_| TmslError::InvalidData("store has outstanding references".into()))?
+            .into_inner()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
         inner
             .close()
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
@@ -377,7 +417,10 @@ pub extern "C" fn tmsl_store_tick_background_tasks(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_store = unsafe { &*(store as *const FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.inner) };
+        let store_inner = ffi_store
+            .inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
         let TickResult {
             executed_tasks,
             next_delay,
@@ -408,7 +451,10 @@ pub extern "C" fn tmsl_store_next_background_delay(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_store = unsafe { &*(store as *const FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.inner) };
+        let store_inner = ffi_store
+            .inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
         let delay = store_inner
             .next_background_delay()
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
@@ -439,8 +485,7 @@ pub extern "C" fn tmsl_dataset_create(
         if store.is_null() || name.is_null() || dataset_type.is_null() {
             return Err(TmslError::InvalidData("null pointer".into()));
         }
-        let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.inner) };
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
         let name_str = unsafe { CStr::from_ptr(name) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
@@ -448,15 +493,21 @@ pub extern "C" fn tmsl_dataset_create(
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid type: {}", e)))?;
 
-        let handle = store_inner.create_dataset(
-            name_str,
-            type_str,
-            data_segment_size,
-            index_segment_size,
-            compress_level,
-            index_continuous,
-            retention_window,
-        )?;
+        let handle = {
+            let mut store_inner = ffi_store
+                .inner
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.create_dataset(
+                name_str,
+                type_str,
+                data_segment_size,
+                index_segment_size,
+                compress_level,
+                index_continuous,
+                retention_window,
+            )?
+        };
         let boxed = register_dataset_child(ffi_store, handle);
         Ok(Box::into_raw(boxed) as *mut c_void)
     })
@@ -476,18 +527,22 @@ pub extern "C" fn tmsl_dataset_create_with_config(
         if store.is_null() || name.is_null() || dataset_type.is_null() {
             return Err(TmslError::InvalidData("null pointer".into()));
         }
-        let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.inner) };
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
         let name_str = unsafe { CStr::from_ptr(name) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
         let type_str = unsafe { CStr::from_ptr(dataset_type) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid type: {}", e)))?;
-        let dataset_config = dataset_config_from_ffi(store_inner.config(), config_ptr)?;
 
-        let handle =
-            store_inner.create_dataset_with_config(name_str, type_str, Some(dataset_config))?;
+        let handle = {
+            let mut store_inner = ffi_store
+                .inner
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            let dataset_config = dataset_config_from_ffi(store_inner.config(), config_ptr)?;
+            store_inner.create_dataset_with_config(name_str, type_str, Some(dataset_config))?
+        };
         let boxed = register_dataset_child(ffi_store, handle);
         Ok(Box::into_raw(boxed) as *mut c_void)
     })
@@ -506,8 +561,7 @@ pub extern "C" fn tmsl_dataset_open(
         if store.is_null() || name.is_null() || dataset_type.is_null() {
             return Err(TmslError::InvalidData("null pointer".into()));
         }
-        let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
-        let store_inner = unsafe { &mut *(ffi_store.inner) };
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
         let name_str = unsafe { CStr::from_ptr(name) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
@@ -515,7 +569,13 @@ pub extern "C" fn tmsl_dataset_open(
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid type: {}", e)))?;
 
-        let handle = store_inner.open_dataset(name_str, type_str)?;
+        let handle = {
+            let mut store_inner = ffi_store
+                .inner
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.open_dataset(name_str, type_str)?
+        };
         let boxed = register_dataset_child(ffi_store, handle);
         Ok(Box::into_raw(boxed) as *mut c_void)
     })
@@ -540,7 +600,15 @@ pub extern "C" fn tmsl_dataset_close(
                 iterator_count
             )));
         }
-        let store_inner = unsafe { &mut *(ffi_ds_ref.store_ptr) };
+        let mut store_inner = ffi_ds_ref
+            .store
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+        if dataset_has_queue_handle(ffi_ds_ref.handle)? {
+            return Err(TmslError::InvalidData(
+                "dataset has outstanding queue handle(s)".into(),
+            ));
+        }
         store_inner
             .close_dataset(ffi_ds_ref.handle)
             .map_err(|e| TmslError::Io(std::io::Error::other(e.to_string())))?;
@@ -563,7 +631,7 @@ pub extern "C" fn tmsl_dataset_drop(
         if store.is_null() || name.is_null() || dataset_type.is_null() {
             return Err(TmslError::InvalidData("null pointer".into()));
         }
-        let ffi_store = unsafe { &mut *(store as *mut FfiStore) };
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
         let child_handles = ffi_store.state.child_handles.load(Ordering::SeqCst);
         if child_handles != 0 {
             return Err(TmslError::InvalidData(format!(
@@ -571,7 +639,6 @@ pub extern "C" fn tmsl_dataset_drop(
                 child_handles
             )));
         }
-        let store_inner = unsafe { &mut *(ffi_store.inner) };
         let name_str = unsafe { CStr::from_ptr(name) }
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid name: {}", e)))?;
@@ -579,6 +646,10 @@ pub extern "C" fn tmsl_dataset_drop(
             .to_str()
             .map_err(|e| TmslError::InvalidData(format!("invalid type: {}", e)))?;
 
+        let mut store_inner = ffi_store
+            .inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
         store_inner.drop_dataset_by_name(name_str, type_str)?;
         Ok(0)
     })
@@ -596,8 +667,13 @@ pub extern "C" fn tmsl_dataset_flush(
             return Err(TmslError::InvalidData("dataset is null".into()));
         }
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
-        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
         let mut ds = ds_arc.lock().unwrap();
         ds.flush()?;
         Ok(0)
@@ -620,8 +696,13 @@ pub extern "C" fn tmsl_dataset_latest_timestamp(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
-        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
         let ds = ds_arc.lock().unwrap();
         unsafe { *out_ts = ds.latest_written_timestamp() as c_longlong };
         Ok(0)
@@ -648,7 +729,10 @@ pub extern "C" fn tmsl_dataset_write(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
+        let mut store_inner = ffi_ds
+            .store
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
         store_inner.write_dataset(ffi_ds.handle, timestamp, data_slice)?;
         Ok(0)
     })
@@ -674,7 +758,10 @@ pub extern "C" fn tmsl_dataset_append(
             unsafe { std::slice::from_raw_parts(data, data_len) }
         };
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
+        let mut store_inner = ffi_ds
+            .store
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
         store_inner.append_dataset(ffi_ds.handle, timestamp, data_slice)?;
         Ok(0)
     })
@@ -696,7 +783,10 @@ pub extern "C" fn tmsl_dataset_delete(
             return Err(TmslError::InvalidData("dataset is null".into()));
         }
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
+        let mut store_inner = ffi_ds
+            .store
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
         store_inner.delete_dataset_record(ffi_ds.handle, timestamp)?;
         Ok(0)
     })
@@ -723,8 +813,13 @@ pub extern "C" fn tmsl_dataset_read(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
-        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
         let mut ds = ds_arc.lock().unwrap();
         match ds.read(timestamp)? {
             Some((ts, data)) => {
@@ -773,21 +868,26 @@ pub extern "C" fn tmsl_dataset_query(
             return Err(TmslError::InvalidData("dataset is null".into()));
         }
         let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
-        let store_inner = unsafe { &mut *(ffi_ds.store_ptr) };
-        let ds_arc = store_inner.get_dataset(&ffi_ds.handle)?;
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
         let mut ds = ds_arc.lock().unwrap();
-        let sources = ds.query_sources(start_ts, end_ts)?;
+        let entries = ds.query_index_entries(start_ts, end_ts)?;
 
         ffi_ds.iterator_count.fetch_add(1, Ordering::SeqCst);
         ffi_ds.state.child_handles.fetch_add(1, Ordering::SeqCst);
 
         let iter = Box::new(FfiIterator {
-            store_ptr: ffi_ds.store_ptr,
+            store: Arc::clone(&ffi_ds.store),
             handle: ffi_ds.handle,
             state: Arc::clone(&ffi_ds.state),
             dataset_iterator_count: Arc::clone(&ffi_ds.iterator_count),
-            sources,
-            current_source: 0,
+            entries,
+            position: 0,
         });
         Ok(Box::into_raw(iter) as *mut c_void)
     })
@@ -809,14 +909,25 @@ pub extern "C" fn tmsl_iter_next(
             return Err(TmslError::InvalidData("null pointer".into()));
         }
         let ffi_iter = unsafe { &mut *(iter as *mut FfiIterator) };
-        let entry = match next_iter_index_entry(ffi_iter)? {
-            Some(entry) => entry,
-            None => return Ok(1),
+        let entry = loop {
+            if ffi_iter.position >= ffi_iter.entries.len() {
+                return Ok(1);
+            }
+            let entry = ffi_iter.entries[ffi_iter.position];
+            ffi_iter.position += 1;
+            if !entry.is_filler() {
+                break entry;
+            }
         };
 
-        // Lazy read: get dataset, read single entry
-        let store_inner = unsafe { &mut *(ffi_iter.store_ptr) };
-        let ds_arc = store_inner.get_dataset(&ffi_iter.handle)?;
+        // Lazy read: get dataset, read single snapshot entry
+        let ds_arc = {
+            let store_inner = ffi_iter
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_iter.handle)?
+        };
         let mut ds = ds_arc.lock().unwrap();
         let (ts, data) = ds.read_entry_at_index(&entry)?;
 
@@ -858,17 +969,38 @@ pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar) {
 /// queue functions. Returns 0 on failure (error written to err_buf).
 #[no_mangle]
 pub extern "C" fn tmsl_queue_open(
-    store: *mut Store,
-    dataset_handle: u64,
+    dataset: *mut c_void,
     err_buf: *mut c_char,
     err_len: usize,
 ) -> usize {
     ffi_catch_usize! { err_buf, err_len, {
-        let store = unsafe { &mut *store };
-        let handle = DataSetHandle(dataset_handle);
-        let queue = store.open_queue(handle)?;
+        if dataset.is_null() {
+            return Err(TmslError::InvalidData("dataset is null".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
         let id = NEXT_QUEUE_ID.fetch_add(1, Ordering::Relaxed);
-        QUEUE_REGISTRY.lock().unwrap().insert(id, queue);
+        {
+            let mut store = ffi_ds
+                    .store
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            let is_journal = store.is_journal_handle(ffi_ds.handle)?;
+            let queue = store.open_queue(ffi_ds.handle)?;
+            ffi_ds.state.child_handles.fetch_add(1, Ordering::SeqCst);
+            QUEUE_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?
+                .insert(
+                    id,
+                    FfiQueueEntry {
+                        store: Arc::clone(&ffi_ds.store),
+                        handle: ffi_ds.handle,
+                        queue,
+                        state: Arc::clone(&ffi_ds.state),
+                        is_journal,
+                    },
+                );
+        }
         Ok::<usize, TmslError>(id)
     }}
 }
@@ -878,24 +1010,43 @@ pub extern "C" fn tmsl_queue_open(
 /// Invalidates all associated consumer handles.
 #[no_mangle]
 pub extern "C" fn tmsl_queue_close(
-    store: *mut Store,
     queue_handle: usize,
     err_buf: *mut c_char,
     err_len: usize,
 ) -> c_int {
     ffi_catch_int! { err_buf, err_len, {
-        let store = unsafe { &mut *store };
-        let registry = QUEUE_REGISTRY.lock().unwrap();
-        let _queue = registry.get(&queue_handle).ok_or_else(|| {
-            TmslError::NotFound("queue handle not found".into())
-        })?;
-        drop(registry);
+        let (store, handle, is_journal, state) = {
+            let registry = QUEUE_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
+            let entry = registry.get(&queue_handle).ok_or_else(|| {
+                TmslError::NotFound("queue handle not found".into())
+            })?;
+            (
+                Arc::clone(&entry.store),
+                entry.handle,
+                entry.is_journal,
+                Arc::clone(&entry.state),
+            )
+        };
 
-        let handle = DataSetHandle(0);
-        store.close_queue(handle).map_err(|_| {
-            TmslError::NotFound("queue close failed".into())
-        })?;
-        QUEUE_REGISTRY.lock().unwrap().remove(&queue_handle);
+        if !is_journal {
+            let mut store = store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store.close_queue(handle)?;
+        }
+
+        let removed_consumers = remove_consumers_for_queue(queue_handle)?;
+        let removed_queue = QUEUE_REGISTRY
+            .lock()
+            .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?
+            .remove(&queue_handle)
+            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+        drop(removed_queue);
+        state
+            .child_handles
+            .fetch_sub(removed_consumers + 1, Ordering::SeqCst);
         Ok::<c_int, TmslError>(0)
     }}
 }
@@ -911,18 +1062,36 @@ pub extern "C" fn tmsl_queue_consumer_open(
     err_len: usize,
 ) -> usize {
     ffi_catch_usize! { err_buf, err_len, {
+        if group_name.is_null() {
+            return Err(TmslError::InvalidData("group_name is null".into()));
+        }
         let group_name = unsafe { CStr::from_ptr(group_name) }
             .to_str()
             .map_err(|_| TmslError::InvalidData("invalid group name encoding".into()))?;
-        let queue = QUEUE_REGISTRY
-            .lock()
-            .unwrap()
-            .get(&queue_handle)
-            .cloned()
-            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+        let (queue, state) = {
+            let registry = QUEUE_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
+            let entry = registry
+                .get(&queue_handle)
+                .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+            (entry.queue.clone(), Arc::clone(&entry.state))
+        };
         let consumer = queue.open_consumer(group_name)?;
         let id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
-        CONSUMER_REGISTRY.lock().unwrap().insert(id, consumer);
+        state.child_handles.fetch_add(1, Ordering::SeqCst);
+        CONSUMER_REGISTRY
+            .lock()
+            .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?
+            .insert(
+                id,
+                FfiConsumerEntry {
+                    queue_handle,
+                    group_name: group_name.to_string(),
+                    consumer,
+                    state,
+                },
+            );
         Ok::<usize, TmslError>(id)
     }}
 }
@@ -936,13 +1105,35 @@ pub extern "C" fn tmsl_queue_consumer_drop(
     err_len: usize,
 ) -> c_int {
     ffi_catch_int! { err_buf, err_len, {
-        let _queue = QUEUE_REGISTRY
-            .lock()
-            .unwrap()
-            .get(&queue_handle)
-            .cloned()
-            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
-        CONSUMER_REGISTRY.lock().unwrap().remove(&consumer_handle);
+        let (queue, group_name, state) = {
+            let consumers = CONSUMER_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
+            let consumer = consumers
+                .get(&consumer_handle)
+                .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?;
+            if consumer.queue_handle != queue_handle {
+                return Err(TmslError::InvalidData(
+                    "consumer does not belong to queue handle".into(),
+                ));
+            }
+            let registry = QUEUE_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
+            let queue = registry
+                .get(&queue_handle)
+                .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?
+                .queue
+                .clone();
+            (
+                queue,
+                consumer.group_name.clone(),
+                Arc::clone(&consumer.state),
+            )
+        };
+        queue.drop_consumer(&group_name)?;
+        let removed = remove_consumers_for_group(queue_handle, &group_name)?;
+        state.child_handles.fetch_sub(removed, Ordering::SeqCst);
         Ok::<c_int, TmslError>(0)
     }}
 }
@@ -963,12 +1154,16 @@ pub extern "C" fn tmsl_queue_push(
         if data.is_null() || data_len == 0 {
             return Err(TmslError::InvalidData("data pointer is null or empty".into()));
         }
-        let queue = QUEUE_REGISTRY
-            .lock()
-            .unwrap()
-            .get(&queue_handle)
-            .cloned()
-            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+        let queue = {
+            let registry = QUEUE_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
+            registry
+                .get(&queue_handle)
+                .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?
+                .queue
+                .clone()
+        };
         let slice = unsafe { std::slice::from_raw_parts(data, data_len) };
         let ts = queue.push(slice)?;
         Ok::<c_longlong, TmslError>(ts as c_longlong)
@@ -990,13 +1185,24 @@ pub extern "C" fn tmsl_queue_poll(
     err_len: usize,
 ) -> c_int {
     ffi_catch_int! { err_buf, err_len, {
-        let consumer = CONSUMER_REGISTRY
-            .lock()
-            .unwrap()
-            .get(&consumer_handle)
-            .cloned()
-            .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?;
-        let timeout = Duration::from_millis(std::cmp::max(0, timeout_ms) as u64);
+        if out_timestamp.is_null() || out_data.is_null() || out_len.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let consumer = {
+            let registry = CONSUMER_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
+            registry
+                .get(&consumer_handle)
+                .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?
+                .consumer
+                .clone()
+        };
+        let timeout = if timeout_ms <= 0 {
+            Duration::from_millis(0)
+        } else {
+            Duration::from_millis(timeout_ms as u64)
+        };
 
         match consumer.poll(timeout)? {
             Some((ts, data)) => {
@@ -1028,12 +1234,16 @@ pub extern "C" fn tmsl_queue_ack(
     err_len: usize,
 ) -> c_int {
     ffi_catch_int! { err_buf, err_len, {
-        let consumer = CONSUMER_REGISTRY
-            .lock()
-            .unwrap()
-            .get(&consumer_handle)
-            .cloned()
-            .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?;
+        let consumer = {
+            let registry = CONSUMER_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
+            registry
+                .get(&consumer_handle)
+                .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?
+                .consumer
+                .clone()
+        };
         consumer.ack(timestamp)?;
         Ok::<c_int, TmslError>(0)
     }}
@@ -1289,6 +1499,173 @@ mod tests {
         }
         // ts=3 deleted, should get 1,2,4,5
         assert_eq!(collected_ts, vec![1, 2, 4, 5]);
+
+        tmsl_iter_close(iter);
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_ffi_queue_c_abi_push_poll_ack_lifecycle() {
+        let dir = temp_store_dir("ffi_queue_c_abi");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+        config.enable_journal = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("queueffi").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        let queue = tmsl_queue_open(dataset, err.as_mut_ptr(), err_len);
+        assert_ne!(queue, 0, "queue open should return a queue handle");
+        assert_eq!(
+            tmsl_store_close(store, err.as_mut_ptr(), err_len),
+            -1,
+            "store close must reject outstanding queue handles"
+        );
+
+        let group = CString::new("group_a").unwrap();
+        let consumer = tmsl_queue_consumer_open(queue, group.as_ptr(), err.as_mut_ptr(), err_len);
+        assert_ne!(consumer, 0, "consumer open should return a handle");
+
+        let payload = b"queued-payload";
+        let assigned_ts = tmsl_queue_push(
+            queue,
+            payload.as_ptr(),
+            payload.len(),
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert_eq!(assigned_ts, 1);
+
+        let mut out_ts: c_longlong = 0;
+        let mut out_data: *mut c_uchar = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        assert_eq!(
+            tmsl_queue_poll(
+                consumer,
+                0,
+                &mut out_ts,
+                &mut out_data,
+                &mut out_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(out_ts, assigned_ts);
+        let out_slice = unsafe { std::slice::from_raw_parts(out_data, out_len) };
+        assert_eq!(out_slice, payload);
+        tmsl_data_free(out_data as *mut c_void);
+
+        assert_eq!(
+            tmsl_queue_ack(consumer, out_ts, err.as_mut_ptr(), err_len),
+            0
+        );
+        assert_eq!(
+            tmsl_queue_consumer_drop(queue, consumer, err.as_mut_ptr(), err_len),
+            0
+        );
+        assert_eq!(tmsl_queue_close(queue, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_ffi_query_iterator_uses_index_entry_snapshot() {
+        let dir = temp_store_dir("ffi_query_iter_snapshot");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+        config.enable_journal = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("snapffi").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        for ts in 1i64..=1100 {
+            let data = format!("rec_{ts}");
+            assert_eq!(
+                tmsl_dataset_write(
+                    dataset,
+                    ts,
+                    data.as_ptr(),
+                    data.len(),
+                    err.as_mut_ptr(),
+                    err_len,
+                ),
+                0
+            );
+        }
+
+        let iter = tmsl_dataset_query(dataset, 500, 501, err.as_mut_ptr(), err_len);
+        assert!(!iter.is_null());
+        assert_eq!(
+            tmsl_dataset_delete(dataset, 500, err.as_mut_ptr(), err_len),
+            0
+        );
+
+        let mut ts: c_longlong = 0;
+        let mut data: *mut c_uchar = std::ptr::null_mut();
+        let mut data_len: usize = 0;
+        assert_eq!(
+            tmsl_iter_next(
+                iter,
+                &mut ts,
+                &mut data,
+                &mut data_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(ts, 500);
+        let out_slice = unsafe { std::slice::from_raw_parts(data, data_len) };
+        assert_eq!(out_slice, b"rec_500");
+        tmsl_iter_free_data(data);
 
         tmsl_iter_close(iter);
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
