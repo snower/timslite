@@ -289,3 +289,37 @@ fn t28_12_journal_queue_rejects_external_push() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn t28_13_journal_dataset_openable_and_queryable_at_store_level() {
+    // After Store::open() with enable_journal=true, the built-in journal
+    // dataset must exist and be openable/queryable via the Store API.
+    let dir = temp_dir("journal_openable");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    // Create at least one dataset so the journal receives log entries
+    store
+        .create_dataset("jds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    // The journal dataset must be openable via Store API
+    let journal_handle = store
+        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
+        .expect("journal dataset should be openable at Store level");
+
+    // Journal should contain at least one record (the create_dataset event)
+    let records = read_all_journal_records(&mut store);
+    assert!(
+        !records.is_empty(),
+        "journal should contain at least one record after dataset creation"
+    );
+
+    // Verify the journal dataset handle is valid (can be used for queue)
+    let journal_queue = store.open_queue(journal_handle);
+    assert!(
+        journal_queue.is_ok(),
+        "should be able to open journal queue"
+    );
+
+    store.close().unwrap();
+}

@@ -1,4 +1,4 @@
-﻿//! Dataset lifecycle tests: create/open/drop error handling and validation.
+//! Dataset lifecycle tests: create/open/drop error handling and validation.
 use std::fs;
 use std::path::PathBuf;
 
@@ -226,4 +226,63 @@ fn t8_2_6_dataset_name_type_length_must_fit_journal_tlv_policy() {
 
     assert!(err.to_string().contains("at most 255 bytes"));
     assert!(!dir.join(&long_name).exists());
+}
+
+#[test]
+fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    // Space in name → rejected
+    let r = store.create_dataset(
+        "my dataset",
+        "data",
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+    );
+    assert!(
+        matches!(r, Err(TmslError::InvalidData(_))),
+        "space in name should be rejected"
+    );
+
+    // Backslash → rejected
+    let r = store.create_dataset(
+        "my\\dataset",
+        "data",
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+    );
+    assert!(
+        matches!(r, Err(TmslError::InvalidData(_))),
+        "backslash in name should be rejected"
+    );
+
+    // Unicode characters → rejected (non-ASCII)
+    let r = store.create_dataset("数据集", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0);
+    assert!(
+        matches!(r, Err(TmslError::InvalidData(_))),
+        "unicode in name should be rejected"
+    );
+
+    // Exactly 255-byte name → accepted (boundary)
+    let name_255 = "a".repeat(255);
+    let r = store.create_dataset(&name_255, "data", 1024 * 1024, 64 * 1024, 6, 0, 0);
+    assert!(
+        r.is_ok(),
+        "255-byte name should be accepted, got: {:?}",
+        r.err()
+    );
+
+    // 256-byte name → rejected (over limit)
+    let name_256 = "b".repeat(256);
+    let r = store.create_dataset(&name_256, "data", 1024 * 1024, 64 * 1024, 6, 0, 0);
+    assert!(r.is_err(), "256-byte name should be rejected");
 }

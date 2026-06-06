@@ -39,7 +39,7 @@
 | H-7 | 新增 Python 封装测试：非连续模式纠正写（同时间戳覆盖） | `wrapper/python/tests/test_write_query.py` TestExtendedAPI | [x] | 2026-06-05 |
 | H-8 | 新增 Python 封装测试：`read(timestamp=-1)` 读取最新记录 | `wrapper/python/tests/test_write_query.py` TestExtendedAPI | [x] | 2026-06-05 |
 | H-9 | 新增 Python 封装测试：对旧时间戳 append 应失败 | `wrapper/python/tests/test_write_query.py` TestExtendedAPI | [x] | 2026-06-05 |
-| H-10 | 新增端到端 append 通知流程测试：Condvar 信号 → consumer poll 返回数据 | `src/dataset.rs` 或 `tests/queue_test.rs` | [ ] | |
+| H-10 | 新增端到端 append 通知流程测试：Condvar 信号 → consumer poll 返回数据 | `tests/queue_test.rs` t27_7 | [x] | 2026-06-05 |
 | H-11 | 新增 `read_entry_at_index` Python 测试 | `wrapper/python/tests/` | [ ] | |
 
 ---
@@ -74,12 +74,24 @@
 
 ---
 
+## 设计与测试对齐问题
+
+| # | 问题 | 位置 | 状态 | 完成日期 |
+|---|------|------|------|----------|
+| DA-1 | retention_window 单位模糊：补充 Unix 纪元秒级 timestamp 测试验证 retention 语义 | `src/dataset.rs` `test_retention_with_epoch_second_timestamps` | [x] | 2026-06-05 |
+| DA-2 | append() 通知行为端到端：Condvar 信号 → consumer poll 返回数据 | `tests/queue_test.rs` t27_7 (≈H-10) | [x] | 2026-06-05 |
+| DA-3 | Journal `.journal/logs` 数据集创建未在 Store 级别测试 | `tests/journal_test.rs` t28_13 | [x] | 2026-06-05 |
+| DA-4 | DataSet name/type 校验未在 Store 级别全面测试（unicode、space、backslash、255/256 边界） | `tests/dataset_lifecycle_test.rs` t8_2_7 | [x] | 2026-06-05 |
+
+---
+
 ## 进度统计
 
 | 严重程度 | 总数 | 已完成 | 进行中 | 待完成 |
 |---------|------|--------|--------|--------|
 | 严重 | 8 | 7 | 0 | 1 |
-| 高 | 11 | 9 | 0 | 2 |
+| 高 | 11 | 10 | 0 | 1 |
 | 中 | 10 | 10 | 0 | 0 |
 | 低 | 6 | 0 | 0 | 6 |
-| **合计** | **35** | **26** | **0** | **9** |
+| 设计与测试对齐 | 4 | 4 | 0 | 0 |
+| **合计** | **39** | **31** | **0** | **8** |

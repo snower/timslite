@@ -676,3 +676,54 @@ fn t27_6_4_store_open_consumer_and_drop_consumer() {
     assert!(matches!(err, TmslError::ConsumerGroupNotFound(_)));
     store.close().unwrap();
 }
+
+#[test]
+fn t27_7_push_notification_wakes_blocking_consumer_poll() {
+    // End-to-end: consumer is blocked in poll() when push() fires.
+    // The Condvar notification in notify_queue() should wake the consumer
+    // well before the poll timeout expires.
+    use std::sync::Arc;
+    use std::thread;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+
+    // Push from a background thread after a short delay
+    let q_clone = q.clone();
+    let producer = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(300));
+        q_clone.push(b"wake_up_data").unwrap();
+    });
+
+    // Poll with a 5-second timeout; should return quickly via Condvar wake
+    let start = std::time::Instant::now();
+    let result = c.poll(Duration::from_secs(5)).unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(
+        result.is_some(),
+        "poll should return data after push notification"
+    );
+    let (ts, data) = result.unwrap();
+    assert_eq!(data, b"wake_up_data");
+    assert!(ts > 0);
+    // Condvar wake should be well under the 5s timeout
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "poll took {:?}, expected < 3s (Condvar wake-up, not timeout)",
+        elapsed
+    );
+
+    producer.join().unwrap();
+    store.close().unwrap();
+}

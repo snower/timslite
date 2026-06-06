@@ -3144,6 +3144,64 @@ mod tests {
     }
 
     #[test]
+    fn test_retention_with_epoch_second_timestamps() {
+        // Validates retention semantics using realistic Unix-epoch-second timestamps.
+        // retention_window is in timestamp units; when timestamps are epoch seconds,
+        // the window must also be in seconds.
+        let dir = temp_dir("retention_epoch_secs");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let data_segment_size = 180u64;
+        let retention_window = 86_400u64; // 1 day in seconds
+        let mut ds = DataSet::create(
+            id.clone(),
+            dir.clone(),
+            data_segment_size,
+            4096,
+            0,
+            0,
+            data_segment_size,
+            4096,
+            retention_window,
+        )
+        .unwrap();
+
+        // Day 1 (Nov 14 2023 ~10:00 UTC)
+        let day1 = 1_700_000_000i64;
+        ds.write(day1, &[0xAA; 32]).unwrap();
+
+        // Day 2 (Nov 15 2023 ~10:00 UTC)
+        let day2 = day1 + 86_400;
+        ds.write(day2, &[0xBB; 32]).unwrap();
+
+        // Day 3 (Nov 16 2023 ~10:00 UTC)
+        let day3 = day2 + 86_400;
+        ds.write(day3, &[0xCC; 32]).unwrap();
+
+        // threshold = latest(=day3) - 86400 = day2
+        // day1 segment has max_ts = day1 < day2 → expired
+        let reclaimed = ds.reclaim_expired_segments().unwrap();
+        assert!(reclaimed >= 1, "day-1 segment should be expired");
+
+        // Reopen and verify day-1 data is gone but day-2 and day-3 survive
+        let mut ds2 = DataSet::open(id, dir).unwrap();
+        assert!(
+            ds2.read(day1).unwrap().is_none(),
+            "day-1 data should be reclaimed"
+        );
+        assert!(
+            ds2.read(day2).unwrap().is_some(),
+            "day-2 data should survive"
+        );
+        assert!(
+            ds2.read(day3).unwrap().is_some(),
+            "day-3 data should survive"
+        );
+    }
+
+    #[test]
     fn test_read_minus_one_after_reopen() {
         let dir = temp_dir("read_minus_one_reopen");
         let id = DataSetKey {
