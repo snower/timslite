@@ -8,6 +8,7 @@
 - `[ ]` 待完成
 - `[x]` 已完成
 - `[~]` 进行中
+- `[w]` 延后处理（wontfix）
 
 ---
 
@@ -65,12 +66,12 @@
 
 | # | 问题 | 位置 | 状态 | 完成日期 |
 |---|------|------|------|---------|
-| L-1 | `dataset.rs` 单元测试：引入 `TestDataSetBuilder` 辅助，减少 9 参数 `DataSet::create` 重复调用 | `src/dataset.rs` | [ ] | |
-| L-2 | 统一临时目录管理：创建 `#[cfg(test)] mod test_helpers`，提供 `temp_dir(name)` + 自动清理 | 新增 `src/test_helpers.rs` | [ ] | |
-| L-3 | 序列化模块添加属性测试（proptest / quickcheck）：meta.rs、header.rs、block.rs、index/segment.rs | 各模块 `#[cfg(test)]` | [ ] | |
-| L-4 | 新增完整查询迭代器生命周期集成测试：覆盖内存索引→磁盘索引→惰性打开段→HotBlockCache→全局 BlockCache 全 5 条路径 | `tests/query_test.rs` | [ ] | |
-| L-5 | Python `test_store_manual_bg.py` 改用 conftest `tmpdir` fixture 替代手动 `mkdtemp` | `wrapper/python/tests/test_store_manual_bg.py` | [ ] | |
-| L-6 | 新增 Store 操作错误路径测试：损坏目录 open、损坏 meta 文件 open、segment full 时 queue push | `tests/` | [ ] | |
+| L-1 | `dataset.rs` 单元测试：引入 `TestDataSetBuilder` 辅助，减少 9 参数 `DataSet::create` 重复调用 | `src/dataset.rs` | [w] | 延后 |
+| L-2 | 统一临时目录管理：创建 `#[cfg(test)] mod test_helpers`，提供 `temp_dir(name)` + 自动清理 | 新增 `src/test_helpers.rs` | [w] | 延后 |
+| L-3 | 序列化模块添加属性测试（proptest / quickcheck）：meta.rs、header.rs、block.rs、index/segment.rs | `src/meta.rs` `src/block.rs` `src/index/segment.rs` | [x] | 2026-06-05 |
+| L-4 | 新增完整查询迭代器生命周期集成测试：覆盖内存索引→磁盘索引→惰性打开段→HotBlockCache→全局 BlockCache 全 5 条路径 | `tests/query_test.rs` t13_6 | [x] | 2026-06-05 |
+| L-5 | Python `test_store_manual_bg.py` 改用 conftest `tmpdir` fixture 替代手动 `mkdtemp` | `wrapper/python/tests/test_store_manual_bg.py` | [x] | 2026-06-05 |
+| L-6 | 新增 Store 操作错误路径测试：损坏目录 open、损坏 meta 文件 open、segment full 时 queue push | `tests/dataset_lifecycle_test.rs` t8_2_8~t8_2_10 | [x] | 2026-06-05 |
 
 ---
 
@@ -92,6 +93,6 @@
 | 严重 | 8 | 7 | 0 | 1 |
 | 高 | 11 | 10 | 0 | 1 |
 | 中 | 10 | 10 | 0 | 0 |
-| 低 | 6 | 0 | 0 | 6 |
+| 低 | 6 | 4 | 0 | 0 (+2 延后) |
 | 设计与测试对齐 | 4 | 4 | 0 | 0 |
-| **合计** | **39** | **31** | **0** | **8** |
+| **合计** | **39** | **37** | **0** | **2** (+2 延后) |

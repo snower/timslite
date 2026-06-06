@@ -286,3 +286,103 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
     let r = store.create_dataset(&name_256, "data", 1024 * 1024, 64 * 1024, 6, 0, 0);
     assert!(r.is_err(), "256-byte name should be rejected");
 }
+
+#[test]
+fn t8_2_8_store_open_on_corrupted_directory() {
+    // Store::open() on a directory with corrupted meta file should fail gracefully
+    use std::io::Write;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    // Create a dataset, then corrupt its meta file
+    {
+        let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+        store
+            .create_dataset("corrupt_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+            .unwrap();
+        store.close().unwrap();
+    }
+
+    // Corrupt the meta file by overwriting with garbage
+    let meta_path = dir.join("corrupt_ds").join("data").join("meta");
+    assert!(meta_path.exists(), "meta file should exist");
+    {
+        let mut f = fs::OpenOptions::new().write(true).open(&meta_path).unwrap();
+        f.write_all(&[0xFF; 100]).unwrap();
+    }
+
+    // Reopening the store should still work (store-level open is lazy)
+    // but opening the corrupted dataset should fail
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let result = store.open_dataset("corrupt_ds", "data");
+    assert!(
+        result.is_err(),
+        "opening dataset with corrupted meta should fail"
+    );
+    store.close().unwrap();
+}
+
+#[test]
+fn t8_2_9_store_open_on_truncated_meta_file() {
+    // DataSet::open() on a truncated (too-short) meta file should fail
+    use std::io::Write;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    // Create dataset directory structure manually with truncated meta
+    let ds_dir = dir.join("trunc_ds").join("data");
+    fs::create_dir_all(&ds_dir).unwrap();
+    fs::create_dir_all(ds_dir.join("..").join("..").join("trunc_ds")).unwrap();
+
+    let meta_path = dir.join("trunc_ds").join("data").join("meta");
+    {
+        let mut f = fs::File::create(&meta_path).unwrap();
+        // Write only 3 bytes (far too short for any valid meta)
+        f.write_all(&[0x54, 0x4D, 0x53]).unwrap(); // partial "TMS"
+    }
+
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let result = store.open_dataset("trunc_ds", "data");
+    assert!(
+        result.is_err(),
+        "opening dataset with truncated meta should fail"
+    );
+    store.close().unwrap();
+}
+
+#[test]
+fn t8_2_10_store_close_with_open_dataset_handles() {
+    // Store::close() should gracefully close all datasets even if handles exist
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds1", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let _h1 = store.open_dataset("ds1", "data").unwrap();
+
+    // Write some data
+    {
+        let arc = store.get_dataset(&_h1).unwrap();
+        arc.lock().unwrap().write(1, b"data1").unwrap();
+    }
+
+    // Close store without explicitly closing dataset handles
+    // Store::close() should flush and close all datasets
+    let result = store.close();
+    assert!(
+        result.is_ok(),
+        "Store::close() with open handles should succeed, got: {:?}",
+        result.err()
+    );
+
+    // Verify data persisted
+    let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store2.open_dataset("ds1", "data").unwrap();
+    let arc = store2.get_dataset(&h).unwrap();
+    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].1, b"data1");
+    store2.close().unwrap();
+}

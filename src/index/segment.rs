@@ -733,4 +733,20 @@ mod tests {
         let result = seg.overwrite_entry(5, &IndexEntry::new(999, 0, 0));
         assert!(result.is_err());
     }
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_index_entry_roundtrip(
+            timestamp in proptest::num::i64::ANY,
+            block_offset in proptest::num::u64::ANY,
+            in_block_offset in proptest::num::u16::ANY,
+        ) {
+            let entry = IndexEntry::new(timestamp, block_offset, in_block_offset);
+            let bytes = entry.to_bytes();
+            let parsed = IndexEntry::from_bytes(&bytes);
+            assert_eq!(parsed.timestamp, timestamp);
+            assert_eq!(parsed.block_offset, block_offset);
+            assert_eq!(parsed.in_block_offset, in_block_offset);
+        }
+    }
 }

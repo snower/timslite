@@ -150,4 +150,23 @@ mod tests {
         let reserved = read_u32_from_mmap(&buf, BH_RESERVED);
         assert_eq!(reserved, 0);
     }
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_block_header_roundtrip(
+            payload_size in proptest::num::u32::ANY,
+            flags in proptest::num::u16::ANY,
+            record_count in proptest::num::u16::ANY,
+            uncompressed_size in proptest::num::u32::ANY,
+        ) {
+            let header = BlockHeader::new(payload_size, flags, record_count, uncompressed_size);
+            let mut buf = [0u8; 32];
+            header.write_to(&mut buf, 0);
+            let read = BlockHeader::read_from(&buf, 0);
+            assert_eq!(read.payload_size, payload_size);
+            assert_eq!(read.flags, flags);
+            assert_eq!(read.record_count, record_count);
+            assert_eq!(read.uncompressed_size, uncompressed_size);
+        }
+    }
 }

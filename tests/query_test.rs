@@ -1,4 +1,4 @@
-﻿//! Query iterator and empty range tests.
+//! Query iterator and empty range tests.
 use std::fs;
 use std::path::PathBuf;
 
@@ -165,4 +165,101 @@ fn t13_5_cross_segment_query() {
     assert_eq!(partial.len(), 3);
     assert_eq!(partial[0].0, 20);
     assert_eq!(partial[2].0, 40);
+}
+
+#[test]
+fn t13_6_query_iterator_full_lifecycle() {
+    // Comprehensive test covering all 5 query pipeline paths:
+    // 1. Memory index buffer (unflushed writes)
+    // 2. Disk index segments (flushed data)
+    // 3. Lazy-open data segments (segments reopened after close)
+    // 4. HotBlockCache (same-block sequential reads via QueryIterator)
+    // 5. Global BlockCache (via Store + cache_max_memory)
+    use timslite::{DataSet, DataSetKey, Store, StoreConfig};
+
+    let dir = temp_dir();
+
+    // Small segment sizes to force multiple data + index segments
+    let data_segment_size: u64 = 64 * 1024;
+    let index_segment_size: u64 = 4096;
+
+    // Use Store API to get BlockCache (path 5)
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .cache_max_memory(1024 * 1024)
+        .initial_data_segment_size(data_segment_size)
+        .initial_index_segment_size(index_segment_size)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset(
+            "lifecycle",
+            "data",
+            data_segment_size,
+            index_segment_size,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let handle = store.open_dataset("lifecycle", "data").unwrap();
+
+    // Phase 1: Write data through Store (flushed to disk, paths 2, 3)
+    {
+        let arc = store.get_dataset(&handle).unwrap();
+        let mut ds = arc.lock().unwrap();
+        for i in 1..=50i64 {
+            let data = format!("record_{:03}", i);
+            ds.write(i * 100, data.as_bytes()).unwrap();
+        }
+        ds.flush().unwrap();
+        ds.close().unwrap();
+    }
+
+    // Phase 2: Reopen dataset (path 3: lazy-open segments)
+    let handle2 = store.open_dataset("lifecycle", "data").unwrap();
+    {
+        let arc = store.get_dataset(&handle2).unwrap();
+        let mut ds = arc.lock().unwrap();
+
+        // Write additional records that stay in memory buffer (path 1)
+        for i in 51..=60i64 {
+            let data = format!("record_{:03}", i);
+            ds.write(i * 100, data.as_bytes()).unwrap();
+        }
+
+        // Full lifecycle query across disk + memory (paths 1+2+3+4+5)
+        let entries = ds.query(100, 6000).unwrap();
+        assert_eq!(
+            entries.len(),
+            60,
+            "full lifecycle query should return all 60 records"
+        );
+
+        // Verify data integrity
+        for (i, (ts, data)) in entries.iter().enumerate() {
+            let expected_ts = (i as i64 + 1) * 100;
+            let expected_data = format!("record_{:03}", i + 1);
+            assert_eq!(*ts, expected_ts, "timestamp mismatch at index {}", i);
+            assert_eq!(
+                *data,
+                expected_data.as_bytes(),
+                "data mismatch at ts={}",
+                ts
+            );
+        }
+
+        // Query again — BlockCache should serve cached reads (path 5)
+        let entries2 = ds.query(100, 6000).unwrap();
+        assert_eq!(entries2.len(), 60);
+
+        // Partial query spanning disk + memory boundary
+        let mid = ds.query(4500, 5500).unwrap();
+        assert_eq!(mid.len(), 11, "ts 4500..5500 should return records 45..55");
+        assert_eq!(mid[0].0, 4500);
+        assert_eq!(mid[10].0, 5500);
+    }
+
+    store.close().unwrap();
 }

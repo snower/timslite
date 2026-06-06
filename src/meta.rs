@@ -412,4 +412,49 @@ mod tests {
         assert_eq!(loaded.initial_index_segment_size, 128);
         assert_eq!(loaded.retention_window, 86400);
     }
+
+    #[test]
+    fn test_meta_roundtrip_zero_values() {
+        // from_bytes backward compat: initial_data_segment_size=0 defaults to data_segment_size.
+        // So passing 0 for init_data and data_seg=1 → parsed.initial_data_segment_size = 1.
+        let meta = DataSetMeta::new(1, 1, 0, 0, 1, 1, 0);
+        let bytes = meta.to_bytes();
+        let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.initial_data_segment_size, 1);
+        assert_eq!(parsed.initial_index_segment_size, 1);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn proptest_meta_roundtrip(
+            data_seg in proptest::num::u64::ANY,
+            idx_seg in proptest::num::u64::ANY,
+            compress in proptest::num::u8::ANY,
+            continuous in proptest::num::u8::ANY,
+            init_data in proptest::num::u64::ANY,
+            init_idx in proptest::num::u64::ANY,
+            retention in proptest::num::u64::ANY,
+        ) {
+            let data_seg = data_seg.max(1);
+            let idx_seg = idx_seg.max(1);
+            let compress = compress % 10; // compress_level must be <= 9
+            let continuous = continuous % 2;
+            // init must be <= segment_size (from_bytes validation)
+            let init_data = init_data % data_seg + 1;
+            let init_idx = init_idx % idx_seg + 1;
+            let meta = DataSetMeta::new(
+                data_seg, idx_seg, compress, continuous,
+                init_data, init_idx, retention,
+            );
+            let bytes = meta.to_bytes();
+            let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
+            assert_eq!(parsed.data_segment_size, data_seg);
+            assert_eq!(parsed.index_segment_size, idx_seg);
+            assert_eq!(parsed.compress_level, compress);
+            assert_eq!(parsed.index_continuous, continuous);
+            assert_eq!(parsed.initial_data_segment_size, init_data);
+            assert_eq!(parsed.initial_index_segment_size, init_idx);
+            assert_eq!(parsed.retention_window, retention);
+        }
+    }
 }
