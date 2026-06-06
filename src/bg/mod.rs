@@ -1,4 +1,4 @@
-﻿//! Background task executor (flush, idle-check, cache eviction, retention reclaim).
+//! Background task executor (flush, idle-check, cache eviction, retention reclaim).
 //!
 //! Supports two modes:
 //! - **Auto (default)**: `BackgroundTasks::start` spawns a dedicated thread.
@@ -578,31 +578,68 @@ mod tests {
     }
 
     #[test]
-    fn test_tick_bg_all_tasks_due_after_expiry() {
+    fn test_tick_bg_interval_tasks_due_after_expiry() {
+        // Tests the 3 interval-based tasks (flush, idle, cache) separately
+        // from retention, which uses wall-clock scheduling and is timing-fragile.
         let datasets = Arc::new(RwLock::new(HashMap::new()));
         let block_cache = Arc::new(BlockCache::new(256 * 1024)); // enabled
         let flush_interval = Duration::from_millis(1);
         let bg = BackgroundTasks::new(
             datasets,
             block_cache,
-            flush_interval, // 1ms 閳?very short
+            flush_interval,
             Duration::from_secs(1800),
             Duration::from_secs(1800),
             0,
         );
 
-        // Force last_flush far in the past by taking the lock
+        // Force interval-based deadlines far in the past
         {
             let mut state = bg.state.lock().unwrap();
             state.last_flush = Instant::now() - Duration::from_secs(10);
             state.last_idle_check = Instant::now() - Duration::from_secs(120);
             state.last_cache_eviction = Instant::now() - Duration::from_secs(120);
+            // Leave next_retention in the future so only 3 tasks fire
+        }
+
+        let result = bg.tick();
+        assert_eq!(
+            result.executed_tasks, 3,
+            "expected flush + idle + cache = 3 tasks"
+        );
+    }
+
+    #[test]
+    fn test_tick_bg_retention_reschedules_after_fire() {
+        // Tests retention independently: verify it fires and reschedules
+        // to a future wall-clock time, avoiding the timing fragility of
+        // combining it with interval-based tasks.
+        let datasets = Arc::new(RwLock::new(HashMap::new()));
+        let block_cache = Arc::new(BlockCache::new(0));
+        let bg = BackgroundTasks::new(
+            datasets,
+            block_cache,
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+            0,
+        );
+
+        // Force retention deadline to the past
+        {
+            let mut state = bg.state.lock().unwrap();
             state.next_retention = Instant::now() - Duration::from_secs(1);
         }
 
-        // All 4 tasks should now be due
         let result = bg.tick();
-        assert_eq!(result.executed_tasks, 4, "expected all 4 tasks executed");
+        assert!(result.executed_tasks >= 1, "retention task should execute");
+
+        // After firing, next_retention must be rescheduled to the future
+        let state = bg.state.lock().unwrap();
+        assert!(
+            state.next_retention > Instant::now(),
+            "next_retention should be rescheduled to a future time"
+        );
     }
 
     #[test]

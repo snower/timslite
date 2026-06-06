@@ -242,8 +242,8 @@ class TestQueuePersistence:
 
 
 class TestQueueConcurrency:
-    def test_clone_queue_for_threads(self, tmpdir):
-        """Multiple threads can push when each has a clone of the queue."""
+    def test_queue_push_poll_roundtrip(self, tmpdir):
+        """Basic push-poll roundtrip via a single queue instance."""
         cfg = timslite.StoreConfig(enable_background_thread=False)
         with timslite.Store.open(tmpdir, cfg) as store:
             store.create_dataset("events", "events")

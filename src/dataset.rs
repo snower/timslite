@@ -1206,7 +1206,15 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let data_segment_size = 180;
+        // Byte budget per segment:
+        //   DATA_HEADER_SIZE = 116, BLOCK_HEADER_SIZE = 16, RECORD_OVERHEAD = 12
+        //   Available payload = data_segment_size - DATA_HEADER_SIZE
+        //   Per-record cost   = BLOCK_HEADER_SIZE + RECORD_OVERHEAD + data_len
+        //                     = 16 + 12 + 32 = 60 bytes
+        // With data_segment_size = 200:
+        //   Available = 200 - 116 = 84 >= 60  (1st record fits, 24 bytes left)
+        //   2nd record needs 60 > 24  → rollover to next segment.
+        let data_segment_size = 200;
         let mut ds = DataSet::create(
             id,
             dir,
@@ -1297,11 +1305,20 @@ mod tests {
             .iter()
             .filter(|entry| entry.is_filler())
             .count();
-        assert!(
-            filler_count < 2 * segment_capacity - 2,
-            "filler_count={} segment_capacity={}",
-            filler_count,
-            segment_capacity
+        // Sparse continuous mode only materializes fillers at the edges of the
+        // previous and current segments; middle segments are skipped entirely.
+        //   prev_segment: fillers from (first_ts+1) to (prev_segment_start + capacity - 1)
+        //   curr_segment: fillers from curr_segment_start to (second_ts - 1)
+        let base = first_ts;
+        let capacity = segment_capacity as i64;
+        let prev_seg_start = base + ((first_ts - base) / capacity) * capacity;
+        let curr_seg_start = base + ((second_ts - base) / capacity) * capacity;
+        let prev_seg_end_fillers = (prev_seg_start + capacity - 1 - first_ts) as usize;
+        let curr_seg_start_fillers = (second_ts - curr_seg_start) as usize;
+        let expected_fillers = prev_seg_end_fillers + curr_seg_start_fillers;
+        assert_eq!(
+            filler_count, expected_fillers,
+            "fillers should only cover edge-segment gaps, not the full gap"
         );
     }
 
@@ -2000,22 +2017,43 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let ret = 30 * 86400u64;
-        let ds = DataSet::create(
+        // data_segment_size=180 forces one record per segment (same as reclaim test).
+        // retention_window=15 → threshold = latest_ts(30) - 15 = 15.
+        let data_segment_size = 180u64;
+        let ret = 15u64;
+        let mut ds = DataSet::create(
             id.clone(),
             dir.clone(),
-            64 * 1024 * 1024,
-            4 * 1024 * 1024,
-            6,
+            data_segment_size,
+            4096,
             0,
-            256 * 1024,
-            4 * 1024,
+            0,
+            data_segment_size,
+            4096,
             ret,
         )
         .unwrap();
         assert_eq!(ds.retention_window(), ret);
 
-        // Reopen and verify
+        // Write 3 records, each forcing a new segment
+        ds.write(10, &[0xAA; 32]).unwrap();
+        ds.write(20, &[0xBB; 32]).unwrap();
+        ds.write(30, &[0xCC; 32]).unwrap();
+
+        // Segment 0 (max_ts=10): 10 < 15 → expired
+        // Segment 1 (max_ts=20): 20 >= 15 → kept
+        // Segment 2 (max_ts=30): 30 >= 15 → kept
+        let data_dir = dir.join("data");
+        let count_before = std::fs::read_dir(&data_dir).unwrap().count();
+        assert_eq!(count_before, 3);
+
+        let reclaimed = ds.reclaim_expired_segments().unwrap();
+        assert_eq!(reclaimed, 1, "segment with max_ts=10 should be expired");
+
+        let count_after = std::fs::read_dir(&data_dir).unwrap().count();
+        assert_eq!(count_after, 2, "one segment file should be deleted");
+
+        // Reopen and verify retention_window persists
         let ds2 = DataSet::open(id, dir).unwrap();
         assert_eq!(ds2.retention_window(), ret);
     }

@@ -240,3 +240,46 @@ fn t21_5_cache_eviction_via_background_tick() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn t21_6_background_thread_auto_flush() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(true)
+        .flush_interval(Duration::from_millis(100))
+        .idle_timeout(Duration::from_secs(3600))
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset(
+            "auto_flush",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("auto_flush", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    arc.lock().unwrap().write(1, b"auto_flushed").unwrap();
+    drop(arc);
+
+    // Wait for the background thread to auto-flush (flush_interval=100ms)
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Verify data is still queryable after background flush
+    let arc = store.get_dataset(&ds).unwrap();
+    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].1, b"auto_flushed");
+    drop(arc);
+
+    store.close().unwrap();
+}

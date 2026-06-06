@@ -17,10 +17,12 @@ class TestConfig:
         assert config.compress_level == 6
         assert config.cache_max_memory == 268435456
         assert config.cache_idle_timeout == 1800
+        assert config.retention_check_hour == 0
+        assert config.enable_background_thread is True
         assert config.enable_journal is True
 
     def test_store_config_custom(self):
-        """Custom config sets all fields."""
+        """Custom config sets all fields including retention_check_hour and enable_background_thread."""
         config = timslite.StoreConfig(
             flush_interval=300,
             idle_timeout=900,
@@ -31,6 +33,8 @@ class TestConfig:
             compress_level=9,
             cache_max_memory=512 * 1024 * 1024,
             cache_idle_timeout=600,
+            retention_check_hour=3,
+            enable_background_thread=False,
             enable_journal=False,
         )
         assert config.flush_interval == 300
@@ -42,6 +46,8 @@ class TestConfig:
         assert config.compress_level == 9
         assert config.cache_max_memory == 512 * 1024 * 1024
         assert config.cache_idle_timeout == 600
+        assert config.retention_check_hour == 3
+        assert config.enable_background_thread is False
         assert config.enable_journal is False
 
     def test_create_dataset_with_kwargs(self, tmpdir):

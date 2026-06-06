@@ -49,15 +49,15 @@
 | # | 问题 | 位置 | 状态 | 完成日期 |
 |---|------|------|------|---------|
 | M-1 | 修复 `test_next_delay_during_tick` 无意义断言（`delay >= 0.0` 恒为 true），替换为 `delay <= flush_interval` | `src/bg/mod.rs` | [x] | 2026-06-05 |
-| M-2 | 修复 `test_block_offset_routes_to_next_data_segment_after_rollover` 脆弱尺寸（180字节），加大余量或添加计算注释 | `src/dataset.rs` L1203 | [ ] | |
-| M-3 | 重命名 `test_clone_queue_for_threads`（实际未使用线程），或添加真正的多线程 push/poll | `wrapper/python/tests/test_queue.py` L245 | [ ] | |
-| M-4 | 收紧 `test_continuous_large_gap_filler_is_bounded_by_edge_segments` 断言边界至精确预期值 | `src/dataset.rs` L1267 | [ ] | |
+| M-2 | 修复 `test_block_offset_routes_to_next_data_segment_after_rollover` 脆弱尺寸（180字节），加大余量或添加计算注释 | `src/dataset.rs` L1203 | [x] | 2026-06-05 |
+| M-3 | 重命名 `test_clone_queue_for_threads`（实际未使用线程），或添加真正的多线程 push/poll | `wrapper/python/tests/test_queue.py` L245 | [x] | 2026-06-05 |
+| M-4 | 收紧 `test_continuous_large_gap_filler_is_bounded_by_edge_segments` 断言边界至精确预期值 | `src/dataset.rs` L1267 | [x] | 2026-06-05 |
 | M-5 | 修复 FFI 测试临时目录泄漏：`cleanup_store_dir()` 在每个测试末尾清理 | `src/ffi.rs` | [x] | 2026-06-05 |
-| M-6 | 修复 `test_tick_bg_all_tasks_due_after_expiry` 时序脆弱：将 retention 与其他 3 个任务分开测试 | `src/bg/mod.rs` L581 | [ ] | |
-| M-7 | 修复 `test_continuous_large_gap_filler_is_bounded_by_edge_segments` filler 上界过于宽松 | `src/dataset.rs` L1267 | [ ] | |
-| M-8 | `test_retention_window_stored_and_roundtrip` 补充实际回收行为验证 | `src/dataset.rs` L1997 | [ ] | |
-| M-9 | `tests/background_test.rs` 补充至少一个启用后台线程的测试（写入→等待→验证自动 flush） | `tests/background_test.rs` | [ ] | |
-| M-10 | Python `test_store_config_custom` 补充 `retention_check_hour` 和 `enable_background_thread` 字段测试 | `wrapper/python/tests/test_config.py` | [ ] | |
+| M-6 | 修复 `test_tick_bg_all_tasks_due_after_expiry` 时序脆弱：将 retention 与其他 3 个任务分开测试 | `src/bg/mod.rs` L581 | [x] | 2026-06-05 |
+| M-7 | 修复 `test_continuous_large_gap_filler_is_bounded_by_edge_segments` filler 上界过于宽松 | `src/dataset.rs` L1267 | [x] | 2026-06-05 |
+| M-8 | `test_retention_window_stored_and_roundtrip` 补充实际回收行为验证 | `src/dataset.rs` L1997 | [x] | 2026-06-05 |
+| M-9 | `tests/background_test.rs` 补充至少一个启用后台线程的测试（写入→等待→验证自动 flush） | `tests/background_test.rs` | [x] | 2026-06-05 |
+| M-10 | Python `test_store_config_custom` 补充 `retention_check_hour` 和 `enable_background_thread` 字段测试 | `wrapper/python/tests/test_config.py` | [x] | 2026-06-05 |
 
 ---
 
@@ -80,6 +80,6 @@
 |---------|------|--------|--------|--------|
 | 严重 | 8 | 7 | 0 | 1 |
 | 高 | 11 | 9 | 0 | 2 |
-| 中 | 10 | 2 | 0 | 8 |
+| 中 | 10 | 10 | 0 | 0 |
 | 低 | 6 | 0 | 0 | 6 |
-| **合计** | **35** | **18** | **0** | **17** |
+| **合计** | **35** | **26** | **0** | **9** |
