@@ -527,6 +527,39 @@ impl DataSegmentSet {
         seg.read_at_index_with_hot_cache(&rel_entry, cache, hot_block)
     }
 
+    /// Find the segment and read only the record data_len (lightweight).
+    pub fn read_record_data_len(
+        &mut self,
+        entry: &crate::segment::data::ReadIndexEntry,
+        cache: Option<&BlockCache>,
+    ) -> Result<u32> {
+        let seg = self.find_or_open_segment(entry.block_offset)?;
+        let seg_file_offset = seg.file_offset;
+        let rel_entry = crate::segment::data::ReadIndexEntry {
+            timestamp: entry.timestamp,
+            block_offset: entry.block_offset - seg_file_offset,
+            in_block_offset: entry.in_block_offset,
+        };
+        seg.read_record_data_len(&rel_entry, cache)
+    }
+
+    /// Find the segment and read record data_len with HotBlockCache support.
+    pub fn read_record_data_len_with_hot_cache(
+        &mut self,
+        entry: &crate::segment::data::ReadIndexEntry,
+        cache: Option<&BlockCache>,
+        hot_block: &mut HotBlockCache,
+    ) -> Result<u32> {
+        let seg = self.find_or_open_segment(entry.block_offset)?;
+        let seg_file_offset = seg.file_offset;
+        let rel_entry = crate::segment::data::ReadIndexEntry {
+            timestamp: entry.timestamp,
+            block_offset: entry.block_offset - seg_file_offset,
+            in_block_offset: entry.in_block_offset,
+        };
+        seg.read_record_data_len_with_hot_cache(&rel_entry, cache, hot_block)
+    }
+
     fn find_or_open_segment(&mut self, absolute_offset: u64) -> Result<&mut DS> {
         // Find which segment this offset belongs to
         for seg in &self.segments {

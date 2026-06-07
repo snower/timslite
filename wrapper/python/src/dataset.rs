@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 use std::sync::{Arc, Mutex};
 
 use crate::exceptions::wrap;
-use crate::query::PyQueryIterator;
+use crate::query::{PyQueryIterator, PyQueryLengthIterator};
 
 #[pyclass(name = "Dataset")]
 pub struct PyDataset {
@@ -170,5 +170,83 @@ impl PyDataset {
     fn latest_timestamp(&self) -> i64 {
         let ds = self.inner.lock().unwrap();
         ds.latest_written_timestamp()
+    }
+
+    /// Check if index entry exists for a timestamp.
+    ///
+    /// Args:
+    ///     timestamp: Timestamp to check. Pass `-1` to check latest written timestamp.
+    ///
+    /// Returns:
+    ///     bool: True if index entry exists (including filler entries), False otherwise.
+    fn read_exist(&mut self, timestamp: i64) -> PyResult<bool> {
+        let mut ds = self.inner.lock().unwrap();
+        wrap(ds.read_exist(timestamp))
+    }
+
+    /// Check existence of index entries in [start_ts, end_ts].
+    ///
+    /// Args:
+    ///     start_ts: Start timestamp (inclusive).
+    ///     end_ts: End timestamp (inclusive).
+    ///
+    /// Returns:
+    ///     bytes: Bitmap as bytes. Bit i represents (start_ts + i): 1=exists, 0=not found.
+    fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> PyResult<Vec<u8>> {
+        let mut ds = self.inner.lock().unwrap();
+        wrap(ds.query_exist(start_ts, end_ts))
+    }
+
+    /// Read the logical data length for a timestamp.
+    ///
+    /// Args:
+    ///     timestamp: Timestamp to read. Pass `-1` to read latest written timestamp.
+    ///
+    /// Returns:
+    ///     Optional[int]: Data length if record exists, None if not found, filler, or expired.
+    fn read_length(&mut self, timestamp: i64) -> PyResult<Option<u32>> {
+        let mut ds = self.inner.lock().unwrap();
+        wrap(ds.read_length(timestamp))
+    }
+
+    /// Query data lengths in [start_ts, end_ts], returns a lazy iterator.
+    ///
+    /// Yields (timestamp: int, data_len: int) tuples.
+    /// Implements Python iterator protocol (__iter__ / __next__).
+    fn query_length(&mut self, start_ts: i64, end_ts: i64) -> PyResult<PyQueryLengthIterator> {
+        let ds_arc = self.inner_arc();
+        let entries = {
+            let mut ds = ds_arc.lock().unwrap();
+            wrap(ds.query_index_entries(start_ts, end_ts))?
+        };
+        Ok(PyQueryLengthIterator::new(ds_arc, entries))
+    }
+
+    /// Query data lengths and collect all results into a list.
+    /// Convenience wrapper: equivalent to list(dataset.query_length(...)).
+    fn query_length_all(&mut self, start_ts: i64, end_ts: i64) -> PyResult<Vec<(i64, u32)>> {
+        let ds_arc = self.inner_arc();
+        let entries = {
+            let mut ds = ds_arc.lock().unwrap();
+            wrap(ds.query_index_entries(start_ts, end_ts))?
+        };
+        let entries_len = entries.len();
+
+        let mut results = Vec::with_capacity(entries_len);
+        for entry in entries {
+            if entry.block_offset == timslite::BLOCK_OFFSET_FILLER {
+                continue;
+            }
+            let mut ds = ds_arc.lock().unwrap();
+            let re = timslite::ReadIndexEntry {
+                timestamp: entry.timestamp,
+                block_offset: entry.block_offset,
+                in_block_offset: entry.in_block_offset,
+            };
+            let cache = ds.cache_ref().cloned();
+            let data_len = wrap(ds.segments_mut().read_record_data_len(&re, cache.as_deref()))?;
+            results.push((entry.timestamp, data_len));
+        }
+        Ok(results)
     }
 }

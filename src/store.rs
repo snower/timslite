@@ -1,4 +1,4 @@
-﻿//! Store: facade that manages all datasets and background tasks.
+//! Store: facade that manages all datasets and background tasks.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -547,6 +547,56 @@ impl Store {
             .lock()
             .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
         ds.query(start_ts, end_ts)
+    }
+
+    /// Check if index entry exists for a timestamp.
+    pub fn dataset_read_exist(&self, handle: DataSetHandle, timestamp: i64) -> Result<bool> {
+        let ds_arc = self.get_dataset(&handle)?;
+        let mut ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.read_exist(timestamp)
+    }
+
+    /// Check existence of index entries in [start_ts, end_ts].
+    pub fn dataset_query_exist(
+        &self,
+        handle: DataSetHandle,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Vec<u8>> {
+        let ds_arc = self.get_dataset(&handle)?;
+        let mut ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.query_exist(start_ts, end_ts)
+    }
+
+    /// Read the logical data length for a timestamp.
+    pub fn dataset_read_length(
+        &self,
+        handle: DataSetHandle,
+        timestamp: i64,
+    ) -> Result<Option<u32>> {
+        let ds_arc = self.get_dataset(&handle)?;
+        let mut ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.read_length(timestamp)
+    }
+
+    /// Query data lengths for timestamps in [start_ts, end_ts].
+    pub fn dataset_query_length(
+        &self,
+        handle: DataSetHandle,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Vec<(i64, u32)>> {
+        let ds_arc = self.get_dataset(&handle)?;
+        let mut ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.query_length(start_ts, end_ts)
     }
 
     /// Return the highest successfully written timestamp for a dataset handle.

@@ -15,6 +15,7 @@ use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOC
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::query::iter::{QueryIterator, QuerySource};
+use crate::query::length_iter::QueryLengthIterator;
 use crate::queue::{flush_queue_state_files, queue_dir_for, QueueInner};
 use crate::segment::data::{APPEND_MIGRATION_THRESHOLD, MAX_RECORD_DATA_SIZE, RECORD_HEADER_SIZE};
 use crate::segment::DataSegmentSet;
@@ -757,6 +758,59 @@ impl DataSet {
         Ok(Some((ts, data)))
     }
 
+    /// Check if index entry exists for the given timestamp.
+    /// timestamp == -1 checks latest_written_timestamp.
+    /// Returns true if index entry exists (including filler entries).
+    /// Does NOT check retention — index existence is enough.
+    pub fn read_exist(&mut self, timestamp: i64) -> Result<bool> {
+        let effective_ts = if timestamp == -1 {
+            if self.latest_written_timestamp <= 0 {
+                return Ok(false);
+            }
+            self.latest_written_timestamp
+        } else {
+            timestamp
+        };
+
+        let entry = self.time_index.find_entry(effective_ts)?;
+        Ok(entry.is_some())
+    }
+
+    /// Read the logical data length for a timestamp.
+    /// timestamp == -1 reads latest_written_timestamp.
+    /// Returns Some(data_len) if record exists, None if not found, filler, or expired.
+    pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>> {
+        let effective_ts = if timestamp == -1 {
+            if self.latest_written_timestamp <= 0 {
+                return Ok(None);
+            }
+            self.latest_written_timestamp
+        } else {
+            timestamp
+        };
+
+        if self.is_timestamp_expired(effective_ts) {
+            return Ok(None);
+        }
+
+        let entry = match self.time_index.find_entry(effective_ts)? {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+        if entry.block_offset == BLOCK_OFFSET_FILLER {
+            return Ok(None);
+        }
+        let re = ReadIndexEntry {
+            timestamp: entry.timestamp,
+            block_offset: entry.block_offset,
+            in_block_offset: entry.in_block_offset,
+        };
+        let cache = self.runtime_context.block_cache.clone();
+        let data_len = self.segments.read_record_data_len(&re, cache.as_deref())?;
+        self.last_used_at = Instant::now();
+        Ok(Some(data_len))
+    }
+
     /// Return a lazy query iterator for records in [start_ts, end_ts].
     #[allow(clippy::needless_lifetimes)]
     pub fn query_iter<'a>(&'a mut self, start_ts: i64, end_ts: i64) -> Result<QueryIterator<'a>> {
@@ -805,6 +859,80 @@ impl DataSet {
             return Ok(Vec::new());
         }
         self.time_index.prepare_query_sources(start_ts, end_ts)
+    }
+
+    /// Check existence of index entries in [start_ts, end_ts].
+    /// Returns bitmap as byte array. Bit i represents (start_ts + i).
+    /// Bit is 1 if index entry exists (including filler), 0 otherwise.
+    /// Caller controls bitmap size — no range limit.
+    pub fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>> {
+        if start_ts > end_ts {
+            return Ok(Vec::new());
+        }
+        let count = (end_ts - start_ts + 1) as usize;
+        let byte_count = count.div_ceil(8);
+        let mut bitmap = vec![0u8; byte_count];
+
+        let entries = self.time_index.query(start_ts, end_ts)?;
+        for entry in entries {
+            let offset = (entry.timestamp - start_ts) as usize;
+            let byte_index = offset / 8;
+            let bit_index = offset % 8;
+            if byte_index < bitmap.len() {
+                bitmap[byte_index] |= 1 << bit_index;
+            }
+        }
+        Ok(bitmap)
+    }
+
+    /// Query data lengths for timestamps in [start_ts, end_ts].
+    /// Returns Vec<(timestamp, data_len)> for valid records only (skips filler and expired).
+    pub fn query_length(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>> {
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
+        if start_ts > end_ts {
+            return Ok(Vec::new());
+        }
+        let mut result = Vec::new();
+        let sources = self.time_index.prepare_query_sources(start_ts, end_ts)?;
+        let cache = self.runtime_context.block_cache.clone();
+
+        for mut source in sources {
+            while let Some(entry) = source.next_entry()? {
+                if entry.block_offset == BLOCK_OFFSET_FILLER {
+                    continue;
+                }
+                let re = ReadIndexEntry {
+                    timestamp: entry.timestamp,
+                    block_offset: entry.block_offset,
+                    in_block_offset: entry.in_block_offset,
+                };
+                let data_len = self.segments.read_record_data_len(&re, cache.as_deref())?;
+                result.push((entry.timestamp, data_len));
+            }
+        }
+        self.last_used_at = Instant::now();
+        Ok(result)
+    }
+
+    /// Create a lazy iterator for data lengths in [start_ts, end_ts].
+    /// Supports HotBlockCache for efficient block reuse.
+    #[allow(clippy::needless_lifetimes)]
+    pub fn query_length_iter<'a>(
+        &'a mut self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<QueryLengthIterator<'a>> {
+        let cache = self.runtime_context.block_cache.clone();
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
+        if start_ts > end_ts {
+            return Ok(QueryLengthIterator::new(vec![], &mut self.segments, cache));
+        }
+        let sources = self.time_index.prepare_query_sources(start_ts, end_ts)?;
+        Ok(QueryLengthIterator::new_with_sources(
+            sources,
+            &mut self.segments,
+            cache,
+        ))
     }
 
     pub fn read_entry_at_index(&mut self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
@@ -1029,6 +1157,16 @@ impl DataSet {
 
         self.last_used_at = Instant::now();
         Ok(idx_reclaimed + data_reclaimed)
+    }
+
+    /// Get a reference to the block cache (for FFI and Python wrapper).
+    pub fn cache_ref(&self) -> Option<&Arc<BlockCache>> {
+        self.runtime_context.block_cache.as_ref()
+    }
+
+    /// Get a mutable reference to segments (for FFI and Python wrapper).
+    pub fn segments_mut(&mut self) -> &mut DataSegmentSet {
+        &mut self.segments
     }
 }
 

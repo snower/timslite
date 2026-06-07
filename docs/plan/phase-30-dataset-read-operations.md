@@ -34,10 +34,10 @@ impl DataSegmentSet {
 7. 返回 `data_len`
 
 ### 测试用例
-- [ ] 单条记录 block 的 data_len 读取
-- [ ] 多条记录 block 中按 in_block_offset 定位
-- [ ] 压缩 block 的正确解压后读取
-- [ ] 无效 block_offset 返回错误
+- [x] 单条记录 block 的 data_len 读取
+- [x] 多条记录 block 中按 in_block_offset 定位
+- [x] 压缩 block 的正确解压后读取
+- [x] 无效 block_offset 返回错误
 
 ---
 
@@ -67,12 +67,12 @@ impl DataSet {
 6. **不检查 retention** — 索引存在即返回 `true`
 
 ### 测试用例
-- [ ] 存在的时间戳返回 true
-- [ ] 不存在的时间戳返回 false
-- [ ] filler entry 返回 true（索引存在）
-- [ ] timestamp == -1 且有数据返回 true
-- [ ] timestamp == -1 且无数据返回 false
-- [ ] 过期时间戳仍返回 true（仅检查索引）
+- [x] 存在的时间戳返回 true
+- [x] 不存在的时间戳返回 false
+- [x] filler entry 返回 true（索引存在）
+- [x] timestamp == -1 且有数据返回 true
+- [x] timestamp == -1 且无数据返回 false
+- [x] 过期时间戳仍返回 true（仅检查索引）
 
 ---
 
@@ -112,12 +112,12 @@ start_ts = 100, end_ts = 107
 ```
 
 ### 测试用例
-- [ ] 空范围返回空 Vec
-- [ ] 单字节位图正确性
-- [ ] 跨字节位图正确性
-- [ ] 包含 filler 的位图（filler 位为 1）
-- [ ] retention 裁剪后的范围
-- [ ] 大范围位图（1000+ 时间点）
+- [x] 空范围返回空 Vec
+- [x] 单字节位图正确性
+- [x] 跨字节位图正确性
+- [x] 包含 filler 的位图（filler 位为 1）
+- [x] retention 裁剪后的范围
+- [x] 大范围位图（1000+ 时间点）
 
 ---
 
@@ -149,13 +149,13 @@ impl DataSet {
 8. 返回 `Ok(Some(data_len))`
 
 ### 测试用例
-- [ ] 正常记录返回正确的 data_len
-- [ ] 不存在的时间戳返回 None
-- [ ] filler 返回 None
-- [ ] 过期时间戳返回 None
-- [ ] timestamp == -1 读取最新记录
-- [ ] timestamp == -1 无数据返回 None
-- [ ] 压缩 block 中的 data_len 正确读取
+- [x] 正常记录返回正确的 data_len
+- [x] 不存在的时间戳返回 None
+- [x] filler 返回 None
+- [x] 过期时间戳返回 None
+- [x] timestamp == -1 读取最新记录
+- [x] timestamp == -1 无数据返回 None
+- [x] 压缩 block 中的 data_len 正确读取
 
 ---
 
@@ -187,12 +187,12 @@ impl DataSet {
 6. 返回 result
 
 ### 测试用例
-- [ ] 空范围返回空 Vec
-- [ ] 正常范围返回正确的 (timestamp, data_len) 列表
-- [ ] filler 被跳过
-- [ ] 过期记录被跳过
-- [ ] 跨 segment 边界的查询
-- [ ] 与 query_iter 结果一致性验证
+- [x] 空范围返回空 Vec
+- [x] 正常范围返回正确的 (timestamp, data_len) 列表
+- [x] filler 被跳过
+- [x] 过期记录被跳过
+- [x] 跨 segment 边界的查询
+- [x] 与 query_iter 结果一致性验证
 
 ---
 
@@ -251,12 +251,12 @@ impl DataSet {
 4. 通过 Store 创建时自动注入 `Arc<BlockCache>`
 
 ### 测试用例
-- [ ] 迭代器正确遍历所有有效记录
-- [ ] filler 被跳过
-- [ ] HotBlockCache 命中/未命中路径
-- [ ] 跨 source 边界正确切换
-- [ ] 空范围返回 None
-- [ ] 与 query_length 结果一致性验证
+- [x] 迭代器正确遍历所有有效记录
+- [x] filler 被跳过
+- [x] HotBlockCache 命中/未命中路径
+- [x] 跨 source 边界正确切换
+- [x] 空范围返回 None
+- [x] 与 query_length 结果一致性验证
 
 ---
 
@@ -310,12 +310,12 @@ int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
 - `tmsl_dataset_query_length_iter` 返回的迭代器由 `tmsl_iter_free` 释放
 
 ### 测试用例
-- [ ] FFI read_exist 正确返回 true/false
-- [ ] FFI query_exist 返回正确位图
-- [ ] FFI read_length 正确返回数据长度
-- [ ] FFI query_length 返回正确数组
-- [ ] FFI query_length_iter 迭代器正确工作
-- [ ] 内存泄漏验证（所有 malloc 都有对应 free）
+- [x] FFI read_exist 正确返回 true/false
+- [x] FFI query_exist 返回正确位图
+- [x] FFI read_length 正确返回数据长度
+- [x] FFI query_length 返回正确数组
+- [x] FFI query_length_iter 迭代器正确工作
+- [x] 内存泄漏验证（所有 malloc 都有对应 free）
 
 ---
 

@@ -1154,6 +1154,144 @@ impl DataSegment {
             .to_vec();
         Ok((timestamp, data))
     }
+
+    /// Read only the record header to get data_len.
+    /// Does not read the actual data payload.
+    pub fn read_record_data_len(
+        &self,
+        entry: &ReadIndexEntry,
+        cache: Option<&BlockCache>,
+    ) -> Result<u32> {
+        let mmap = self
+            .mmap
+            .as_ref()
+            .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
+
+        let hdr_pos = (self.header_size + entry.block_offset) as usize;
+        let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
+
+        // Try cache first for compressed blocks
+        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
+        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
+        let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
+
+        if is_compressed {
+            if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
+                let pos = entry.in_block_offset as usize;
+                if pos + RECORD_HEADER_SIZE > cached.len() {
+                    return Err(TmslError::InvalidData("record index out of bounds".into()));
+                }
+                let data_len = read_u32_le(
+                    cached[pos..pos + 4]
+                        .try_into()
+                        .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+                );
+                return Ok(data_len);
+            }
+        }
+
+        // Cache miss or raw block: read from mmap
+        let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
+        let payload = &mmap[pay_start..pay_start + payload_size];
+
+        let block_data: Vec<u8> = if is_compressed {
+            decompress(payload, self.compress_type)?
+        } else {
+            payload.to_vec()
+        };
+
+        let pos = entry.in_block_offset as usize;
+        if pos + RECORD_HEADER_SIZE > block_data.len() {
+            return Err(TmslError::InvalidData("record index out of bounds".into()));
+        }
+
+        let data_len = read_u32_le(
+            block_data[pos..pos + 4]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+        );
+        Ok(data_len)
+    }
+
+    /// Read record data_len with HotBlockCache support.
+    pub fn read_record_data_len_with_hot_cache(
+        &self,
+        entry: &ReadIndexEntry,
+        cache: Option<&BlockCache>,
+        hot_block: &mut HotBlockCache,
+    ) -> Result<u32> {
+        let mmap = self
+            .mmap
+            .as_ref()
+            .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
+
+        let hdr_pos = (self.header_size + entry.block_offset) as usize;
+        let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
+
+        // Check hot block cache
+        if hot_block.is_hit(self.file_offset, entry.block_offset) {
+            let pos = entry.in_block_offset as usize;
+            if pos + RECORD_HEADER_SIZE > hot_block.current_data.len() {
+                return Err(TmslError::InvalidData("record index out of bounds".into()));
+            }
+            let data_len = read_u32_le(
+                hot_block.current_data[pos..pos + 4]
+                    .try_into()
+                    .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+            );
+            return Ok(data_len);
+        }
+
+        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
+        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
+        let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
+
+        // Try global cache
+        if is_compressed {
+            if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
+                hot_block.fill(cache_key, block_data.clone());
+                let pos = entry.in_block_offset as usize;
+                if pos + RECORD_HEADER_SIZE > block_data.len() {
+                    return Err(TmslError::InvalidData("record index out of bounds".into()));
+                }
+                let data_len = read_u32_le(
+                    block_data[pos..pos + 4]
+                        .try_into()
+                        .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+                );
+                return Ok(data_len);
+            }
+        }
+
+        // Read from mmap
+        let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
+        let payload = &mmap[pay_start..pay_start + payload_size];
+
+        let block_data: Vec<u8> = if is_compressed {
+            decompress(payload, self.compress_type)?
+        } else {
+            payload.to_vec()
+        };
+
+        hot_block.fill(cache_key.clone(), block_data.clone());
+        if is_compressed {
+            if let Some(c) = cache {
+                c.put(cache_key, block_data.clone());
+            }
+        }
+
+        let pos = entry.in_block_offset as usize;
+        if pos + RECORD_HEADER_SIZE > block_data.len() {
+            return Err(TmslError::InvalidData("record index out of bounds".into()));
+        }
+
+        let data_len = read_u32_le(
+            block_data[pos..pos + 4]
+                .try_into()
+                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+        );
+        Ok(data_len)
+    }
 }
 
 #[cfg(test)]

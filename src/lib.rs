@@ -69,6 +69,7 @@ pub use journal::{
 pub use query::hot_block::HotBlockCache;
 pub use query::iter::{QueryIterator, QuerySource, SourceIndex};
 pub use queue::{DatasetQueue, DatasetQueueConsumer, PendingEntry};
+pub use segment::ReadIndexEntry;
 pub use store::{DataSetHandle, Store};
 
 // 鈹€鈹€鈹€ Queue constants (exported for FFI consumers) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

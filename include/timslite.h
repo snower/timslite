@@ -356,6 +356,93 @@ void tmsl_iter_free_data(unsigned char* data);
  */
 void tmsl_iter_close(void* iter);
 
+/* Lightweight Read Operations */
+
+/**
+ * Check if index entry exists for a timestamp.
+ * timestamp=-1 checks latest_written_timestamp.
+ * @param dataset      Opaque dataset pointer.
+ * @param timestamp    Timestamp to check (-1 for latest).
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0=false, 1=true, -1=error.
+ */
+int tmsl_dataset_read_exist(void* dataset, int64_t timestamp,
+                            char* err_buf, size_t err_buf_len);
+
+/**
+ * Check existence of index entries in [start_ts, end_ts].
+ * Returns bitmap via out_bitmap (allocated with malloc, caller frees with tmsl_data_free).
+ * Bit i represents (start_ts + i): 1=exists, 0=not found.
+ * @param dataset      Opaque dataset pointer.
+ * @param start_ts     Start timestamp (inclusive).
+ * @param end_ts       End timestamp (inclusive).
+ * @param out_bitmap   Output: pointer to bitmap data.
+ * @param out_bitmap_len Output: bitmap byte count.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_dataset_query_exist(void* dataset, int64_t start_ts, int64_t end_ts,
+                             unsigned char** out_bitmap, size_t* out_bitmap_len,
+                             char* err_buf, size_t err_buf_len);
+
+/**
+ * Read the logical data length for a timestamp.
+ * timestamp=-1 reads latest_written_timestamp.
+ * @param dataset      Opaque dataset pointer.
+ * @param timestamp    Timestamp to read (-1 for latest).
+ * @param out_len      Output: data length (valid when return=0).
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0=success (out_len valid), 1=not found, -1=error.
+ */
+int tmsl_dataset_read_length(void* dataset, int64_t timestamp,
+                             uint32_t* out_len,
+                             char* err_buf, size_t err_buf_len);
+
+/**
+ * Query data lengths for timestamps in [start_ts, end_ts].
+ * Returns array of (timestamp, data_len) pairs via out_array (allocated with malloc).
+ * Each element is 12 bytes: int64_t timestamp + uint32_t data_len.
+ * Caller frees with tmsl_data_free.
+ * @param dataset      Opaque dataset pointer.
+ * @param start_ts     Start timestamp (inclusive).
+ * @param end_ts       End timestamp (inclusive).
+ * @param out_array    Output: pointer to array data.
+ * @param out_array_len Output: element count.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_dataset_query_length(void* dataset, int64_t start_ts, int64_t end_ts,
+                              void** out_array, size_t* out_array_len,
+                              char* err_buf, size_t err_buf_len);
+
+/**
+ * Create a query length iterator for lazy data length iteration.
+ * @param dataset      Opaque dataset pointer.
+ * @param start_ts     Start timestamp (inclusive).
+ * @param end_ts       End timestamp (inclusive).
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque iterator pointer, or NULL on error.
+ */
+void* tmsl_dataset_query_length_iter(void* dataset, int64_t start_ts, int64_t end_ts,
+                                     char* err_buf, size_t err_buf_len);
+
+/**
+ * Get next data length from query length iterator.
+ * @param iter         Opaque iterator pointer.
+ * @param out_ts       Output: timestamp (valid when return=0).
+ * @param out_len      Output: data length (valid when return=0).
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0=success, 1=done, -1=error.
+ */
+int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
+                          char* err_buf, size_t err_buf_len);
+
 /* Queue API */
 
 /**

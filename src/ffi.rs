@@ -969,7 +969,265 @@ pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar) {
     tmsl_data_free(data as *mut c_void);
 }
 
-// 鈹€鈹€鈹€ Queue FFI functions 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ─── Lightweight read operations FFI ──────────────────────────────────────────
+
+/// Check if index entry exists for a timestamp.
+/// timestamp=-1 checks latest_written_timestamp.
+/// Returns 0=false, 1=true, -1=error.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_read_exist(
+    dataset: *mut c_void,
+    timestamp: c_longlong,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() {
+            return Err(TmslError::InvalidData("dataset is null".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
+        let mut ds = ds_arc.lock().unwrap();
+        let exists = ds.read_exist(timestamp)?;
+        Ok(if exists { 1 } else { 0 })
+    })
+}
+
+/// Check existence of index entries in [start_ts, end_ts].
+/// Returns bitmap via out_bitmap (allocated with libc::malloc, caller frees with tmsl_data_free).
+/// out_bitmap_len receives the byte count. Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_query_exist(
+    dataset: *mut c_void,
+    start_ts: c_longlong,
+    end_ts: c_longlong,
+    out_bitmap: *mut *mut c_uchar,
+    out_bitmap_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() || out_bitmap.is_null() || out_bitmap_len.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
+        let mut ds = ds_arc.lock().unwrap();
+        let bitmap = ds.query_exist(start_ts, end_ts)?;
+        if bitmap.is_empty() {
+            unsafe {
+                *out_bitmap = std::ptr::null_mut();
+                *out_bitmap_len = 0;
+            }
+        } else {
+            let ptr = unsafe { libc::malloc(bitmap.len()) as *mut c_uchar };
+            if ptr.is_null() {
+                return Err(TmslError::InvalidData("malloc failed".into()));
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(bitmap.as_ptr(), ptr, bitmap.len());
+                *out_bitmap = ptr;
+                *out_bitmap_len = bitmap.len();
+            }
+        }
+        Ok(0)
+    })
+}
+
+/// Read the logical data length for a timestamp.
+/// timestamp=-1 reads latest_written_timestamp.
+/// Returns 0=success (out_len valid), 1=not found, -1=error.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_read_length(
+    dataset: *mut c_void,
+    timestamp: c_longlong,
+    out_len: *mut u32,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() || out_len.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
+        let mut ds = ds_arc.lock().unwrap();
+        match ds.read_length(timestamp)? {
+            Some(len) => {
+                unsafe { *out_len = len };
+                Ok(0)
+            }
+            None => Ok(1),
+        }
+    })
+}
+
+/// Query data lengths for timestamps in [start_ts, end_ts].
+/// Returns array of (timestamp: i64, data_len: u32) pairs via out_array (allocated with libc::malloc).
+/// Each element is 12 bytes (8 + 4). Caller frees with tmsl_data_free.
+/// out_array_len receives the element count. Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_query_length(
+    dataset: *mut c_void,
+    start_ts: c_longlong,
+    end_ts: c_longlong,
+    out_array: *mut *mut c_void,
+    out_array_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() || out_array.is_null() || out_array_len.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
+        let mut ds = ds_arc.lock().unwrap();
+        let pairs = ds.query_length(start_ts, end_ts)?;
+        if pairs.is_empty() {
+            unsafe {
+                *out_array = std::ptr::null_mut();
+                *out_array_len = 0;
+            }
+        } else {
+            // Each element: timestamp (i64) + data_len (u32) = 12 bytes
+            let elem_size = std::mem::size_of::<i64>() + std::mem::size_of::<u32>();
+            let total_size = pairs.len() * elem_size;
+            let ptr = unsafe { libc::malloc(total_size) as *mut u8 };
+            if ptr.is_null() {
+                return Err(TmslError::InvalidData("malloc failed".into()));
+            }
+            for (i, (ts, len)) in pairs.iter().enumerate() {
+                let offset = i * elem_size;
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ts.to_le_bytes().as_ptr(), ptr.add(offset), 8);
+                    std::ptr::copy_nonoverlapping(
+                        len.to_le_bytes().as_ptr(),
+                        ptr.add(offset + 8),
+                        4,
+                    );
+                }
+            }
+            unsafe {
+                *out_array = ptr as *mut c_void;
+                *out_array_len = pairs.len();
+            }
+        }
+        Ok(0)
+    })
+}
+
+/// Create a query length iterator. Returns iterator handle or NULL on error.
+/// Caller must free with tmsl_iter_close.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_query_length_iter(
+    dataset: *mut c_void,
+    start_ts: c_longlong,
+    end_ts: c_longlong,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> *mut c_void {
+    ffi_catch_ptr!(err_buf, err_buf_len, {
+        if dataset.is_null() {
+            return Err(TmslError::InvalidData("dataset is null".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
+        let mut ds = ds_arc.lock().unwrap();
+        let entries = ds.query_index_entries(start_ts, end_ts)?;
+        let ffi_iter = Box::new(FfiIterator {
+            store: Arc::clone(&ffi_ds.store),
+            handle: ffi_ds.handle,
+            state: Arc::clone(&ffi_ds.state),
+            dataset_iterator_count: Arc::clone(&ffi_ds.iterator_count),
+            entries,
+            position: 0,
+        });
+        ffi_ds.iterator_count.fetch_add(1, Ordering::SeqCst);
+        ffi_ds.state.child_handles.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::into_raw(ffi_iter) as *mut c_void)
+    })
+}
+
+/// Get next data length from query length iterator.
+/// Returns 0=success (out_ts, out_len valid), 1=done, -1=error.
+#[no_mangle]
+pub extern "C" fn tmsl_length_iter_next(
+    iter: *mut c_void,
+    out_ts: *mut c_longlong,
+    out_len: *mut u32,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if iter.is_null() || out_ts.is_null() || out_len.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_iter = unsafe { &mut *(iter as *mut FfiIterator) };
+        loop {
+            if ffi_iter.position >= ffi_iter.entries.len() {
+                return Ok(1);
+            }
+            let entry = &ffi_iter.entries[ffi_iter.position];
+            ffi_iter.position += 1;
+            if entry.block_offset == crate::index::segment::BLOCK_OFFSET_FILLER {
+                continue;
+            }
+            let store = ffi_iter
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            let ds_arc = store.get_dataset(&ffi_iter.handle)?;
+            let mut ds = ds_arc.lock().unwrap();
+            let re = crate::segment::ReadIndexEntry {
+                timestamp: entry.timestamp,
+                block_offset: entry.block_offset,
+                in_block_offset: entry.in_block_offset,
+            };
+            let cache = ds.cache_ref().cloned();
+            let data_len = ds
+                .segments_mut()
+                .read_record_data_len(&re, cache.as_deref())?;
+            unsafe {
+                *out_ts = entry.timestamp as c_longlong;
+                *out_len = data_len;
+            }
+            return Ok(0);
+        }
+    })
+}
+
+// ─── Queue FFI functions ────────────────────────────────────────────────────
 
 /// Open the queue subsystem for a dataset.
 ///
