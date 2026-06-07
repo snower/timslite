@@ -38,6 +38,7 @@
 | 27 | Queue 模块 (DatasetQueue + Consumer) | ✅ 完成 (含完整测试) | [phase-27-queue-module.md](docs/plan/phase-27-queue-module.md) |
 | 28 | Journal 变更日志 (`.journal/logs`) | ✅ 完成 | [phase-28-journal.md](docs/plan/phase-28-journal.md) |
 | 29 | Dataset Append API + Journal `0x13` | ✅ 完成 | [phase-29-dataset-append.md](docs/plan/phase-29-dataset-append.md) |
+| 30 | Dataset 读操作优化 | ⏳ 待实现 | [phase-30-dataset-read-operations.md](docs/plan/phase-30-dataset-read-operations.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -64,6 +65,21 @@
 - [x] 测试 — append 行为矩阵、迁移、错误路径、journal 编解码与 Store/FFI hook
 - [x] 实现 — DataSegment tail append、DataSet append、Store/FFI API、journal `0x13`
 - [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`
+
+### Phase 30: Dataset 读操作优化
+- [ ] 设计文档 — read_exist/query_exist/read_length/query_length/query_length_iter 接口规范
+- [ ] DataSegmentSet::read_record_data_len() — 仅读取 record header 获取 data_len
+- [ ] DataSet::read_exist() — 单时间戳索引存在检查
+- [ ] DataSet::query_exist() — 范围索引存在性检查，返回位图
+- [ ] DataSet::read_length() — 单时间戳数据长度读取
+- [ ] DataSet::query_length() — 范围查询数据长度列表
+- [ ] QueryLengthIterator + query_length_iter() — 惰性数据长度迭代器
+- [ ] FFI 接口 — tmsl_dataset_read_exist/query_exist/read_length/query_length/query_length_iter
+- [ ] Store 门面 API — dataset_read_exist/query_exist/read_length/query_length/query_length_iter
+- [ ] C 头文件 — include/timslite.h 新增函数声明
+- [ ] Python Wrapper — DataSet 类新增方法
+- [ ] 集成测试 — 完整测试矩阵覆盖
+- [ ] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy -- -D warnings`
 
 ---
 
@@ -103,7 +119,8 @@ docs/plan/
 ├── phase-26-github-actions-ci.md    ← Phase 26: GitHub Actions CI/CD
 ├── phase-27-queue-module.md         ← Phase 27: Queue 模块 (DatasetQueue + Consumer)
 ├── phase-28-journal.md              ← Phase 28: Journal 变更日志 (.journal/logs)
-└── phase-29-dataset-append.md       ← Phase 29: Dataset Append API + Journal 0x13
+├── phase-29-dataset-append.md       ← Phase 29: Dataset Append API + Journal 0x13
+└── phase-30-dataset-read-operations.md ← Phase 30: Dataset 读操作优化
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:
