@@ -29,6 +29,7 @@
 | 16 | [Queue 架构与 API](docs/design/queue-overview.md) | DatasetQueue/Consumer 类型、API 设计、生命周期、并发控制、Dataset 集成 | 队列功能开发 |
 | 17 | [Queue 状态文件](docs/design/queue-state-file.md) | 消费组 4KB mmap 状态文件格式、Pending Entry 结构、Crash 恢复、同步策略 | 队列持久化/恢复 |
 | 18 | [Journal 变更日志](docs/design/journal.md) | 内置 `.journal/logs` dataset、操作日志格式、Store/DataSet hook、read/query/open_queue 实时消费、热迁移/恢复边界 | 变更日志/热迁移/恢复工具 |
+| 19 | [数据集读操作](docs/design/dataset-read-operations.md) | read/query/query_iter 及新增 read_exist/query_exist/read_length/query_length/query_length_iter 统一描述 | 读操作 API 设计/选型 |
 
 ---
 
@@ -40,7 +41,7 @@
 - **纠正写入**: [数据集操作·§9.1 时间戳验证与写入分支](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.4](docs/design/index-continuous.md#234-写入行为)
 - **乱序写入**: [数据集操作·§9.1 乱序写入机制](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.4 情况B](docs/design/index-continuous.md#234-写入行为)
 - **删除记录**: [数据集操作·§9.3 删除操作](docs/design/dataset-operations.md#93-删除操作-datasetdelete) → [索引连续存储·§23.5 哨兵值设计](docs/design/index-continuous.md#235-哨兵值设计)
-- **读取数据**: [时间索引](docs/design/time-index.md) → [数据集操作·读取流程](docs/design/dataset-operations.md#十读取流程详解) → [查询迭代器](docs/design/query-iterator.md) → [后台任务与缓存](docs/design/background-and-cache.md)
+- **读取数据**: [时间索引](docs/design/time-index.md) → [数据集操作·读取流程](docs/design/dataset-operations.md#十读取流程详解) → [数据集读操作](docs/design/dataset-read-operations.md) → [查询迭代器](docs/design/query-iterator.md) → [后台任务与缓存](docs/design/background-and-cache.md)
 - **数据保留回收**: [元数据格式·retention_ms](docs/design/meta-format.md) → [数据集操作·§11](docs/design/dataset-operations.md#十一数据保留-retention-与回收) → [后台任务·§17.8](docs/design/background-and-cache.md#178-retention-reclaim-数据保留回收)
 - **FFI 集成**: [Store 与 FFI](docs/design/store-and-ffi.md)
 - **崩溃安全**: [内存与并发](docs/design/memory-and-concurrency.md#崩溃安全)
@@ -59,6 +60,7 @@
 | `TimeIndex` + `IndexSegment` | [时间索引](docs/design/time-index.md) |
 | `FileMetadata` + `BlockHeader` | [数据模型](docs/design/data-model.md) |
 | `QueryIterator` + `HotBlockCache` | [查询迭代器](docs/design/query-iterator.md) |
+| `QueryLengthIterator` | [数据集读操作](docs/design/dataset-read-operations.md) |
 | `BlockCache` | [后台任务与缓存](docs/design/background-and-cache.md) |
 | `BackgroundTasks` | [后台任务与缓存](docs/design/background-and-cache.md#十七后台任务) |
 | `DatasetQueue` + `DatasetQueueConsumer` | [Queue 架构与 API](docs/design/queue-overview.md) |

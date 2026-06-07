@@ -49,6 +49,14 @@ impl DataSet {
     fn read(&mut self, timestamp: i64) -> io::Result<Option<(i64, Vec<u8>)>>;
     fn query(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<(i64, Vec<u8>)>>;
     fn query_iter(&mut self, start_ts: i64, end_ts: i64) -> io::Result<QueryIterator<'_>>;
+
+    // 轻量级读操作 (仅索引或 record header)
+    fn read_exist(&self, timestamp: i64) -> io::Result<bool>;
+    fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<u8>>;
+    fn read_length(&mut self, timestamp: i64) -> io::Result<Option<u32>>;
+    fn query_length(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<(i64, u32)>>;
+    fn query_length_iter(&mut self, start_ts: i64, end_ts: i64) -> io::Result<QueryLengthIterator<'_>>;
+
     fn flush(&mut self) -> io::Result<()>;
     fn config(&self) -> &DataSetConfig;
 
@@ -571,6 +579,8 @@ read(timestamp) → Option<(i64, Vec<u8>)>
   - `read(-1)` 快捷路径解析到最大已写 timestamp; 若该 entry 不存在、已删除或已过期, 返回 `None`, 不反向搜索更早有效记录
   - 数据保留阈值计算 (`latest_written_timestamp.saturating_sub(retention_window)`)
   - 连续模式稀疏 filler 的上一个真实写入边界判定
+
+> **读操作接口总览**: 完整的读操作接口文档（含新增的 read_exist/query_exist/read_length/query_length/query_length_iter）见 [数据集读操作](dataset-read-operations.md)。
 
 ## 十一、数据保留 (Retention) 与回收
 
