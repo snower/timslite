@@ -272,7 +272,7 @@ impl DataSegmentSet {
 }
 ```
 
-**Record Header 格式** (8 bytes):
+**Record Header 格式** (12 bytes):
 ```
 data_len: u32 (4 bytes, little-endian)
 timestamp: i64 (8 bytes, little-endian)
@@ -292,7 +292,7 @@ pub struct QueryLengthIterator<'a> {
 }
 
 impl<'a> Iterator for QueryLengthIterator<'a> {
-    type Item = (i64, u32);
+    type Item = Result<(i64, u32)>;
     
     fn next(&mut self) -> Option<Self::Item> {
         // Similar to QueryIterator::next_entry()
@@ -392,3 +392,37 @@ for i in 0..bitmap.len() * 8 {
     }
 }
 ```
+
+---
+
+## 七、运行时约束
+
+### 7.1 read_only 模式支持
+
+所有新增的读操作接口均支持 `read_only` 模式：
+
+- `read_exist()` — 只读索引，完全兼容
+- `query_exist()` — 只读索引，完全兼容
+- `read_length()` — 读取 record header，完全兼容
+- `query_length()` — 读取 record header，完全兼容
+- `query_length_iter()` — 读取 record header，完全兼容
+
+`.journal/logs` dataset 的 `runtime_context` 标记为 `read_only=true`，这些读操作可正常调用。
+
+### 7.2 Journal 交互
+
+这些读操作**不会**触发 journal 记录：
+
+- `read_exist()` — 无写入，无 journal hook
+- `query_exist()` — 无写入，无 journal hook
+- `read_length()` — 无写入，无 journal hook
+- `query_length()` — 无写入，无 journal hook
+- `query_length_iter()` — 无写入，无 journal hook
+
+与 `read()`/`query()`/`query_iter()` 行为一致，读操作不产生 journal 条目。
+
+### 7.3 并发安全
+
+- `read_exist()` 使用 `&self`（不可变借用），支持并发调用
+- 其他读操作使用 `&mut self`（可变借用），与写操作互斥
+- 通过 Store 门面调用时，内部 `Mutex<DataSet>` 保证线程安全

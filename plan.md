@@ -67,7 +67,7 @@
 - [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`
 
 ### Phase 30: Dataset 读操作优化
-- [ ] 设计文档 — read_exist/query_exist/read_length/query_length/query_length_iter 接口规范
+- [x] 设计文档 — read_exist/query_exist/read_length/query_length/query_length_iter 接口规范
 - [ ] DataSegmentSet::read_record_data_len() — 仅读取 record header 获取 data_len
 - [ ] DataSet::read_exist() — 单时间戳索引存在检查
 - [ ] DataSet::query_exist() — 范围索引存在性检查，返回位图

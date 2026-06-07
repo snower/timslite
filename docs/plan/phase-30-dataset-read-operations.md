@@ -269,29 +269,39 @@ impl DataSet {
 
 ### 新增函数
 ```c
-// read_exist: 检查索引是否存在
-bool tmsl_dataset_read_exist(TmslStore* store, const char* name, const char* type, int64_t timestamp);
+// read_exist: 检查索引是否存在 (包括 filler)
+// 返回 0=false/1=true; 错误时返回 -1
+int tmsl_dataset_read_exist(void* dataset, int64_t timestamp, char* err_buf, size_t err_buf_len);
 
 // query_exist: 范围索引存在性检查，返回位图
-// 返回的 bitmap 需要调用方 free
-uint8_t* tmsl_dataset_query_exist(TmslStore* store, const char* name, const char* type, 
-                                   int64_t start_ts, int64_t end_ts, size_t* bitmap_len);
+// 返回的 bitmap 由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放
+// bitmap_len 写入字节数；出错时返回 -1
+int tmsl_dataset_query_exist(void* dataset, int64_t start_ts, int64_t end_ts,
+                             uint8_t** out_bitmap, size_t* out_bitmap_len,
+                             char* err_buf, size_t err_buf_len);
 
 // read_length: 读取数据长度
-bool tmsl_dataset_read_length(TmslStore* store, const char* name, const char* type, 
-                              int64_t timestamp, uint32_t* out_len);
+// 返回 0=成功(out_len 有效)/1=未找到/-1=错误
+int tmsl_dataset_read_length(void* dataset, int64_t timestamp,
+                             uint32_t* out_len,
+                             char* err_buf, size_t err_buf_len);
 
 // query_length: 范围查询数据长度数组
-// 返回的数组需要调用方 free
-uint32_t* tmsl_dataset_query_length(TmslStore* store, const char* name, const char* type,
-                                     int64_t start_ts, int64_t end_ts, size_t* array_len);
+// 返回的数组由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放
+// array_len 写入元素数量；出错时返回 -1
+// 每个元素为 (timestamp: i64, data_len: u32)，共 12 字节
+int tmsl_dataset_query_length(void* dataset, int64_t start_ts, int64_t end_ts,
+                              void** out_array, size_t* out_array_len,
+                              char* err_buf, size_t err_buf_len);
 
 // query_length_iter: 创建数据长度迭代器
-TmslIterator* tmsl_dataset_query_length_iter(TmslStore* store, const char* name, const char* type,
-                                              int64_t start_ts, int64_t end_ts);
+// 返回迭代器句柄，出错时返回 NULL
+void* tmsl_dataset_query_length_iter(void* dataset, int64_t start_ts, int64_t end_ts,
+                                     char* err_buf, size_t err_buf_len);
 
-// 迭代器 next: 返回 timestamp，通过 out_len 返回 data_len
-bool tmsl_length_iter_next(TmslIterator* iter, int64_t* out_ts, uint32_t* out_len);
+// 迭代器 next: 返回 0=成功/1=无更多数据/-1=错误
+int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
+                          char* err_buf, size_t err_buf_len);
 ```
 
 ### 内存管理
@@ -319,16 +329,16 @@ bool tmsl_length_iter_next(TmslIterator* iter, int64_t* out_ts, uint32_t* out_le
 ### 新增方法
 ```rust
 impl Store {
-    pub fn dataset_read_exist(&self, name: &str, dataset_type: &str, timestamp: i64) -> Result<bool>;
-    pub fn dataset_query_exist(&self, name: &str, dataset_type: &str, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
-    pub fn dataset_read_length(&self, name: &str, dataset_type: &str, timestamp: i64) -> Result<Option<u32>>;
-    pub fn dataset_query_length(&self, name: &str, dataset_type: &str, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
-    pub fn dataset_query_length_iter(&self, name: &str, dataset_type: &str, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator<'_>>;
+    pub fn dataset_read_exist(&self, handle: DataSetHandle, timestamp: i64) -> Result<bool>;
+    pub fn dataset_query_exist(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
+    pub fn dataset_read_length(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<u32>>;
+    pub fn dataset_query_length(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
+    pub fn dataset_query_length_iter(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator<'_>>;
 }
 ```
 
 ### 实现要点
-1. 获取 dataset 锁
+1. 通过 `DataSetHandle` 从 registry 获取 dataset 锁
 2. 调用对应的 DataSet 方法
 3. 更新 `last_used_at`
 
@@ -341,16 +351,39 @@ impl Store {
 
 ### 新增声明
 ```c
-bool tmsl_dataset_read_exist(TmslStore* store, const char* name, const char* type, int64_t timestamp);
-uint8_t* tmsl_dataset_query_exist(TmslStore* store, const char* name, const char* type, 
-                                   int64_t start_ts, int64_t end_ts, size_t* bitmap_len);
-bool tmsl_dataset_read_length(TmslStore* store, const char* name, const char* type, 
-                              int64_t timestamp, uint32_t* out_len);
-uint32_t* tmsl_dataset_query_length(TmslStore* store, const char* name, const char* type,
-                                     int64_t start_ts, int64_t end_ts, size_t* array_len);
-TmslIterator* tmsl_dataset_query_length_iter(TmslStore* store, const char* name, const char* type,
-                                              int64_t start_ts, int64_t end_ts);
-bool tmsl_length_iter_next(TmslIterator* iter, int64_t* out_ts, uint32_t* out_len);
+// 轻量级读操作 (详见 dataset-read-operations.md §5 FFI 接口)
+
+// 检查索引是否存在 (包括 filler)。timestamp=-1 检查 latest_written_timestamp。
+// 返回 0=false/1=true; 错误时返回 -1。
+int tmsl_dataset_read_exist(void* dataset, int64_t timestamp, char* err_buf, size_t err_buf_len);
+
+// 范围索引存在性检查，返回位图。位 i 代表 (start_ts + i) 是否存在。
+// 返回的 bitmap 由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放。
+// bitmap_len 写入字节数；出错时返回 -1。
+int tmsl_dataset_query_exist(void* dataset, int64_t start_ts, int64_t end_ts,
+                             uint8_t** out_bitmap, size_t* out_bitmap_len,
+                             char* err_buf, size_t err_buf_len);
+
+// 读取单条记录的数据长度。timestamp=-1 读取 latest_written_timestamp。
+// 返回 0=成功(out_len 有效)/1=未找到/-1=错误。
+int tmsl_dataset_read_length(void* dataset, int64_t timestamp,
+                             uint32_t* out_len,
+                             char* err_buf, size_t err_buf_len);
+
+// 范围查询数据长度数组。返回的数组由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放。
+// array_len 写入元素数量；出错时返回 -1。
+// 每个元素为 (timestamp: i64, data_len: u32)，共 12 字节。
+int tmsl_dataset_query_length(void* dataset, int64_t start_ts, int64_t end_ts,
+                              void** out_array, size_t* out_array_len,
+                              char* err_buf, size_t err_buf_len);
+
+// 创建数据长度迭代器。返回迭代器句柄，出错时返回 NULL。
+void* tmsl_dataset_query_length_iter(void* dataset, int64_t start_ts, int64_t end_ts,
+                                     char* err_buf, size_t err_buf_len);
+
+// 迭代器 next。返回 0=成功/1=无更多数据/-1=错误。
+int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
+                          char* err_buf, size_t err_buf_len);
 ```
 
 ---

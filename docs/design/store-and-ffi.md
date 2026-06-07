@@ -49,6 +49,14 @@ impl Store {
     pub fn read_dataset(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>;
     pub fn query_dataset(&self, handle: DataSetHandle, start: i64, end: i64) -> Result<Vec<(i64, Vec<u8>)>>;
     pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<i64>;
+
+    // 轻量级读操作 (详见 dataset-read-operations.md)
+    pub fn dataset_read_exist(&self, handle: DataSetHandle, timestamp: i64) -> Result<bool>;
+    pub fn dataset_query_exist(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
+    pub fn dataset_read_length(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<u32>>;
+    pub fn dataset_query_length(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
+    pub fn dataset_query_length_iter(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator<'_>>;
+
     pub fn open_queue(&self, handle: DataSetHandle) -> Result<DatasetQueue>;
     pub fn open_journal_queue(&self) -> Result<DatasetQueue>;
     pub fn open_consumer(&self, queue: &DatasetQueue, group_name: &str) -> Result<DatasetQueueConsumer>;
@@ -338,6 +346,41 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar);
 #[no_mangle] pub extern "C" fn tmsl_iter_close(iter: *mut c_void);
 
+// 轻量级读操作 (详见 dataset-read-operations.md §5 FFI 接口)
+/// 检查索引是否存在 (包括 filler)。timestamp=-1 检查 latest_written_timestamp。
+/// 返回 0=false/1=true; 错误时返回 -1。
+#[no_mangle] pub extern "C" fn tmsl_dataset_read_exist(dataset: *mut c_void, timestamp: c_longlong,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+/// 范围索引存在性检查，返回位图。位 i 代表 (start_ts + i) 是否存在。
+/// 返回的 bitmap 由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放。
+/// bitmap_len 写入字节数；出错时返回 NULL。
+#[no_mangle] pub extern "C" fn tmsl_dataset_query_exist(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong,
+    out_bitmap: *mut *mut c_uchar, out_bitmap_len: *mut usize,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+/// 读取单条记录的数据长度。timestamp=-1 读取 latest_written_timestamp。
+/// 返回 0=成功(out_len 有效)/1=未找到/-1=错误。
+#[no_mangle] pub extern "C" fn tmsl_dataset_read_length(dataset: *mut c_void, timestamp: c_longlong,
+    out_len: *mut u32,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+/// 范围查询数据长度数组。返回的数组由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放。
+/// array_len 写入元素数量；出错时返回 NULL。
+/// 每个元素为 (timestamp: i64, data_len: u32)，共 12 字节。
+#[no_mangle] pub extern "C" fn tmsl_dataset_query_length(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong,
+    out_array: *mut *mut c_void, out_array_len: *mut usize,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+/// 创建数据长度迭代器。返回迭代器句柄，出错时返回 NULL。
+#[no_mangle] pub extern "C" fn tmsl_dataset_query_length_iter(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong,
+    err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+
+/// 迭代器 next。返回 0=成功/1=无更多数据/-1=错误。
+#[no_mangle] pub extern "C" fn tmsl_length_iter_next(iter: *mut c_void,
+    out_ts: *mut c_longlong, out_len: *mut u32,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
 // Queue C ABI
 #[no_mangle] pub extern "C" fn tmsl_queue_open(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> usize;
 #[no_mangle] pub extern "C" fn tmsl_queue_close(queue_handle: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
@@ -354,6 +397,8 @@ pub struct TmslDatasetConfigFFI {
 > - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_dataset_read` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_queue_poll` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
+> - `tmsl_dataset_query_exist` 返回的 `out_bitmap` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
+> - `tmsl_dataset_query_length` 返回的 `out_array` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_iter_free_data` 保留为兼容别名, 内部等价于 `tmsl_data_free`
 > - `tmsl_iter_close` 释放迭代器本身 (Rust `Box::from_raw` + drop)
 > - 所有 FFI 函数用 `catch_unwind` 包裹, panic 时返回 -1/null + err_buf 写错误信息
