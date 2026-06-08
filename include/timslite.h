@@ -577,6 +577,87 @@ int tmsl_queue_poll(size_t consumer_handle, int64_t timeout_ms,
 int tmsl_queue_ack(size_t consumer_handle, int64_t timestamp,
                    char* err_buf, size_t err_buf_len);
 
+/* ─── Dataset Inspect ─────────────────────────────────────────────────── */
+
+/**
+ * Dataset immutable configuration info.
+ */
+typedef struct TmslDataSetInfo {
+    char* name;                       /**< Dataset name (caller must free) */
+    char* dataset_type;               /**< Dataset type (caller must free) */
+    char* base_dir;                   /**< Dataset directory path (caller must free) */
+    uint64_t data_segment_size;       /**< Data segment file size limit (bytes) */
+    uint64_t index_segment_size;      /**< Index segment file size limit (bytes) */
+    uint64_t initial_data_segment_size; /**< Initial data segment file size (bytes) */
+    uint64_t initial_index_segment_size; /**< Initial index segment file size (bytes) */
+    uint8_t compress_type;            /**< Compression algorithm type (0=zstd, 1=deflate) */
+    uint8_t compress_level;           /**< Compression level (0-9) */
+    uint8_t index_continuous;         /**< Index mode: 0=sparse, 1=continuous */
+    uint64_t retention_window;        /**< Data retention window (0=no limit) */
+    int64_t create_time;              /**< Dataset creation time (Unix milliseconds) */
+} TmslDataSetInfo;
+
+/**
+ * Dataset mutable state info.
+ */
+typedef struct TmslDataSetState {
+    int64_t latest_written_timestamp; /**< Highest written timestamp */
+    uint32_t open_data_segments;      /**< Number of currently open data segments */
+    uint32_t closed_data_segments;    /**< Number of closed data segments */
+    uint64_t total_record_count;      /**< Total record count across all data segments */
+    uint64_t total_data_size;         /**< Total used space across all data segments (bytes) */
+    uint64_t total_uncompressed_size; /**< Total uncompressed size across all data segments (bytes) */
+    uint64_t total_invalid_record_count; /**< Total invalid record count across all data segments */
+    int64_t min_timestamp;            /**< Global minimum timestamp */
+    int64_t max_timestamp;            /**< Global maximum timestamp */
+    uint32_t open_index_segments;     /**< Number of currently open index segments */
+    uint32_t closed_index_segments;   /**< Number of closed index segments */
+    uint32_t pending_index_entries;   /**< Number of in-memory buffered index entries */
+    int64_t base_timestamp;           /**< Index base timestamp (0 if no data) */
+    uint8_t read_only;                /**< Whether the dataset is in read-only mode */
+    uint8_t has_block_cache;          /**< Whether BlockCache is enabled */
+    uint8_t has_journal;              /**< Whether Journal is enabled */
+    uint8_t has_queue;                /**< Whether the dataset has an associated Queue */
+    uint32_t queue_consumer_groups;   /**< Number of queue consumer groups */
+} TmslDataSetState;
+
+/**
+ * Dataset inspect result.
+ */
+typedef struct TmslInspectResult {
+    TmslDataSetInfo info;   /**< Immutable configuration info */
+    TmslDataSetState state; /**< Mutable current state */
+} TmslInspectResult;
+
+/**
+ * Get detailed info and state of a dataset.
+ *
+ * On success writes the inspect result to `out_result`. Caller must free with
+ * `tmsl_free_inspect_result`.
+ *
+ * @param store         Opaque store pointer.
+ * @param name          Dataset name.
+ * @param dataset_type  Dataset type.
+ * @param out_result    Written with the inspect result.
+ * @param err_buf       Buffer for error message.
+ * @param err_buf_len   Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_store_inspect_dataset(void* store,
+                                const char* name,
+                                const char* dataset_type,
+                                TmslInspectResult* out_result,
+                                char* err_buf, size_t err_buf_len);
+
+/**
+ * Free the memory allocated by `tmsl_store_inspect_dataset`.
+ *
+ * This frees the strings in `info` (name, dataset_type, base_dir).
+ *
+ * @param result  Pointer to the inspect result to free.
+ */
+void tmsl_free_inspect_result(TmslInspectResult* result);
+
 #ifdef __cplusplus
 }
 #endif

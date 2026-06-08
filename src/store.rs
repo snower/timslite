@@ -9,7 +9,9 @@ use crate::bg::BackgroundTasks;
 use crate::bg::TickResult;
 use crate::cache::BlockCache;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
-use crate::dataset::{DataSet, DataSetJournalSink, DataSetKey, DataSetRuntimeContext};
+use crate::dataset::{
+    DataSet, DataSetInspectResult, DataSetJournalSink, DataSetKey, DataSetRuntimeContext,
+};
 use crate::error::{Result, TmslError};
 use crate::journal::{
     meta_values_from_file, validate_create_drop_record_inputs, JournalManager,
@@ -671,6 +673,25 @@ impl Store {
             .collect();
         types.sort();
         Ok(types)
+    }
+
+    /// Get detailed info and state of a dataset.
+    ///
+    /// Returns `DataSetInspectResult` containing immutable config (`DataSetInfo`)
+    /// and mutable state (`DataSetState`).
+    pub fn inspect_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetInspectResult> {
+        let key = DataSetKey {
+            name: name.to_string(),
+            dataset_type: dataset_type.to_string(),
+        };
+        let guard = self.datasets.read().unwrap();
+        let ds_arc = guard
+            .get(&key)
+            .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?;
+        let ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.inspect()
     }
 
     /// Close the store completely.

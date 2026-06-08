@@ -1619,6 +1619,196 @@ pub extern "C" fn tmsl_queue_ack(
     }}
 }
 
+// ─── Dataset Inspect FFI ──────────────────────────────────────────────────
+
+/// Dataset immutable configuration info (C representation).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslDataSetInfo {
+    /// Dataset name (caller must free with tmsl_free_inspect_result)
+    pub name: *mut c_char,
+    /// Dataset type (caller must free with tmsl_free_inspect_result)
+    pub dataset_type: *mut c_char,
+    /// Dataset directory path (caller must free with tmsl_free_inspect_result)
+    pub base_dir: *mut c_char,
+    /// Data segment file size limit (bytes)
+    pub data_segment_size: u64,
+    /// Index segment file size limit (bytes)
+    pub index_segment_size: u64,
+    /// Initial data segment file size (bytes)
+    pub initial_data_segment_size: u64,
+    /// Initial index segment file size (bytes)
+    pub initial_index_segment_size: u64,
+    /// Compression algorithm type (0=zstd, 1=deflate)
+    pub compress_type: u8,
+    /// Compression level (0-9)
+    pub compress_level: u8,
+    /// Index mode: 0=sparse, 1=continuous
+    pub index_continuous: u8,
+    /// Data retention window (same unit as timestamp, 0=no limit)
+    pub retention_window: u64,
+    /// Dataset creation time (Unix milliseconds)
+    pub create_time: i64,
+}
+
+/// Dataset mutable state info (C representation).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslDataSetState {
+    /// Highest written timestamp
+    pub latest_written_timestamp: i64,
+    /// Number of currently open data segments
+    pub open_data_segments: u32,
+    /// Number of closed data segments
+    pub closed_data_segments: u32,
+    /// Total record count across all data segments
+    pub total_record_count: u64,
+    /// Total used space across all data segments (bytes)
+    pub total_data_size: u64,
+    /// Total uncompressed size across all data segments (bytes)
+    pub total_uncompressed_size: u64,
+    /// Total invalid record count across all data segments
+    pub total_invalid_record_count: u64,
+    /// Global minimum timestamp
+    pub min_timestamp: i64,
+    /// Global maximum timestamp
+    pub max_timestamp: i64,
+    /// Number of currently open index segments
+    pub open_index_segments: u32,
+    /// Number of closed index segments
+    pub closed_index_segments: u32,
+    /// Number of in-memory buffered index entries
+    pub pending_index_entries: u32,
+    /// Index base timestamp (0 if no data)
+    pub base_timestamp: i64,
+    /// Whether the dataset is in read-only mode
+    pub read_only: u8,
+    /// Whether BlockCache is enabled
+    pub has_block_cache: u8,
+    /// Whether Journal is enabled
+    pub has_journal: u8,
+    /// Whether the dataset has an associated Queue
+    pub has_queue: u8,
+    /// Number of queue consumer groups
+    pub queue_consumer_groups: u32,
+}
+
+/// Dataset inspect result (C representation).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslInspectResult {
+    /// Immutable configuration info
+    pub info: TmslDataSetInfo,
+    /// Mutable current state
+    pub state: TmslDataSetState,
+}
+
+/// Get detailed info and state of a dataset.
+///
+/// On success writes the inspect result to `out_result`. Caller must free with
+/// `tmsl_free_inspect_result`.
+///
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn tmsl_store_inspect_dataset(
+    store: *mut c_void,
+    name: *const c_char,
+    dataset_type: *const c_char,
+    out_result: *mut TmslInspectResult,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if store.is_null() || name.is_null() || dataset_type.is_null() || out_result.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let name_str = unsafe { CStr::from_ptr(name) }
+            .to_str()
+            .map_err(|_| TmslError::InvalidData("invalid UTF-8 in name".into()))?;
+        let type_str = unsafe { CStr::from_ptr(dataset_type) }
+            .to_str()
+            .map_err(|_| TmslError::InvalidData("invalid UTF-8 in dataset_type".into()))?;
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let store_inner = ffi_store
+            .inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+        let result = store_inner.inspect_dataset(name_str, type_str)?;
+
+        // Convert to C struct
+        let name_cstr = CString::new(result.info.name)
+            .map_err(|_| TmslError::InvalidData("name contains null byte".into()))?;
+        let type_cstr = CString::new(result.info.dataset_type)
+            .map_err(|_| TmslError::InvalidData("dataset_type contains null byte".into()))?;
+        let base_dir_cstr = CString::new(result.info.base_dir)
+            .map_err(|_| TmslError::InvalidData("base_dir contains null byte".into()))?;
+
+        let info = TmslDataSetInfo {
+            name: name_cstr.into_raw(),
+            dataset_type: type_cstr.into_raw(),
+            base_dir: base_dir_cstr.into_raw(),
+            data_segment_size: result.info.data_segment_size,
+            index_segment_size: result.info.index_segment_size,
+            initial_data_segment_size: result.info.initial_data_segment_size,
+            initial_index_segment_size: result.info.initial_index_segment_size,
+            compress_type: result.info.compress_type,
+            compress_level: result.info.compress_level,
+            index_continuous: result.info.index_continuous,
+            retention_window: result.info.retention_window,
+            create_time: result.info.create_time,
+        };
+
+        let state = TmslDataSetState {
+            latest_written_timestamp: result.state.latest_written_timestamp,
+            open_data_segments: result.state.open_data_segments,
+            closed_data_segments: result.state.closed_data_segments,
+            total_record_count: result.state.total_record_count,
+            total_data_size: result.state.total_data_size,
+            total_uncompressed_size: result.state.total_uncompressed_size,
+            total_invalid_record_count: result.state.total_invalid_record_count,
+            min_timestamp: result.state.min_timestamp,
+            max_timestamp: result.state.max_timestamp,
+            open_index_segments: result.state.open_index_segments,
+            closed_index_segments: result.state.closed_index_segments,
+            pending_index_entries: result.state.pending_index_entries,
+            base_timestamp: result.state.base_timestamp.unwrap_or(0),
+            read_only: u8::from(result.state.read_only),
+            has_block_cache: u8::from(result.state.has_block_cache),
+            has_journal: u8::from(result.state.has_journal),
+            has_queue: u8::from(result.state.has_queue),
+            queue_consumer_groups: result.state.queue_consumer_groups,
+        };
+
+        unsafe {
+            *out_result = TmslInspectResult { info, state };
+        }
+        Ok(0)
+    })
+}
+
+/// Free the memory allocated by `tmsl_store_inspect_dataset`.
+///
+/// This frees the strings in `info` and the result struct itself.
+#[no_mangle]
+pub extern "C" fn tmsl_free_inspect_result(result: *mut TmslInspectResult) {
+    if result.is_null() {
+        return;
+    }
+    unsafe {
+        let result_ref = &*result;
+        // Free strings
+        if !result_ref.info.name.is_null() {
+            let _ = CString::from_raw(result_ref.info.name);
+        }
+        if !result_ref.info.dataset_type.is_null() {
+            let _ = CString::from_raw(result_ref.info.dataset_type);
+        }
+        if !result_ref.info.base_dir.is_null() {
+            let _ = CString::from_raw(result_ref.info.base_dir);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

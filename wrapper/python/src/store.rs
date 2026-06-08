@@ -13,6 +13,173 @@ use crate::dataset::PyDataset;
 use crate::exceptions::wrap;
 use crate::queue::PyDatasetQueue;
 
+/// Immutable dataset configuration info.
+#[pyclass(name = "DataSetInfo")]
+#[derive(Clone, Debug)]
+pub struct PyDataSetInfo {
+    /// Dataset name
+    #[pyo3(get)]
+    pub name: String,
+    /// Dataset type
+    #[pyo3(get)]
+    pub dataset_type: String,
+    /// Dataset directory path
+    #[pyo3(get)]
+    pub base_dir: String,
+    /// Data segment file size limit (bytes)
+    #[pyo3(get)]
+    pub data_segment_size: u64,
+    /// Index segment file size limit (bytes)
+    #[pyo3(get)]
+    pub index_segment_size: u64,
+    /// Initial data segment file size (bytes)
+    #[pyo3(get)]
+    pub initial_data_segment_size: u64,
+    /// Initial index segment file size (bytes)
+    #[pyo3(get)]
+    pub initial_index_segment_size: u64,
+    /// Compression algorithm type (0=zstd, 1=deflate)
+    #[pyo3(get)]
+    pub compress_type: u8,
+    /// Compression level (0-9)
+    #[pyo3(get)]
+    pub compress_level: u8,
+    /// Index mode: 0=sparse, 1=continuous
+    #[pyo3(get)]
+    pub index_continuous: u8,
+    /// Data retention window (same unit as timestamp, 0=no limit)
+    #[pyo3(get)]
+    pub retention_window: u64,
+    /// Dataset creation time (Unix milliseconds)
+    #[pyo3(get)]
+    pub create_time: i64,
+}
+
+/// Mutable dataset state info.
+#[pyclass(name = "DataSetState")]
+#[derive(Clone, Debug)]
+pub struct PyDataSetState {
+    /// Highest written timestamp
+    #[pyo3(get)]
+    pub latest_written_timestamp: i64,
+    /// Number of currently open data segments
+    #[pyo3(get)]
+    pub open_data_segments: u32,
+    /// Number of closed data segments
+    #[pyo3(get)]
+    pub closed_data_segments: u32,
+    /// Total record count across all data segments
+    #[pyo3(get)]
+    pub total_record_count: u64,
+    /// Total used space across all data segments (bytes)
+    #[pyo3(get)]
+    pub total_data_size: u64,
+    /// Total uncompressed size across all data segments (bytes)
+    #[pyo3(get)]
+    pub total_uncompressed_size: u64,
+    /// Total invalid record count across all data segments
+    #[pyo3(get)]
+    pub total_invalid_record_count: u64,
+    /// Global minimum timestamp
+    #[pyo3(get)]
+    pub min_timestamp: i64,
+    /// Global maximum timestamp
+    #[pyo3(get)]
+    pub max_timestamp: i64,
+    /// Number of currently open index segments
+    #[pyo3(get)]
+    pub open_index_segments: u32,
+    /// Number of closed index segments
+    #[pyo3(get)]
+    pub closed_index_segments: u32,
+    /// Number of in-memory buffered index entries
+    #[pyo3(get)]
+    pub pending_index_entries: u32,
+    /// Index base timestamp (None if no data)
+    #[pyo3(get)]
+    pub base_timestamp: Option<i64>,
+    /// Whether the dataset is in read-only mode
+    #[pyo3(get)]
+    pub read_only: bool,
+    /// Whether BlockCache is enabled
+    #[pyo3(get)]
+    pub has_block_cache: bool,
+    /// Whether Journal is enabled
+    #[pyo3(get)]
+    pub has_journal: bool,
+    /// Whether the dataset has an associated Queue
+    #[pyo3(get)]
+    pub has_queue: bool,
+    /// Number of queue consumer groups
+    #[pyo3(get)]
+    pub queue_consumer_groups: u32,
+}
+
+/// Result of `Store.inspect_dataset()`.
+#[pyclass(name = "DataSetInspectResult")]
+#[derive(Clone, Debug)]
+pub struct PyDataSetInspectResult {
+    /// Immutable configuration info
+    #[pyo3(get)]
+    pub info: PyDataSetInfo,
+    /// Mutable current state
+    #[pyo3(get)]
+    pub state: PyDataSetState,
+}
+
+impl From<timslite::DataSetInfo> for PyDataSetInfo {
+    fn from(info: timslite::DataSetInfo) -> Self {
+        Self {
+            name: info.name,
+            dataset_type: info.dataset_type,
+            base_dir: info.base_dir,
+            data_segment_size: info.data_segment_size,
+            index_segment_size: info.index_segment_size,
+            initial_data_segment_size: info.initial_data_segment_size,
+            initial_index_segment_size: info.initial_index_segment_size,
+            compress_type: info.compress_type,
+            compress_level: info.compress_level,
+            index_continuous: info.index_continuous,
+            retention_window: info.retention_window,
+            create_time: info.create_time,
+        }
+    }
+}
+
+impl From<timslite::DataSetState> for PyDataSetState {
+    fn from(state: timslite::DataSetState) -> Self {
+        Self {
+            latest_written_timestamp: state.latest_written_timestamp,
+            open_data_segments: state.open_data_segments,
+            closed_data_segments: state.closed_data_segments,
+            total_record_count: state.total_record_count,
+            total_data_size: state.total_data_size,
+            total_uncompressed_size: state.total_uncompressed_size,
+            total_invalid_record_count: state.total_invalid_record_count,
+            min_timestamp: state.min_timestamp,
+            max_timestamp: state.max_timestamp,
+            open_index_segments: state.open_index_segments,
+            closed_index_segments: state.closed_index_segments,
+            pending_index_entries: state.pending_index_entries,
+            base_timestamp: state.base_timestamp,
+            read_only: state.read_only,
+            has_block_cache: state.has_block_cache,
+            has_journal: state.has_journal,
+            has_queue: state.has_queue,
+            queue_consumer_groups: state.queue_consumer_groups,
+        }
+    }
+}
+
+impl From<timslite::DataSetInspectResult> for PyDataSetInspectResult {
+    fn from(result: timslite::DataSetInspectResult) -> Self {
+        Self {
+            info: PyDataSetInfo::from(result.info),
+            state: PyDataSetState::from(result.state),
+        }
+    }
+}
+
 #[pyclass(name = "Store")]
 pub struct PyStore {
     inner: Option<timslite::Store>,
@@ -268,6 +435,19 @@ impl PyStore {
             .as_ref()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
         wrap(store.get_dataset_types(name))
+    }
+
+    /// Get detailed info and state of a dataset.
+    ///
+    /// Returns a DataSetInspectResult containing immutable config (DataSetInfo)
+    /// and mutable state (DataSetState).
+    fn inspect_dataset(&self, name: &str, dataset_type: &str) -> PyResult<PyDataSetInspectResult> {
+        let store = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
+        let result = wrap(store.inspect_dataset(name, dataset_type))?;
+        Ok(PyDataSetInspectResult::from(result))
     }
 }
 

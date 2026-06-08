@@ -18,6 +18,9 @@ fn timslite(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Register Python classes
     m.add_class::<store::PyStore>()?;
+    m.add_class::<store::PyDataSetInfo>()?;
+    m.add_class::<store::PyDataSetState>()?;
+    m.add_class::<store::PyDataSetInspectResult>()?;
     m.add_class::<config::PyStoreConfig>()?;
     m.add_class::<dataset::PyDataset>()?;
     m.add_class::<query::PyQueryIterator>()?;

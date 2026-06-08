@@ -57,7 +57,7 @@ mod store;
 
 pub use bg::TickResult;
 pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
-pub use dataset::{DataSet, DataSetKey};
+pub use dataset::{DataSet, DataSetInfo, DataSetInspectResult, DataSetKey, DataSetState};
 pub use error::{Result, TmslError};
 pub use index::segment::{IndexEntry, BLOCK_OFFSET_FILLER};
 pub use journal::{
