@@ -17,8 +17,6 @@ use crate::store::{DataSetHandle, Store};
 
 use std::sync::LazyLock;
 
-// 鈹€鈹€鈹€ Queue handle registry (FFI-safe opaque handles) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
 static NEXT_QUEUE_ID: AtomicUsize = AtomicUsize::new(1);
 static QUEUE_REGISTRY: LazyLock<Mutex<HashMap<usize, FfiQueueEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -26,8 +24,6 @@ static QUEUE_REGISTRY: LazyLock<Mutex<HashMap<usize, FfiQueueEntry>>> =
 static NEXT_CONSUMER_ID: AtomicUsize = AtomicUsize::new(1);
 static CONSUMER_REGISTRY: LazyLock<Mutex<HashMap<usize, FfiConsumerEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-
-// 鈹€鈹€鈹€ FFI error handling helpers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Write an error message to a C string buffer.
 pub fn write_error(buf: *mut c_char, len: usize, msg: &str) {
@@ -95,8 +91,6 @@ macro_rules! ffi_catch_usize {
         }
     };
 }
-
-// 鈹€鈹€鈹€ Opaque handle types 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 4;
 pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 2;
@@ -318,8 +312,6 @@ fn remove_consumers_for_group(
     Ok(count)
 }
 
-// 鈹€鈹€鈹€ Store Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
 /// Write default store config to `out_config`.
 #[no_mangle]
 pub extern "C" fn tmsl_store_config_default(
@@ -473,7 +465,121 @@ pub extern "C" fn tmsl_store_next_background_delay(
     })
 }
 
-// 鈹€鈹€鈹€ Dataset Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ─── Store dataset enumeration ────────────────────────────────────────
+
+/// Free a malloc'd array of C strings (from tmsl_store_get_dataset_names/types).
+///
+/// # Safety
+/// - `arr` must have been allocated by `libc::malloc` (or equivalent).
+/// - Each `arr[i]` must have been allocated by `libc::malloc`.
+/// - `count` must match the count returned by the function that produced `arr`.
+/// - After this call, `arr` and all its contents are invalid.
+#[no_mangle]
+pub extern "C" fn tmsl_free_string_array(arr: *mut *mut c_char, count: u32) {
+    if arr.is_null() {
+        return;
+    }
+    let count = count as usize;
+    unsafe {
+        for i in 0..count {
+            let s = *arr.add(i);
+            if !s.is_null() {
+                drop(CString::from_raw(s));
+            }
+        }
+        drop(Vec::from_raw_parts(arr, count, count));
+    }
+}
+
+/// Get all unique dataset names in the store.
+///
+/// On success writes a malloc'd array of malloc'd C strings to `out_names` and
+/// the count to `out_count`. Caller must free with `tmsl_free_string_array`.
+///
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn tmsl_store_get_dataset_names(
+    store: *mut c_void,
+    out_names: *mut *mut *mut c_char,
+    out_count: *mut u32,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if store.is_null() || out_names.is_null() || out_count.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let store_inner = ffi_store
+            .inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+        let names = store_inner.get_dataset_names()?;
+        let count = names.len();
+
+        // Allocate Vec<*mut c_char> and convert to raw parts
+        let mut c_strings: Vec<*mut c_char> = Vec::with_capacity(count);
+        for name in names {
+            let c_str = CString::new(name)
+                .map_err(|_| TmslError::InvalidData("dataset name contains null byte".into()))?;
+            c_strings.push(c_str.into_raw());
+        }
+        let (ptr, _, _) = c_strings.into_raw_parts();
+
+        unsafe {
+            *out_names = ptr;
+            *out_count = count as u32;
+        }
+        Ok(0)
+    })
+}
+
+/// Get all dataset types for a given name.
+///
+/// On success writes a malloc'd array of malloc'd C strings to `out_types` and
+/// the count to `out_count`. Caller must free with `tmsl_free_string_array`.
+///
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn tmsl_store_get_dataset_types(
+    store: *mut c_void,
+    name: *const c_char,
+    out_types: *mut *mut *mut c_char,
+    out_count: *mut u32,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if store.is_null() || name.is_null() || out_types.is_null() || out_count.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let name_str = unsafe { CStr::from_ptr(name) }
+            .to_str()
+            .map_err(|_| TmslError::InvalidData("invalid UTF-8 in name".into()))?;
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let store_inner = ffi_store
+            .inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+        let types = store_inner.get_dataset_types(name_str)?;
+        let count = types.len();
+
+        // Allocate Vec<*mut c_char> and convert to raw parts
+        let mut c_strings: Vec<*mut c_char> = Vec::with_capacity(count);
+        for t in types {
+            let c_str = CString::new(t)
+                .map_err(|_| TmslError::InvalidData("dataset type contains null byte".into()))?;
+            c_strings.push(c_str.into_raw());
+        }
+        let (ptr, _, _) = c_strings.into_raw_parts();
+
+        unsafe {
+            *out_types = ptr;
+            *out_count = count as u32;
+        }
+        Ok(0)
+    })
+}
 
 /// Create a new dataset (explicit, errors if already exists).
 #[no_mangle]
@@ -859,8 +965,6 @@ pub extern "C" fn tmsl_iter_close(iter: *mut c_void) {
         ffi_iter.state.child_handles.fetch_sub(1, Ordering::SeqCst);
     }
 }
-
-// 鈹€鈹€鈹€ Query Iterator 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Query a time range. Returns iterator pointer or NULL on error.
 #[no_mangle]

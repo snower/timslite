@@ -251,6 +251,24 @@ impl PyStore {
         let delay = wrap(store.next_background_delay())?;
         Ok(delay.as_millis() as u64)
     }
+
+    /// Get all unique dataset names in the store.
+    fn get_dataset_names(&self) -> PyResult<Vec<String>> {
+        let store = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
+        wrap(store.get_dataset_names())
+    }
+
+    /// Get all dataset types for a given name.
+    fn get_dataset_types(&self, name: &str) -> PyResult<Vec<String>> {
+        let store = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
+        wrap(store.get_dataset_types(name))
+    }
 }
 
 impl Drop for PyStore {

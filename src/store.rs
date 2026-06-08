@@ -646,6 +646,33 @@ impl Store {
         Ok(bg.next_delay())
     }
 
+    // ─── Dataset enumeration ────────────────────────────────────────────
+
+    /// Get all unique dataset names in the store.
+    pub fn get_dataset_names(&self) -> Result<Vec<String>> {
+        let guard = self.datasets.read().unwrap();
+        let mut names: Vec<String> = guard
+            .keys()
+            .map(|k| k.name.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    /// Get all dataset types for a given name.
+    pub fn get_dataset_types(&self, name: &str) -> Result<Vec<String>> {
+        let guard = self.datasets.read().unwrap();
+        let mut types: Vec<String> = guard
+            .keys()
+            .filter(|k| k.name == name)
+            .map(|k| k.dataset_type.clone())
+            .collect();
+        types.sort();
+        Ok(types)
+    }
+
     /// Close the store completely.
     pub fn close(mut self) -> Result<()> {
         // 1. Stop background tasks
@@ -666,8 +693,6 @@ impl Store {
 
         Ok(())
     }
-
-    // 鈹€鈹€鈹€ Queue operations 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     /// Open the queue subsystem for a dataset.
     ///

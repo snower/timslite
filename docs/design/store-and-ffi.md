@@ -71,6 +71,10 @@ impl Store {
     pub fn config(&self) -> &StoreConfig;
     pub fn close(self) -> Result<()>;
 
+    // 数据集枚举
+    pub fn get_dataset_names(&self) -> Result<Vec<String>>;
+    pub fn get_dataset_types(&self, name: &str) -> Result<Vec<String>>;
+
     // 后台任务手动执行与查询 (详见 §17.10)
     pub fn tick_background_tasks(&self) -> Result<TickResult>;
     pub fn next_background_delay(&self) -> Duration;

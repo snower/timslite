@@ -38,7 +38,8 @@
 | 27 | Queue 模块 (DatasetQueue + Consumer) | ✅ 完成 (含完整测试) | [phase-27-queue-module.md](docs/plan/phase-27-queue-module.md) |
 | 28 | Journal 变更日志 (`.journal/logs`) | ✅ 完成 | [phase-28-journal.md](docs/plan/phase-28-journal.md) |
 | 29 | Dataset Append API + Journal `0x13` | ✅ 完成 | [phase-29-dataset-append.md](docs/plan/phase-29-dataset-append.md) |
-| 30 | Dataset 读操作优化 | ⏳ 待实现 | [phase-30-dataset-read-operations.md](docs/plan/phase-30-dataset-read-operations.md) |
+| 30 | Dataset 读操作优化 | ✅ 完成 | [phase-30-dataset-read-operations.md](docs/plan/phase-30-dataset-read-operations.md) |
+| 31 | Store API - Dataset 枚举 | ✅ 完成 | [phase-31-store-api-listing.md](docs/plan/phase-31-store-api-listing.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---

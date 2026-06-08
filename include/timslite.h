@@ -50,8 +50,6 @@ typedef struct TmslDatasetConfigFFI {
     uint8_t index_continuous;
 } TmslDatasetConfigFFI;
 
-/* 鈹€鈹€鈹€ Store Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
-
 /**
  * Fill a store config struct with default values.
  * @param out_config   Output config pointer.
@@ -124,7 +122,45 @@ int tmsl_store_next_background_delay(void* store,
                                      uint64_t* out_next_delay_ms,
                                      char* err_buf, size_t err_buf_len);
 
-/* 鈹€鈹€鈹€ Dataset Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
+/* ─── Store Dataset Enumeration ──────────────────────────────────────── */
+
+/**
+ * Free a malloc'd array of C strings returned by tmsl_store_get_dataset_names
+ * or tmsl_store_get_dataset_types.
+ * @param arr    Pointer to the array returned by the enumeration function.
+ * @param count  Number of elements in the array.
+ */
+void tmsl_free_string_array(char** arr, uint32_t count);
+
+/**
+ * Get all unique dataset names in the store.
+ * @param store      Opaque store pointer.
+ * @param out_names  Written with a malloc'd array of malloc'd C strings.
+ * @param out_count  Written with the number of names.
+ * @param err_buf    Buffer for error message.
+ * @param err_buf_len Length of error buffer.
+ * @return 0 on success, -1 on error. Caller must free with tmsl_free_string_array.
+ */
+int tmsl_store_get_dataset_names(void* store,
+                                  char*** out_names,
+                                  uint32_t* out_count,
+                                  char* err_buf, size_t err_buf_len);
+
+/**
+ * Get all dataset types for a given name.
+ * @param store      Opaque store pointer.
+ * @param name       Dataset name to query.
+ * @param out_types  Written with a malloc'd array of malloc'd C strings.
+ * @param out_count  Written with the number of types.
+ * @param err_buf    Buffer for error message.
+ * @param err_buf_len Length of error buffer.
+ * @return 0 on success, -1 on error. Caller must free with tmsl_free_string_array.
+ */
+int tmsl_store_get_dataset_types(void* store,
+                                  const char* name,
+                                  char*** out_types,
+                                  uint32_t* out_count,
+                                  char* err_buf, size_t err_buf_len);
 
 /**
  * Create a new dataset (errors if already exists).
@@ -220,8 +256,6 @@ int tmsl_dataset_flush(void* dataset, char* err_buf, size_t err_buf_len);
 int tmsl_dataset_latest_timestamp(void* dataset, int64_t* out_ts,
                                   char* err_buf, size_t err_buf_len);
 
-/* 鈹€鈹€鈹€ Data Write 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
-
 /**
  * Write a record to a dataset.
  *
@@ -281,8 +315,6 @@ int tmsl_dataset_append(void* dataset, int64_t timestamp,
 int tmsl_dataset_delete(void* dataset, int64_t timestamp,
                         char* err_buf, size_t err_buf_len);
 
-/* 鈹€鈹€鈹€ Single Record Read 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
-
 /**
  * Read a single record by exact timestamp.
  *
@@ -306,8 +338,6 @@ int tmsl_dataset_delete(void* dataset, int64_t timestamp,
 int tmsl_dataset_read(void* dataset, int64_t timestamp,
                       int64_t* out_ts, unsigned char** out_data, size_t* out_data_len,
                       char* err_buf, size_t err_buf_len);
-
-/* 鈹€鈹€鈹€ Query Iterator 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ */
 
 /**
  * Query records in a time range.

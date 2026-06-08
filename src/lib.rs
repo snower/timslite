@@ -35,7 +35,6 @@
 //! // ... write and query
 //! ```
 
-// 鈹€鈹€鈹€ Module declarations 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 pub mod config;
 pub mod error;
 pub mod util;
@@ -56,7 +55,6 @@ pub mod queue;
 mod segment;
 mod store;
 
-// 鈹€鈹€鈹€ Public re-exports 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 pub use bg::TickResult;
 pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
 pub use dataset::{DataSet, DataSetKey};
@@ -72,8 +70,6 @@ pub use queue::{DatasetQueue, DatasetQueueConsumer, PendingEntry};
 pub use segment::ReadIndexEntry;
 pub use store::{DataSetHandle, Store};
 
-// 鈹€鈹€鈹€ Queue constants (exported for FFI consumers) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
 /// Queue state file magic bytes ("QSTF").
 pub const QUEUE_STATE_MAGIC: [u8; 4] = *queue::QUEUE_STATE_MAGIC;
 
@@ -85,8 +81,6 @@ pub const QUEUE_STATE_FILE_SIZE: usize = queue::STATE_FILE_SIZE;
 
 /// Maximum pending entries per consumer group.
 pub const QUEUE_MAX_PENDING_ENTRIES: usize = queue::MAX_PENDING_ENTRIES;
-
-// 鈹€鈹€鈹€ Core constants (exported for FFI consumers) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 /// Data segment v1 default header size in bytes.
 pub const DATA_HEADER_SIZE: u64 = header::DATA_HEADER_SIZE;
@@ -115,7 +109,6 @@ pub const FILE_TYPE_DATA: u8 = header::FILE_TYPE_DATA;
 /// File type: index segment.
 pub const FILE_TYPE_INDEX: u8 = header::FILE_TYPE_INDEX;
 
-// 鈹€鈹€鈹€ Default crate-level test 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 #[cfg(test)]
 mod tests {
     #[test]
