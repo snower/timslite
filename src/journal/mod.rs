@@ -4,7 +4,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use crate::config::StoreConfig;
-use crate::dataset::{DataSet, DataSetJournalSink, DataSetKey, DataSetRuntimeContext};
+use crate::dataset::{
+    DataSet, DataSetJournalSink, DataSetKey, DataSetRuntimeContext, SegmentFlushQueue,
+};
 use crate::error::{Result, TmslError};
 use crate::index::segment::IndexEntry;
 use crate::queue::DatasetQueue;
@@ -375,7 +377,11 @@ pub(crate) enum JournalManager {
 }
 
 impl JournalManager {
-    pub(crate) fn open_or_create(data_dir: &Path, config: &StoreConfig) -> Result<Self> {
+    pub(crate) fn open_or_create(
+        data_dir: &Path,
+        config: &StoreConfig,
+        flush_queue: Option<SegmentFlushQueue>,
+    ) -> Result<Self> {
         if !config.enable_journal {
             return Ok(Self::Disabled);
         }
@@ -399,7 +405,9 @@ impl JournalManager {
                 0,
             )?
         };
-        ds.set_runtime_context(DataSetRuntimeContext::read_only());
+        ds.set_runtime_context(DataSetRuntimeContext::read_only_with_flush_queue(
+            flush_queue,
+        ));
         Ok(Self::Enabled {
             dataset: Arc::new(Mutex::new(ds)),
             queue: Mutex::new(None),

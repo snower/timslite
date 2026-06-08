@@ -106,6 +106,8 @@ struct IndexSegment {
     mmap: Option<MmapMut>,       // None = closed/unmapped
     sealed: bool,
     last_accessed_at: Instant,
+    is_flushed: bool,             // 内存态: 当前 mmap 内容是否已 MS_SYNC
+    queued_for_flush: bool,       // 内存态: dirty 后是否已进入 runtime flush 队列
     current_file_size: u64,      // 运行时文件实际大小 (随扩容增长)
     max_file_size: u64,          // 扩容上限 (segment_size, 不可变)
 }
@@ -139,6 +141,14 @@ impl IndexSegment {
     pub fn expand(&mut self) -> Result<()>;
 }
 ```
+
+索引分段的 flush 语义与 data segment 一致:
+
+- 创建、打开、成功 `sync()` 后 `is_flushed=true`。
+- `append_entry()` / `overwrite_entry()` 写 mmap 后置 `is_flushed=false`。
+- dirty 状态首次从 true 变 false 时, 通过 `DataSetRuntimeContext` 引用的 Store 级共享 `flush_queue` 加入 `{ dataset_key, Index { start_timestamp } }` target。
+- `TimeIndex::flush_to_disk()` 可能把内存 index buffer 写入多个 index segment; 写入完成后由 `DataSet` 收集 dirty index targets 入队。
+- 创建新的 index segment 前, 对前一个已经完结或跨 grid 的 index segment 直接 `sync()`。
 
 ### 7.5 索引文件布局
 

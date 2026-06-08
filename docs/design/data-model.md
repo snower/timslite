@@ -304,7 +304,7 @@ struct DataSet {
 
 /// Store 配置: 后台/缓存等运行时设置 + 新建 DataSet 默认值
 pub struct StoreConfig {
-    pub flush_interval: Duration,    // 默认 10 分钟 (mmap sync, 不密封/不压缩)
+    pub flush_interval: Duration,    // 默认 15 秒 (dirty segment mmap sync, 不密封/不压缩)
     pub idle_timeout: Duration,      // 默认 30 分钟 (sync + unmmap + close, 不改变 pending)
     pub data_segment_size: u64,      // 新建 DataSet 默认 64MB
     pub index_segment_size: u64,     // 新建 DataSet 默认 4MB
@@ -319,7 +319,7 @@ pub struct StoreConfig {
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            flush_interval: Duration::from_secs(600),    // 10 分钟
+            flush_interval: Duration::from_secs(15),
             idle_timeout: Duration::from_secs(1800),     // 30 分钟
             data_segment_size: 64 * 1024 * 1024,         // 64MB
             index_segment_size: 4 * 1024 * 1024,         // 4MB

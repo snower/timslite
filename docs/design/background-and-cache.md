@@ -8,7 +8,7 @@
 
 | 任务 | 间隔 | 行为 |
 |------|------|------|
-| Flush | 可配置, 默认 10min | 遍历所有打开的 segment, mmap.flush() (MS_SYNC) |
+| Flush | 可配置, 默认 15s | drain Store 级共享待 flush 队列, 仅定位并同步队列涉及的 dirty data/index segment |
 | Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + unmmap + close |
 | Cache Eviction | 60s | 扫描缓存池, last_access_at ≥30min → 回收 + 释放内存 → LRU 检查 |
 | Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_window > 0 的 dataset, 回收过期分段 |
@@ -38,12 +38,51 @@
 ### 17.1 Flush 行为
 
 ```
-flush (每 10 分钟):
-  for each dataset:
-    for each open segment (data + index):
-      mmap.flush() — MS_SYNC
+flush (默认每 15 秒):
+  1. 从 Store 级共享 flush_queue drain 全部 DataSetFlushTarget
+  2. 按 dataset key 去重, 不遍历未出现在队列中的 dataset
+  3. 对每个出现在队列中的 dataset:
+     a. 通过 datasets HashMap 精确 get 普通 dataset; journal key 通过 JournalManager 的 dataset Arc 定位
+     b. 执行该 dataset 的 flush_dirty_segments()
+        - 先把该 dataset 的 in-memory index buffer flush_to_disk()
+        - 收集该 dataset 当前仍 dirty 的 data/index segment
+        - 仅对这些 dirty segment target 执行 mmap.flush() — MS_SYNC
+       - 如果 target 已在 idle-close 中被 flush+close, 或分段已经不存在, 则跳过
   注: flush 不密封 pending block, 不压缩
 ```
+
+每个 data/index segment 在内存中维护两个非持久字段:
+
+- `is_flushed`: 当前 mmap 内容是否已通过 `mmap.flush()` 同步。创建、打开、成功 flush 后为 `true`; 任意 mmap 写入后置为 `false`。
+- `queued_for_flush`: 当前 dirty segment 是否已经进入等待 flush 队列。`is_flushed` 从 `true` 变为 `false` 时加入队列; 后续写入保持 dirty 但不重复入队。
+
+Store 持有一个全局共享 `VecDeque<DataSetFlushTarget>` 等待队列, `DataSetRuntimeContext` 仅保存该队列的 `Arc` 引用。队列项必须带 dataset key, 以便后台 flush 不扫描全部 dataset:
+
+```rust
+struct DataSetFlushTarget {
+    dataset: DataSetKey,
+    segment: SegmentFlushTarget,
+}
+
+enum SegmentFlushTarget {
+    Data { file_offset: u64 },
+    Index { start_timestamp: i64 },
+}
+```
+
+`SegmentFlushTarget` 的逻辑定位键:
+
+- data segment: `file_offset`
+- index segment: `start_timestamp`
+
+后台 `run_flush()` 只 drain 全局队列并处理队列中出现过的 dataset key; 不遍历全部 dataset。`DataSet::flush()` 只同步当前 dataset 的 dirty segment, 并清除全局队列中属于当前 dataset 的 stale target; 低层 `DataSet::create/open` 绕过 Store 且没有 runtime context 时, `flush()` 退化为同步所有打开 data/index segment, 保持直接使用 API 的可用性。
+
+创建新分段文件时, 写入路径必须先把前一个已经完结的分段文件直接 `flush()`:
+
+- data segment rollover: 当前段无法继续承载新 record, 创建下一 data segment 前同步旧段。
+- index segment rollover: 当前 index segment 达到 max size 或连续模式进入下一 grid segment, 创建下一 index segment 前同步旧段。
+
+这个直接 flush 不改变 pending block 状态, 只减少已完结分段在后台 flush 间隔内的异常窗口。
 
 ### 17.2 Idle-Close 行为
 
@@ -79,7 +118,7 @@ pub struct BackgroundTasks {
 │         │ ←─ on-demand ──│(mmap) │                 │(unmap) │
 └─────────┘                └────────┘                 └────────┘
     ↑                          │
-    │      flush (10min)       │ msync only
+    │      flush (15s dirty queue) │ msync only
     └──────────────────────────┘
 ```
 
@@ -257,7 +296,7 @@ tick_background_tasks():
 **任务执行顺序与更新**:
 | 任务 | 到期判断 | 执行体 | 状态更新 |
 |------|---------|--------|---------|
-| Flush | `now >= last_flush + flush_interval && !flush_running` | `ds.flush()` (per dataset) | 预约时 `last_flush = now`, `flush_running = true`; 完成后 `flush_running = false` |
+| Flush | `now >= last_flush + flush_interval && !flush_running` | drain 全局 dirty queue, 按 dataset key 精确定位后执行 `flush_dirty_segments()` | 预约时 `last_flush = now`, `flush_running = true`; 完成后 `flush_running = false` |
 | Idle Check | `now >= last_idle_check + 60s && !idle_running` | 收集 idle keys → `ds.lock()` + double-check close | 预约时 `last_idle_check = now`, `idle_running = true`; 完成后 `idle_running = false` |
 | Cache Eviction | `cache enabled && now >= last_cache_eviction + 60s && !cache_running` | `block_cache.evict_idle(idle_timeout)` | 预约时 `last_cache_eviction = now`, `cache_running = true`; 完成后 `cache_running = false` |
 | Retention Reclaim | `now >= next_retention && !retention_running` | `ds.reclaim_expired_segments()` | 预约时 `next_retention = next_retention_time(hour)`, `retention_running = true`; 完成后 `retention_running = false` |

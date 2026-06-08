@@ -84,6 +84,8 @@ pub struct IndexSegment {
     pub sealed: bool,
     /// Most recent access time.
     pub last_accessed_at: Instant,
+    pub is_flushed: bool,
+    pub queued_for_flush: bool,
     /// Current actual file size (grows with expansion).
     pub current_file_size: u64,
     /// Expansion upper limit (= segment_size, immutable).
@@ -159,6 +161,8 @@ impl IndexSegment {
             mmap: Some(mmap),
             sealed: false,
             last_accessed_at: Instant::now(),
+            is_flushed: true,
+            queued_for_flush: false,
             current_file_size: file_size,
             max_file_size,
             header_size,
@@ -190,6 +194,8 @@ impl IndexSegment {
             mmap: Some(mmap),
             sealed: false,
             last_accessed_at: Instant::now(),
+            is_flushed: true,
+            queued_for_flush: false,
             current_file_size: actual_file_size,
             max_file_size,
             header_size,
@@ -215,6 +221,7 @@ impl IndexSegment {
         write_index_wrote_position_to_mmap(mmap, abs_pos)?;
 
         self.last_accessed_at = Instant::now();
+        self.mark_dirty();
         Ok(())
     }
 
@@ -248,6 +255,7 @@ impl IndexSegment {
         // Recalculate entries_capacity
         self.current_file_size = target;
         self.entries_capacity = ((target - self.header_size) / INDEX_ENTRY_SIZE as u64) as usize;
+        self.mark_dirty();
 
         Ok(())
     }
@@ -465,6 +473,7 @@ impl IndexSegment {
         mmap[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&new_entry.to_bytes());
         // No header update needed — record_count stays the same
         self.last_accessed_at = Instant::now();
+        self.mark_dirty();
         Ok(())
     }
 
@@ -556,6 +565,8 @@ impl IndexSegment {
         let mmap = unsafe { MmapMut::map_mut(&file)? };
         self.mmap = Some(mmap);
         self.last_accessed_at = Instant::now();
+        self.is_flushed = true;
+        self.queued_for_flush = false;
         Ok(())
     }
 
@@ -565,6 +576,8 @@ impl IndexSegment {
         }
         self.mmap = None;
         self.last_accessed_at = Instant::now();
+        self.is_flushed = true;
+        self.queued_for_flush = false;
         Ok(())
     }
 
@@ -573,7 +586,22 @@ impl IndexSegment {
             m.flush()?;
         }
         self.last_accessed_at = Instant::now();
+        self.is_flushed = true;
+        self.queued_for_flush = false;
         Ok(())
+    }
+
+    pub(crate) fn take_flush_enqueue_marker(&mut self) -> bool {
+        if !self.is_flushed && !self.queued_for_flush {
+            self.queued_for_flush = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.is_flushed = false;
     }
 }
 

@@ -11,6 +11,7 @@ use crate::cache::BlockCache;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::dataset::{
     DataSet, DataSetInspectResult, DataSetJournalSink, DataSetKey, DataSetRuntimeContext,
+    SegmentFlushQueue,
 };
 use crate::error::{Result, TmslError};
 use crate::journal::{
@@ -57,9 +58,14 @@ impl Store {
     fn dataset_runtime_context(
         block_cache: &Arc<BlockCache>,
         journal: &Arc<JournalManager>,
+        flush_queue: &SegmentFlushQueue,
     ) -> DataSetRuntimeContext {
         let sink: Arc<dyn DataSetJournalSink> = journal.clone();
-        DataSetRuntimeContext::new(Some(Arc::clone(block_cache)), Some(sink))
+        DataSetRuntimeContext::new(
+            Some(Arc::clone(block_cache)),
+            Some(sink),
+            Some(Arc::clone(flush_queue)),
+        )
     }
 
     /// Open a store at the given directory.
@@ -67,8 +73,14 @@ impl Store {
         let data_dir = data_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&data_dir)?;
         let block_cache = Arc::new(BlockCache::new(config.cache_max_memory));
-        let journal = Arc::new(JournalManager::open_or_create(&data_dir, &config)?);
-        let runtime_context = Self::dataset_runtime_context(&block_cache, &journal);
+        let flush_queue = DataSetRuntimeContext::new_flush_queue();
+        let journal = Arc::new(JournalManager::open_or_create(
+            &data_dir,
+            &config,
+            Some(Arc::clone(&flush_queue)),
+        )?);
+        let journal_dataset = journal.dataset().ok();
+        let runtime_context = Self::dataset_runtime_context(&block_cache, &journal, &flush_queue);
 
         let mut datasets = HashMap::new();
 
@@ -147,6 +159,8 @@ impl Store {
         if config.enable_background_thread {
             store.bg_tasks = Some(BackgroundTasks::start(
                 datasets,
+                Arc::clone(&flush_queue),
+                journal_dataset.clone(),
                 block_cache,
                 config.flush_interval,
                 config.idle_timeout,
@@ -156,6 +170,8 @@ impl Store {
         } else {
             store.bg_tasks = Some(BackgroundTasks::new(
                 datasets,
+                Arc::clone(&flush_queue),
+                journal_dataset,
                 block_cache,
                 config.flush_interval,
                 config.idle_timeout,
@@ -223,6 +239,10 @@ impl Store {
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
+            self.bg_tasks
+                .as_ref()
+                .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
+                .flush_queue(),
         ));
 
         let ds = Arc::new(Mutex::new(ds));
@@ -304,6 +324,10 @@ impl Store {
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
+            self.bg_tasks
+                .as_ref()
+                .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
+                .flush_queue(),
         ));
 
         let ds = Arc::new(Mutex::new(ds));

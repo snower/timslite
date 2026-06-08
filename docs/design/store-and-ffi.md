@@ -477,3 +477,28 @@ tmsl_store_close(store, err_buf, sizeof(err_buf));
 - Unknown values are rejected during FFI config decode.
 - `tmsl_dataset_create(...)` without an explicit config uses the store default compression type.
 - `tmsl_dataset_create_with_config(...)` stores the supplied dataset compression type in dataset meta, and new segment headers copy it into their immutable TLV meta.
+
+## Flush Runtime Context
+
+Store 持有一个全局共享 dirty flush queue。Store 管理的每个 `DataSet` 都持有 `DataSetRuntimeContext`, context 除 cache/journal/read-only 状态外, 还持有该全局队列的 `Arc` 引用:
+
+```rust
+enum SegmentFlushTarget {
+    Data { file_offset: u64 },
+    Index { start_timestamp: i64 },
+}
+
+struct DataSetFlushTarget {
+    dataset: DataSetKey,
+    segment: SegmentFlushTarget,
+}
+
+struct DataSetRuntimeContext {
+    block_cache: Option<Arc<BlockCache>>,
+    journal: Option<Arc<dyn DataSetJournalSink>>,
+    flush_queue: Option<Arc<Mutex<VecDeque<DataSetFlushTarget>>>>,
+    read_only: bool,
+}
+```
+
+普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入、journal 内部写入都复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位 dataset, 不遍历所有 dataset。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment。

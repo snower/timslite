@@ -4,6 +4,7 @@
 //! Dataset creation parameters are written to the meta file and are immutable.
 //! Subsequent opens read those values from meta.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
@@ -24,6 +25,20 @@ use crate::segment::ReadIndexEntry;
 
 type QueueCondvarPair = Arc<(Mutex<bool>, Condvar)>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SegmentFlushTarget {
+    Data { file_offset: u64 },
+    Index { start_timestamp: i64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DataSetFlushTarget {
+    pub dataset: DataSetKey,
+    pub segment: SegmentFlushTarget,
+}
+
+pub(crate) type SegmentFlushQueue = Arc<Mutex<VecDeque<DataSetFlushTarget>>>;
+
 pub(crate) trait DataSetJournalSink: Send + Sync {
     fn record_write(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()>;
     fn record_delete(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()>;
@@ -40,17 +55,24 @@ pub(crate) trait DataSetJournalSink: Send + Sync {
 pub(crate) struct DataSetRuntimeContext {
     block_cache: Option<Arc<BlockCache>>,
     journal: Option<Arc<dyn DataSetJournalSink>>,
+    flush_queue: Option<SegmentFlushQueue>,
     read_only: bool,
 }
 
 impl DataSetRuntimeContext {
+    pub(crate) fn new_flush_queue() -> SegmentFlushQueue {
+        Arc::new(Mutex::new(VecDeque::new()))
+    }
+
     pub(crate) fn new(
         block_cache: Option<Arc<BlockCache>>,
         journal: Option<Arc<dyn DataSetJournalSink>>,
+        flush_queue: Option<SegmentFlushQueue>,
     ) -> Self {
         Self {
             block_cache,
             journal,
+            flush_queue,
             read_only: false,
         }
     }
@@ -59,6 +81,16 @@ impl DataSetRuntimeContext {
         Self {
             block_cache: None,
             journal: None,
+            flush_queue: None,
+            read_only: true,
+        }
+    }
+
+    pub(crate) fn read_only_with_flush_queue(flush_queue: Option<SegmentFlushQueue>) -> Self {
+        Self {
+            block_cache: None,
+            journal: None,
+            flush_queue,
             read_only: true,
         }
     }
@@ -304,6 +336,87 @@ impl DataSet {
         self.runtime_context = context;
     }
 
+    fn enqueue_dirty_segments(&mut self) {
+        let Some(queue) = self.runtime_context.flush_queue.as_ref() else {
+            return;
+        };
+        let mut queue = queue.lock().unwrap();
+        for seg in &mut self.segments.segments {
+            if seg.take_flush_enqueue_marker() {
+                queue.push_back(DataSetFlushTarget {
+                    dataset: self.id.clone(),
+                    segment: SegmentFlushTarget::Data {
+                        file_offset: seg.file_offset,
+                    },
+                });
+            }
+        }
+        for seg in &mut self.time_index.index_segments {
+            if seg.take_flush_enqueue_marker() {
+                queue.push_back(DataSetFlushTarget {
+                    dataset: self.id.clone(),
+                    segment: SegmentFlushTarget::Index {
+                        start_timestamp: seg.start_timestamp,
+                    },
+                });
+            }
+        }
+    }
+
+    fn remove_queued_flush_targets_for_self(&self) {
+        if let Some(queue) = self.runtime_context.flush_queue.as_ref() {
+            let mut queue = queue.lock().unwrap();
+            queue.retain(|target| target.dataset != self.id);
+        }
+    }
+
+    fn sync_flush_target(&mut self, target: SegmentFlushTarget) -> Result<()> {
+        match target {
+            SegmentFlushTarget::Data { file_offset } => self.segments.sync_segment(file_offset),
+            SegmentFlushTarget::Index { start_timestamp } => {
+                self.time_index.sync_segment(start_timestamp)
+            }
+        }
+    }
+
+    fn dirty_flush_targets(&self) -> Vec<SegmentFlushTarget> {
+        let mut targets = Vec::new();
+        for seg in &self.segments.segments {
+            if !seg.is_flushed {
+                targets.push(SegmentFlushTarget::Data {
+                    file_offset: seg.file_offset,
+                });
+            }
+        }
+        for seg in &self.time_index.index_segments {
+            if !seg.is_flushed {
+                targets.push(SegmentFlushTarget::Index {
+                    start_timestamp: seg.start_timestamp,
+                });
+            }
+        }
+        targets
+    }
+
+    pub(crate) fn flush_dirty_segments(&mut self) -> Result<()> {
+        self.time_index.flush_to_disk()?;
+        self.enqueue_dirty_segments();
+        let targets = self.dirty_flush_targets();
+        for target in targets {
+            self.sync_flush_target(target)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn flush_queue_len(&self) -> usize {
+        self.runtime_context
+            .flush_queue
+            .as_ref()
+            .map(|queue| queue.lock().unwrap().len())
+            .unwrap_or(0)
+    }
+
     /// Delete an entire dataset directory (destructive, not recoverable).
     pub fn drop_dataset(base_dir: &std::path::Path) -> Result<()> {
         std::fs::remove_dir_all(base_dir)?;
@@ -389,6 +502,7 @@ impl DataSet {
                 .add_entry(timestamp, block_offset, in_block_offset)?;
             self.latest_written_timestamp = timestamp;
             self.last_used_at = Instant::now();
+            self.enqueue_dirty_segments();
             self.notify_queue();
             Ok(WriteOutcome {
                 index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
@@ -406,6 +520,7 @@ impl DataSet {
             )?;
             self.latest_written_timestamp = timestamp;
             self.last_used_at = Instant::now();
+            self.enqueue_dirty_segments();
             self.notify_queue();
             Ok(WriteOutcome {
                 index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
@@ -523,6 +638,7 @@ impl DataSet {
             self.segments
                 .increment_invalid_record_count(old_entry.block_offset)?;
             self.last_used_at = Instant::now();
+            self.enqueue_dirty_segments();
             return Ok(Some(AppendOutcome {
                 index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
                 data_offset,
@@ -535,6 +651,7 @@ impl DataSet {
             self.segments
                 .append_to_last_record(entry.block_offset, entry.in_block_offset, data)?;
         self.last_used_at = Instant::now();
+        self.enqueue_dirty_segments();
         Ok(Some(AppendOutcome {
             index_entry: entry,
             data_offset: actual_offset,
@@ -584,6 +701,7 @@ impl DataSet {
 
         // latest_written_timestamp unchanged
         self.last_used_at = Instant::now();
+        self.enqueue_dirty_segments();
         Ok(WriteOutcome {
             index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
             branch: WriteBranch::OutOfOrder,
@@ -617,6 +735,7 @@ impl DataSet {
                         // latest_written_timestamp unchanged; index unchanged.
                         self.invalidate_cache_for_entry(&entry, cache);
                         self.last_used_at = Instant::now();
+                        self.enqueue_dirty_segments();
                         Ok(WriteOutcome {
                             index_entry: entry,
                             branch: WriteBranch::Correction,
@@ -696,6 +815,7 @@ impl DataSet {
             .increment_invalid_record_count(old_entry.block_offset)?;
 
         self.last_used_at = Instant::now();
+        self.enqueue_dirty_segments();
         Ok(DeleteOutcome {
             old_index_entry: old_entry,
         })
@@ -961,10 +1081,14 @@ impl DataSet {
 
     /// Flush all data.
     pub fn flush(&mut self) -> Result<()> {
-        // Flush in-memory index buffer to disk
-        self.time_index.flush_to_disk()?;
-        self.segments.sync_all()?;
-        self.time_index.sync_all()?;
+        if self.runtime_context.flush_queue.is_some() {
+            self.flush_dirty_segments()?;
+            self.remove_queued_flush_targets_for_self();
+        } else {
+            self.time_index.flush_to_disk()?;
+            self.segments.sync_all()?;
+            self.time_index.sync_all()?;
+        }
         // Flush queue state files if open
         if let Some(ref inner) = self.queue_inner {
             if let Err(e) = flush_queue_state_files(inner) {
@@ -1404,6 +1528,94 @@ mod tests {
             0,
         )
         .unwrap()
+    }
+
+    fn make_dirty_queue_dataset(name: &str, data_segment_size: u64) -> DataSet {
+        let dir = temp_dir(name);
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSet::create(
+            id,
+            dir,
+            data_segment_size,
+            512,
+            0,
+            0,
+            data_segment_size,
+            512,
+            0,
+        )
+        .unwrap();
+        ds.set_runtime_context(DataSetRuntimeContext::new(
+            None,
+            None,
+            Some(Default::default()),
+        ));
+        ds
+    }
+
+    #[test]
+    fn test_dirty_flush_queue_enqueues_once_and_flushes_targets() {
+        let mut ds = make_dirty_queue_dataset("dirty_queue_once", 4096);
+
+        ds.write(100, b"first").unwrap();
+        assert_eq!(ds.flush_queue_len(), 1);
+        assert!(!ds.segments.segments[0].is_flushed);
+
+        ds.write(200, b"second").unwrap();
+        assert_eq!(
+            ds.flush_queue_len(),
+            1,
+            "same dirty data segment should not be queued twice"
+        );
+
+        ds.flush().unwrap();
+        assert_eq!(ds.flush_queue_len(), 0);
+        assert!(ds.segments.segments.iter().all(|seg| seg.is_flushed));
+        assert!(ds
+            .time_index
+            .index_segments
+            .iter()
+            .all(|seg| seg.is_flushed));
+    }
+
+    #[test]
+    fn test_data_rollover_flushes_completed_previous_segment() {
+        let mut ds = make_dirty_queue_dataset("dirty_queue_rollover", 188);
+
+        ds.write(100, &[0xAA; 32]).unwrap();
+        let first_offset = ds.segments.segments[0].file_offset;
+        assert!(!ds.segments.segments[0].is_flushed);
+
+        ds.write(200, &[0xBB; 32]).unwrap();
+
+        let first = ds
+            .segments
+            .segments
+            .iter()
+            .find(|seg| seg.file_offset == first_offset)
+            .unwrap();
+        assert!(
+            first.is_flushed,
+            "creating a new data segment must directly flush the completed previous segment"
+        );
+    }
+
+    #[test]
+    fn test_dirty_flush_queue_skips_idle_closed_stale_target() {
+        let mut ds = make_dirty_queue_dataset("dirty_queue_idle_stale", 4096);
+
+        ds.write(100, b"first").unwrap();
+        assert_eq!(ds.flush_queue_len(), 1);
+
+        ds.segments.idle_close_all().unwrap();
+        assert!(ds.segments.segments.is_empty());
+
+        ds.flush().unwrap();
+
+        assert_eq!(ds.flush_queue_len(), 0);
     }
 
     #[test]

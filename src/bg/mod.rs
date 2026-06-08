@@ -7,15 +7,16 @@
 //!
 //! Both modes share a `Mutex<ExecutorState>` for concurrency safety.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cache::BlockCache;
-use crate::dataset::DataSet;
 use crate::dataset::DataSetKey;
+use crate::dataset::{DataSet, DataSetFlushTarget, SegmentFlushQueue};
+use crate::journal::JournalManager;
 
 type DatasetMap = HashMap<DataSetKey, Arc<std::sync::Mutex<DataSet>>>;
 
@@ -44,6 +45,8 @@ pub struct TickResult {
 pub struct BackgroundTasks {
     state: Arc<Mutex<ExecutorState>>,
     datasets: Arc<RwLock<DatasetMap>>,
+    flush_queue: SegmentFlushQueue,
+    journal_dataset: Option<Arc<std::sync::Mutex<DataSet>>>,
     block_cache: Arc<BlockCache>,
     flush_interval: Duration,
     idle_timeout: Duration,
@@ -104,6 +107,8 @@ impl BackgroundTasks {
     /// Create the executor without spawning a background thread.
     pub fn new(
         datasets: Arc<RwLock<DatasetMap>>,
+        flush_queue: SegmentFlushQueue,
+        journal_dataset: Option<Arc<std::sync::Mutex<DataSet>>>,
         block_cache: Arc<BlockCache>,
         flush_interval: Duration,
         idle_timeout: Duration,
@@ -123,6 +128,8 @@ impl BackgroundTasks {
                 retention_running: false,
             })),
             datasets,
+            flush_queue,
+            journal_dataset,
             block_cache,
             flush_interval,
             idle_timeout,
@@ -136,6 +143,8 @@ impl BackgroundTasks {
     /// Create the executor AND spawn a background thread.
     pub fn start(
         datasets: Arc<RwLock<DatasetMap>>,
+        flush_queue: SegmentFlushQueue,
+        journal_dataset: Option<Arc<std::sync::Mutex<DataSet>>>,
         block_cache: Arc<BlockCache>,
         flush_interval: Duration,
         idle_timeout: Duration,
@@ -159,12 +168,16 @@ impl BackgroundTasks {
         // Clone Arcs for the thread
         let thread_state = Arc::clone(&state);
         let thread_datasets = Arc::clone(&datasets);
+        let thread_flush_queue = Arc::clone(&flush_queue);
+        let thread_journal_dataset = journal_dataset.clone();
         let thread_block_cache = Arc::clone(&block_cache);
 
         let handle = std::thread::spawn(move || {
             let bg = BackgroundTasks {
                 state: thread_state,
                 datasets: thread_datasets,
+                flush_queue: thread_flush_queue,
+                journal_dataset: thread_journal_dataset,
                 block_cache: thread_block_cache,
                 flush_interval,
                 idle_timeout,
@@ -179,6 +192,8 @@ impl BackgroundTasks {
         Self {
             state,
             datasets,
+            flush_queue,
+            journal_dataset,
             block_cache,
             flush_interval,
             idle_timeout,
@@ -206,6 +221,10 @@ impl BackgroundTasks {
     pub fn next_delay(&self) -> Duration {
         let state = self.state.lock().unwrap();
         self.compute_next_delay(&state)
+    }
+
+    pub(crate) fn flush_queue(&self) -> &SegmentFlushQueue {
+        &self.flush_queue
     }
 
     /// Stop the background thread (no-op if no thread was started).
@@ -318,17 +337,42 @@ impl BackgroundTasks {
     }
 
     fn run_flush(&self) {
-        if let Ok(guard) = self.datasets.read() {
-            for (_key, ds_arc) in guard.iter() {
-                let mut ds = match ds_arc.lock() {
-                    Ok(ds) => ds,
-                    Err(_) => continue,
-                };
-                if let Err(e) = ds.flush() {
-                    log::error!("[bg flush] failed: {}", e);
+        let keys = self.drain_flush_dataset_keys();
+        for key in keys {
+            let ds_arc = if JournalManager::is_journal_key(&key) {
+                self.journal_dataset.as_ref().map(Arc::clone)
+            } else {
+                match self.datasets.read() {
+                    Ok(guard) => guard.get(&key).cloned(),
+                    Err(_) => None,
                 }
+            };
+            let Some(ds_arc) = ds_arc else {
+                continue;
+            };
+            let mut ds = match ds_arc.lock() {
+                Ok(ds) => ds,
+                Err(_) => continue,
+            };
+            if let Err(e) = ds.flush_dirty_segments() {
+                log::error!("[bg flush] failed for {:?}: {}", key, e);
             }
         }
+    }
+
+    fn drain_flush_dataset_keys(&self) -> Vec<DataSetKey> {
+        let targets: Vec<DataSetFlushTarget> = {
+            let mut queue = self.flush_queue.lock().unwrap();
+            queue.drain(..).collect()
+        };
+        let mut seen = HashSet::new();
+        let mut keys = Vec::new();
+        for target in targets {
+            if seen.insert(target.dataset.clone()) {
+                keys.push(target.dataset);
+            }
+        }
+        keys
     }
 
     fn run_idle_check(&self) {
@@ -488,6 +532,7 @@ mod tests {
 
     fn make_empty_test_bg(thread_enabled: bool) -> BackgroundTasks {
         let datasets = Arc::new(RwLock::new(HashMap::new()));
+        let flush_queue = crate::dataset::DataSetRuntimeContext::new_flush_queue();
         let block_cache = Arc::new(BlockCache::new(0)); // disabled
         let flush_interval = Duration::from_secs(600);
         let idle_timeout = Duration::from_secs(1800);
@@ -497,6 +542,8 @@ mod tests {
         if thread_enabled {
             BackgroundTasks::start(
                 datasets,
+                Arc::clone(&flush_queue),
+                None,
                 block_cache,
                 flush_interval,
                 idle_timeout,
@@ -506,6 +553,8 @@ mod tests {
         } else {
             BackgroundTasks::new(
                 datasets,
+                flush_queue,
+                None,
                 block_cache,
                 flush_interval,
                 idle_timeout,
@@ -586,6 +635,8 @@ mod tests {
         let flush_interval = Duration::from_millis(1);
         let bg = BackgroundTasks::new(
             datasets,
+            crate::dataset::DataSetRuntimeContext::new_flush_queue(),
+            None,
             block_cache,
             flush_interval,
             Duration::from_secs(1800),
@@ -618,6 +669,8 @@ mod tests {
         let block_cache = Arc::new(BlockCache::new(0));
         let bg = BackgroundTasks::new(
             datasets,
+            crate::dataset::DataSetRuntimeContext::new_flush_queue(),
+            None,
             block_cache,
             Duration::from_secs(3600),
             Duration::from_secs(3600),
@@ -728,6 +781,8 @@ mod tests {
 
         let bg = Arc::new(BackgroundTasks::new(
             datasets,
+            crate::dataset::DataSetRuntimeContext::new_flush_queue(),
+            None,
             Arc::new(BlockCache::new(0)),
             Duration::from_millis(1),
             Duration::from_secs(1800),
@@ -768,6 +823,59 @@ mod tests {
         );
 
         drop(ds_guard);
+        let result = tick_handle.join().unwrap();
+        assert_eq!(result.executed_tasks, 1);
+    }
+
+    #[test]
+    fn test_flush_drains_queue_without_locking_unqueued_dataset() {
+        let datasets = Arc::new(RwLock::new(HashMap::new()));
+        let flush_queue = crate::dataset::DataSetRuntimeContext::new_flush_queue();
+        let (queued_key, queued_ds) = make_test_dataset("timslite_bg_flush_queued");
+        let (unqueued_key, unqueued_ds) = make_test_dataset("timslite_bg_flush_unqueued");
+
+        {
+            let mut ds = queued_ds.lock().unwrap();
+            ds.set_runtime_context(crate::dataset::DataSetRuntimeContext::new(
+                None,
+                None,
+                Some(Arc::clone(&flush_queue)),
+            ));
+            ds.write(1, b"queued").unwrap();
+        }
+
+        {
+            let mut guard = datasets.write().unwrap();
+            guard.insert(queued_key, Arc::clone(&queued_ds));
+            guard.insert(unqueued_key, Arc::clone(&unqueued_ds));
+        }
+
+        let bg = Arc::new(BackgroundTasks::new(
+            datasets,
+            flush_queue,
+            None,
+            Arc::new(BlockCache::new(0)),
+            Duration::from_millis(1),
+            Duration::from_secs(1800),
+            Duration::from_secs(1800),
+            0,
+        ));
+        {
+            let mut state = bg.state.lock().unwrap();
+            state.last_flush = Instant::now() - Duration::from_secs(10);
+        }
+
+        let unqueued_guard = unqueued_ds.lock().unwrap();
+        let bg_tick = Arc::clone(&bg);
+        let tick_handle = std::thread::spawn(move || bg_tick.tick());
+
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            tick_handle.is_finished(),
+            "flush should not lock datasets without queued dirty segments"
+        );
+
+        drop(unqueued_guard);
         let result = tick_handle.join().unwrap();
         assert_eq!(result.executed_tasks, 1);
     }

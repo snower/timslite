@@ -59,6 +59,8 @@ pub struct DataSegment {
     pub mmap: Option<MmapMut>,
     pub lifecycle: SegmentLifecycle,
     pub last_accessed_at: Instant,
+    pub is_flushed: bool,
+    pub queued_for_flush: bool,
 
     // ─── Pending block state (from header state) ──────────────────────────
     pub pending_block_offset: Option<u64>,
@@ -142,6 +144,8 @@ impl DataSegment {
             mmap: Some(mmap),
             lifecycle: SegmentLifecycle::OpenReady,
             last_accessed_at: now,
+            is_flushed: true,
+            queued_for_flush: false,
             pending_block_offset: None,
             pending_wrote_position: 0,
             pending_record_count: 0,
@@ -190,6 +194,8 @@ impl DataSegment {
             mmap: Some(mmap),
             lifecycle: SegmentLifecycle::OpenReady,
             last_accessed_at: now,
+            is_flushed: true,
+            queued_for_flush: false,
             pending_block_offset: None,
             pending_wrote_position: 0,
             pending_record_count: 0,
@@ -280,6 +286,8 @@ impl DataSegment {
         self.mmap = Some(mmap);
         self.lifecycle = SegmentLifecycle::OpenReady;
         self.last_accessed_at = Instant::now();
+        self.is_flushed = true;
+        self.queued_for_flush = false;
 
         self.restore_pending_from_metadata(&metadata)?;
 
@@ -293,6 +301,8 @@ impl DataSegment {
         }
         self.mmap = None;
         self.lifecycle = SegmentLifecycle::Closed;
+        self.is_flushed = true;
+        self.queued_for_flush = false;
         Ok(())
     }
 
@@ -302,7 +312,22 @@ impl DataSegment {
             m.flush()?;
         }
         self.last_accessed_at = Instant::now();
+        self.is_flushed = true;
+        self.queued_for_flush = false;
         Ok(())
+    }
+
+    pub(crate) fn take_flush_enqueue_marker(&mut self) -> bool {
+        if !self.is_flushed && !self.queued_for_flush {
+            self.queued_for_flush = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.is_flushed = false;
     }
 
     /// Expand the segment file by 2x (up to max_file_size).
@@ -331,6 +356,7 @@ impl DataSegment {
         let new_mmap = unsafe { MmapMut::map_mut(&file)? };
         self.mmap = Some(new_mmap);
         self.file_size = target;
+        self.mark_dirty();
 
         Ok(())
     }
@@ -929,6 +955,7 @@ impl DataSegment {
         if let Some(ref mut mmap) = self.mmap {
             write_data_invalid_record_count_to_mmap(mmap, self.invalid_record_count)?;
         }
+        self.mark_dirty();
         Ok(())
     }
 
@@ -944,7 +971,9 @@ impl DataSegment {
             abs_pos,
             self.record_count,
             self.total_uncompressed_size,
-        )
+        )?;
+        self.mark_dirty();
+        Ok(())
     }
 
     fn update_file_header_for_pending(&mut self, block_rel_offset: u64) -> Result<()> {

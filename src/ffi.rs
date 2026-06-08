@@ -2269,8 +2269,8 @@ mod tests {
             0
         );
         assert!(
-            delay_ms <= 600_000,
-            "delay bounded by flush_interval (600s)"
+            delay_ms <= 15_000,
+            "delay bounded by default flush_interval (15s)"
         );
 
         assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);

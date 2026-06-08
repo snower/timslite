@@ -66,6 +66,8 @@ struct DataSegment {
     mmap: Option<MmapMut>,       // None = closed/unmapped
     lifecycle: SegmentLifecycle,
     last_accessed_at: Instant,
+    is_flushed: bool,            // 内存态: 当前 mmap 内容是否已 MS_SYNC
+    queued_for_flush: bool,      // 内存态: dirty 后是否已进入 runtime flush 队列
     // Pending Block 状态
     pending_block_offset: Option<u64>, // block_segment_offset
     pending_wrote_position: u64,
@@ -78,7 +80,7 @@ enum SegmentLifecycle {
 }
 
 const BLOCK_HEADER_SIZE: u64 = 16;
-const DATA_HEADER_SIZE: u64 = 116;  // v1 默认数据段 header_len
+const DATA_HEADER_SIZE: u64 = 124;  // v1 默认数据段 header_len
 ```
 
 `DataSegmentSet` 接收索引中的 `block_offset`, 通过 `segment_size` 计算所属数据段:
@@ -95,11 +97,11 @@ physical_file_offset = segment.header_len + block_segment_offset
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ DataFileHeader (variable, v1 default 116 bytes)  │
+│ DataFileHeader (variable, v1 default 124 bytes)  │
 │ - 固定前缀: magic(4)+version(2)+fileType(1)+     │
 │   meta_length(2)                                 │
-│ - Meta(TLV, 33B): created_at, file_offset,       │
-│   file_size, compress_level                      │
+│ - Meta(TLV, 41B): created_at, file_offset,       │
+│   file_size, compress_level, compress_type       │
 │ - state_length: 2                                │
 │ - State(72B): 9×8B                               │
 │   min_timestamp, max_timestamp, wrote_position,  │
@@ -386,7 +388,11 @@ impl DataSegment {
 
 **状态一致性**:
 - 每次 `append_record` 后立即写入 mmap state 区域
-- `idle_close()` 前 sync 确保落盘
+- 每次 mmap 写入后仅更新内存 dirty 状态: `is_flushed=false`
+- 当 dirty 状态首次从 flushed 变为 unflushed 时, 通过 `DataSetRuntimeContext` 引用的 Store 级共享 `flush_queue` 记录 `{ dataset_key, Data { file_offset } }`
+- 后台 flush drain 队列后只同步 dirty segment, 成功后 `is_flushed=true`, `queued_for_flush=false`
+- `idle_close()` 前 sync 确保落盘, 并清除该 segment 的 queued 标记; flush 队列中后续遇到该 stale target 时跳过
+- 创建新 data segment 前, 对前一个已经完结的 data segment 直接执行 sync, 不等待后台 flush 间隔
 - 崩溃恢复时从 file header 读取, 保证一致性
 
 ### 6.8 数据保留回收

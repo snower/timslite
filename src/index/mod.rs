@@ -485,6 +485,7 @@ impl TimeIndex {
                 Err(TmslError::SegmentFull) => {
                     if seg.current_file_size >= seg.max_file_size {
                         seg.seal()?;
+                        seg.sync()?;
                         return Err(TmslError::SegmentFull);
                     }
                     seg.expand()?;
@@ -591,6 +592,9 @@ impl TimeIndex {
             let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
             self.index_segments.push(seg);
         } else {
+            if let Some(last) = self.index_segments.last_mut() {
+                last.sync()?;
+            }
             let seg = IndexSegment::create_with_compression(
                 &self.base_dir,
                 start_ts,
@@ -624,6 +628,9 @@ impl TimeIndex {
             let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
             self.index_segments.push(seg);
         } else {
+            if let Some(last) = self.index_segments.last_mut() {
+                last.sync()?;
+            }
             let seg = IndexSegment::create_with_compression(
                 &self.base_dir,
                 segment_start,
@@ -739,6 +746,19 @@ impl TimeIndex {
     pub fn sync_all(&mut self) -> Result<()> {
         for seg in &mut self.index_segments {
             seg.sync()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn sync_segment(&mut self, start_timestamp: i64) -> Result<()> {
+        if let Some(seg) = self
+            .index_segments
+            .iter_mut()
+            .find(|seg| seg.start_timestamp == start_timestamp)
+        {
+            if !seg.is_flushed {
+                seg.sync()?;
+            }
         }
         Ok(())
     }

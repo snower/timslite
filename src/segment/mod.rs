@@ -100,6 +100,19 @@ impl DataSegmentSet {
         Ok(())
     }
 
+    pub(crate) fn sync_segment(&mut self, file_offset: u64) -> Result<()> {
+        if let Some(seg) = self
+            .segments
+            .iter_mut()
+            .find(|seg| seg.file_offset == file_offset)
+        {
+            if !seg.is_flushed {
+                seg.sync()?;
+            }
+        }
+        Ok(())
+    }
+
     /// Idle-close all open data segments.
     pub fn idle_close_all(&mut self) -> Result<()> {
         let mut closed: Vec<DataSegmentMeta> = Vec::new();
@@ -239,6 +252,9 @@ impl DataSegmentSet {
         let seg = match self.lazy_open(current_offset) {
             Ok(s) => s,
             Err(_) => {
+                if let Some(last) = self.segments.last_mut() {
+                    last.sync()?;
+                }
                 // Create new segment with initial_size
                 let file_name = format!("{:020}", current_offset);
                 let path = self.base_dir.join(&file_name);
@@ -273,6 +289,7 @@ impl DataSegmentSet {
                     // Already at max_file_size → seal current, create new segment
                     // Mark this segment as needing seal
                     let seg_offset_to_seal = seg.file_offset;
+                    seg.sync()?;
 
                     let new_offset = self.next_offset;
                     let file_name = format!("{:020}", new_offset);
@@ -428,6 +445,7 @@ impl DataSegmentSet {
         match seg.create_single_record_block(timestamp, data, compress_level) {
             Ok((block_rel, in_block)) => Ok((seg.file_offset, block_rel, in_block)),
             Err(TmslError::SegmentFull) => {
+                seg.sync()?;
                 let new_offset = self.next_offset;
                 let file_name = format!("{:020}", new_offset);
                 let path = self.base_dir.join(&file_name);

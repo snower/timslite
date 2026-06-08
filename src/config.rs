@@ -1,4 +1,4 @@
-﻿//! Configuration types for timslite.
+//! Configuration types for timslite.
 //!
 //! `StoreConfig` combines Store runtime settings with defaults for newly
 //! created datasets. Existing datasets reopen from their own meta files.
@@ -12,7 +12,7 @@ use crate::compress::COMPRESS_TYPE_ZSTD;
 /// Existing datasets do not compare against these defaults when reopened.
 ///
 /// # Defaults
-/// - `flush_interval`: 10 minutes (600s)
+/// - `flush_interval`: 15 seconds
 /// - `idle_timeout`: 30 minutes (1800s)
 /// - `data_segment_size`: 64 MiB
 /// - `index_segment_size`: 4 MiB
@@ -59,12 +59,12 @@ pub struct StoreConfig {
 impl Default for StoreConfig {
     fn default() -> Self {
         Self {
-            flush_interval: Duration::from_secs(600), // 10 min
-            idle_timeout: Duration::from_secs(1800),  // 30 min
-            data_segment_size: 64 * 1024 * 1024,      // 64 MiB
-            index_segment_size: 4 * 1024 * 1024,      // 4 MiB
-            initial_data_segment_size: 256 * 1024,    // 256 KiB
-            initial_index_segment_size: 4 * 1024,     // 4 KiB
+            flush_interval: Duration::from_secs(15),
+            idle_timeout: Duration::from_secs(1800), // 30 min
+            data_segment_size: 64 * 1024 * 1024,     // 64 MiB
+            index_segment_size: 4 * 1024 * 1024,     // 4 MiB
+            initial_data_segment_size: 256 * 1024,   // 256 KiB
+            initial_index_segment_size: 4 * 1024,    // 4 KiB
             compress_level: 6,
             compress_type: COMPRESS_TYPE_ZSTD,
             cache_max_memory: 256 * 1024 * 1024, // 256 MiB
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let cfg = StoreConfig::default();
-        assert_eq!(cfg.flush_interval, Duration::from_secs(600));
+        assert_eq!(cfg.flush_interval, Duration::from_secs(15));
         assert_eq!(cfg.idle_timeout, Duration::from_secs(1800));
         assert_eq!(cfg.data_segment_size, 64 * 1024 * 1024);
         assert_eq!(cfg.index_segment_size, 4 * 1024 * 1024);
