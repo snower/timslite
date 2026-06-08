@@ -129,4 +129,5 @@ src/
 - [索引连续存储](index-continuous.md) — 连续模式稀疏 filler + 逻辑空洞
 - [懒分配与扩容](lazy-allocation.md) — 分段文件懒分配 + 倍率扩容
 - [Journal 变更日志](journal.md) — 内置 `.journal/logs` dataset + 操作日志格式 + queue 实时消费
+- [数据集 Inspect](dataset-inspect.md) — DataSetInfo (不变配置) + DataSetState (可变状态) 完整字段定义
 - [构建配置](cargo-and-config.md) — Cargo.toml 依赖

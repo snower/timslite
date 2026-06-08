@@ -30,6 +30,7 @@
 | 17 | [Queue 状态文件](docs/design/queue-state-file.md) | 消费组 4KB mmap 状态文件格式、Pending Entry 结构、Crash 恢复、同步策略 | 队列持久化/恢复 |
 | 18 | [Journal 变更日志](docs/design/journal.md) | 内置 `.journal/logs` dataset、操作日志格式、Store/DataSet hook、read/query/open_queue 实时消费、热迁移/恢复边界 | 变更日志/热迁移/恢复工具 |
 | 19 | [数据集读操作](docs/design/dataset-read-operations.md) | read/query/query_iter 及新增 read_exist/query_exist/read_length/query_length/query_length_iter 统一描述 | 读操作 API 设计/选型 |
+| 20 | [数据集 Inspect](docs/design/dataset-inspect.md) | DataSetInfo (不变配置) + DataSetState (可变状态) 完整字段定义、Rust/FFI/Python API | 数据集状态监控/运维 |
 
 ---
 

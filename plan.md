@@ -40,6 +40,7 @@
 | 29 | Dataset Append API + Journal `0x13` | ✅ 完成 | [phase-29-dataset-append.md](docs/plan/phase-29-dataset-append.md) |
 | 30 | Dataset 读操作优化 | ✅ 完成 | [phase-30-dataset-read-operations.md](docs/plan/phase-30-dataset-read-operations.md) |
 | 31 | Store API - Dataset 枚举 | ✅ 完成 | [phase-31-store-api-listing.md](docs/plan/phase-31-store-api-listing.md) |
+| 32 | Dataset Inspect API | ⏳ 待实现 | [phase-32-dataset-inspect.md](docs/plan/phase-32-dataset-inspect.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
