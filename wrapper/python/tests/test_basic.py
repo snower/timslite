@@ -41,7 +41,7 @@ class TestBasic:
     def test_store_config_default(self, tmpdir):
         """Default StoreConfig has sensible defaults."""
         config = timslite.StoreConfig.default()
-        assert config.flush_interval == 600
+        assert config.flush_interval == 15
         assert config.idle_timeout == 1800
         assert config.data_segment_size == 67108864
         assert config.index_segment_size == 4194304

@@ -8,7 +8,7 @@ class TestConfig:
     def test_store_config_defaults(self):
         """All default values are correct."""
         config = timslite.StoreConfig.default()
-        assert config.flush_interval == 600
+        assert config.flush_interval == 15
         assert config.idle_timeout == 1800
         assert config.data_segment_size == 67108864
         assert config.index_segment_size == 4194304
