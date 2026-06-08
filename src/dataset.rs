@@ -11,6 +11,7 @@ use std::time::Instant;
 use crate::cache::BlockCache;
 use crate::config::DataSetConfig;
 use crate::error::{Result, TmslError};
+use crate::header::{TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
 use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
@@ -222,6 +223,7 @@ impl DataSet {
                 initial_data_segment_size,
                 initial_index_segment_size,
                 retention_window,
+                create_time: meta.create_time,
             },
             segments,
             time_index,
@@ -259,6 +261,7 @@ impl DataSet {
             initial_data_segment_size: meta.initial_data_segment_size,
             initial_index_segment_size: meta.initial_index_segment_size,
             retention_window: meta.retention_window,
+            create_time: meta.create_time,
         };
         let retention_window = meta.retention_window;
 
@@ -1168,6 +1171,193 @@ impl DataSet {
     pub fn segments_mut(&mut self) -> &mut DataSegmentSet {
         &mut self.segments
     }
+
+    /// Get detailed info and state of this dataset.
+    ///
+    /// Returns `DataSetInspectResult` containing immutable config (`DataSetInfo`)
+    /// and mutable state (`DataSetState`).
+    pub fn inspect(&self) -> Result<DataSetInspectResult> {
+        let info = DataSetInfo {
+            name: self.id.name.clone(),
+            dataset_type: self.id.dataset_type.clone(),
+            base_dir: self.base_dir.to_string_lossy().to_string(),
+            data_segment_size: self.config.data_segment_size,
+            index_segment_size: self.config.index_segment_size,
+            initial_data_segment_size: self.config.initial_data_segment_size,
+            initial_index_segment_size: self.config.initial_index_segment_size,
+            compress_type: self.config.compress_type,
+            compress_level: self.config.compress_level,
+            index_continuous: self.config.index_continuous,
+            retention_window: self.retention_window,
+            create_time: self.config.create_time,
+        };
+
+        // Aggregate data segment state
+        let open_ds = self.segments.segments.len() as u32;
+        let closed_ds = self.segments.closed_segments.len() as u32;
+        let mut total_record_count: u64 = 0;
+        let mut total_data_size: u64 = 0;
+        let mut total_uncompressed_size: u64 = 0;
+        let mut total_invalid_record_count: u64 = 0;
+        let mut min_timestamp = i64::MAX;
+        let mut max_timestamp = i64::MIN;
+
+        // Open segments
+        for seg in &self.segments.segments {
+            total_record_count += seg.record_count;
+            total_data_size += seg.data_wrote_position;
+            total_uncompressed_size += seg.total_uncompressed_size;
+            total_invalid_record_count += seg.invalid_record_count;
+            if seg.min_timestamp != TIMESTAMP_MIN_SENTINEL && seg.min_timestamp < min_timestamp {
+                min_timestamp = seg.min_timestamp;
+            }
+            if seg.max_timestamp != TIMESTAMP_MAX_SENTINEL && seg.max_timestamp > max_timestamp {
+                max_timestamp = seg.max_timestamp;
+            }
+        }
+
+        // Closed segments
+        for seg in &self.segments.closed_segments {
+            if seg.min_timestamp != TIMESTAMP_MIN_SENTINEL && seg.min_timestamp < min_timestamp {
+                min_timestamp = seg.min_timestamp;
+            }
+            if seg.max_timestamp != TIMESTAMP_MAX_SENTINEL && seg.max_timestamp > max_timestamp {
+                max_timestamp = seg.max_timestamp;
+            }
+        }
+
+        // If no valid timestamps found, use 0
+        if min_timestamp == i64::MAX {
+            min_timestamp = 0;
+        }
+        if max_timestamp == i64::MIN {
+            max_timestamp = 0;
+        }
+
+        // Aggregate index state
+        let open_idx = self.time_index.index_segments.len() as u32;
+        let closed_idx = self.time_index.closed_index_segments.len() as u32;
+        let pending_entries = self.time_index.in_memory_buffer.len() as u32;
+        let base_timestamp = self.time_index.base_timestamp;
+
+        // Queue state
+        let has_queue = self.queue_inner.is_some();
+        let queue_consumer_groups = if has_queue {
+            self.queue_inner
+                .as_ref()
+                .and_then(|inner| inner.lock().ok())
+                .map(|guard| guard.consumers().len() as u32)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let state = DataSetState {
+            latest_written_timestamp: self.latest_written_timestamp,
+            open_data_segments: open_ds,
+            closed_data_segments: closed_ds,
+            total_record_count,
+            total_data_size,
+            total_uncompressed_size,
+            total_invalid_record_count,
+            min_timestamp,
+            max_timestamp,
+            open_index_segments: open_idx,
+            closed_index_segments: closed_idx,
+            pending_index_entries: pending_entries,
+            base_timestamp,
+            read_only: self.runtime_context.read_only,
+            has_block_cache: self.runtime_context.block_cache.is_some(),
+            has_journal: self.runtime_context.journal.is_some(),
+            has_queue,
+            queue_consumer_groups,
+        };
+
+        Ok(DataSetInspectResult { info, state })
+    }
+}
+
+/// Immutable dataset configuration info.
+///
+/// These values are set at dataset creation and never change.
+#[derive(Debug, Clone)]
+pub struct DataSetInfo {
+    /// Dataset name
+    pub name: String,
+    /// Dataset type
+    pub dataset_type: String,
+    /// Dataset directory path
+    pub base_dir: String,
+    /// Data segment file size limit (bytes)
+    pub data_segment_size: u64,
+    /// Index segment file size limit (bytes)
+    pub index_segment_size: u64,
+    /// Initial data segment file size (bytes, grows up to data_segment_size)
+    pub initial_data_segment_size: u64,
+    /// Initial index segment file size (bytes, grows up to index_segment_size)
+    pub initial_index_segment_size: u64,
+    /// Compression algorithm type (0=zstd, 1=deflate)
+    pub compress_type: u8,
+    /// Compression level (0-9)
+    pub compress_level: u8,
+    /// Index mode: 0=sparse, 1=continuous
+    pub index_continuous: u8,
+    /// Data retention window (same unit as timestamp, 0=no limit)
+    pub retention_window: u64,
+    /// Dataset creation time (Unix milliseconds)
+    pub create_time: i64,
+}
+
+/// Mutable dataset state info.
+///
+/// These values reflect the current runtime state of the dataset.
+#[derive(Debug, Clone)]
+pub struct DataSetState {
+    /// Highest written timestamp (not latest valid record, deletion doesn't roll back)
+    pub latest_written_timestamp: i64,
+    /// Number of currently open data segments
+    pub open_data_segments: u32,
+    /// Number of closed data segments (only metadata in memory)
+    pub closed_data_segments: u32,
+    /// Total record count across all data segments (includes deleted and expired)
+    pub total_record_count: u64,
+    /// Total used space across all data segments (bytes, excluding header)
+    pub total_data_size: u64,
+    /// Total uncompressed size across all data segments (bytes)
+    pub total_uncompressed_size: u64,
+    /// Total invalid record count across all data segments (deleted/expired/overwritten)
+    pub total_invalid_record_count: u64,
+    /// Global minimum timestamp (across all data segments)
+    pub min_timestamp: i64,
+    /// Global maximum timestamp (across all data segments)
+    pub max_timestamp: i64,
+    /// Number of currently open index segments
+    pub open_index_segments: u32,
+    /// Number of closed index segments
+    pub closed_index_segments: u32,
+    /// Number of in-memory buffered index entries pending flush
+    pub pending_index_entries: u32,
+    /// Index base timestamp (first entry's timestamp), None if no data
+    pub base_timestamp: Option<i64>,
+    /// Whether the dataset is in read-only mode
+    pub read_only: bool,
+    /// Whether BlockCache is enabled
+    pub has_block_cache: bool,
+    /// Whether Journal is enabled
+    pub has_journal: bool,
+    /// Whether the dataset has an associated Queue
+    pub has_queue: bool,
+    /// Number of queue consumer groups (only meaningful when has_queue=true)
+    pub queue_consumer_groups: u32,
+}
+
+/// Result of `DataSet::inspect()`.
+#[derive(Debug, Clone)]
+pub struct DataSetInspectResult {
+    /// Immutable configuration info
+    pub info: DataSetInfo,
+    /// Mutable current state
+    pub state: DataSetState,
 }
 
 #[cfg(test)]

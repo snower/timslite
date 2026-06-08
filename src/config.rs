@@ -228,6 +228,8 @@ pub struct DataSetConfig {
     pub initial_index_segment_size: u64,
     /// Data validity period in same unit as timestamps. 0 = no limit.
     pub retention_window: u64,
+    /// Dataset creation time (Unix milliseconds).
+    pub create_time: i64,
 }
 
 #[allow(dead_code)]
@@ -242,6 +244,7 @@ impl DataSetConfig {
             initial_data_segment_size: config.initial_data_segment_size,
             initial_index_segment_size: config.initial_index_segment_size,
             retention_window: 0,
+            create_time: 0,
         }
     }
 
@@ -365,6 +368,7 @@ impl DataSetConfigBuilder {
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
             retention_window: self.retention_window.unwrap_or(0),
+            create_time: 0, // Set at dataset creation
         }
     }
 }

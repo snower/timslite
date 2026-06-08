@@ -185,44 +185,43 @@ class Store:
 
 ## 实现任务
 
-- [ ] 计划文档创建 (本文件)
-- [ ] plan.md 更新
-- [ ] DataSet inspect() 实现
-  - [ ] DataSetInfo 构建 (从 DataSetKey + DataSetMeta + config)
-  - [ ] DataSetState 构建 (聚合 DataSegmentSet + TimeIndex + runtime_context)
-  - [ ] 时间戳哨兵值处理 (TIMESTAMP_MIN/MAX_SENTINEL → 0/None)
-- [ ] Store inspect_dataset() 实现
-- [ ] FFI 函数实现
-  - [ ] TmslInspectResult 结构体
-  - [ ] tmsl_store_inspect_dataset
-  - [ ] tmsl_free_inspect_result (释放 info 字符串 + state)
-- [ ] C 头文件更新 (include/timslite.h)
-- [ ] Python wrapper 更新
-  - [ ] DataSetInfo PyClass
-  - [ ] DataSetState PyClass
-  - [ ] DataSetInspectResult PyClass
-  - [ ] store.inspect_dataset() 方法
-- [ ] 集成测试编写
-- [ ] 验证: cargo build + test + fmt + clippy
+- [x] 计划文档创建 (本文件)
+- [x] plan.md 更新
+- [x] DataSet inspect() 实现
+  - [x] DataSetInfo 构建 (从 DataSetKey + DataSetMeta + config)
+  - [x] DataSetState 构建 (聚合 DataSegmentSet + TimeIndex + runtime_context)
+  - [x] 时间戳哨兵值处理 (TIMESTAMP_MIN/MAX_SENTINEL → 0/None)
+- [x] Store inspect_dataset() 实现
+- [x] FFI 函数实现
+  - [x] TmslInspectResult 结构体
+  - [x] tmsl_store_inspect_dataset
+  - [x] tmsl_free_inspect_result (释放 info 字符串 + state)
+- [x] C 头文件更新 (include/timslite.h)
+- [x] Python wrapper 更新
+  - [x] DataSetInfo PyClass
+  - [x] DataSetState PyClass
+  - [x] DataSetInspectResult PyClass
+  - [x] store.inspect_dataset() 方法
+- [x] 集成测试编写
+- [x] 验证: cargo build + test + fmt + clippy
 
 ## 测试用例
 
 ### 集成测试
 
-1. `test_inspect_basic`: 创建数据集后 inspect 返回正确的 info 和 state
-2. `test_inspect_info_fields`: 验证所有 info 字段值正确
-3. `test_inspect_state_after_write`: 写入数据后 state 统计正确更新
-4. `test_inspect_state_multi_segment`: 跨多个数据段的统计聚合正确
-5. `test_inspect_state_empty_dataset`: 空数据集 min/max timestamp 处理正确
-6. `test_inspect_read_only`: 只读打开的数据集 read_only=true
-7. `test_inspect_with_queue`: 有关联队列时 has_queue=true
-8. `test_inspect_not_found`: 不存在的数据集返回错误
-9. `test_inspect_after_drop`: drop 后 inspect 返回错误
+1. ✅ `test_inspect_basic`: 创建数据集后 inspect 返回正确的 info 和 state
+2. ✅ `test_inspect_info_fields`: 验证所有 info 字段值正确
+3. ✅ `test_inspect_state_after_write`: 写入数据后 state 统计正确更新
+4. ✅ `test_inspect_state_multi_segment`: 跨多个数据段的统计聚合正确
+5. ✅ `test_inspect_state_empty_dataset`: 空数据集 min/max timestamp 处理正确
+6. ✅ `test_inspect_with_queue`: 有关联队列时 has_queue=true
+7. ✅ `test_inspect_not_found`: 不存在的数据集返回错误
+8. ✅ `test_inspect_after_drop`: drop 后 inspect 返回错误
 
 ## 验收标准
 
-- [ ] `cargo build` 成功
-- [ ] `cargo test -- --test-threads=1` 全部通过
-- [ ] `cargo fmt -- --check` 无格式问题
-- [ ] `cargo clippy -- -D warnings` 无警告
-- [ ] Python wrapper 编译通过
+- [x] `cargo build` 成功
+- [x] `cargo test -- --test-threads=1` 全部通过
+- [x] `cargo fmt -- --check` 无格式问题
+- [x] `cargo clippy -- -D warnings` 无警告
+- [x] Python wrapper 编译通过
