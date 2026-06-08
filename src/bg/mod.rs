@@ -863,6 +863,9 @@ mod tests {
         {
             let mut state = bg.state.lock().unwrap();
             state.last_flush = Instant::now() - Duration::from_secs(10);
+            // Push retention far into the future so run_retention_reclaim
+            // does not fire and attempt to lock all datasets.
+            state.next_retention = Instant::now() + Duration::from_secs(86400);
         }
 
         let unqueued_guard = unqueued_ds.lock().unwrap();
