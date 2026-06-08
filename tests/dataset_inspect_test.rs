@@ -232,9 +232,11 @@ fn test_inspect_with_queue() {
 #[test]
 fn test_inspect_not_found() {
     let dir = temp_dir("inspect_not_found");
-    let mut config = StoreConfig::default();
-    config.enable_background_thread = false;
-    config.enable_journal = false;
+    let config = StoreConfig {
+        enable_background_thread: false,
+        enable_journal: false,
+        ..Default::default()
+    };
     let store = Store::open(&dir, config).unwrap();
 
     let result = store.inspect_dataset("nonexistent", "data");
@@ -244,9 +246,11 @@ fn test_inspect_not_found() {
 #[test]
 fn test_inspect_after_drop() {
     let dir = temp_dir("inspect_after_drop");
-    let mut config = StoreConfig::default();
-    config.enable_background_thread = false;
-    config.enable_journal = false;
+    let config = StoreConfig {
+        enable_background_thread: false,
+        enable_journal: false,
+        ..Default::default()
+    };
     let mut store = Store::open(&dir, config).unwrap();
 
     store
