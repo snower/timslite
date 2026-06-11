@@ -4,6 +4,7 @@
 
 pub mod data;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 
@@ -23,6 +24,11 @@ pub(crate) struct DataSegmentMeta {
     pub file_size: u64,
     pub min_timestamp: i64,
     pub max_timestamp: i64,
+}
+
+pub(crate) enum DataSegmentEntry {
+    Open(DataSegment),
+    Closed(DataSegmentMeta),
 }
 
 impl DataSegmentMeta {
@@ -46,14 +52,45 @@ pub struct DataSegmentSet {
     pub initial_segment_size: u64,
     pub compress_level: u8,
     pub compress_type: u8,
-    pub segments: Vec<DataSegment>,
-    #[allow(private_interfaces)]
-    pub closed_segments: Vec<DataSegmentMeta>,
+    pub(crate) segments: BTreeMap<u64, DataSegmentEntry>,
     pub next_offset: u64,
     pub last_used_at: Instant,
 }
 
 impl DataSegmentSet {
+    fn segment_offset_for(&self, absolute_offset: u64) -> u64 {
+        (absolute_offset / self.segment_size) * self.segment_size
+    }
+
+    pub(crate) fn open_segments(&self) -> impl Iterator<Item = &DataSegment> {
+        self.segments.values().filter_map(|entry| match entry {
+            DataSegmentEntry::Open(seg) => Some(seg),
+            DataSegmentEntry::Closed(_) => None,
+        })
+    }
+
+    pub(crate) fn open_segments_mut(&mut self) -> impl Iterator<Item = &mut DataSegment> {
+        self.segments.values_mut().filter_map(|entry| match entry {
+            DataSegmentEntry::Open(seg) => Some(seg),
+            DataSegmentEntry::Closed(_) => None,
+        })
+    }
+
+    pub(crate) fn closed_segments(&self) -> impl Iterator<Item = &DataSegmentMeta> {
+        self.segments.values().filter_map(|entry| match entry {
+            DataSegmentEntry::Open(_) => None,
+            DataSegmentEntry::Closed(meta) => Some(meta),
+        })
+    }
+
+    pub(crate) fn open_len(&self) -> usize {
+        self.open_segments().count()
+    }
+
+    pub(crate) fn closed_len(&self) -> usize {
+        self.closed_segments().count()
+    }
+
     /// Create a new (empty) DataSegmentSet for a freshly created dataset.
     pub fn new(
         base_dir: &Path,
@@ -85,8 +122,7 @@ impl DataSegmentSet {
             initial_segment_size,
             compress_level,
             compress_type,
-            segments: Vec::new(),
-            closed_segments: Vec::new(),
+            segments: BTreeMap::new(),
             next_offset: 0,
             last_used_at: Instant::now(),
         })
@@ -94,18 +130,14 @@ impl DataSegmentSet {
 
     /// Sync all open data segments.
     pub fn sync_all(&mut self) -> Result<()> {
-        for seg in &mut self.segments {
+        for seg in self.open_segments_mut() {
             seg.sync()?;
         }
         Ok(())
     }
 
     pub(crate) fn sync_segment(&mut self, file_offset: u64) -> Result<()> {
-        if let Some(seg) = self
-            .segments
-            .iter_mut()
-            .find(|seg| seg.file_offset == file_offset)
-        {
+        if let Some(DataSegmentEntry::Open(seg)) = self.segments.get_mut(&file_offset) {
             if !seg.is_flushed {
                 seg.sync()?;
             }
@@ -115,43 +147,58 @@ impl DataSegmentSet {
 
     /// Idle-close all open data segments.
     pub fn idle_close_all(&mut self) -> Result<()> {
-        let mut closed: Vec<DataSegmentMeta> = Vec::new();
-        for mut seg in self.segments.drain(..) {
-            closed.push(DataSegmentMeta {
+        let keys: Vec<u64> = self
+            .segments
+            .iter()
+            .filter_map(|(key, entry)| match entry {
+                DataSegmentEntry::Open(_) => Some(*key),
+                DataSegmentEntry::Closed(_) => None,
+            })
+            .collect();
+        for key in keys {
+            let Some(DataSegmentEntry::Open(mut seg)) = self.segments.remove(&key) else {
+                continue;
+            };
+            let meta = DataSegmentMeta {
                 path: seg.path.clone(),
                 file_offset: seg.file_offset,
                 file_size: seg.file_size,
                 min_timestamp: seg.min_timestamp,
                 max_timestamp: seg.max_timestamp,
-            });
+            };
             seg.idle_close(6)?;
+            self.segments.insert(key, DataSegmentEntry::Closed(meta));
         }
-        self.closed_segments.extend(closed);
         Ok(())
     }
 
     /// Lazy open a segment by its file_offset.
     pub fn lazy_open(&mut self, file_offset: u64) -> Result<&mut DS> {
-        // Check open segments
-        if let Some(idx) = self
-            .segments
-            .iter()
-            .position(|s| s.file_offset == file_offset)
-        {
-            return Ok(&mut self.segments[idx]);
+        if !self.segments.contains_key(&file_offset) {
+            return Err(crate::error::TmslError::NotFound(format!(
+                "no segment at offset {}",
+                file_offset
+            )));
         }
-        // Check closed segments
-        let meta_pos = self
-            .closed_segments
-            .iter()
-            .position(|m| m.file_offset == file_offset)
-            .ok_or_else(|| {
-                crate::error::TmslError::NotFound(format!("no segment at offset {}", file_offset))
-            })?;
-        let meta = self.closed_segments.remove(meta_pos);
-        let seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
-        self.segments.push(seg);
-        Ok(self.segments.last_mut().unwrap())
+        let needs_open = matches!(
+            self.segments.get(&file_offset),
+            Some(DataSegmentEntry::Closed(_))
+        );
+        if needs_open {
+            let Some(DataSegmentEntry::Closed(meta)) = self.segments.remove(&file_offset) else {
+                unreachable!();
+            };
+            let seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
+            self.segments
+                .insert(file_offset, DataSegmentEntry::Open(seg));
+        }
+        match self.segments.get_mut(&file_offset) {
+            Some(DataSegmentEntry::Open(seg)) => Ok(seg),
+            _ => Err(crate::error::TmslError::NotFound(format!(
+                "no segment at offset {}",
+                file_offset
+            ))),
+        }
     }
 
     /// Load existing data segments from disk (all start closed).
@@ -216,8 +263,10 @@ impl DataSegmentSet {
             initial_segment_size,
             compress_level,
             compress_type,
-            segments: Vec::new(),
-            closed_segments: metas,
+            segments: metas
+                .into_iter()
+                .map(|meta| (meta.file_offset, DataSegmentEntry::Closed(meta)))
+                .collect(),
             next_offset,
             last_used_at: Instant::now(),
         })
@@ -228,15 +277,17 @@ impl DataSegmentSet {
     /// Append a record. Returns (segment_offset, block_relative_offset, in_block_offset).
     pub fn append(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u64, u16)> {
         // Get current segment for writing
+        let segment_size = self.segment_size;
         let current_offset = if self.segments.is_empty() {
             self.next_offset
         } else {
-            let last = self.segments.last().unwrap();
+            let latest_offset = *self.segments.last_key_value().unwrap().0;
+            let last = self.lazy_open(latest_offset)?;
             if last.lifecycle == SL::Closed
                 || last.data_wrote_position
                     + crate::block::BLOCK_HEADER_SIZE
                     + data::RECORD_OVERHEAD
-                    > self.segment_size
+                    > segment_size
             {
                 self.next_offset
             } else {
@@ -252,7 +303,9 @@ impl DataSegmentSet {
         let seg = match self.lazy_open(current_offset) {
             Ok(s) => s,
             Err(_) => {
-                if let Some(last) = self.segments.last_mut() {
+                if let Some(DataSegmentEntry::Open(last)) =
+                    self.segments.last_entry().map(|entry| entry.into_mut())
+                {
                     last.sync()?;
                 }
                 // Create new segment with initial_size
@@ -266,9 +319,13 @@ impl DataSegmentSet {
                     compress_level,
                     compress_type,
                 )?;
-                self.segments.push(new_seg);
+                self.segments
+                    .insert(current_offset, DataSegmentEntry::Open(new_seg));
                 self.next_offset += self.segment_size;
-                self.segments.last_mut().unwrap()
+                match self.segments.get_mut(&current_offset) {
+                    Some(DataSegmentEntry::Open(seg)) => seg,
+                    _ => unreachable!(),
+                }
             }
         };
         if seg.lifecycle == SL::Closed {
@@ -302,22 +359,25 @@ impl DataSegmentSet {
                         compress_level,
                         compress_type,
                     )?;
-                    self.segments.push(new_seg);
+                    self.segments
+                        .insert(new_offset, DataSegmentEntry::Open(new_seg));
                     self.next_offset = new_offset + self.segment_size;
                     written_segment_offset = new_offset;
 
                     // Seal the old segment (lazy approach: set lifecycle to Closed)
                     // It will be properly sealed on idle-close
                     {
-                        let idx = self
-                            .segments
-                            .iter()
-                            .position(|s| s.file_offset == seg_offset_to_seal)
-                            .unwrap();
-                        self.segments[idx].lifecycle = SL::Closed;
+                        if let Some(DataSegmentEntry::Open(seg)) =
+                            self.segments.get_mut(&seg_offset_to_seal)
+                        {
+                            seg.lifecycle = SL::Closed;
+                        }
                     }
 
-                    let new_seg = self.segments.last_mut().unwrap();
+                    let new_seg = match self.segments.get_mut(&new_offset) {
+                        Some(DataSegmentEntry::Open(seg)) => seg,
+                        _ => unreachable!(),
+                    };
                     new_seg.append_record(timestamp, data, compress_level)?
                 }
             }
@@ -411,10 +471,12 @@ impl DataSegmentSet {
     pub fn append_single_record(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u64, u16)> {
         let compress_level = self.compress_level;
         let compress_type = self.compress_type;
-        let seg = self
+        let latest_offset = self
             .segments
-            .last_mut()
+            .last_key_value()
+            .map(|(offset, _)| *offset)
             .ok_or_else(|| TmslError::InvalidData("no data segment available".into()))?;
+        let seg = self.lazy_open(latest_offset)?;
         if seg.pending_block_offset.is_some() {
             seg.seal_pending_block(compress_level)?;
             seg.clear_pending();
@@ -434,12 +496,13 @@ impl DataSegmentSet {
                     compress_level,
                     compress_type,
                 )?;
-                self.segments.push(new_seg);
+                self.segments
+                    .insert(new_offset, DataSegmentEntry::Open(new_seg));
                 self.next_offset += self.segment_size;
-                let seg = self
-                    .segments
-                    .last_mut()
-                    .ok_or_else(|| TmslError::InvalidData("no data segment available".into()))?;
+                let seg = match self.segments.get_mut(&new_offset) {
+                    Some(DataSegmentEntry::Open(seg)) => seg,
+                    _ => unreachable!(),
+                };
                 let (block_rel, in_block) =
                     seg.create_single_record_block(timestamp, data, compress_level)?;
                 Ok((seg.file_offset, block_rel, in_block))
@@ -454,28 +517,14 @@ impl DataSegmentSet {
     /// relative to data area starts across the data stream). Opens the segment lazily
     /// if it is currently closed, then closes it again after the increment.
     pub fn increment_invalid_record_count(&mut self, absolute_offset: u64) -> Result<()> {
-        // Check open segments
-        for seg in &mut self.segments {
-            let seg_start = seg.file_offset;
-            let seg_end = seg_start + self.segment_size;
-            if absolute_offset >= seg_start && absolute_offset < seg_end {
-                seg.increment_invalid_record_count()?;
-                return Ok(());
-            }
+        let seg_start = self.segment_offset_for(absolute_offset);
+        if let Some(DataSegmentEntry::Open(seg)) = self.segments.get_mut(&seg_start) {
+            seg.increment_invalid_record_count()?;
+            return Ok(());
         }
         // Closed segments — open briefly, increment, then idle_close back.
-        // Collect match info first to satisfy borrow checker.
-        let mut target: Option<(std::path::PathBuf, u64)> = None;
-        for meta in &self.closed_segments {
-            let seg_start = meta.file_offset;
-            let seg_end = seg_start + self.segment_size;
-            if absolute_offset >= seg_start && absolute_offset < seg_end {
-                target = Some((meta.path.clone(), meta.file_offset));
-                break;
-            }
-        }
-        if let Some((path, file_offset)) = target {
-            let mut seg = DS::open(&path, file_offset, self.segment_size)?;
+        if let Some(DataSegmentEntry::Closed(meta)) = self.segments.get(&seg_start) {
+            let mut seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
             seg.increment_invalid_record_count()?;
             seg.idle_close(self.compress_level)?;
             return Ok(());
@@ -556,39 +605,22 @@ impl DataSegmentSet {
     }
 
     fn find_or_open_segment(&mut self, absolute_offset: u64) -> Result<&mut DS> {
-        // Find which segment this offset belongs to
-        for seg in &self.segments {
-            let seg_start = seg.file_offset;
-            let seg_end = seg_start + self.segment_size;
-            if absolute_offset >= seg_start && absolute_offset < seg_end {
-                let idx = self
-                    .segments
-                    .iter()
-                    .position(|s| s.file_offset == seg_start)
-                    .unwrap();
-                return Ok(&mut self.segments[idx]);
-            }
+        let seg_start = self.segment_offset_for(absolute_offset);
+        if matches!(
+            self.segments.get(&seg_start),
+            Some(DataSegmentEntry::Open(_))
+        ) {
+            return match self.segments.get_mut(&seg_start) {
+                Some(DataSegmentEntry::Open(seg)) => Ok(seg),
+                _ => unreachable!(),
+            };
         }
-        // Not in open segments - find in closed
-        for meta in &self.closed_segments {
-            let seg_start = meta.file_offset;
-            let seg_end = seg_start + self.segment_size;
-            if absolute_offset >= seg_start && absolute_offset < seg_end {
-                let meta_pos = self
-                    .closed_segments
-                    .iter()
-                    .position(|m| m.file_offset == seg_start)
-                    .unwrap();
-                let m = self.closed_segments.remove(meta_pos);
-                let seg = DS::open(&m.path, m.file_offset, self.segment_size)?;
-                self.segments.push(seg);
-                return Ok(self.segments.last_mut().unwrap());
-            }
-        }
-        Err(crate::error::TmslError::NotFound(format!(
-            "no segment contains offset {}",
-            absolute_offset
-        )))
+        self.lazy_open(seg_start).map_err(|_| {
+            crate::error::TmslError::NotFound(format!(
+                "no segment contains offset {}",
+                absolute_offset
+            ))
+        })
     }
 
     /// Flush all segments.
@@ -600,17 +632,18 @@ impl DataSegmentSet {
     /// Must be called only when all data segments are closed (via idle_close_all).
     /// Returns the number of files removed.
     pub fn reclaim_expired_segments(&mut self, threshold: i64) -> Result<usize> {
-        let before = self.closed_segments.len();
-        self.closed_segments.retain(|meta| {
-            if meta.max_timestamp < threshold && meta.max_timestamp != TIMESTAMP_MAX_SENTINEL {
-                let _ = std::fs::remove_file(&meta.path);
-                log::info!("[retention] deleted data segment: {:?}", meta.path);
-                false
-            } else {
-                true
+        let before = self.segments.len();
+        self.segments.retain(|_, entry| {
+            if let DataSegmentEntry::Closed(meta) = entry {
+                if meta.max_timestamp < threshold && meta.max_timestamp != TIMESTAMP_MAX_SENTINEL {
+                    let _ = std::fs::remove_file(&meta.path);
+                    log::info!("[retention] deleted data segment: {:?}", meta.path);
+                    return false;
+                }
             }
+            true
         });
-        Ok(before - self.closed_segments.len())
+        Ok(before - self.segments.len())
     }
 }
 
@@ -638,4 +671,106 @@ fn read_segment_timestamps_inner(path: &Path) -> Result<(i64, i64)> {
     drop(mmap);
     drop(file);
     Ok((meta.min_timestamp, meta.max_timestamp))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("timslite_segment_set_{}", name));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn create_closed_segment(set: &mut DataSegmentSet, file_offset: u64) -> std::path::PathBuf {
+        let path = set.base_dir.join(format!("{:020}", file_offset));
+        let mut seg = DataSegment::create_with_compression(
+            &path,
+            file_offset,
+            set.initial_segment_size,
+            set.segment_size,
+            set.compress_level,
+            set.compress_type,
+        )
+        .unwrap();
+        seg.idle_close(set.compress_level).unwrap();
+        set.segments.insert(
+            file_offset,
+            DataSegmentEntry::Closed(DataSegmentMeta {
+                path: path.clone(),
+                file_offset,
+                file_size: set.initial_segment_size,
+                min_timestamp: TIMESTAMP_MIN_SENTINEL,
+                max_timestamp: TIMESTAMP_MAX_SENTINEL,
+            }),
+        );
+        path
+    }
+
+    #[test]
+    fn test_lazy_open_keeps_data_segment_registries_sorted() {
+        let dir = temp_dir("ordered_lazy_open");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir,
+            256,
+            256,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+
+        create_closed_segment(&mut set, 512);
+        create_closed_segment(&mut set, 0);
+        create_closed_segment(&mut set, 256);
+        assert_eq!(
+            set.closed_segments()
+                .map(|meta| meta.file_offset)
+                .collect::<Vec<_>>(),
+            vec![0, 256, 512]
+        );
+
+        set.lazy_open(512).unwrap();
+        set.lazy_open(0).unwrap();
+
+        assert_eq!(
+            set.segments
+                .iter()
+                .filter_map(|(_, entry)| match entry {
+                    DataSegmentEntry::Open(seg) => Some(seg.file_offset),
+                    DataSegmentEntry::Closed(_) => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![0, 512]
+        );
+        assert_eq!(
+            set.closed_segments()
+                .map(|meta| meta.file_offset)
+                .collect::<Vec<_>>(),
+            vec![256]
+        );
+    }
+
+    #[test]
+    fn test_increment_invalid_record_count_uses_computed_closed_offset() {
+        let dir = temp_dir("invalid_count_closed_lookup");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir,
+            256,
+            256,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+        let path = create_closed_segment(&mut set, 256);
+
+        set.increment_invalid_record_count(300).unwrap();
+
+        let reopened = DataSegment::open(&path, 256, 256).unwrap();
+        assert_eq!(reopened.invalid_record_count, 1);
+        assert_eq!(set.open_len(), 0);
+        assert_eq!(set.closed_len(), 1);
+    }
 }

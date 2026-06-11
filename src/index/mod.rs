@@ -5,6 +5,7 @@
 
 pub mod segment;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub use self::segment::INDEX_ENTRY_SIZE;
@@ -15,6 +16,11 @@ use crate::error::{Result, TmslError};
 use crate::header::{IndexFileMetadata, INDEX_HEADER_SIZE};
 use crate::query::iter::QuerySource;
 
+pub(crate) enum IndexSegmentEntryState {
+    Open(IndexSegment),
+    Closed(IndexSegmentMeta),
+}
+
 // ─── TimeIndex ─────────────────────────────────────────────────────────────
 
 pub struct TimeIndex {
@@ -23,8 +29,7 @@ pub struct TimeIndex {
     pub initial_segment_size: u64,
     pub compress_level: u8,
     pub compress_type: u8,
-    pub index_segments: Vec<IndexSegment>,
-    pub closed_index_segments: Vec<IndexSegmentMeta>,
+    pub(crate) index_segments: BTreeMap<i64, IndexSegmentEntryState>,
     pub in_memory_buffer: Vec<IndexEntry>,
     pub in_memory_flush_threshold: usize,
     pub index_continuous: bool, // true = continuous mode (O(1) lookup enabled)
@@ -33,6 +38,93 @@ pub struct TimeIndex {
 }
 
 impl TimeIndex {
+    pub(crate) fn open_index_segments(&self) -> impl Iterator<Item = &IndexSegment> {
+        self.index_segments
+            .values()
+            .filter_map(|entry| match entry {
+                IndexSegmentEntryState::Open(seg) => Some(seg),
+                IndexSegmentEntryState::Closed(_) => None,
+            })
+    }
+
+    pub(crate) fn open_index_segments_mut(&mut self) -> impl Iterator<Item = &mut IndexSegment> {
+        self.index_segments
+            .values_mut()
+            .filter_map(|entry| match entry {
+                IndexSegmentEntryState::Open(seg) => Some(seg),
+                IndexSegmentEntryState::Closed(_) => None,
+            })
+    }
+
+    pub(crate) fn closed_index_segments(&self) -> impl Iterator<Item = &IndexSegmentMeta> {
+        self.index_segments
+            .values()
+            .filter_map(|entry| match entry {
+                IndexSegmentEntryState::Open(_) => None,
+                IndexSegmentEntryState::Closed(meta) => Some(meta),
+            })
+    }
+
+    pub(crate) fn open_len(&self) -> usize {
+        self.open_index_segments().count()
+    }
+
+    pub(crate) fn closed_len(&self) -> usize {
+        self.closed_index_segments().count()
+    }
+
+    fn open_index_segment(&mut self, start_timestamp: i64) -> Result<&mut IndexSegment> {
+        if !self.index_segments.contains_key(&start_timestamp) {
+            return Err(TmslError::NotFound(format!(
+                "no index segment at {}",
+                start_timestamp
+            )));
+        }
+        let needs_open = matches!(
+            self.index_segments.get(&start_timestamp),
+            Some(IndexSegmentEntryState::Closed(_))
+        );
+        if needs_open {
+            let Some(IndexSegmentEntryState::Closed(meta)) =
+                self.index_segments.remove(&start_timestamp)
+            else {
+                unreachable!();
+            };
+            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            self.index_segments
+                .insert(start_timestamp, IndexSegmentEntryState::Open(seg));
+        }
+        match self.index_segments.get_mut(&start_timestamp) {
+            Some(IndexSegmentEntryState::Open(seg)) => Ok(seg),
+            _ => Err(TmslError::NotFound(format!(
+                "no index segment at {}",
+                start_timestamp
+            ))),
+        }
+    }
+
+    fn segment_start_candidate_for_ts(&self, timestamp: i64) -> Option<i64> {
+        self.index_segments
+            .range(..=timestamp)
+            .next_back()
+            .map(|(start, _)| *start)
+    }
+
+    fn segment_keys_for_range(&self, start_ts: i64, end_ts: i64) -> Vec<i64> {
+        let mut keys = Vec::new();
+        if let Some((key, _)) = self.index_segments.range(..start_ts).next_back() {
+            keys.push(*key);
+        }
+        keys.extend(
+            self.index_segments
+                .range(start_ts..=end_ts)
+                .map(|(key, _)| *key),
+        );
+        keys.sort_unstable();
+        keys.dedup();
+        keys
+    }
+
     /// Create a new TimeIndex.
     pub fn new(
         base_dir: &Path,
@@ -65,8 +157,7 @@ impl TimeIndex {
             initial_segment_size,
             compress_level,
             compress_type,
-            index_segments: Vec::new(),
-            closed_index_segments: Vec::new(),
+            index_segments: BTreeMap::new(),
             in_memory_buffer: Vec::new(),
             in_memory_flush_threshold: 1024,
             index_continuous,
@@ -203,14 +294,10 @@ impl TimeIndex {
     fn materialized_count_for_segment(&self, segment_start: i64) -> Result<usize> {
         let mut count = 0usize;
 
-        for seg in &self.index_segments {
-            if seg.start_timestamp == segment_start {
-                count = count.max(seg.wrote_count);
-            }
-        }
-        for meta in &self.closed_index_segments {
-            if meta.start_timestamp == segment_start {
-                count = count.max(meta.wrote_count);
+        if let Some(entry) = self.index_segments.get(&segment_start) {
+            match entry {
+                IndexSegmentEntryState::Open(seg) => count = count.max(seg.wrote_count),
+                IndexSegmentEntryState::Closed(meta) => count = count.max(meta.wrote_count),
             }
         }
         for entry in &self.in_memory_buffer {
@@ -224,8 +311,8 @@ impl TimeIndex {
 
     /// Find the IndexEntry at the given timestamp (for correction write).
     ///
-    /// Searches `in_memory_buffer` → open `index_segments` → `closed_index_segments`
-    /// (temporarily opened). Returns `Ok(None)` if not found.
+    /// Searches `in_memory_buffer`, then the unified segment registry.
+    /// Returns `Ok(None)` if not found.
     pub fn find_entry(&mut self, timestamp: i64) -> Result<Option<IndexEntry>> {
         let ic = self.index_continuous;
 
@@ -238,24 +325,24 @@ impl TimeIndex {
             return Ok(Some(*entry));
         }
 
-        // 2. open segments
-        for seg in &self.index_segments {
-            if let Some(entry) = seg.find_exact_cs(timestamp, ic) {
-                return Ok(Some(entry));
+        // 2. segment registry
+        let segment_start = if ic {
+            match self.segment_start_for(timestamp) {
+                Ok(start) => Some(start),
+                Err(TmslError::NotFound(_)) => None,
+                Err(e) => return Err(e),
             }
+        } else {
+            self.segment_start_candidate_for_ts(timestamp)
+        };
+        let Some(segment_start) = segment_start else {
+            return Ok(None);
+        };
+        if !self.index_segments.contains_key(&segment_start) {
+            return Ok(None);
         }
-
-        // 3. closed segments (temporarily open → lookup → idle_close)
-        for meta in &self.closed_index_segments {
-            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-            if let Some(entry) = seg.find_exact_cs(timestamp, ic) {
-                seg.idle_close().ok();
-                return Ok(Some(entry));
-            }
-            seg.idle_close().ok();
-        }
-
-        Ok(None)
+        let seg = self.open_index_segment(segment_start)?;
+        Ok(seg.find_exact_cs(timestamp, ic))
     }
 
     /// Update the index entry at `timestamp` with a new (block_offset, in_block_offset),
@@ -275,7 +362,6 @@ impl TimeIndex {
         let ic = self.index_continuous;
         let new_entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
 
-        // 1. in-memory buffer (linear search)
         if let Some(pos) = self
             .in_memory_buffer
             .iter()
@@ -286,30 +372,23 @@ impl TimeIndex {
             return Ok(old);
         }
 
-        // 2. open segments
-        for seg in &mut self.index_segments {
-            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
-                let old = seg
-                    .find_exact_cs(timestamp, ic)
-                    .expect("entry exists after find_entry_index_cs");
-                seg.ensure_open()?;
-                seg.overwrite_entry(idx, &new_entry)?;
-                return Ok(old);
+        let segment_start = if ic {
+            Some(self.segment_start_for(timestamp)?)
+        } else {
+            self.segment_start_candidate_for_ts(timestamp)
+        };
+        if let Some(segment_start) = segment_start {
+            if self.index_segments.contains_key(&segment_start) {
+                let seg = self.open_index_segment(segment_start)?;
+                if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
+                    let old = seg
+                        .find_exact_cs(timestamp, ic)
+                        .expect("entry exists after find_entry_index_cs");
+                    seg.ensure_open()?;
+                    seg.overwrite_entry(idx, &new_entry)?;
+                    return Ok(old);
+                }
             }
-        }
-
-        // 3. closed segments (open briefly → overwrite → idle_close)
-        for meta in &self.closed_index_segments {
-            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, Some(meta.wrote_count)) {
-                let old = seg
-                    .find_exact_cs(timestamp, ic)
-                    .expect("entry exists after find_entry_index_cs");
-                seg.overwrite_entry(idx, &new_entry)?;
-                seg.idle_close()?;
-                return Ok(old);
-            }
-            seg.idle_close()?;
         }
 
         if ic {
@@ -369,7 +448,6 @@ impl TimeIndex {
         let ic = self.index_continuous;
         let sentinel = IndexEntry::new(timestamp, BLOCK_OFFSET_FILLER, IN_BLOCK_OFFSET_FILLER);
 
-        // 1. in-memory buffer
         if let Some(pos) = self
             .in_memory_buffer
             .iter()
@@ -386,43 +464,29 @@ impl TimeIndex {
             return Ok(old);
         }
 
-        // 2. open segments
-        for seg in &mut self.index_segments {
-            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
-                let old = seg
-                    .find_exact_cs(timestamp, ic)
-                    .expect("entry exists after find_entry_index_cs");
-                if old.is_filler() {
-                    return Err(TmslError::NotFound(format!(
-                        "no real data at timestamp {} (filler)",
-                        timestamp
-                    )));
+        let segment_start = if ic {
+            Some(self.segment_start_for(timestamp)?)
+        } else {
+            self.segment_start_candidate_for_ts(timestamp)
+        };
+        if let Some(segment_start) = segment_start {
+            if self.index_segments.contains_key(&segment_start) {
+                let seg = self.open_index_segment(segment_start)?;
+                if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
+                    let old = seg
+                        .find_exact_cs(timestamp, ic)
+                        .expect("entry exists after find_entry_index_cs");
+                    if old.is_filler() {
+                        return Err(TmslError::NotFound(format!(
+                            "no real data at timestamp {} (filler)",
+                            timestamp
+                        )));
+                    }
+                    seg.ensure_open()?;
+                    seg.overwrite_entry(idx, &sentinel)?;
+                    return Ok(old);
                 }
-                seg.ensure_open()?;
-                seg.overwrite_entry(idx, &sentinel)?;
-                return Ok(old);
             }
-        }
-
-        // 3. closed segments (open briefly → overwrite → idle_close)
-        for meta in &self.closed_index_segments {
-            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-            if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, Some(meta.wrote_count)) {
-                let old = seg
-                    .find_exact_cs(timestamp, ic)
-                    .expect("entry exists after find_entry_index_cs");
-                if old.is_filler() {
-                    seg.idle_close()?;
-                    return Err(TmslError::NotFound(format!(
-                        "no real data at timestamp {} (filler)",
-                        timestamp
-                    )));
-                }
-                seg.overwrite_entry(idx, &sentinel)?;
-                seg.idle_close()?;
-                return Ok(old);
-            }
-            seg.idle_close()?;
         }
 
         Err(TmslError::NotFound(format!(
@@ -529,121 +593,92 @@ impl TimeIndex {
     /// Used in continuous mode to avoid creating segments filled entirely
     /// with filler entries that span no real data.
     fn remove_pure_filler_segments(&mut self) {
-        use crate::index::segment::BLOCK_OFFSET_FILLER;
+        let mut to_remove = Vec::new();
 
-        // Check closed_index_segments
-        self.closed_index_segments.retain(|meta| {
-            if let Ok(seg) = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)
-            {
-                if seg.wrote_count > 0 {
-                    // Check if all entries are filler
-                    let all_filler = seg
-                        .query_range(i64::MIN, i64::MAX)
-                        .iter()
-                        .all(|e| e.block_offset == BLOCK_OFFSET_FILLER);
-                    if all_filler {
-                        let _ = std::fs::remove_file(&meta.path);
-                        log::debug!("[index] removed pure-filler segment: {:?}", meta.path);
-                        return false; // remove from vec
+        for (key, entry) in self.index_segments.iter_mut() {
+            let remove = match entry {
+                IndexSegmentEntryState::Open(seg) => {
+                    if seg.wrote_count == 0 {
+                        false
+                    } else {
+                        let all_filler = seg
+                            .query_range(i64::MIN, i64::MAX)
+                            .iter()
+                            .all(|e| e.block_offset == BLOCK_OFFSET_FILLER);
+                        if all_filler {
+                            let _ = seg.idle_close();
+                            let _ = std::fs::remove_file(&seg.path);
+                            log::debug!("[index] removed pure-filler segment: {:?}", seg.path);
+                        }
+                        all_filler
                     }
                 }
-            }
-            true // keep
-        });
-
-        // Check open index_segments
-        let mut to_remove = Vec::new();
-        for (idx, seg) in self.index_segments.iter_mut().enumerate() {
-            if seg.wrote_count > 0 {
-                let all_filler = seg
-                    .query_range(i64::MIN, i64::MAX)
-                    .iter()
-                    .all(|e| e.block_offset == BLOCK_OFFSET_FILLER);
-                if all_filler {
-                    seg.idle_close().ok();
-                    let _ = std::fs::remove_file(&seg.path);
-                    log::debug!("[index] removed pure-filler segment: {:?}", seg.path);
-                    to_remove.push(idx);
+                IndexSegmentEntryState::Closed(meta) => {
+                    match IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size) {
+                        Ok(seg) if seg.wrote_count > 0 => {
+                            let all_filler = seg
+                                .query_range(i64::MIN, i64::MAX)
+                                .iter()
+                                .all(|e| e.block_offset == BLOCK_OFFSET_FILLER);
+                            if all_filler {
+                                let _ = std::fs::remove_file(&meta.path);
+                                log::debug!("[index] removed pure-filler segment: {:?}", meta.path);
+                            }
+                            all_filler
+                        }
+                        _ => false,
+                    }
                 }
+            };
+            if remove {
+                to_remove.push(*key);
             }
         }
-        for idx in to_remove.into_iter().rev() {
-            self.index_segments.remove(idx);
+
+        for key in to_remove {
+            self.index_segments.remove(&key);
         }
     }
 
     /// Get or create a segment for the given timestamp.
     fn get_or_create_segment_for_ts(&mut self, start_ts: i64) -> Result<&mut IndexSegment> {
-        // Try last segment first
-        if let Some(last) = self.index_segments.last() {
-            if !last.is_full() {
-                let idx: usize = self.index_segments.len() - 1;
-                return Ok(&mut self.index_segments[idx]);
+        if let Some(latest_key) = self.index_segments.last_key_value().map(|(key, _)| *key) {
+            let latest_available = {
+                let latest = self.open_index_segment(latest_key)?;
+                !latest.is_full()
+            };
+            if latest_available {
+                return self.open_index_segment(latest_key);
             }
         }
 
-        // Check closed segments for existing one
-        if let Some(pos) = self
-            .closed_index_segments
-            .iter()
-            .position(|m| m.start_timestamp == start_ts)
-        {
-            let meta = self.closed_index_segments.remove(pos);
-            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-            self.index_segments.push(seg);
-        } else {
-            if let Some(last) = self.index_segments.last_mut() {
-                last.sync()?;
-            }
-            let seg = IndexSegment::create_with_compression(
-                &self.base_dir,
-                start_ts,
-                self.initial_segment_size,
-                self.segment_size,
-                self.compress_level,
-                self.compress_type,
-            )?;
-            self.index_segments.push(seg);
-        }
-
-        let idx: usize = self.index_segments.len() - 1;
-        Ok(&mut self.index_segments[idx])
+        self.get_or_create_segment_by_start(start_ts)
     }
 
     fn get_or_create_segment_by_start(&mut self, segment_start: i64) -> Result<&mut IndexSegment> {
-        if let Some(pos) = self
-            .index_segments
-            .iter()
-            .position(|seg| seg.start_timestamp == segment_start)
-        {
-            return Ok(&mut self.index_segments[pos]);
+        if self.index_segments.contains_key(&segment_start) {
+            return self.open_index_segment(segment_start);
         }
 
-        if let Some(pos) = self
-            .closed_index_segments
-            .iter()
-            .position(|meta| meta.start_timestamp == segment_start)
-        {
-            let meta = self.closed_index_segments.remove(pos);
-            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-            self.index_segments.push(seg);
-        } else {
-            if let Some(last) = self.index_segments.last_mut() {
-                last.sync()?;
+        if let Some(latest_key) = self.index_segments.last_key_value().map(|(key, _)| *key) {
+            if let Some(IndexSegmentEntryState::Open(seg)) =
+                self.index_segments.get_mut(&latest_key)
+            {
+                seg.sync()?;
             }
-            let seg = IndexSegment::create_with_compression(
-                &self.base_dir,
-                segment_start,
-                self.initial_segment_size,
-                self.segment_size,
-                self.compress_level,
-                self.compress_type,
-            )?;
-            self.index_segments.push(seg);
         }
 
-        let idx = self.index_segments.len() - 1;
-        Ok(&mut self.index_segments[idx])
+        let seg = IndexSegment::create_with_compression(
+            &self.base_dir,
+            segment_start,
+            self.initial_segment_size,
+            self.segment_size,
+            self.compress_level,
+            self.compress_type,
+        )?;
+        self.index_segments
+            .insert(segment_start, IndexSegmentEntryState::Open(seg));
+        self.open_index_segment(segment_start)
     }
 
     /// Query entries in the time range [start_ts, end_ts].
@@ -652,29 +687,18 @@ impl TimeIndex {
         let mut results = Vec::new();
         let ic = self.index_continuous;
 
-        // In-memory buffer
         for entry in &self.in_memory_buffer {
             if entry.timestamp >= start_ts && entry.timestamp <= end_ts {
                 results.push(*entry);
             }
         }
 
-        // Open segments (use continuous-safe query)
-        for seg in &mut self.index_segments {
+        for key in self.segment_keys_for_range(start_ts, end_ts) {
+            let seg = self.open_index_segment(key)?;
             seg.ensure_open()?;
-            let range_entries = seg.query_range_cs(start_ts, end_ts, ic);
-            results.extend(range_entries);
+            results.extend(seg.query_range_cs(start_ts, end_ts, ic));
         }
 
-        // Closed segments (open briefly for query)
-        for meta in &self.closed_index_segments {
-            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-            let range_entries = seg.query_range_cs(start_ts, end_ts, ic);
-            results.extend(range_entries);
-            // Don't keep open - query only
-        }
-
-        // Deduplicate and sort
         results.sort_by_key(|e| e.timestamp);
         results.dedup_by_key(|e| e.timestamp);
         Ok(results)
@@ -704,37 +728,22 @@ impl TimeIndex {
             });
         }
 
-        for seg in &mut self.index_segments {
+        let segment_size = self.segment_size;
+        for key in self.segment_keys_for_range(start_ts, end_ts) {
+            let seg = self.open_index_segment(key)?;
             seg.ensure_open()?;
             if let Some((start_idx, end_idx)) = seg.query_range_indices(start_ts, end_ts, ic) {
                 let first_timestamp = seg.read_entry_at_index(start_idx)?.timestamp;
                 sources.push(QuerySource::segment_file(
                     seg.path.clone(),
                     seg.start_timestamp,
-                    self.segment_size,
+                    segment_size,
                     ic,
                     start_idx,
                     end_idx,
                     first_timestamp,
                 ));
             }
-        }
-
-        for meta in &self.closed_index_segments {
-            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-            if let Some((start_idx, end_idx)) = seg.query_range_indices(start_ts, end_ts, ic) {
-                let first_timestamp = seg.read_entry_at_index(start_idx)?.timestamp;
-                sources.push(QuerySource::segment_file(
-                    meta.path.clone(),
-                    meta.start_timestamp,
-                    self.segment_size,
-                    ic,
-                    start_idx,
-                    end_idx,
-                    first_timestamp,
-                ));
-            }
-            seg.idle_close().ok();
         }
 
         sources.sort_by_key(|source| source.first_timestamp().unwrap_or(i64::MAX));
@@ -744,17 +753,15 @@ impl TimeIndex {
     // ─── Lifecycle management ────────────────────────────────────────────
 
     pub fn sync_all(&mut self) -> Result<()> {
-        for seg in &mut self.index_segments {
+        for seg in self.open_index_segments_mut() {
             seg.sync()?;
         }
         Ok(())
     }
 
     pub(crate) fn sync_segment(&mut self, start_timestamp: i64) -> Result<()> {
-        if let Some(seg) = self
-            .index_segments
-            .iter_mut()
-            .find(|seg| seg.start_timestamp == start_timestamp)
+        if let Some(IndexSegmentEntryState::Open(seg)) =
+            self.index_segments.get_mut(&start_timestamp)
         {
             if !seg.is_flushed {
                 seg.sync()?;
@@ -764,18 +771,30 @@ impl TimeIndex {
     }
 
     pub fn idle_close_all(&mut self) -> Result<()> {
-        let mut closed: Vec<IndexSegmentMeta> = Vec::new();
-        for mut seg in self.index_segments.drain(..) {
-            closed.push(IndexSegmentMeta::new(
+        let keys: Vec<i64> = self
+            .index_segments
+            .iter()
+            .filter_map(|(key, entry)| match entry {
+                IndexSegmentEntryState::Open(_) => Some(*key),
+                IndexSegmentEntryState::Closed(_) => None,
+            })
+            .collect();
+        for key in keys {
+            let Some(IndexSegmentEntryState::Open(mut seg)) = self.index_segments.remove(&key)
+            else {
+                continue;
+            };
+            let meta = IndexSegmentMeta::new(
                 seg.path.clone(),
                 seg.start_timestamp,
                 seg.entries_capacity,
                 seg.wrote_count,
                 seg.header_size,
-            ));
+            );
             seg.idle_close()?;
+            self.index_segments
+                .insert(key, IndexSegmentEntryState::Closed(meta));
         }
-        self.closed_index_segments.extend(closed);
         Ok(())
     }
 
@@ -787,9 +806,11 @@ impl TimeIndex {
         threshold: i64,
         _max_file_size: u64,
     ) -> Result<usize> {
-        let before = self.closed_index_segments.len();
-        self.closed_index_segments.retain(|meta| {
-            // Open briefly with read-only mmap and drop immediately after reading.
+        let before = self.index_segments.len();
+        self.index_segments.retain(|_, entry| {
+            let IndexSegmentEntryState::Closed(meta) = entry else {
+                return true;
+            };
             match segment::last_entry_timestamp(&meta.path) {
                 Ok(Some(last_ts)) if last_ts < threshold => {
                     let _ = std::fs::remove_file(&meta.path);
@@ -797,7 +818,6 @@ impl TimeIndex {
                     false
                 }
                 Ok(None) => {
-                    // Empty segment — only filler? Reclaim to recycle disk.
                     let _ = std::fs::remove_file(&meta.path);
                     log::info!("[retention] deleted empty index segment: {:?}", meta.path);
                     false
@@ -813,7 +833,7 @@ impl TimeIndex {
                 }
             }
         });
-        Ok(before - self.closed_index_segments.len())
+        Ok(before - self.index_segments.len())
     }
 
     /// Load existing index segments from disk.
@@ -884,8 +904,10 @@ impl TimeIndex {
             initial_segment_size,
             compress_level,
             compress_type,
-            index_segments: Vec::new(),
-            closed_index_segments: metas,
+            index_segments: metas
+                .into_iter()
+                .map(|meta| (meta.start_timestamp, IndexSegmentEntryState::Closed(meta)))
+                .collect(),
             in_memory_buffer: Vec::new(),
             in_memory_flush_threshold: 1024,
             index_continuous,
@@ -924,11 +946,29 @@ impl Drop for TimeIndex {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
     fn temp_dir() -> std::path::PathBuf {
         let d = std::env::temp_dir().join("timslite_test_index");
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    fn fresh_subdir(name: &str) -> std::path::PathBuf {
+        let sub = temp_dir().join(name);
+        let _ = fs::remove_dir_all(&sub);
+        fs::create_dir_all(&sub).unwrap();
+        sub
+    }
+
+    fn missing_meta(dir: &Path, start_timestamp: i64) -> IndexSegmentMeta {
+        IndexSegmentMeta::new(
+            dir.join(format!("missing_{}", start_timestamp)),
+            start_timestamp,
+            4,
+            4,
+            INDEX_HEADER_SIZE,
+        )
     }
 
     #[test]
@@ -979,6 +1019,82 @@ mod tests {
         assert_eq!(entries.len(), 11);
         assert_eq!(entries[0].timestamp, 1010);
         assert_eq!(entries.last().unwrap().timestamp, 1020);
+    }
+
+    #[test]
+    fn test_time_index_registries_stay_sorted_across_lazy_open() {
+        let sub = fresh_subdir("ordered_registry_lazy_open");
+        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        for ts in 100..108 {
+            idx.add_entry(ts, ts as u64, 0).unwrap();
+        }
+        idx.flush_to_disk().unwrap();
+        assert_eq!(
+            idx.open_index_segments()
+                .map(|seg| seg.start_timestamp)
+                .collect::<Vec<_>>(),
+            vec![100, 104]
+        );
+
+        idx.idle_close_all().unwrap();
+        assert_eq!(idx.open_len(), 0);
+        assert_eq!(
+            idx.closed_index_segments()
+                .map(|meta| meta.start_timestamp)
+                .collect::<Vec<_>>(),
+            vec![100, 104]
+        );
+
+        idx.get_or_create_segment_by_start(104).unwrap();
+        idx.get_or_create_segment_by_start(100).unwrap();
+        assert_eq!(
+            idx.open_index_segments()
+                .map(|seg| seg.start_timestamp)
+                .collect::<Vec<_>>(),
+            vec![100, 104]
+        );
+    }
+
+    #[test]
+    fn test_continuous_find_entry_uses_computed_closed_segment() {
+        let sub = fresh_subdir("continuous_direct_closed_lookup");
+        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        for ts in 100..108 {
+            idx.add_entry(ts, ts as u64, 0).unwrap();
+        }
+        idx.flush_to_disk().unwrap();
+        idx.idle_close_all().unwrap();
+        let meta = missing_meta(&sub, 50);
+        idx.index_segments
+            .insert(meta.start_timestamp, IndexSegmentEntryState::Closed(meta));
+
+        let entry = idx.find_entry(102).unwrap().unwrap();
+        assert_eq!(entry.timestamp, 102);
+        assert_eq!(entry.block_offset, 102);
+    }
+
+    #[test]
+    fn test_noncontinuous_update_delete_skip_unrelated_closed_segment() {
+        let sub = fresh_subdir("noncontinuous_candidate_closed_lookup");
+        let mut idx = TimeIndex::new(&sub, 200, 200, false).unwrap();
+        idx.add_entry(100, 1000, 1).unwrap();
+        idx.add_entry(101, 1001, 1).unwrap();
+        idx.flush_to_disk().unwrap();
+        idx.idle_close_all().unwrap();
+        let meta = missing_meta(&sub, 0);
+        idx.index_segments
+            .insert(meta.start_timestamp, IndexSegmentEntryState::Closed(meta));
+
+        let old = idx.update_entry(101, 9001, 9).unwrap();
+        assert_eq!(old.block_offset, 1001);
+
+        let updated = idx.find_entry(101).unwrap().unwrap();
+        assert_eq!(updated.block_offset, 9001);
+        assert_eq!(updated.in_block_offset, 9);
+
+        let deleted = idx.find_and_delete_entry(101).unwrap();
+        assert_eq!(deleted.block_offset, 9001);
+        assert!(idx.find_and_delete_entry(101).is_err());
     }
 
     #[test]

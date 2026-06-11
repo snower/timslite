@@ -1,4 +1,4 @@
-# 数据段管理 - DataSegmentSet + DataSegment
+﻿# 数据段管理 - DataSegmentSet + DataSegment
 
 ## 五、DataSegmentSet: 数据段集合
 
@@ -17,8 +17,7 @@ struct DataSegmentSet {
     segment_size: u64,
     initial_segment_size: u64,    // 初始分配大小
     compress_level: u8,
-    segments: Vec<DataSegment>,           // 打开中的 data segment
-    closed_segments: Vec<DataSegmentMeta>, // 已关闭的 data segment
+    segments: BTreeMap<u64, DataSegmentEntry>, // key = data segment file_offset
     next_offset: u64,
     last_used_at: Instant,
 }
@@ -359,6 +358,28 @@ impl DataSegment {
 }
 ```
 
+### 6.5.1 DataSegmentSet 分段注册表与定位
+
+`DataSegmentSet` 使用单个 `BTreeMap<u64, DataSegmentEntry>` 保存所有数据分段, key 为 `file_offset`:
+
+- `DataSegmentEntry::Open(DataSegment)`: 当前 mmap/open 的分段。
+- `DataSegmentEntry::Closed(DataSegmentMeta)`: 已 idle-close 或 load-existing 后尚未打开的分段元数据。
+
+该注册表天然按 `file_offset` 升序维护。任何生命周期迁移都只改变同一 key 下的 entry 状态, 不在 open/closed 两个列表之间搬移:
+
+- load-existing 扫描磁盘后插入 `Closed` entry。
+- lazy-open: 通过 `file_offset` 在 `BTreeMap` 中 O(log n) 命中, 若为 `Closed` 则打开文件并替换为 `Open`。
+- idle-close: 遍历 registry, 将 `Open` sync+unmap 后替换为 `Closed`。
+- 新建 segment: 以新 `file_offset` 插入 `Open` entry。
+
+定位规则:
+
+```text
+segment_file_offset = (block_offset / data_segment_size) * data_segment_size
+```
+
+读路径、cache invalidation、`invalid_record_count` 更新、flush target 定位都应使用该精确 key 直接从 `BTreeMap` 定位。不得在大分段数量下线性扫描全部 segment。
+
 ### 6.6 扩容机制 (详见 [懒分配与扩容](lazy-allocation.md))
 
 - 创建时: `file.set_len(initial_size)` — 仅分配初始大小
@@ -402,15 +423,15 @@ impl DataSegment {
 ```
 reclaim_expired_segments(expiration_threshold: i64):
   前置条件: DataSet 已 close (), 所有 segment 均处于 closed 状态
-  for seg in closed_segments:
-    if seg.max_timestamp < expiration_threshold:
-      fs::remove_file(seg.path)
-      closed_segments.remove(seg)
+  for (file_offset, entry) in segments:
+    if entry is Closed(meta) && meta.max_timestamp < expiration_threshold:
+      fs::remove_file(meta.path)
+      segments.remove(file_offset)
 ```
 
 **判断依据**:
 - 使用段文件 header 中的 `max_timestamp` (已在 `DataSegmentMeta` 中缓存)
-- 无需打开文件, closed_segments 在 idle_close_all (DataSet::close) 时已读取 header 中的 min/max_timestamp
+- 无需打开文件, `segments` 中的 `Closed(DataSegmentMeta)` entry 在 idle-close/load-existing 时已读取 header 中的 min/max_timestamp
 - 过期判断: `max_timestamp < expiration_threshold` (整个段的最大时间戳早于过期阈值)
 - 如果一个 data segment 同时包含过期和未过期 timestamp, 该混合分段必须保留, 不做部分裁剪
 - 数据段回收不检查其数据是否仍被 index entry 引用; 可见性由 `DataSet` 的 retention 读写约束保证
@@ -424,3 +445,4 @@ reclaim_expired_segments(expiration_threshold: i64):
 ---
 
 **相关**: [架构概览](architecture.md) | [数据模型](data-model.md) | [懒分配与扩容](lazy-allocation.md)
+

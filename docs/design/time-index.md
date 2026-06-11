@@ -1,4 +1,4 @@
-# 时间索引 - TimeIndex + IndexSegment
+﻿# 时间索引 - TimeIndex + IndexSegment
 
 ## 七、TimeIndex: 时间索引
 
@@ -9,8 +9,7 @@ struct TimeIndex {
     base_dir: PathBuf,
     segment_size: u64,
     initial_segment_size: u64,    // 初始分配大小
-    index_segments: Vec<IndexSegment>,              // 打开中的 index segment
-    closed_index_segments: Vec<IndexSegmentMeta>,   // 已关闭的 index segment
+    index_segments: BTreeMap<i64, IndexSegmentEntry>, // key = index segment start_timestamp
     in_memory_buffer: Vec<IndexEntry>,
     in_memory_flush_threshold: usize,               // 默认 1024
     index_continuous: bool,                         // 连续存储模式
@@ -189,6 +188,22 @@ impl IndexSegment {
 
 其中 `k` = 查询范围内条目数, `n` = 段内总条目数。
 
+### 7.6.1 TimeIndex 分段注册表与定位
+
+`TimeIndex` 使用单个 `BTreeMap<i64, IndexSegmentEntry>` 保存所有 index segment, key 为 `start_timestamp`:
+
+- `IndexSegmentEntry::Open(IndexSegment)`: 当前 mmap/open 的索引分段。
+- `IndexSegmentEntry::Closed(IndexSegmentMeta)`: 已 idle-close 或 load-existing 后尚未打开的索引分段元数据。
+
+该注册表天然按 `start_timestamp` 升序维护。load-existing、新建 segment、lazy-open、idle-close、remove pure filler segment 与 retention reclaim 都只更新同一个 map 中的 entry 状态或删除 key。写入路径可以通过 `BTreeMap::last_key_value()` 获取最新段, 不再维护 open/closed 两个列表。
+
+单点查找/更新/删除的 segment 定位规则:
+
+- continuous mode: 通过 `segment_start_for(timestamp)` 直接计算目标 `start_timestamp`, 然后从 `BTreeMap` 中 O(log n) 命中。最多打开一个 closed segment。
+- non-continuous mode: 通过 `range(..=timestamp).next_back()` 找 `start_timestamp <= timestamp` 的最后一个候选 segment。若候选段内不存在目标 timestamp, 该 timestamp 不存在; 不逐个打开全部 closed index segment。
+
+范围查询仍需要访问与 `[start_ts, end_ts]` 有交集的多个 segment, 但应利用 `BTreeMap::range` 跳过明显在范围外的前缀/后缀。对于 closed segment, 只打开候选范围内的 segment。
+
 ### 7.7 连续模式稀疏分段
 
 连续模式仍保持 O(1) 定位, 但不再要求所有缺失 timestamp 都落盘为 filler。它使用固定逻辑网格:
@@ -219,11 +234,13 @@ entry_index      = ts - segment_start
 ```
 reclaim_expired_segments(expiration_threshold: i64):
   前置条件: DataSet 已 close(), 所有 index segment 处于 closed 状态
-  for meta in closed_index_segments:
+  for (start_timestamp, entry) in index_segments:
+    if entry is not Closed(meta):
+      continue
     last_ts = IndexSegment::last_entry_timestamp(meta.path)
     if last_ts < expiration_threshold:
       fs::remove_file(meta.path)
-      closed_index_segments.remove(meta)
+      index_segments.remove(start_timestamp)
 ```
 
 **`last_entry_timestamp` 实现**:
@@ -242,3 +259,4 @@ reclaim_expired_segments(expiration_threshold: i64):
 ---
 
 **相关**: [架构概览](architecture.md) | [数据模型](data-model.md) | [索引连续存储](index-continuous.md)
+

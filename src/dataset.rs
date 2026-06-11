@@ -340,7 +340,7 @@ impl DataSet {
             return;
         };
         let mut queue = queue.lock().unwrap();
-        for seg in &mut self.segments.segments {
+        for seg in self.segments.open_segments_mut() {
             if seg.take_flush_enqueue_marker() {
                 queue.push_back(DataSetFlushTarget {
                     dataset: self.id.clone(),
@@ -350,7 +350,7 @@ impl DataSet {
                 });
             }
         }
-        for seg in &mut self.time_index.index_segments {
+        for seg in self.time_index.open_index_segments_mut() {
             if seg.take_flush_enqueue_marker() {
                 queue.push_back(DataSetFlushTarget {
                     dataset: self.id.clone(),
@@ -380,14 +380,14 @@ impl DataSet {
 
     fn dirty_flush_targets(&self) -> Vec<SegmentFlushTarget> {
         let mut targets = Vec::new();
-        for seg in &self.segments.segments {
+        for seg in self.segments.open_segments() {
             if !seg.is_flushed {
                 targets.push(SegmentFlushTarget::Data {
                     file_offset: seg.file_offset,
                 });
             }
         }
-        for seg in &self.time_index.index_segments {
+        for seg in self.time_index.open_index_segments() {
             if !seg.is_flushed {
                 targets.push(SegmentFlushTarget::Index {
                     start_timestamp: seg.start_timestamp,
@@ -1123,15 +1123,13 @@ impl DataSet {
     /// position. Deleted/filler entries still define the written timestamp.
     fn recover_latest_timestamp(time_index: &TimeIndex) -> i64 {
         let latest_closed = time_index
-            .closed_index_segments
-            .iter()
+            .closed_index_segments()
             .filter(|meta| meta.wrote_count > 0)
             .max_by_key(|meta| meta.start_timestamp)
             .and_then(|meta| last_entry_timestamp(&meta.path).ok().flatten());
 
         let latest_open = time_index
-            .index_segments
-            .iter()
+            .open_index_segments()
             .filter(|seg| seg.wrote_count > 0)
             .max_by_key(|seg| seg.start_timestamp)
             .and_then(Self::last_open_index_entry_timestamp);
@@ -1232,7 +1230,7 @@ impl DataSet {
             return Ok(0);
         }
 
-        // Close all open segments so they appear in closed_segments / closed_index_segments
+        // Close all open segments so they become Closed entries in the registries.
         self.close()?;
 
         // Reclaim index segments (read-only mmap per segment, released immediately)
@@ -1240,7 +1238,7 @@ impl DataSet {
             .time_index
             .reclaim_expired_segments(threshold, self.config.index_segment_size)?;
 
-        // Reclaim data segments (uses cached max_timestamp in closed_segments vec)
+        // Reclaim data segments using cached max_timestamp in Closed registry entries.
         let data_reclaimed = self.segments.reclaim_expired_segments(threshold)?;
 
         self.last_used_at = Instant::now();
@@ -1278,8 +1276,8 @@ impl DataSet {
         };
 
         // Aggregate data segment state
-        let open_ds = self.segments.segments.len() as u32;
-        let closed_ds = self.segments.closed_segments.len() as u32;
+        let open_ds = self.segments.open_len() as u32;
+        let closed_ds = self.segments.closed_len() as u32;
         let mut total_record_count: u64 = 0;
         let mut total_data_size: u64 = 0;
         let mut total_uncompressed_size: u64 = 0;
@@ -1288,7 +1286,7 @@ impl DataSet {
         let mut max_timestamp = i64::MIN;
 
         // Open segments
-        for seg in &self.segments.segments {
+        for seg in self.segments.open_segments() {
             total_record_count += seg.record_count;
             total_data_size += seg.data_wrote_position;
             total_uncompressed_size += seg.total_uncompressed_size;
@@ -1302,7 +1300,7 @@ impl DataSet {
         }
 
         // Closed segments
-        for seg in &self.segments.closed_segments {
+        for seg in self.segments.closed_segments() {
             if seg.min_timestamp != TIMESTAMP_MIN_SENTINEL && seg.min_timestamp < min_timestamp {
                 min_timestamp = seg.min_timestamp;
             }
@@ -1320,8 +1318,8 @@ impl DataSet {
         }
 
         // Aggregate index state
-        let open_idx = self.time_index.index_segments.len() as u32;
-        let closed_idx = self.time_index.closed_index_segments.len() as u32;
+        let open_idx = self.time_index.open_len() as u32;
+        let closed_idx = self.time_index.closed_len() as u32;
         let pending_entries = self.time_index.in_memory_buffer.len() as u32;
         let base_timestamp = self.time_index.base_timestamp;
 
@@ -1523,7 +1521,7 @@ mod tests {
 
         ds.write(100, b"first").unwrap();
         assert_eq!(ds.flush_queue_len(), 1);
-        assert!(!ds.segments.segments[0].is_flushed);
+        assert!(!ds.segments.open_segments().next().unwrap().is_flushed);
 
         ds.write(200, b"second").unwrap();
         assert_eq!(
@@ -1534,11 +1532,10 @@ mod tests {
 
         ds.flush().unwrap();
         assert_eq!(ds.flush_queue_len(), 0);
-        assert!(ds.segments.segments.iter().all(|seg| seg.is_flushed));
+        assert!(ds.segments.open_segments().all(|seg| seg.is_flushed));
         assert!(ds
             .time_index
-            .index_segments
-            .iter()
+            .open_index_segments()
             .all(|seg| seg.is_flushed));
     }
 
@@ -1547,15 +1544,14 @@ mod tests {
         let mut ds = make_dirty_queue_dataset("dirty_queue_rollover", 188);
 
         ds.write(100, &[0xAA; 32]).unwrap();
-        let first_offset = ds.segments.segments[0].file_offset;
-        assert!(!ds.segments.segments[0].is_flushed);
+        let first_offset = ds.segments.open_segments().next().unwrap().file_offset;
+        assert!(!ds.segments.open_segments().next().unwrap().is_flushed);
 
         ds.write(200, &[0xBB; 32]).unwrap();
 
         let first = ds
             .segments
-            .segments
-            .iter()
+            .open_segments()
             .find(|seg| seg.file_offset == first_offset)
             .unwrap();
         assert!(
@@ -1572,7 +1568,7 @@ mod tests {
         assert_eq!(ds.flush_queue_len(), 1);
 
         ds.segments.idle_close_all().unwrap();
-        assert!(ds.segments.segments.is_empty());
+        assert!(ds.segments.open_len() == 0);
 
         ds.flush().unwrap();
 
@@ -1600,7 +1596,7 @@ mod tests {
         let mut ds = make_cache_dataset("append_latest_tail_in_place");
         ds.write(100, b"ab").unwrap();
         let before = {
-            let seg = ds.segments.segments.last().unwrap();
+            let seg = ds.segments.open_segments().last().unwrap();
             (
                 seg.data_wrote_position,
                 seg.pending_wrote_position,
@@ -1617,7 +1613,7 @@ mod tests {
         assert_eq!(outcome.data_len, 2);
         assert_eq!(ds.latest_written_timestamp(), 100);
         assert_eq!(ds.read(100).unwrap().unwrap().1, b"abcd");
-        let seg = ds.segments.segments.last().unwrap();
+        let seg = ds.segments.open_segments().last().unwrap();
         assert_eq!(seg.data_wrote_position, before.0 + 2);
         assert_eq!(seg.pending_wrote_position, before.1 + 2);
         assert_eq!(seg.total_uncompressed_size, before.2 + 2);
@@ -1719,7 +1715,7 @@ mod tests {
         let mut expected = old;
         expected.extend_from_slice(&[0x22, 0x33]);
         assert_eq!(ds.read(100).unwrap().unwrap().1, expected);
-        let seg = ds.segments.segments.last().unwrap();
+        let seg = ds.segments.open_segments().last().unwrap();
         assert_eq!(seg.invalid_record_count, 0);
     }
 
@@ -1739,7 +1735,7 @@ mod tests {
             before_entry
         );
         assert_eq!(ds.read(100).unwrap().unwrap().1, old);
-        let seg = ds.segments.segments.last().unwrap();
+        let seg = ds.segments.open_segments().last().unwrap();
         assert_eq!(seg.invalid_record_count, 0);
     }
 
@@ -2445,7 +2441,7 @@ mod tests {
 
             // The old data segment (only one segment here, everything fits) should have
             // invalid_record_count = 2 after two out-of-order writes.
-            let seg = ds.segments.segments.last().unwrap();
+            let seg = ds.segments.open_segments().last().unwrap();
             assert_eq!(
                 seg.invalid_record_count, 2,
                 "expected invalid_record_count=2, got {}",
@@ -2460,7 +2456,7 @@ mod tests {
         // Query forces segment open; after open, invalid_record_count is read from file header.
         let entries = ds2.query(100, 200).unwrap();
         assert_eq!(entries.len(), 2); // ts=100 ("v3") and ts=200 ("latest")
-        let seg2 = ds2.segments.segments.last().unwrap();
+        let seg2 = ds2.segments.open_segments().last().unwrap();
         assert_eq!(seg2.invalid_record_count, 2);
     }
 
@@ -3059,7 +3055,7 @@ mod tests {
         ds.delete(200).unwrap();
 
         // Both deletes target the same segment; count = 2
-        let seg = ds.segments.segments.last().unwrap();
+        let seg = ds.segments.open_segments().last().unwrap();
         assert_eq!(seg.invalid_record_count, 2);
 
         // Only ts=300 should remain queryable
@@ -3101,7 +3097,7 @@ mod tests {
         // invalid_record_count unchanged
         ds.write(100, b"replaced").unwrap();
 
-        let seg = ds.segments.segments.last().unwrap();
+        let seg = ds.segments.open_segments().last().unwrap();
         assert_eq!(
             seg.invalid_record_count, 1,
             "expected 1, got {}",
@@ -3147,7 +3143,7 @@ mod tests {
         assert_eq!(entries[0].0, 200);
 
         // Reopened segment should preserve invalid_record_count
-        let seg2 = ds2.segments.segments.last().unwrap();
+        let seg2 = ds2.segments.open_segments().last().unwrap();
         assert_eq!(seg2.invalid_record_count, 1);
     }
 
@@ -3190,7 +3186,7 @@ mod tests {
             // latest_written_timestamp unchanged
             assert_eq!(ds.latest_written_timestamp, 100);
 
-            let seg = ds.segments.segments.last().unwrap();
+            let seg = ds.segments.open_segments().last().unwrap();
             assert_eq!(seg.invalid_record_count, 0);
         }
     }
@@ -3234,7 +3230,7 @@ mod tests {
         assert_eq!(ds.latest_written_timestamp, 100);
 
         // invalid_record_count should be 1 (old data orphaned)
-        let seg = ds.segments.segments.last().unwrap();
+        let seg = ds.segments.open_segments().last().unwrap();
         assert_eq!(seg.invalid_record_count, 1);
     }
 
@@ -3342,8 +3338,12 @@ mod tests {
             assert_eq!(entries[1].0, 200);
             assert_eq!(entries[1].1, b"last");
 
-            let seg = ds.segments.segments.last().unwrap();
-            assert_eq!(seg.invalid_record_count, 1);
+            let invalid_count: u64 = ds
+                .segments
+                .open_segments()
+                .map(|seg| seg.invalid_record_count)
+                .sum();
+            assert_eq!(invalid_count, 1);
         }
     }
 
