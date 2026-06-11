@@ -43,7 +43,7 @@
 - **乱序写入**: [数据集操作·§9.1 乱序写入机制](docs/design/dataset-operations.md#91-时间戳验证与写入分支) → [索引连续存储·§23.4 情况B](docs/design/index-continuous.md#234-写入行为)
 - **删除记录**: [数据集操作·§9.3 删除操作](docs/design/dataset-operations.md#93-删除操作-datasetdelete) → [索引连续存储·§23.5 哨兵值设计](docs/design/index-continuous.md#235-哨兵值设计)
 - **读取数据**: [时间索引](docs/design/time-index.md) → [数据集操作·读取流程](docs/design/dataset-operations.md#十读取流程详解) → [数据集读操作](docs/design/dataset-read-operations.md) → [查询迭代器](docs/design/query-iterator.md) → [后台任务与缓存](docs/design/background-and-cache.md)
-- **数据保留回收**: [元数据格式·retention_ms](docs/design/meta-format.md) → [数据集操作·§11](docs/design/dataset-operations.md#十一数据保留-retention-与回收) → [后台任务·§17.8](docs/design/background-and-cache.md#178-retention-reclaim-数据保留回收)
+- **数据保留回收**: [元数据格式·retention_window](docs/design/meta-format.md) → [数据集操作·§11](docs/design/dataset-operations.md#十一数据保留-retention-与回收) → [后台任务·§17.8](docs/design/background-and-cache.md#178-retention-reclaim-数据保留回收)
 - **FFI 集成**: [Store 与 FFI](docs/design/store-and-ffi.md)
 - **崩溃安全**: [内存与并发](docs/design/memory-and-concurrency.md#崩溃安全)
 - **磁盘优化**: [懒分配与扩容](docs/design/lazy-allocation.md)

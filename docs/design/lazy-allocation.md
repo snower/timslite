@@ -1,127 +1,121 @@
-# 分段文件懒分配与倍率扩容
+# 分段文件懒分配与倍增扩容
 
-> **核心原则**: 分段文件创建时仅分配初始大小, 写入过程中如已分配空间不足, 按 2 倍速率扩容, 上限为配置的 `segment_size`。
-> **优化目标**: 减少小数据量场景下的磁盘空间浪费。
+> 核心原则: 分段文件创建时只分配初始大小。写入过程中如果已分配空间不足, 按 2 倍速度扩容, 上限为配置的 `segment_size`。
+> 优化目标: 减少小数据量场景下的磁盘空间浪费。
 
 ## 24.1 设计动机
 
-当前全量预分配问题:
-- 仅写入 100 条记录 → 实际数据 < 10KB → 磁盘占用 64MB + 4MB = 68MB
-- 创建 50 个小数据集 → 磁盘浪费 3.4GB
+全量预分配会让少量数据也占用完整 data/index segment 大小。例如只写入少量记录时, 仍可能占用 64MiB data segment + 4MiB index segment。
 
 懒分配方案:
-- 数据段初始 256KB, 索引段初始 4KB → 磁盘占用仅 260KB
-- 写入时逐步扩容, 最多到 64MB/4MB
-- 节省 99%+ 的磁盘空间
 
-## 24.2 新增配置参数
+- data segment 初始 256KiB。
+- index segment 初始 4KiB。
+- 写入时逐步扩容, 最大到 `data_segment_size` / `index_segment_size`。
+- 新分段文件名和逻辑路由仍基于 max segment size, 不基于当前物理文件大小。
+
+## 24.2 配置参数
 
 | 参数 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `initial_data_segment_size` | u64 | 256 * 1024 (256KB) | 数据分段文件初始大小 |
-| `initial_index_segment_size` | u64 | 4 * 1024 (4KB) | 索引分段文件初始大小 |
+|---|---:|---:|---|
+| `initial_data_segment_size` | `u64` | `256 * 1024` | data segment 初始物理文件大小 |
+| `initial_index_segment_size` | `u64` | `4 * 1024` | index segment 初始物理文件大小 |
 
-**约束**:
-- `initial_data_segment_size` 必须 ≥ data `header_len` + 最小可用空间 (当前 v1 默认 124 bytes)
-- `initial_index_segment_size` 必须 ≥ index entry area 起点 + 最小可用空间 (当前固定 128 bytes)
-- `initial_*` 必须 ≤ 对应的 `segment_size` (max)
-- 若 `initial_* == segment_size` → 退化为全量预分配
+约束:
 
-### Meta 文件持久化 (TLV 扩展)
+- `initial_data_segment_size >= data header_len + 最小可用空间`。
+- `initial_index_segment_size >= 128 + INDEX_ENTRY_SIZE`。
+- `initial_* <= 对应 segment_size`。
+- `initial_* == segment_size` 时退化为全量预分配。
 
-| Type (hex) | 名称 | 长度 | 数据类型 | 说明 |
-|------------|------|------|---------|------|
-| 0x06 | initial_data_segment_size | 8 | u64 LE | 数据分段初始大小 |
-| 0x07 | initial_index_segment_size | 8 | u64 LE | 索引分段初始大小 |
+Dataset meta 持久化:
 
-> `initial_*` 不是分段文件的不可变布局参数, 而是新分段的初始分配策略。
-> 旧版本库读取时跳过未知 TLV type。
+| Type | 名称 | 长度 | 类型 | 说明 |
+|---|---|---:|---|---|
+| `0x06` | `initial_data_segment_size` | 8 | `u64 LE` | data segment 初始大小 |
+| `0x07` | `initial_index_segment_size` | 8 | `u64 LE` | index segment 初始大小 |
 
-## 24.3 分段创建与扩容
+`initial_*` 是新分段的分配策略, 不是分段文件内不可变布局参数。
 
-### 创建
+## 24.3 创建与扩容流程
+
+创建分段:
 
 ```rust
-// DataSegment::create - 仅分配初始大小
-pub fn create(path: &Path, file_offset: u64, initial_size: u64, max_size: u64) -> Result<Self> {
-    file.set_len(initial_size)?;  // ← 仅分配初始大小
-    let metadata = DataFileMetadata::create_default(FILE_TYPE_DATA, file_offset as i64, max_size as u32);
-    // header file_size = max, NOT initial_size
-}
-
-// IndexSegment::create - 同理
-pub fn create(base_dir: &Path, start_timestamp: i64, initial_size: u64, max_size: u64) -> Result<Self>;
+file.set_len(initial_size)?;
+let metadata = FileMetadata::create_default(file_type, file_offset, max_size);
 ```
 
-### 扩容算法
+Header meta `file_size` 记录的是 `max_size`, 不是 `initial_size`。
 
+扩容流程:
+
+```text
+expand(current_file_size, max_size):
+  1. target = min(current_file_size * 2, max_size)
+  2. if target == current_file_size: return SegmentFull
+  3. unmap current mmap
+  4. file.set_len(target)
+  5. remap mmap from the same file
+  6. update in-memory current file size / entry capacity
 ```
-expand(current_file_size, max_size, mmap, path):
-   │
-   ├─ 1. target = min(current_file_size * 2, max_size)
-   │     └─ target == current_size → 已达上限, 返回错误
-   │
-   ├─ 2. unmap: self.mmap = None
-   ├─ 3. file.set_len(target)
-   ├─ 4. remap: self.mmap = Some(MmapMut::map_mut(&file))
-   ├─ 5. 更新内存字段: file_size = target
-   └─ 6. flush (确保持久化)
+
+扩容只要求 `set_len(target)` 成功返回后, 文件系统元数据中的文件长度变更对后续 open/remap 可见。扩容步骤本身不执行 `mmap.flush()`; `flush()` 只同步已经写入 mmap 的 data/header state 内容, 由后台 dirty flush、idle-close 或显式 `DataSet::flush()` 负责。
+
+Crash 语义:
+
+- 如果 crash 发生在 `set_len` 前, reopen 看到旧物理长度。
+- 如果 crash 发生在 `set_len` 后但新区域未写入或未 flush, reopen 看到扩容后的物理长度, 新区域按 OS 文件系统语义处理。
+- Header meta `file_size` 始终保持 `max_size`, 不随扩容改写, 因此不会出现 header 记录 initial/current size 的二次状态维护问题。
+
+## 24.4 触发时机
+
+Data segment:
+
+```text
+current_file_size - header_len < required_data_area_position
 ```
 
-### 触发时机
+Index segment:
 
-**DataSegment**: `file_size - header_len < wrote_position + 需要的空间` → 扩容
-**IndexSegment**: `wrote_count >= entries_capacity` → 扩容 → 使用固定 index entry area 起点 128 重新计算 `entries_capacity`
+```text
+wrote_count >= entries_capacity
+```
 
-### 扩容上限处理
+Index entry area 固定从文件偏移 128 开始, 扩容后重新根据当前物理文件长度计算 `entries_capacity = (current_file_size - 128) / INDEX_ENTRY_SIZE`。
 
-当 `target == max_file_size` (已达上限) 时:
-1. 若当前段仍有 pending block 且需要结束写入该段, 在 next write overflow 路径强制压缩并密封 pending block
-2. 创建新段 (以 `initial_size` 创建)
-3. 写入到新段
+## 24.5 达到上限
 
-> **重要**: `next_offset` 计算仍然基于 `segment_size` (max), 确保新段文件名正确:
-> - 第 1 段: offset = 0
-> - 第 2 段: offset = 64MB (即使第 1 段只用了 1MB)
+当当前分段已经达到 max segment size 且仍放不下新写入:
 
-## 24.4 Header file_size 语义
+1. 如果存在 pending block, 在 next write overflow 路径 seal + compress 当前 pending block。
+2. 创建新分段, 新分段按 `initial_*` 大小创建。
+3. 写入新分段。
 
-文件头中的 `file_size` (meta TLV type 0x03) **不随扩容更新**:
+新分段的 `file_offset` / 文件名仍按 max segment size 计算:
 
-| 时机 | file_size 值 | 说明 |
-|------|-------------|------|
-| 创建时 | `max_file_size` | 创建时写入, 记录标准分段大小 |
-| 扩容时 | **不变** | 扩容仅修改磁盘文件, 不修改 header |
-| 打开时 | **忽略** | 以 `fs::metadata(path)?.len()` 实际大小为准 |
+```text
+segment_n_base = n * segment_size
+```
 
-> **Crash 安全**: header file_size 不更新 → 扩容中途 crash → header 与实际文件不会不一致。
-
-## 24.5 打开已有分段 (兼容)
+## 24.6 打开已有分段
 
 `DataSegment::open()` 和 `IndexSegment::open()`:
-- 通过 `fs::metadata(path)?.len()` 读取实际文件大小
-- 已全量预分配文件: 实际大小 = segment_size → 正常打开
-- 懒分配+扩容后的文件: 实际大小 = 扩容后大小 → 正常打开
-- `max_file_size` 由配置传入
 
-## 24.6 磁盘空间优化效果
+- 通过 `fs::metadata(path)?.len()` 读取当前物理文件长度。
+- 通过 header meta `file_size` 校验/恢复 max segment size 契约。
+- data segment 的可写位置来自 state `wrote_position`。
+- index segment 的可写位置来自 state `wrote_position`, entry capacity 来自当前物理长度。
 
-| 场景 | 传统 (全量预分配) | 懒分配 | 节省 |
-|------|-------------------|--------|------|
-| 100 条记录 (data ~1KB) | 68MB | 260KB | 99.6% |
-| 1000 条记录 (data ~10KB) | 68MB | 260KB | 99.6% |
-| 50000 条记录 (data ~500KB) | 68MB | 774KB | 98.9% |
-| 满数据 (64MB) | 68MB | 68MB | 0% |
+## 24.7 风险与边界
 
-## 24.7 风险与应对
-
-| 风险 | 影响 | 应对 |
-|------|------|------|
-| 扩容时 unmap/remap 开销 | 写入延迟增加 | 64MB 从 256KB 仅需 9 次扩容 |
-| initial_size 配置过小 | 频繁扩容 | 默认 256KB/4KB 已能容纳大量小写入 |
-| 扩容 crash | header 损坏风险 | **零风险**: header 不变, 以磁盘实际大小为准 |
-| 后台任务与扩容竞态 | 冲突 | DataSet 的 Mutex 保证互斥 |
+| 风险 | 影响 | 处理 |
+|---|---|---|
+| 扩容 unmap/remap 开销 | 写入延迟偶发增加 | 默认初始大小控制扩容次数 |
+| initial size 过小 | 频繁扩容 | builder/meta 校验最小值, 默认值保守 |
+| 扩容期间 crash | 可能看到旧长度或新长度 | 以 OS 文件长度为准, header 不记录 current size |
+| 后台任务与扩容并发 | 可能竞争同一 mmap | DataSet mutex 串行保护 |
 
 ---
 
-**相关**: [数据模型](data-model.md) | [数据段管理](data-segment.md) | [时间索引](time-index.md)
+相关: [数据模型](data-model.md) | [数据段管理](data-segment.md) | [时间索引](time-index.md)

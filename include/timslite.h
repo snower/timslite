@@ -260,11 +260,11 @@ int tmsl_dataset_latest_timestamp(void* dataset, int64_t* out_ts,
  * Write a record to a dataset.
  *
  * Supports three timestamp modes:
- *   - correction: timestamp == latest 鈫?overwrite data in place (index unchanged)
- *   - out-of-order: timestamp < latest 鈫?append to latest segment + update index
+ *   - correction: timestamp == latest -> overwrite data in place (index unchanged)
+ *   - out-of-order: timestamp < latest -> append to latest segment + update index
  *     entry in place; the old data segment's invalid_record_count is incremented
  *     if the previous entry referenced real data; its global cache entry is invalidated
- *   - in-order: timestamp > latest 鈫?append; continuous mode fills gaps with filler
+ *   - in-order: timestamp > latest -> append; continuous mode fills gaps with filler
  *
  * @param dataset      Opaque dataset pointer.
  * @param timestamp    Timestamp (unit must match the dataset's timestamp scheme).

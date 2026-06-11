@@ -2,6 +2,8 @@
 
 ## 十九、Cargo.toml
 
+当前 crate:
+
 ```toml
 [package]
 name = "timslite"
@@ -17,67 +19,71 @@ memmap2 = "0.9"
 miniz_oxide = "0.8"
 log = "0.4"
 libc = "0.2"
+zstd = "0.13"
 
 [dev-dependencies]
 criterion = "0.5"
+proptest = "1"
 ```
 
-### 依赖说明
+依赖说明:
 
-| 依赖 | 版本 | 用途 |
-|------|------|------|
-| `memmap2` | 0.9 | 内存映射文件 I/O |
-| `miniz_oxide` | 0.8 | 纯 Rust deflate 压缩/解压 |
-| `log` | 0.4 | 日志门面 |
-| `libc` | 0.2 | C 标准库绑定 (malloc/free) |
-| `criterion` | 0.5 | 基准测试依赖 (dev-only; 当前尚未定义 bench target) |
+| 依赖 | 用途 |
+|---|---|
+| `memmap2` | mmap-backed data/index/queue state 文件 |
+| `miniz_oxide` | deflate 压缩/解压支持 |
+| `zstd` | 默认 zstd 压缩/解压支持 |
+| `log` | 日志门面 |
+| `libc` | C ABI 内存分配/释放边界 |
+| `criterion` | 性能基准 dev-dependency |
+| `proptest` | 属性测试 dev-dependency |
 
-### 构建命令
+## 二十、仓库结构与验证状态
+
+当前仓库已经包含:
+
+- `.github/workflows/ci.yml`: GitHub Actions CI。
+- `benches/`: benchmark 目录已存在, 但当前没有 benchmark 源文件, `Cargo.toml` 也未声明 `[[bench]]` target。
+- `src/`, `tests/`, `include/`, `wrapper/python/`, `docs/design/`, `docs/plan/`, `docs/review/`。
+
+因此当前不应再描述为“缺少 `.github/workflows/` 或 `benches/` 目录”。同时, 在新增可运行 benchmark 前, `cargo bench` 不作为必过验证命令。
+
+## 二十一、推荐本地验证
 
 ```bash
-# Debug
 cargo build
-
-# Release
 cargo build --release
-# 输出: target/release/libtimslite.so / timslite.dll / libtimslite.dylib
-
-# 测试
-cargo test -- --test-threads=1
-
-# Clippy
-cargo clippy --all-targets -- -D warnings
-
-# 格式检查
 cargo fmt -- --check
+cargo clippy --all-targets -- -D warnings
+cargo test -- --test-threads=1
 ```
 
-当前 `Cargo.toml` 尚未声明 `[[bench]]` target, 仓库也尚未创建 `benches/` 目录。`criterion` 仅作为后续性能基准的 dev-dependency 保留; 在新增基准前, 不应把 `cargo bench` 作为必过验证命令。
+本仓库文件系统测试共享临时路径, 完整测试必须单线程运行。
+
+修改 Python wrapper 时, 在本地环境支持的前提下还需要执行:
+
+```bash
+cd wrapper/python
+maturin develop
+python -m pytest tests/ -v
+```
+
+## 二十二、CI
+
+当前 `.github/workflows/ci.yml` 执行:
+
+- `cargo fmt -- --check`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test --lib -- --test-threads=1`
+- `cargo test --tests -- --test-threads=1`
+- Python 3.9 到 3.13 的 wrapper build + pytest
+
+CI 与本地完整验证的关系:
+
+- CI 拆分 lib/tests 以便定位失败。
+- 本地交付前仍推荐执行 `cargo test -- --test-threads=1`, 覆盖 lib + integration tests。
+- Benchmark 属于后续性能验证项, 不属于当前 CI 必过项。
 
 ---
 
-## 二十、CI 状态与建议命令
-
-当前仓库尚未包含 `.github/workflows/` 配置。以下命令是推荐 CI/合并前验证集合, 不是已存在 workflow 的声明。
-
-### 建议验证矩阵
-
-| 层 | 命令 | 说明 |
-|----|------|------|
-| Rust 单元测试 | `cargo test --lib -- --test-threads=1` | `src/` 内 `#[cfg(test)]` 模块 |
-| Rust 集成测试 | `cargo test --test integration_test -- --test-threads=1` | `tests/integration_test.rs` |
-| Clippy 检查 | `cargo clippy --all-targets -- -D warnings` | 零警告 |
-| 格式检查 | `cargo fmt -- --check` | 零差异 |
-| Python 包装测试 | `pytest wrapper/python/tests/ -v` | PyO3 + maturin 构建后执行 |
-| 基准测试 | 待补充 `benches/` + `[[bench]]` 后启用 | 当前不作为 CI 要求 |
-
-### Python 测试构建流程
-
-1. 安装 Python 3.9+
-2. `pip install maturin pytest`
-3. `maturin develop` (在 `wrapper/python/` 目录)
-4. `pytest tests/ -v`
-
----
-
-**相关**: [架构概览](architecture.md) | [Store 与 FFI](store-and-ffi.md)
+相关: [架构概览](architecture.md) | [Store 与 FFI](store-and-ffi.md)

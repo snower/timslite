@@ -446,3 +446,43 @@ Active segment header immutable TLV set:
 | 0x03 | file_size | 8 | u64 LE | Configured max segment size |
 | 0x04 | compress_level | 1 | u8 | Compression level |
 | 0x05 | compress_type | 1 | u8 | Compression algorithm: 0=zstd, 1=deflate |
+
+## P2-2 Active Contract: StoreConfig And DataSetConfig
+
+The older struct excerpt above is illustrative only. The authoritative field list is `src/config.rs`; this section records the active design-level contract so the data model document does not omit current fields.
+
+`StoreConfig` contains runtime settings and defaults for newly created datasets:
+
+```rust
+pub struct StoreConfig {
+    pub flush_interval: Duration,          // default 15s
+    pub idle_timeout: Duration,            // default 30min
+    pub data_segment_size: u64,            // default 64MiB
+    pub index_segment_size: u64,           // default 4MiB
+    pub initial_data_segment_size: u64,    // default 256KiB
+    pub initial_index_segment_size: u64,   // default 4KiB
+    pub compress_level: u8,                // default 6
+    pub compress_type: u8,                 // default 0=zstd, 1=deflate
+    pub cache_max_memory: usize,           // default 256MiB, 0=disabled
+    pub cache_idle_timeout: Duration,      // default 30min
+    pub retention_check_hour: u8,          // UTC hour 0..=23, default 0
+    pub enable_background_thread: bool,    // default true
+    pub enable_journal: bool,              // default true
+}
+```
+
+`DataSetConfig` contains dataset creation/open configuration. Values persisted in dataset meta must be read from meta on reopen, not compared against Store defaults:
+
+```rust
+pub struct DataSetConfig {
+    pub data_segment_size: u64,
+    pub index_segment_size: u64,
+    pub compress_level: u8,
+    pub compress_type: u8,
+    pub index_continuous: u8,
+    pub initial_data_segment_size: u64,
+    pub initial_index_segment_size: u64,
+    pub retention_window: u64, // same unit as timestamp, 0=no limit
+    pub create_time: i64,      // unix milliseconds
+}
+```

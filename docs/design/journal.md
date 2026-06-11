@@ -466,6 +466,19 @@ Queue 与 query 的关系:
 | `query/query_iter` | 批量扫描历史 journal, 补偿缺口, 离线恢复 |
 | `open_queue + poll` | 实时热迁移/同步, 需要持久消费进度和等待唤醒 |
 
+#### 25.8.3 Lagging Consumer Semantics
+
+Journal v1 records `index_info` pointers, not a self-contained historical payload. A consumer that falls behind must treat every `0x11`, `0x12`, and `0x13` record as a best-effort change hint:
+
+1. Decode the journal record and locate the source dataset by name/type.
+2. For `0x11` and `0x13`, call `read_entry_at_index(index_info)` on the source dataset before applying the change.
+3. For `0x12`, use `index_info` as the deleted record's former location and verify against the source dataset only when the source data still exists.
+4. If the source dataset was dropped, retention-reclaimed, checkpointed, corrected, overwritten, or the exact index location no longer resolves, the consumer must mark the record as not replayable from journal alone and fall back to full scan, snapshot compare, or operator repair.
+
+This means a large consumer lag can make a journal record unusable for exact replay even when the journal record itself is still present. The `journal_ts` checkpoint only records how far the consumer has read in `.journal/logs`; it does not guarantee that the source dataset still contains the historical bytes referenced by old journal records.
+
+Strict replay, self-contained hot migration, and crash recovery that must survive arbitrary consumer lag require a future WAL/versioned-payload design, not Journal v1.
+
 ### 25.9 并发与锁顺序
 
 Journal dataset 是全 Store 共享串行写入点。并发写入不同业务 dataset 时, 业务写入仍可并行到各自 `DataSet` mutex, 但 journal append 会在 `JournalManager.dataset` mutex 上串行。

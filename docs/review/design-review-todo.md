@@ -31,12 +31,12 @@
 | [x] | P1-5 | P1 | 统一 Queue consumer state 与 gap/filler poll 语义 | `docs/design/queue-overview.md`, `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue tests | 明确每组一个共享 state file；poll 对 gap/filler 的推进与 `processed_ts` 语义清晰；复杂度说明与实现一致 |
 | [x] | P1-6 | P1 | 统一 retention reclaim 是否更新 `last_used_at` | `docs/design/background-and-cache.md`, `docs/design/dataset-operations.md`, `src/dataset.rs`, background/retention tests | 明确 reclaim 是维护任务还是 dataset activity；文档、实现和 idle-close 行为一致 |
 | [x] | P1-7 | P1 | 同步 Store Rust API 文档中的 mutability 与内部字段 | `docs/design/store-and-ffi.md`, `src/store.rs`, README/AGENTS 如需 | `&self`/`&mut self` 签名、handle registry、read-only handles、background tasks 描述与实现一致 |
-| [ ] | P2-1 | P2 | 清理 `design.md` 中残留的 `retention_ms` 导航名称 | `design.md`, `docs/design/meta-format.md` | 所有导航和描述统一使用 `retention_window` / timestamp unit |
-| [ ] | P2-2 | P2 | 更新或去重 `data-model.md` 的 StoreConfig/DataSetConfig 片段 | `docs/design/data-model.md`, `docs/design/cargo-and-config.md`, `docs/design/store-and-ffi.md` | 配置字段摘要不再遗漏当前字段；避免多文档重复维护完整 struct |
-| [ ] | P2-3 | P2 | 对齐 lazy allocation 扩容 flush/set_len 持久化语义 | `docs/design/lazy-allocation.md`, `src/segment/data.rs`, `src/index/segment.rs` | 扩容是否需要 flush/sync 的对象、时机和 crash safety 被明确定义，并与实现一致 |
-| [ ] | P2-4 | P2 | 更新 `cargo-and-config.md` 中仓库结构与 CI/bench 状态 | `docs/design/cargo-and-config.md`, `.github/workflows/`, `benches/`, `Cargo.toml` | 文档不再声称缺少已存在目录；清晰区分现有 CI、推荐本地验证和未来 benchmark 要求 |
-| [ ] | P2-5 | P2 | 清理 C header 与 FFI 源码注释乱码 | `include/timslite.h`, `src/ffi.rs` | 外部 header 注释可读；源码分隔注释统一为 ASCII 或有效 UTF-8；不影响 ABI |
-| [ ] | P2-6 | P2 | 补充 Journal v1 consumer 滞后读取语义 | `docs/design/journal.md`, journal consumer examples/tests 如需 | 明确 journal pointer 只能读取当前仍可校验的数据，不代表精确历史 payload；严格 replay 留待未来 WAL/version 设计 |
+| [x] | P2-1 | P2 | 清理 `design.md` 中残留的 `retention_ms` 导航名称 | `design.md`, `docs/design/meta-format.md` | 所有导航和描述统一使用 `retention_window` / timestamp unit |
+| [x] | P2-2 | P2 | 更新或去重 `data-model.md` 的 StoreConfig/DataSetConfig 片段 | `docs/design/data-model.md`, `docs/design/cargo-and-config.md`, `docs/design/store-and-ffi.md` | 配置字段摘要不再遗漏当前字段；避免多文档重复维护完整 struct |
+| [x] | P2-3 | P2 | 对齐 lazy allocation 扩容 flush/set_len 持久化语义 | `docs/design/lazy-allocation.md`, `src/segment/data.rs`, `src/index/segment.rs` | 扩容是否需要 flush/sync 的对象、时机和 crash safety 被明确定义，并与实现一致 |
+| [x] | P2-4 | P2 | 更新 `cargo-and-config.md` 中仓库结构与 CI/bench 状态 | `docs/design/cargo-and-config.md`, `.github/workflows/`, `benches/`, `Cargo.toml` | 文档不再声称缺少已存在目录；清晰区分现有 CI、推荐本地验证和未来 benchmark 要求 |
+| [x] | P2-5 | P2 | 清理 C header 与 FFI 源码注释乱码 | `include/timslite.h`, `src/ffi.rs` | 外部 header 注释可读；源码分隔注释统一为 ASCII 或有效 UTF-8；不影响 ABI |
+| [x] | P2-6 | P2 | 补充 Journal v1 consumer 滞后读取语义 | `docs/design/journal.md`, journal consumer examples/tests 如需 | 明确 journal pointer 只能读取当前仍可校验的数据，不代表精确历史 payload；严格 replay 留待未来 WAL/version 设计 |
 
 ## 处理记录
 
@@ -51,4 +51,10 @@
 | 2026-06-11 | P1-5 | [x] | Queue consumer 文档改为真实实现模型: shared state file、direct read fast path、`query_index_entries` 跳过 gap/filler、不为 filler 建 pending/自动 ack; 新增连续 filler gap poll 集成测试 | `cargo test t27_1_4_poll_skips_continuous_filler_gap -- --test-threads=1` |
 | 2026-06-11 | P1-6 | [x] | retention reclaim 定义为维护任务, 实现保存并恢复 `last_used_at`, 不延长 dataset 热度; 新增回归测试 | `cargo test dataset::tests::test_retention_reclaim_does_not_refresh_last_used_at -- --test-threads=1` |
 | 2026-06-11 | P1-7 | [x] | Store Rust API 文档按实现同步 `&mut self`/`&self` 边界, 补充 handle registry 与内部同步 mutability note | `cargo check` |
-| 2026-06-06 | ALL | [ ] | 基于第 4 轮 `design-review.md` 创建初始 TODO 追踪表，尚未执行修复 | `Test-Path docs/review/design-review-todo.md`; `git diff --check -- docs/review/design-review-todo.md` |
+| 2026-06-11 | P2-1 | [x] | `design.md` 快速导航统一改为 `retention_window`, 移除 `retention_ms` 残留 | `rg -n "retention_ms" design.md docs/design` |
+| 2026-06-11 | P2-2 | [x] | `data-model.md` 补充当前有效 StoreConfig/DataSetConfig 字段摘要, 明确旧片段只作示意且字段以 `src/config.rs` 为准 | `rg -n "Active Contract: StoreConfig" docs/design/data-model.md` |
+| 2026-06-11 | P2-3 | [x] | 重写 lazy allocation 设计, 将扩容定义为 unmap + `set_len` + remap, 不要求扩容步骤执行 mmap flush; flush 仅同步已写 mmap 内容 | `rg -n "set_len\\(target\\)|mmap.flush" docs/design/lazy-allocation.md` |
+| 2026-06-11 | P2-4 | [x] | 更新构建配置文档: 补齐 `zstd`/`proptest`, 记录 `.github/workflows/ci.yml` 和空 `benches/` 目录现状, 区分 CI、本地验证与未来 benchmark | `Test-Path .github`; `Test-Path benches`; `Get-Content Cargo.toml` |
+| 2026-06-11 | P2-5 | [x] | 清理 C header 写入分支注释中的编码损坏箭头, `src/ffi.rs` 未发现同类乱码命中 | `rg -n "鈫|�" include/timslite.h src/ffi.rs` |
+| 2026-06-11 | P2-6 | [x] | Journal 设计补充 lagging consumer 语义: `0x11/0x12/0x13` 只是 pointer hint, 滞后消费者必须通过源 dataset 校验, 严格 replay 留待未来 WAL/versioned payload | `rg -n "Lagging Consumer" docs/design/journal.md` |
+| 2026-06-11 | ALL | [x] | 第 4 轮 P0/P1/P2 设计审查 TODO 均已完成状态更新; 本轮 P2-1..P2-6 以文档契约和 C header 注释修复为主, 未改变运行时 ABI | `cargo fmt -- --check`; `cargo check`; `cargo test -- --test-threads=1`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
