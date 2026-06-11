@@ -2,11 +2,15 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join("timslite_crash_recovery");
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = d.join(format!(
-        "{}_{:?}",
+        "{}_{:?}_{id}",
         name,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -78,6 +82,86 @@ fn t_crash_recover_pending_block_after_drop_without_close() {
         );
         assert_eq!(entries[0].0, 10);
         assert_eq!(entries[4].0, 50);
+
+        ds.close().unwrap();
+    }
+}
+
+#[test]
+fn t_crash_recover_index_segment_integrity() {
+    use timslite::{DataSet, DataSetKey};
+
+    let dir = temp_dir("crash_index");
+    let id = DataSetKey {
+        name: "idx_ds".into(),
+        dataset_type: "data".into(),
+    };
+
+    // Phase 1: write enough records to span multiple index entries, drop without close
+    {
+        let mut ds = DataSet::create(
+            id.clone(),
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024, // index_segment_size
+            6,               // compress_level
+            0,               // index_continuous
+            4096,            // initial_data_segment_size
+            4096,            // initial_index_segment_size
+            0,               // retention_window
+        )
+        .unwrap();
+
+        // Write 30 records with timestamps at intervals of 10
+        for i in 1..=30i64 {
+            ds.write(i * 10, format!("rec_{}", i * 10).as_bytes())
+                .unwrap();
+        }
+        // Drop without close — index segment stays as-is on disk
+    }
+
+    // Phase 2: reopen and verify index integrity
+    {
+        let mut ds = DataSet::open(id.clone(), dir.clone()).unwrap();
+
+        // Verify inspect shows index segments exist
+        let info = ds.inspect().unwrap();
+        let total_index_segments =
+            info.state.open_index_segments + info.state.closed_index_segments;
+        assert!(
+            total_index_segments > 0 || info.state.pending_index_entries > 0,
+            "index segments or pending entries should exist after crash recovery: {:?}",
+            info.state
+        );
+
+        // Verify base_timestamp is correct (first record at ts=10)
+        // base_timestamp may be None if index is pending flush, so check query instead
+        if let Some(base_ts) = info.state.base_timestamp {
+            assert_eq!(base_ts, 10, "base_timestamp should be 10");
+        }
+
+        // Verify all records are queryable (proves index is functional)
+        let entries = ds.query(1, 300).unwrap();
+        assert_eq!(
+            entries.len(),
+            30,
+            "all 30 records should be queryable via index after crash"
+        );
+        assert_eq!(entries[0].0, 10);
+        assert_eq!(entries[29].0, 300);
+
+        // Verify specific timestamp lookups work (proves index mapping is correct)
+        for i in 1..=30i64 {
+            let (ts, data) = ds.read(i * 10).unwrap().unwrap();
+            assert_eq!(ts, i * 10);
+            assert_eq!(data, format!("rec_{}", i * 10).as_bytes());
+        }
+
+        // Verify latest_written_timestamp is preserved
+        assert_eq!(
+            info.state.latest_written_timestamp, 300,
+            "latest_written_timestamp should be 300"
+        );
 
         ds.close().unwrap();
     }

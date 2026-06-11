@@ -1,12 +1,16 @@
 //! Queue integration tests: push/poll/ack, consumer groups, persistence, threading.
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_dir() -> PathBuf {
     let d = std::env::temp_dir().join("timslite_integration");
     fs::create_dir_all(&d).unwrap();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     d.join(format!(
-        "test_{:?}",
+        "test_{:?}_{id}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -114,9 +118,15 @@ fn t27_1_4_poll_skips_continuous_filler_gap() {
     let q = store.open_queue(h).unwrap();
     let c = store.open_consumer(&q, "g1").unwrap();
 
+    // Write 3 records
     store.write_dataset(h, 10, b"first").unwrap();
     store.write_dataset(h, 20, b"second").unwrap();
+    store.write_dataset(h, 30, b"third").unwrap();
 
+    // Delete the middle record (creates a filler/gap)
+    store.delete_dataset_record(h, 20).unwrap();
+
+    // Poll should skip deleted ts=20 and return ts=10 first
     let (ts, data) = store
         .queue_poll(&c, Duration::from_millis(100))
         .unwrap()
@@ -125,12 +135,13 @@ fn t27_1_4_poll_skips_continuous_filler_gap() {
     assert_eq!(data, b"first");
     store.queue_ack(&c, ts).unwrap();
 
+    // Poll should skip ts=20 (deleted/filler) and return ts=30
     let (ts, data) = store
         .queue_poll(&c, Duration::from_millis(100))
         .unwrap()
         .unwrap();
-    assert_eq!(ts, 20);
-    assert_eq!(data, b"second");
+    assert_eq!(ts, 30);
+    assert_eq!(data, b"third");
     store.queue_ack(&c, ts).unwrap();
 
     assert!(store

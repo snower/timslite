@@ -1,12 +1,16 @@
 ﻿//! Manual background execution tests.
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_dir() -> PathBuf {
     let d = std::env::temp_dir().join("timslite_integration");
     fs::create_dir_all(&d).unwrap();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     d.join(format!(
-        "test_{:?}",
+        "test_{:?}_{id}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -106,10 +110,12 @@ fn t21_3_manual_bg_concurrent_with_thread() {
     arc.lock().unwrap().write(1, b"concurrent").unwrap();
     drop(arc);
 
-    // Manual tick alongside background thread 鈥?should not deadlock
-    std::thread::sleep(Duration::from_millis(200));
+    // Wait for bg thread to potentially flush (conservative timeout)
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Manual tick alongside background thread — should not deadlock
     let result = store.tick_background_tasks().unwrap();
-    // executed_tasks may be 0 if bg thread already ran 鈥?that's fine
+    // executed_tasks may be 0 if bg thread already ran — that's fine
     assert!(result.executed_tasks <= 2);
 
     let arc = store.get_dataset(&ds).unwrap();

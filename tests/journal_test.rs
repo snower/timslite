@@ -2,16 +2,20 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use timslite::{
     JournalRecord, JournalRecordKind, Store, StoreConfig, JOURNAL_DATASET_NAME,
     JOURNAL_DATASET_TYPE,
 };
 
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn temp_dir(name: &str) -> PathBuf {
     let d = std::env::temp_dir().join("timslite_journal_integration");
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let dir = d.join(format!(
-        "{}_{}",
+        "{}_{}_{id}",
         name,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

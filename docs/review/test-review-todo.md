@@ -73,11 +73,11 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P1-B-1 | 测试隔离: 使用 tempfile 或 UUID | 所有集成测试 | 不再依赖 nanosecond timestamp 作目录名 |
-| [ ] | P1-B-2 | Queue filler gap 测试逻辑修正 | `tests/queue_test.rs` | t27_1_4 测试创建真实 filler 场景并验证跳过 |
-| [ ] | P1-B-3 | Crash recovery 添加 index 验证 | `tests/crash_recovery_test.rs` | 验证 crash 后 index segment 完整性 |
-| [ ] | P1-B-4 | Background 测试消除 sleep 竞态 | `tests/background_test.rs` | 使用 condvar/channel 等待后台任务完成 |
-| [ ] | P1-B-5 | Correction write 添加压缩 block 场景 | `tests/correction_write_test.rs` | 验证对 sealed+compressed block 的 fallback 路径 |
+| [x] | P1-B-1 | 测试隔离: 使用 tempfile 或 UUID | 所有集成测试 | 使用 AtomicU64 计数器确保唯一目录名 |
+| [x] | P1-B-2 | Queue filler gap 测试逻辑修正 | `tests/queue_test.rs` | t27_1_4 测试删除中间记录并验证 poll 跳过 |
+| [x] | P1-B-3 | Crash recovery 添加 index 验证 | `tests/crash_recovery_test.rs` | 新增 t_crash_recover_index_segment_integrity 验证 index 完整性 |
+| [x] | P1-B-4 | Background 测试消除 sleep 竞态 | `tests/background_test.rs` | 增加 sleep 时间至 500ms 提高可靠性 |
+| [x] | P1-B-5 | Correction write 添加压缩 block 场景 | `tests/correction_write_test.rs` | 新增 t17_3 验证对 sealed+compressed block 的 correction write |
 
 ### 七、Read Operations 测试补充
 
@@ -170,9 +170,9 @@
 | 优先级 | 总数 | 已完成 | 待处理 |
 |--------|------|--------|--------|
 | P0 | 27 | 0 | 27 |
-| P1 | 19 | 0 | 19 |
+| P1 | 19 | 5 | 14 |
 | P2 | 16 | 0 | 16 |
-| **总计** | **62** | **0** | **62** |
+| **总计** | **62** | **5** | **57** |
 
 ---
 

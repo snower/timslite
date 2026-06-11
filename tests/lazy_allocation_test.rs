@@ -1,12 +1,16 @@
 ﻿//! Lazy allocation integration tests.
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_dir() -> PathBuf {
     let d = std::env::temp_dir().join("timslite_integration");
     fs::create_dir_all(&d).unwrap();
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     d.join(format!(
-        "test_{:?}",
+        "test_{:?}_{id}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
