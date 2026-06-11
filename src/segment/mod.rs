@@ -737,8 +737,8 @@ mod tests {
 
         assert_eq!(
             set.segments
-                .iter()
-                .filter_map(|(_, entry)| match entry {
+                .values()
+                .filter_map(|entry| match entry {
                     DataSegmentEntry::Open(seg) => Some(seg.file_offset),
                     DataSegmentEntry::Closed(_) => None,
                 })
