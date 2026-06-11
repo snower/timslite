@@ -18,14 +18,14 @@
 - [x] Add FFI `tmsl_dataset_append`.
 - [x] Add journal record kind `0x13` with `index_info` and `append_info`.
 - [x] Enforce 4MiB maximum pure data length for a single record in both `write` and `append`.
-- [x] Migrate appended latest records to a single-record block when final encoded record size exceeds `BLOCK_MAX_SIZE * 70 / 100`.
+- [x] Keep existing latest-record append as in-place tail growth only; no ratio-threshold migration to a single-record block.
 
 ## 29.2 Non-Goals
 
 - [-] No append to old timestamps (`timestamp < latest_written_timestamp`).
 - [-] No append to compressed, sealed, historical, or non-tail records.
 - [-] No transaction/WAL semantics for append beyond the existing journal change-log behavior.
-- [-] No compaction of the old physical record after migration; old data is counted through `invalid_record_count`.
+- [-] No migration/compaction of the old physical record for append; existing latest-record append is in-place only.
 
 ## 29.3 Behavior Matrix
 
@@ -37,15 +37,15 @@
 | `timestamp == latest_written_timestamp`, target block compressed/sealed | Return error. |
 | `timestamp == latest_written_timestamp`, target record is not the block and segment tail | Return error. |
 | `timestamp == latest_written_timestamp`, final data length > 4MiB | Return error. |
-| `timestamp == latest_written_timestamp`, final encoded record size > 70% of `BLOCK_MAX_SIZE` | Migrate whole logical record to a single-record block, update index, invalidate old cache key, increment old segment `invalid_record_count`, journal `0x13`. |
-| `timestamp == latest_written_timestamp`, tail raw record below threshold | Append bytes in place, update record/block/segment size fields, keep index unchanged, journal `0x13`. |
+| `timestamp == latest_written_timestamp`, tail raw record and final encoded record fits current pending block | Append bytes in place, update record/block/segment size fields, keep index unchanged, journal `0x13`. |
+| `timestamp == latest_written_timestamp`, final encoded record cannot fit current pending block | Return error; append does not migrate to a single-record block. |
 
 ## 29.4 Implementation Tasks
 
 ### 29.4.1 Record Size Limits
 
 - [x] Add a shared constant for the 4MiB single-record data limit.
-- [x] Add a shared constant or helper for the append migration threshold: `BLOCK_MAX_SIZE * 70 / 100`.
+- [x] Remove ratio-based append migration; append uses only 4MiB logical record validation plus ordinary pending block capacity validation.
 - [x] Reject `write` inputs where `data.len() > 4MiB`.
 - [x] Reject append attempts where `old_data_len + append_len > 4MiB`.
 - [x] Use checked arithmetic for all `old_data_len + append_len`, `12 + data_len`, and size-field updates.
@@ -60,15 +60,13 @@
 - [x] Update mmap bytes: `record.data_len`, appended data bytes, `BlockHeader.block_payload_size`, `BlockHeader.uncompressed_size`, data segment `wrote_position`, `pending_wrote_position`, and `total_uncompressed_size`.
 - [x] Keep record count and timestamp range unchanged for in-place append.
 
-### 29.4.3 Migration Path
+### 29.4.3 Removed Migration Path
 
-- [x] Read old logical record data from the latest tail record.
-- [x] Build `old_data + append_data`.
-- [x] Create a single-record block for the full logical record.
-- [x] Update the timestamp index entry to the migrated block location.
-- [x] Increment `invalid_record_count` for the old data segment.
-- [x] Invalidate the old global cache key defensively.
-- [x] Return `AppendOutcome` with `data_offset=old_data_len`, `data_len=append_data.len()`, and `migrated=true`.
+- [x] Do not read/build `old_data + append_data` for ratio-threshold migration.
+- [x] Do not create a single-record block for existing latest-record append.
+- [x] Do not update the timestamp index entry for existing latest-record append; the record start position remains stable.
+- [x] Do not increment `invalid_record_count` or invalidate cache for append-only growth.
+- [x] Return `AppendOutcome` with `data_offset=old_data_len` and `data_len=append_data.len()`.
 
 ### 29.4.4 DataSet And Store API
 
@@ -105,8 +103,8 @@
 - [x] Append to compressed latest block returns error.
 - [x] Append to a latest timestamp whose index entry is deleted/filler returns error.
 - [x] Append to a latest record that is not segment tail returns error.
-- [x] Append crossing the 70% threshold migrates to a single-record block and updates index.
-- [x] Migrated append invalidates the old cache key and increments `invalid_record_count`.
+- [x] Large existing latest-record append remains in-place when the pending block still has capacity.
+- [x] Append that exceeds the current pending block capacity returns error and does not update index or `invalid_record_count`.
 - [x] `write` rejects records larger than 4MiB.
 - [x] `append` rejects final logical record data larger than 4MiB.
 - [x] Journal `0x13` encodes/decodes `index_info` and `append_info`.
@@ -121,7 +119,7 @@
 1. [x] Add failing tests for record size limits and append behavior.
 2. [x] Implement shared constants and write limit.
 3. [x] Implement segment tail append helper.
-4. [x] Implement DataSet append branching and migration.
+4. [x] Implement DataSet append branching without ratio-threshold migration.
 5. [x] Implement Store and FFI append routes.
 6. [x] Implement journal `0x13` codec and hook.
 7. [x] Add wrapper support if applicable.
@@ -130,10 +128,10 @@
 
 ## 29.8 Implementation Record
 
-2026-06-04: implemented dataset append API, tail raw record append, 70% migration to single-record block, 4MiB record limit for write/append, Store/FFI append route, journal `0x13`, Python wrapper append, and tests. Verification passed: `cargo test append -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --manifest-path wrapper/python/Cargo.toml`, `cargo clippy --manifest-path wrapper/python/Cargo.toml --all-targets -- -D warnings`, and Python pytest via a locally built maturin wheel (`57 passed`).
+2026-06-04: implemented dataset append API, tail raw record append, 4MiB record limit for write/append, Store/FFI append route, journal `0x13`, Python wrapper append, and tests. Verification passed: `cargo test append -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test --manifest-path wrapper/python/Cargo.toml`, `cargo clippy --manifest-path wrapper/python/Cargo.toml --all-targets -- -D warnings`, and Python pytest via a locally built maturin wheel (`57 passed`).
 
 ## 29.7 Open Implementation Notes
 
 - Empty append is defined as a no-op that does not write data and does not write journal.
-- The migration threshold is based on encoded record size (`12 + data_len`) because ordinary block capacity is measured in payload bytes.
-- Compressed latest block always returns error before migration logic; migration is only for a still-mutable latest tail record.
+- Append no longer has ratio-based migration. Existing latest-record append is either in-place tail growth or an error.
+- Compressed latest block always returns error.

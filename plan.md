@@ -64,8 +64,8 @@
 - [x] 验证 — journal/queue/ffi 集成测试、fmt、clippy、全量 cargo test
 
 ### Phase 29: Dataset Append API + Journal `0x13`
-- [x] 设计文档 — append 行为、4MiB 上限、70% 迁移阈值、journal `0x13`
-- [x] 测试 — append 行为矩阵、迁移、错误路径、journal 编解码与 Store/FFI hook
+- [x] 设计文档 — append 行为、4MiB 上限、无比例迁移阈值、journal `0x13`
+- [x] 测试 — append 行为矩阵、原地增长、错误路径、journal 编解码与 Store/FFI hook
 - [x] 实现 — DataSegment tail append、DataSet append、Store/FFI API、journal `0x13`
 - [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`
 

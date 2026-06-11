@@ -22,7 +22,7 @@
 | 存储单元 | Block 聚合 | 提高压缩率, 减少 overhead |
 | Block 上限 | 64KB | 适配 L1/L2 缓存 |
 | 压缩时机 | 延迟 (pending→sealed, 仅 next write overflow 或 exclusive/single-record block) | 写入时零 CPU, 避免重复压缩 |
-| exclusive/single-record block | 单条 record 独占 block | 支持 >64KB record, 也支持 append 已有 latest record 超过 70% 聚合阈值后的迁移 |
+| exclusive/single-record block | 单条 record 独占 block | 支持编码后大小超过普通聚合 Block 上限的单条 record |
 | Record 编码 | data_len(4)+ts(8)+data | 支持 block 内随机定位, `u32` 长度可表达超大独占 record |
 | 索引条目 | 18 字节 | 精确定位到 block 内 record |
 | 文件头 | 可变长度 | meta(不可变TLV)/state(可变)分离, 打开文件时按 header 中长度计算数据区起点 |

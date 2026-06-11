@@ -18,7 +18,7 @@ Journal v1 记录五类事件:
 | `0x02` | 删除 dataset | `Store::drop_dataset*` 成功删除普通 dataset |
 | `0x11` | dataset 写入数据 | `DataSet::write*` 成功发布/更新 index entry |
 | `0x12` | dataset 删除数据 | `DataSet::delete*` 成功把 index entry 标记为 filler |
-| `0x13` | dataset append 数据 | `DataSet::append*` 成功创建、追加或迁移 record |
+| `0x13` | dataset append 数据 | `DataSet::append*` 成功创建或追加 record |
 
 Journal 只记录普通用户 dataset 的操作。内部 journal dataset 自身的创建、打开、写入、flush、retention 和删除流程不得再次写 journal, 避免递归。
 
@@ -267,7 +267,6 @@ Offset  Size  Type       Field
 - `data_len` 是本次 append 写入的数据长度, 不是追加后的完整 record 长度。
 - 当 append 因 `timestamp > latest_written_timestamp` 创建新 record 时, `data_offset=0`, `data_len=input.len()`, `index_info` 指向新 record。
 - 当 append 原地追加到最新末尾 record 时, `data_offset=old_data_len`, `data_len=input.len()`, `index_info` 保持原 record 起始位置。
-- 当 append 触发独占 block 迁移时, `data_offset=old_data_len`, `data_len=input.len()`, `index_info` 指向迁移后的新 block。
 - `0x13` 不携带 append bytes; consumer 必须通过源 dataset 的 `read_entry_at_index(index_info)` 获取完整 record, 再按 `data_offset/data_len` 识别本次追加范围。
 - append 失败不写 `0x13` journal record。
 
@@ -354,7 +353,7 @@ journal.append_data_write(dataset_key, outcome.index_entry)
 DataSet::append(timestamp, data):
   1. 从 DataSetRuntimeContext 取得 BlockCache / JournalSink
   2. 执行内部 append_with_cache_outcome(timestamp, data, cache)
-       -> AppendOutcome { index_entry, data_offset, data_len, migrated }
+       -> AppendOutcome { index_entry, data_offset, data_len }
   3. 若 journal sink 存在且本次 append 非空 no-op, 追加 0x13 journal record
 ```
 

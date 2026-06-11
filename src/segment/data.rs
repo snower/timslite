@@ -386,8 +386,6 @@ impl Drop for DataSegment {
 pub(crate) const RECORD_HEADER_SIZE: usize = 12;
 pub(crate) const RECORD_OVERHEAD: u64 = RECORD_HEADER_SIZE as u64;
 pub(crate) const MAX_RECORD_DATA_SIZE: usize = 4 * 1024 * 1024;
-pub(crate) const APPEND_MIGRATION_THRESHOLD: usize =
-    (crate::block::BLOCK_MAX_SIZE as usize * 70) / 100;
 
 fn checked_record_size(data_len: usize) -> Result<usize> {
     if data_len > MAX_RECORD_DATA_SIZE {
@@ -601,7 +599,7 @@ impl DataSegment {
 
     /// Create an exclusive block for a single record.
     ///
-    /// Used for records larger than an aggregated block and for append migration.
+    /// Used for records larger than an aggregated block.
     pub(crate) fn create_single_record_block(
         &mut self,
         timestamp: i64,
@@ -718,23 +716,6 @@ impl DataSegment {
         Ok((block_abs_start, hdr, record_pos, old_data_len))
     }
 
-    pub(crate) fn read_mutable_tail_record(
-        &self,
-        block_rel_offset: u64,
-        in_block_offset: u16,
-    ) -> Result<Vec<u8>> {
-        let (_block_abs_start, _hdr, record_pos, old_data_len) =
-            self.validate_mutable_tail_record(block_rel_offset, in_block_offset)?;
-        let mmap = self
-            .mmap
-            .as_ref()
-            .ok_or_else(|| TmslError::MmapError("segment mmap not open".into()))?;
-        Ok(
-            mmap[record_pos + RECORD_HEADER_SIZE..record_pos + RECORD_HEADER_SIZE + old_data_len]
-                .to_vec(),
-        )
-    }
-
     pub(crate) fn append_to_last_record(
         &mut self,
         block_rel_offset: u64,
@@ -747,9 +728,9 @@ impl DataSegment {
             .checked_add(append_data.len())
             .ok_or_else(|| TmslError::InvalidData("append data_len overflow".into()))?;
         let final_record_size = checked_record_size(final_data_len)?;
-        if final_record_size > APPEND_MIGRATION_THRESHOLD {
+        if final_record_size > crate::block::BLOCK_MAX_SIZE as usize {
             return Err(TmslError::InvalidData(
-                "append: final record exceeds migration threshold".into(),
+                "append: final record exceeds pending block capacity".into(),
             ));
         }
         let delta = append_data.len();

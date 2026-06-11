@@ -384,29 +384,6 @@ impl DataSegmentSet {
         seg.overwrite_in_last_block(block_rel_offset, in_block_offset, new_data)
     }
 
-    pub fn read_mutable_tail_record(
-        &mut self,
-        block_offset: u64,
-        in_block_offset: u16,
-    ) -> Result<Vec<u8>> {
-        let target_segment_offset = (block_offset / self.segment_size) * self.segment_size;
-        let latest_segment_offset = self.next_offset.saturating_sub(self.segment_size);
-        if target_segment_offset != latest_segment_offset {
-            return Err(TmslError::InvalidData(
-                "append: target block is not in the latest segment".into(),
-            ));
-        }
-        let seg = self.lazy_open(target_segment_offset)?;
-        if block_offset < seg.file_offset
-            || block_offset >= seg.file_offset + seg.data_wrote_position
-        {
-            return Err(TmslError::InvalidData(
-                "append: block_offset is outside latest segment data".into(),
-            ));
-        }
-        seg.read_mutable_tail_record(block_offset - seg.file_offset, in_block_offset)
-    }
-
     pub fn append_to_last_record(
         &mut self,
         block_offset: u64,

@@ -7,7 +7,7 @@
 - 延迟压缩: pending 时保持 raw, 仅在 pending overflow 或 exclusive/single-record block 创建时压缩。
 - **强制压缩**: 一旦 block 从 pending 转为 sealed, 必须写入 deflate 后的 payload, 并同时设置 `SEALED | COMPRESSED`。不再根据压缩后是否缩小决定保留 raw。
 - **idle-close 不改变 block 状态**: 只执行 sync + unmap/close, 不 seal、不 compress、不清 pending state。重新打开后最后一个 block 仍按 header 中的 pending state 恢复为 pending。
-- exclusive/single-record block 不进入 pending, 创建时立即 deflate 并写为 `SEALED | COMPRESSED | SINGLE_RECORD`。它可能由 >64KB record 产生, 也可能由 append 修改已有 latest record 后超过 70% 聚合阈值产生。
+- exclusive/single-record block 不进入 pending, 创建时立即 deflate 并写为 `SEALED | COMPRESSED | SINGLE_RECORD`。它由编码后大小超过普通聚合 Block 上限的单条 record 产生。
 
 ### 状态机
 

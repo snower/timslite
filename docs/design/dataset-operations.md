@@ -352,7 +352,7 @@ DataSet::append(timestamp, data):
     │      ├─ 校验 data.len() <= 4MiB
     │      ├─ 复用正常正序 write 路径创建新 record
     │      ├─ latest_written_timestamp = timestamp
-    │      └─ 返回 AppendOutcome(index_entry, data_offset=0, data_len=data.len(), migrated=false)
+    │      └─ 返回 AppendOutcome(index_entry, data_offset=0, data_len=data.len())
     │
     └─ timestamp == latest_written_timestamp
            │
@@ -372,14 +372,8 @@ DataSet::append(timestamp, data):
            ├─ final_data_len = old_data_len + data.len()
            │   if final_data_len > 4MiB → Error("record too large")
            │
-           ├─ if 12 + final_data_len > BLOCK_MAX_SIZE * 70 / 100:
-           │      ├─ 读取 old_data + append data 组成完整 record
-           │      ├─ 追加为独占 block (SINGLE_RECORD, exclusive/single-record block)
-           │      ├─ 更新该 timestamp 的 index entry 指向新 block
-           │      ├─ old block 所在数据段 invalid_record_count += 1
-           │      ├─ invalidate 旧 index entry 对应的全局缓存 key
-           │      └─ 返回 AppendOutcome(new_index_entry, data_offset=old_data_len,
-           │                         data_len=data.len(), migrated=true)
+           ├─ if 12 + final_data_len > BLOCK_MAX_SIZE
+           │      └─ Error("record too large for pending block")
            │
            └─ 原地追加:
                   ├─ old record.data_len += data.len()
@@ -391,19 +385,18 @@ DataSet::append(timestamp, data):
                   ├─ segment.data_wrote_position += data.len()
                   ├─ record_count / min_timestamp / max_timestamp / index entry 不变
                   └─ 返回 AppendOutcome(old_index_entry, data_offset=old_data_len,
-                                      data_len=data.len(), migrated=false)
+                                      data_len=data.len())
 ```
 
 约束与说明:
 
 1. `timestamp < latest_written_timestamp` 不回退为乱序写入。append 的语义是“尾部追加”, 旧 timestamp 的 record 可能位于 compressed block、历史段或中间位置, 不具备稳定追加边界。
-2. `timestamp == latest_written_timestamp` 时, compressed block 一律返回错误, 即使追加后会超过迁移阈值也不迁移。70% 迁移阈值只在 append 修改已存在 latest record 且目标 block 仍是未压缩可验证末尾 record 时生效; `timestamp > latest_written_timestamp` 创建新 record 的 append 复用 normal write 路径, 不因 70% 阈值迁移。
+2. `timestamp == latest_written_timestamp` 时, compressed block 一律返回错误。append 修改已有 latest record 只允许在未压缩且可验证的末尾 record 上原地增长, 不再触发比例阈值迁移; `timestamp > latest_written_timestamp` 创建新 record 的 append 复用 normal write 路径。
 3. “record 在分段文件最末尾位置”定义为: `(block_offset - segment.file_offset) + BLOCK_HEADER_SIZE + in_block_offset + 12 + old_data_len == segment.data_wrote_position`。这里使用运行时数据区相对坐标; header state 中持久化的 `wrote_position` 必须保存为 `segment.header_len + segment.data_wrote_position`。实现需要同时校验它是 block 内最后一条 record, 防止 block 内部还有后续 record。
-4. 原地追加不修改索引, 因为 `block_offset` 和 `in_block_offset` 仍指向同一 record 起点。迁移追加必须更新索引, 因为 record 物理位置变化。
-5. 迁移后的旧 record 物理保留但不再可见, 与 correction 回退/乱序写入一致, 通过 `invalid_record_count` 统计无效记录。
-6. 全局 `BlockCache` 只缓存 compressed block。原地 append 目标是 pending raw block, 正常不会在全局缓存中; 迁移时仍对旧 index key 执行幂等 invalidate。
-7. 普通 DatasetQueue 只按 timestamp 递增投递。`timestamp > latest` 创建新 record 的 append 必须 notify, 与 normal write 等价; `timestamp == latest` 修改已有 latest record 不重新投递、不 notify。
-8. `DataSet::append` 成功后通过自身 `DataSetRuntimeContext.journal` 写 journal `0x13`。`timestamp > latest` 创建新 record 的 append 也写 `0x13`, 其中 `data_offset=0`。journal queue 使用独立递增 journal sequence timestamp, 因此每条 `0x13` 都会投递给 journal queue consumer。
+4. 原地追加不修改索引, 因为 `block_offset` 和 `in_block_offset` 仍指向同一 record 起点。
+5. 全局 `BlockCache` 只缓存 compressed block。原地 append 目标是 pending raw block, 正常不会在全局缓存中。
+6. 普通 DatasetQueue 只按 timestamp 递增投递。`timestamp > latest` 创建新 record 的 append 必须 notify, 与 normal write 等价; `timestamp == latest` 修改已有 latest record 不重新投递、不 notify。
+7. `DataSet::append` 成功后通过自身 `DataSetRuntimeContext.journal` 写 journal `0x13`。`timestamp > latest` 创建新 record 的 append 也写 `0x13`, 其中 `data_offset=0`。journal queue 使用独立递增 journal sequence timestamp, 因此每条 `0x13` 都会投递给 journal queue consumer。
 
 建议新增内部返回值:
 
@@ -412,7 +405,6 @@ pub(crate) struct AppendOutcome {
     pub index_entry: IndexEntry,
     pub data_offset: u32,
     pub data_len: u32,
-    pub migrated: bool,
 }
 ```
 

@@ -19,7 +19,7 @@ use crate::meta::DataSetMeta;
 use crate::query::iter::{QueryIterator, QuerySource};
 use crate::query::length_iter::QueryLengthIterator;
 use crate::queue::{flush_queue_state_files, queue_dir_for, QueueInner};
-use crate::segment::data::{APPEND_MIGRATION_THRESHOLD, MAX_RECORD_DATA_SIZE, RECORD_HEADER_SIZE};
+use crate::segment::data::MAX_RECORD_DATA_SIZE;
 use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
 
@@ -139,7 +139,6 @@ pub struct AppendOutcome {
     pub index_entry: IndexEntry,
     pub data_offset: u32,
     pub data_len: u32,
-    pub migrated: bool,
 }
 
 pub struct DataSet {
@@ -586,7 +585,6 @@ impl DataSet {
                 index_entry: outcome.index_entry,
                 data_offset: 0,
                 data_len: data_len_u32(data.len())?,
-                migrated: false,
             }));
         }
 
@@ -596,7 +594,6 @@ impl DataSet {
                 index_entry: outcome.index_entry,
                 data_offset: 0,
                 data_len: data_len_u32(data.len())?,
-                migrated: false,
             }));
         }
 
@@ -610,42 +607,7 @@ impl DataSet {
             )));
         }
 
-        let old_data = self
-            .segments
-            .read_mutable_tail_record(entry.block_offset, entry.in_block_offset)?;
-        let final_len = old_data
-            .len()
-            .checked_add(data.len())
-            .ok_or_else(|| TmslError::InvalidData("append data_len overflow".into()))?;
-        validate_record_data_len(final_len)?;
-        let final_record_size = RECORD_HEADER_SIZE
-            .checked_add(final_len)
-            .ok_or_else(|| TmslError::InvalidData("append record size overflow".into()))?;
-        let data_offset = data_len_u32(old_data.len())?;
         let data_len = data_len_u32(data.len())?;
-
-        if final_record_size > APPEND_MIGRATION_THRESHOLD {
-            let mut full_data = Vec::with_capacity(final_len);
-            full_data.extend_from_slice(&old_data);
-            full_data.extend_from_slice(data);
-            let (seg_offset, block_rel_offset, in_block_offset) =
-                self.segments.append_single_record(timestamp, &full_data)?;
-            let new_block_offset = seg_offset + block_rel_offset;
-            let old_entry =
-                self.time_index
-                    .update_entry(timestamp, new_block_offset, in_block_offset)?;
-            self.invalidate_cache_for_entry(&old_entry, cache);
-            self.segments
-                .increment_invalid_record_count(old_entry.block_offset)?;
-            self.last_used_at = Instant::now();
-            self.enqueue_dirty_segments();
-            return Ok(Some(AppendOutcome {
-                index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
-                data_offset,
-                data_len,
-                migrated: true,
-            }));
-        }
 
         let actual_offset =
             self.segments
@@ -656,7 +618,6 @@ impl DataSet {
             index_entry: entry,
             data_offset: actual_offset,
             data_len,
-            migrated: false,
         }))
     }
 
@@ -1630,7 +1591,6 @@ mod tests {
         assert_eq!(outcome.index_entry.timestamp, 100);
         assert_eq!(outcome.data_offset, 0);
         assert_eq!(outcome.data_len, 5);
-        assert!(!outcome.migrated);
         assert_eq!(ds.latest_written_timestamp(), 100);
         assert_eq!(ds.read(100).unwrap().unwrap().1, b"hello");
     }
@@ -1655,7 +1615,6 @@ mod tests {
 
         assert_eq!(outcome.data_offset, 2);
         assert_eq!(outcome.data_len, 2);
-        assert!(!outcome.migrated);
         assert_eq!(ds.latest_written_timestamp(), 100);
         assert_eq!(ds.read(100).unwrap().unwrap().1, b"abcd");
         let seg = ds.segments.segments.last().unwrap();
@@ -1714,16 +1673,15 @@ mod tests {
     }
 
     #[test]
-    fn test_append_new_timestamp_over_seventy_percent_uses_normal_write_path() {
-        let mut ds = make_cache_dataset("append_new_over_70_percent");
-        let data = vec![0x44; APPEND_MIGRATION_THRESHOLD + 1 - RECORD_HEADER_SIZE];
+    fn test_append_new_timestamp_large_record_uses_normal_write_path() {
+        let mut ds = make_cache_dataset("append_new_large_record");
+        let data = vec![0x44; 50_000];
 
         let outcome = ds
             .append_with_cache_outcome(100, &data, None)
             .unwrap()
             .unwrap();
 
-        assert!(!outcome.migrated);
         assert_eq!(outcome.data_offset, 0);
         assert_eq!(outcome.data_len, data.len() as u32);
         ds.write(200, b"tail").unwrap();
@@ -1743,25 +1701,46 @@ mod tests {
     }
 
     #[test]
-    fn test_append_crossing_threshold_migrates_to_single_record_block() {
-        let mut ds = make_cache_dataset("append_threshold_migrates");
-        let old_len = APPEND_MIGRATION_THRESHOLD - RECORD_HEADER_SIZE - 1;
+    fn test_append_crossing_old_threshold_stays_in_place() {
+        let mut ds = make_cache_dataset("append_old_threshold_in_place");
+        let old_len = 46_000;
         let old = vec![0x11; old_len];
         ds.write(100, &old).unwrap();
+        let before_entry = ds.time_index.find_entry(100).unwrap().unwrap();
 
         let outcome = ds
             .append_with_cache_outcome(100, &[0x22, 0x33], None)
             .unwrap()
             .unwrap();
 
-        assert!(outcome.migrated);
         assert_eq!(outcome.data_offset, old_len as u32);
         assert_eq!(outcome.data_len, 2);
+        assert_eq!(outcome.index_entry, before_entry);
         let mut expected = old;
         expected.extend_from_slice(&[0x22, 0x33]);
         assert_eq!(ds.read(100).unwrap().unwrap().1, expected);
         let seg = ds.segments.segments.last().unwrap();
-        assert_eq!(seg.invalid_record_count, 1);
+        assert_eq!(seg.invalid_record_count, 0);
+    }
+
+    #[test]
+    fn test_append_existing_latest_over_block_capacity_returns_error() {
+        let mut ds = make_cache_dataset("append_over_block_capacity");
+        let old_len =
+            crate::block::BLOCK_MAX_SIZE as usize - crate::segment::data::RECORD_HEADER_SIZE - 1;
+        let old = vec![0x11; old_len];
+        ds.write(100, &old).unwrap();
+        let before_entry = ds.time_index.find_entry(100).unwrap().unwrap();
+
+        assert!(ds.append(100, &[0x22, 0x33]).is_err());
+
+        assert_eq!(
+            ds.time_index.find_entry(100).unwrap().unwrap(),
+            before_entry
+        );
+        assert_eq!(ds.read(100).unwrap().unwrap().1, old);
+        let seg = ds.segments.segments.last().unwrap();
+        assert_eq!(seg.invalid_record_count, 0);
     }
 
     #[test]

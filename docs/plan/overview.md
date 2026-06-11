@@ -183,7 +183,7 @@ Phase 29 (Dataset Append API: latest tail append + 4MiB limit + journal 0x13)
 | Journal 递归写入 | `.journal/logs` 自身操作再次写 journal 导致无限递归 | JournalManager 内部路径不走 public hook, 普通扫描跳过 `.journal` |
 | Journal queue 被外部伪造 | 热迁移/恢复消费者读到非系统日志 | `.journal/logs` queue 禁止外部 `push`, producer 仅允许 `JournalManager.append_*` |
 | Append 修改历史数据 | 旧 timestamp 可能位于 compressed block 或历史段中间, 无法稳定增长 | Phase 29 只允许 `timestamp > latest` 创建或 `timestamp == latest` 且位于未压缩段尾时追加 |
-| Append 造成普通 block 过大 | 最新 record 追加后可能占据聚合 block 过大比例 | 超过 `BLOCK_MAX_SIZE * 70 / 100` 时迁移整条 record 到独占 block |
+| Append 造成普通 block 过大 | 最新 record 追加后可能超过普通 pending block 容量 | 直接返回错误, 不迁移到独占 block |
 | 单条 record 过大 | `data_len:u32` 可表达但资源消耗不可控 | `write` 和 `append` 均限制单条 record 纯数据长度不超过 4MiB |
 
 ## 开发规范

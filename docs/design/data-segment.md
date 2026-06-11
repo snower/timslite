@@ -253,7 +253,7 @@ fn overwrite_in_last_block(
 
 #### append_to_last_record: 追加写入 (Tail Append)
 
-append 追加场景下 (`timestamp == latest_written_timestamp`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前运行时 `data_wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限和 70% 迁移阈值判断。如果上层判断追加后需要迁移为 exclusive/single-record block, 应先读取完整旧数据并走 `create_single_record_block`, 不调用本方法。
+append 追加场景下 (`timestamp == latest_written_timestamp`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前运行时 `data_wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限判断。append 不再因为比例阈值迁移为 exclusive/single-record block, 若增长后普通 pending block 无法承载则直接返回错误。
 
 ```rust
 fn append_to_last_record(
@@ -276,8 +276,7 @@ fn append_to_last_record(
     //
     // 4. final_data_len = old_data_len + append_data.len()
     //    - final_data_len 必须 <= 4MiB
-    //    - 12 + final_data_len 必须 <= BLOCK_MAX_SIZE * 70 / 100
-    //    - 上述阈值通常由 DataSet 层预检, 本方法仍可防御性校验
+    //    - 12 + final_data_len 必须 <= BLOCK_MAX_SIZE
     //
     // 5. 在 mmap 中更新 record.data_len 并把 append_data 复制到 old data 后方
     //
@@ -299,8 +298,8 @@ fn append_to_last_record(
 
 1. append 只增长 record data, 不支持缩小或替换已有 data。
 2. append 失败不回退为乱序写入; compressed block、非末尾 record、历史段都直接返回错误。
-3. append 修改已存在 latest record 且超过 70% 聚合 block 阈值时迁移整条 record, 而不是继续增长普通 pending block; append 创建新 timestamp 不使用该 70% 阈值。
-4. 原地 append 不改变索引; 迁移 append 由 `DataSet` 层更新索引并递增旧段 `invalid_record_count`。
+3. append 修改已存在 latest record 时只允许原地追加; 不触发独占 block 迁移。
+4. 原地 append 不改变索引, 因为 record 起始位置不变。
 
 
 ### 6.4 读取: 通过索引定位 Block 内 record (含缓存)
