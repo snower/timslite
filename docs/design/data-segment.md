@@ -248,7 +248,7 @@ fn overwrite_in_last_block(
 > - block.flags = 0 (pending raw)
 > - record 是 block 内最末 record
 >
-> **不支持缩小的情况**: 若新 data 长度更小, 后续 block 需前移 (本段内只此 block 时无影响, 但通用场景复杂)。实现中允许缩小, 只需移动本 block 后的字节 (如果有) 并调整 wrote_position。
+> **不支持 byte-shift**: correction 变长覆盖只允许 tail-only resize。新 data 可以变大或变小, 但 record 必须已经是最新 pending raw block 的最后一条记录, 且 record 末尾必须等于当前 block/data 尾部。实现不得移动任何后续 block/record 字节; 只更新该 record 的 `data_len`、payload bytes、block 计数和 segment 计数。若校验发现 record 后仍有字节、block 已 sealed/compressed 或目标不是最新尾部记录, 返回错误并由 `DataSet::correct_write` fallback 为 append 新 record + 更新 index。
 
 #### append_to_last_record: 追加写入 (Tail Append)
 

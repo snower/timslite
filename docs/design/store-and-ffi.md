@@ -1,4 +1,4 @@
-# Store 与 FFI API
+﻿# Store 与 FFI API
 
 ## 十一、Store: 存储门面
 
@@ -35,49 +35,48 @@ pub struct Store {
 
 impl Store {
     pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self>;
-    pub fn create_dataset(&self, name: &str, dataset_type: &str,
+
+    // Handle registry / mutating facade operations require &mut self.
+    pub fn create_dataset(&mut self, name: &str, dataset_type: &str,
         data_segment_size: u64, index_segment_size: u64, compress_level: u8,
-        retention_window: u64,
+        index_continuous: u8, retention_window: u64,
     ) -> Result<DataSetHandle>;
-    pub fn create_dataset_with_config(&self, name: &str, dataset_type: &str,
+    pub fn create_dataset_with_config(&mut self, name: &str, dataset_type: &str,
         config_builder: Option<DataSetConfigBuilder>,
     ) -> Result<DataSetHandle>;
-    pub fn open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
-    pub fn write_dataset(&self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
-    pub fn append_dataset(&self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
-    pub fn delete_dataset_record(&self, handle: DataSetHandle, timestamp: i64) -> Result<()>;
+    pub fn open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
+    pub fn write_dataset(&mut self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
+    pub fn append_dataset(&mut self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
+    pub fn delete_dataset_record(&mut self, handle: DataSetHandle, timestamp: i64) -> Result<()>;
+    pub fn close_dataset(&mut self, handle: DataSetHandle) -> Result<()>;
+    pub fn drop_dataset(&mut self, handle: DataSetHandle) -> Result<()>;
+    pub fn drop_dataset_by_name(&mut self, name: &str, dataset_type: &str) -> Result<()>;
+    pub fn open_queue(&mut self, handle: DataSetHandle) -> Result<DatasetQueue>;
+    pub fn close_queue(&mut self, handle: DataSetHandle) -> Result<()>;
+    pub fn open_journal_queue(&mut self) -> Result<DatasetQueue>;
+    pub fn open_consumer(&mut self, queue: &DatasetQueue, group_name: &str) -> Result<DatasetQueueConsumer>;
+    pub fn drop_consumer(&mut self, queue: &DatasetQueue, group_name: &str) -> Result<()>;
+    pub fn queue_push(&mut self, queue: &DatasetQueue, data: &[u8]) -> Result<i64>;
+
+    // Read/query and executor-inspection operations use &self.
     pub fn read_dataset(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>;
     pub fn query_dataset(&self, handle: DataSetHandle, start: i64, end: i64) -> Result<Vec<(i64, Vec<u8>)>>;
-    pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<i64>;
-
-    // 轻量级读操作 (详见 dataset-read-operations.md)
     pub fn dataset_read_exist(&self, handle: DataSetHandle, timestamp: i64) -> Result<bool>;
     pub fn dataset_query_exist(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
     pub fn dataset_read_length(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<u32>>;
     pub fn dataset_query_length(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
-    pub fn dataset_query_length_iter(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator<'_>>;
-
-    pub fn open_queue(&self, handle: DataSetHandle) -> Result<DatasetQueue>;
-    pub fn open_journal_queue(&self) -> Result<DatasetQueue>;
-    pub fn open_consumer(&self, queue: &DatasetQueue, group_name: &str) -> Result<DatasetQueueConsumer>;
-    pub fn drop_consumer(&self, queue: &DatasetQueue, group_name: &str) -> Result<()>;
-    pub fn queue_push(&self, queue: &DatasetQueue, data: &[u8]) -> Result<i64>;
+    pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<i64>;
     pub fn queue_poll(&self, consumer: &DatasetQueueConsumer, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>;
     pub fn queue_ack(&self, consumer: &DatasetQueueConsumer, timestamp: i64) -> Result<()>;
-    pub fn close_dataset(&self, handle: DataSetHandle) -> Result<()>;
-    pub fn drop_dataset(&self, handle: DataSetHandle) -> Result<()>;
-    pub fn drop_dataset_by_name(&self, name: &str, dataset_type: &str) -> Result<()>;
     pub fn block_cache(&self) -> &Arc<BlockCache>;
     pub fn config(&self) -> &StoreConfig;
-    pub fn close(self) -> Result<()>;
-
-    // 数据集枚举
     pub fn get_dataset_names(&self) -> Result<Vec<String>>;
     pub fn get_dataset_types(&self, name: &str) -> Result<Vec<String>>;
-
-    // 后台任务手动执行与查询 (详见 §17.10)
+    pub fn inspect_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetInspectResult>;
     pub fn tick_background_tasks(&self) -> Result<TickResult>;
-    pub fn next_background_delay(&self) -> Duration;
+    pub fn next_background_delay(&self) -> Result<Duration>;
+
+    pub fn close(self) -> Result<()>;
 }
 ```
 
@@ -210,7 +209,7 @@ impl Store {
     /// 返回距离下一次后台任务执行应等待的时间。
     ///
     /// 仅计算, 不执行任何任务。后台线程或外部 tick 执行期间短暂阻塞 (等待状态锁释放)。
-    pub fn next_background_delay(&self) -> Duration;
+    pub fn next_background_delay(&self) -> Result<Duration>;
 }
 
 /// tick 返回结果
@@ -502,3 +501,5 @@ struct DataSetRuntimeContext {
 ```
 
 普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入、journal 内部写入都复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位 dataset, 不遍历所有 dataset。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment。
+
+> Rust API mutability note: methods that allocate or remove handles, mutate the handle registry, mutate dataset contents, open/close queue producer state, or push queue data require &mut self. Read/query, queue poll/ack, config/cache access, dataset listing, inspect, and background executor tick/query use internal synchronization and keep &self.

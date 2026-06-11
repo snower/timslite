@@ -103,6 +103,44 @@ fn t27_1_3_poll_timeout_empty_queue() {
 }
 
 #[test]
+fn t27_1_4_poll_skips_continuous_filler_gap() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
+        .unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+
+    store.write_dataset(h, 10, b"first").unwrap();
+    store.write_dataset(h, 20, b"second").unwrap();
+
+    let (ts, data) = store
+        .queue_poll(&c, Duration::from_millis(100))
+        .unwrap()
+        .unwrap();
+    assert_eq!(ts, 10);
+    assert_eq!(data, b"first");
+    store.queue_ack(&c, ts).unwrap();
+
+    let (ts, data) = store
+        .queue_poll(&c, Duration::from_millis(100))
+        .unwrap()
+        .unwrap();
+    assert_eq!(ts, 20);
+    assert_eq!(data, b"second");
+    store.queue_ack(&c, ts).unwrap();
+
+    assert!(store
+        .queue_poll(&c, Duration::from_millis(50))
+        .unwrap()
+        .is_none());
+    store.close().unwrap();
+}
+
+#[test]
 fn t27_2_1_multi_consumer_groups() {
     use timslite::{Store, StoreConfig};
 

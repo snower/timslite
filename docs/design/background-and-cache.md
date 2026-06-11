@@ -301,7 +301,7 @@ tick_background_tasks():
 | Cache Eviction | `cache enabled && now >= last_cache_eviction + 60s && !cache_running` | `block_cache.evict_idle(idle_timeout)` | 预约时 `last_cache_eviction = now`, `cache_running = true`; 完成后 `cache_running = false` |
 | Retention Reclaim | `now >= next_retention && !retention_running` | `ds.reclaim_expired_segments()` | 预约时 `next_retention = next_retention_time(hour)`, `retention_running = true`; 完成后 `retention_running = false` |
 
-#### 17.10.2 `Store::next_background_delay() -> Duration`
+#### 17.10.2 `Store::next_background_delay() -> Result<Duration>`
 
 ```rust
 impl Store {
@@ -310,7 +310,7 @@ impl Store {
     /// 仅计算, 不执行任何任务。只在读取调度快照时短暂获取 state 锁,
     /// 不等待后台任务的 IO/segment/cache 操作完成。
     /// 若后台线程未启用, 调用方应以此值调度下一次 tick_background_tasks() 调用。
-    pub fn next_background_delay(&self) -> Duration;
+    pub fn next_background_delay(&self) -> Result<Duration>;
 }
 ```
 
@@ -324,7 +324,7 @@ next_background_delay():
                       last_idle_check + 60s,
                       last_cache_eviction + 60s,
                       next_retention) - now
-  5. 返回 Duration (saturating, 不低于 0)
+  5. 返回 Ok(Duration) (saturating, 不低于 0); executor 未初始化时返回错误
 ```
 
 **语义注意**:

@@ -1229,6 +1229,7 @@ impl DataSet {
         if threshold < 0 {
             return Ok(0);
         }
+        let last_used_at = self.last_used_at;
 
         // Close all open segments so they become Closed entries in the registries.
         self.close()?;
@@ -1241,7 +1242,7 @@ impl DataSet {
         // Reclaim data segments using cached max_timestamp in Closed registry entries.
         let data_reclaimed = self.segments.reclaim_expired_segments(threshold)?;
 
-        self.last_used_at = Instant::now();
+        self.last_used_at = last_used_at;
         Ok(idx_reclaimed + data_reclaimed)
     }
 
@@ -2754,6 +2755,37 @@ mod tests {
             "segment at offset {} should remain",
             data_segment_size * 2
         );
+    }
+
+    #[test]
+    fn test_retention_reclaim_does_not_refresh_last_used_at() {
+        let dir = temp_dir("retention_no_touch");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let data_segment_size = 188u64;
+        let mut ds = DataSet::create(
+            id,
+            dir,
+            data_segment_size,
+            4096,
+            0,
+            0,
+            data_segment_size,
+            4096,
+            15,
+        )
+        .unwrap();
+
+        ds.write(10, &[0xAA; 32]).unwrap();
+        ds.write(20, &[0xBB; 32]).unwrap();
+        ds.write(30, &[0xCC; 32]).unwrap();
+        let last_used_before_reclaim = ds.last_used_at();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        assert_eq!(ds.reclaim_expired_segments().unwrap(), 1);
+        assert_eq!(ds.last_used_at(), last_used_before_reclaim);
     }
 
     #[test]

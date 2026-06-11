@@ -26,7 +26,6 @@
     ├── {group_a}             # 消费组 A 的状态文件 (4KB mmap)
     └── {group_b}             # 消费组 B 的状态文件 (4KB mmap)
 ```
-
 每个消费组对应一个独立的 4KB 状态文件, 存储已处理时间戳和处理中列表。
 
 `.journal/logs` 也可打开 queue, 用于实时 poll 消费 journal record。该 queue 是只读消费队列: producer 只能是 `JournalManager.append_*`, 外部 `queue.push()` 必须返回错误, 但 `open_consumer/poll/ack/drop_consumer` 语义与普通 dataset queue 相同。journal queue 以 journal sequence timestamp 作为独立递增消费序列, 每条成功写入的 `0x13` append journal record 都必须投递。
@@ -69,23 +68,17 @@ pub struct DatasetQueueConsumer {
 }
 
 impl DatasetQueueConsumer {
-    pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>;
-    pub fn ack(&self, timestamp: i64) -> Result<()>;
-}
-
-// ─── ConsumerStateFile (4KB mmap, shared among same-group consumers) ──────
-
-pub(crate) struct ConsumerStateFile {
-    path: PathBuf,
-    mmap: MmapMut,
-    processed_ts: i64,
-    pending_entries: Vec<PendingEntry>,
-}
-
-pub(crate) struct PendingEntry {
-    pub timestamp: i64,
-    pub start_time: i64,        // Unix epoch seconds
-    pub status: u8,             // 0=待ack, 1=已ack
+    /// Poll for the next real record.
+pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
+    // 1. If an unacked pending entry exists, return that real record again.
+    // 2. Otherwise use processed_ts + 1 as the direct-read fast path.
+    // 3. If direct read misses because of a sparse gap or filler, query index
+    //    entries from next_ts forward and choose the first non-filler entry
+    //    that is not already pending.
+    // 4. Add only real records to pending. Filler/gap timestamps are never
+    //    delivered and are not auto-acked.
+    // 5. If no real record exists, release dataset/state locks and wait on
+    //    the condvar until timeout or notification.
 }
 ```
 
@@ -104,7 +97,6 @@ impl DataSet {
     pub fn close_queue(&mut self) -> Result<()>;
 }
 ```
-
 #### DatasetQueue 方法
 
 | 方法 | 说明 | 返回值 |
@@ -165,7 +157,6 @@ DatasetQueue.close() → closed=true + notify_all → 自动 drop 所有 consume
     ↓
 Dataset.close()
 ```
-
 ### 28.6 关键约束
 
 | 约束 | 说明 |
@@ -352,82 +343,18 @@ pub fn push(&self, data: &[u8]) -> Result<i64> {
 ### 30.3 Poll 流程
 
 ```rust
+/// Poll for the next real record.
 pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        // 1. 检查 closed 标志
-        if self.closed.load(Ordering::SeqCst) {
-            return Err(TmslError::QueueClosed);
-        }
-
-        // 2. 获取 dataset 锁
-        let mut dataset_guard = self.dataset.lock().unwrap();
-
-        // 2a. 再次检查 closed (可能在等锁期间被关闭)
-        if self.closed.load(Ordering::SeqCst) {
-            return Err(TmslError::QueueClosed);
-        }
-
-        // 3. 获取 state file 锁
-        let mut state = self.state_file.lock().unwrap();
-
-        // 4. 查找可分配的 entry
-        let latest = dataset_guard.latest_written_timestamp();
-        let next_ts = Self::find_next_available_ts(&state, latest);
-
-        if let Some(ts) = next_ts {
-            // 有数据: 分配 pending entry, 读取数据, 返回
-            let pending = PendingEntry {
-                timestamp: ts,
-                start_time: now_unix_epoch(),
-                status: 0,
-            };
-            state.add_pending(pending)?;
-            // 不执行 sync — 由后台 flush 任务统一同步
-
-            // 读取数据 (跳过 filler entries)
-            let data = dataset_guard.read(ts, None)?
-                .map(|(_, bytes)| bytes)
-                .unwrap_or_default();
-
-            return Ok(Some((ts, data)));
-        }
-
-        // 5. 无数据: 先释放 state 和 dataset 锁, 再进入 notify condvar wait
-        drop(state);
-        drop(dataset_guard);
-
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Ok(None);  // 超时
-        }
-
-        let (ref guard_mutex, ref condvar) = *self.notify;
-        let notify_guard = guard_mutex.lock().unwrap();
-        let (guard, _timeout_result) = condvar
-            .wait_timeout(notify_guard, remaining)
-            .unwrap();
-        drop(guard);
-        // 循环重新检查
-    }
-}
-
-/// 找到 processed_ts 之后第一个不在 pending 中的 timestamp
-fn find_next_available_ts(state: &ConsumerStateFile, latest: i64) -> Option<i64> {
-    let mut ts = state.processed_ts + 1;
-    while ts <= latest {
-        // 检查是否已在 pending 中 (待ack 或已ack 但未清理)
-        let in_pending = state.pending_entries.iter()
-            .any(|e| e.timestamp == ts);
-        if !in_pending {
-            return Some(ts);
-        }
-        ts += 1;
-    }
-    None  // 没有可分配的数据
-}
-```
+    // 1. If an unacked pending entry exists, return that real record again.
+    // 2. Otherwise use processed_ts + 1 as the direct-read fast path.
+    // 3. If direct read misses because of a sparse gap or filler, query index
+    //    entries from next_ts forward and choose the first non-filler entry
+    //    that is not already pending.
+    // 4. Add only real records to pending. Filler/gap timestamps are never
+    //    delivered and are not auto-acked.
+    // 5. If no real record exists, release dataset/state locks and wait on
+    //    the condvar until timeout or notification.
+}```
 
 **关键设计**: poll 先检查数据可用性, 无数据时释放 state/dataset 锁后只持有 notify mutex 进入 Condvar wait。write 完成后 notify_all 唤醒所有等待 consumer。唤醒后循环重新检查 pending entry 和数据可用性。
 
@@ -472,11 +399,11 @@ pub fn ack(&self, timestamp: i64) -> Result<()> {
 同一消费组多个 Consumer 同时 poll 时, 通过共享的 `ConsumerStateFile` 互斥:
 
 ```
-Consumer A: poll → lock(state) → find_next_available_ts → ts=100 → add_pending(100) → unlock
-Consumer B: poll → lock(state) → find_next_available_ts → ts=101 (100已在pending) → add_pending(101) → unlock
+Consumer A: poll → lock(state) → find_next_available_entry → ts=100 → add_pending(100) → unlock
+Consumer B: poll → lock(state) → find_next_available_entry → ts=102 (100 已在 pending, 101 是 filler/gap) → add_pending(102) → unlock
 ```
 
-`find_next_available_ts` 从 `processed_ts + 1` 开始扫描, 跳过已在 pending 中的 timestamp, 返回第一个可用 timestamp。这保证了多 Consumer 不会拿到相同数据。
+`find_next_available_entry` 从 `processed_ts + 1` 开始, 先尝试 direct read; direct read miss 后通过 `query_index_entries` 寻找第一个真实且不在 pending 中的 entry。filler/gap 不投递、不 pending、不自动 ack; 共享 state file 保证同一 group 多 consumer 不会拿到同一真实 timestamp。
 
 ### 30.6 drop_consumer 行为
 

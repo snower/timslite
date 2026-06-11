@@ -1,4 +1,4 @@
-# 数据集操作 - DataSet 生命周期 + 写入/读取流程
+﻿# 数据集操作 - DataSet 生命周期 + 写入/读取流程
 
 ## 八、DataSet: 数据集
 
@@ -616,7 +616,8 @@ expiration_threshold = latest_written_timestamp.saturating_sub(retention_window)
 DataSet::reclaim_expired_segments():
   1. if retention_window == 0 → return Ok(0)
   2. threshold = latest_written_timestamp.saturating_sub(retention_window)
-  3. self.flush()  -- 确保 in-memory buffer 落盘
+  3. old_last_used_at = self.last_used_at
+     self.flush()  -- 确保 in-memory buffer 落盘; flush 内部可能临时 touch
   4. self.time_index.idle_close_all()
      self.segments.idle_close_all()
      确保所有分段进入 closed/closed_index_segments 集合
@@ -624,7 +625,8 @@ DataSet::reclaim_expired_segments():
      逐个检查索引段 last_entry_timestamp() < threshold → 删除
   6. self.segments.reclaim_expired_segments(threshold)
      逐个检查 closed_segments[].max_timestamp < threshold → 删除
-  7. self.last_used_at = Instant::now()
+  7. self.last_used_at = old_last_used_at
+     retention 是维护任务, 不延长 dataset 热度或重置 idle 计时
   8. return Ok(已删除总数)
 ```
 

@@ -1,4 +1,4 @@
-# Queue 模块 — 状态文件格式与同步
+﻿# Queue 模块 — 状态文件格式与同步
 
 ## 三十一、消费组状态文件
 
@@ -440,29 +440,19 @@ for state_arc in state_arcs {
 
 **注意**: 超时清理会导致数据重新可 poll (at-least-once 语义)。Consumer 会再次收到相同数据。
 
-### 33.3 Filler Entry 跳过
+### 33.3 Filler / Gap 跳过
 
-当 consumer poll 到的 timestamp 对应的是 filler entry (哨兵, 无实际数据) 时, `dataset.read(ts)` 返回 `None`。Consumer 应:
-
-1. 自动 ack 该 filler entry (无需处理)
-2. 继续 poll 下一条
+Queue poll 不会投递 filler entry, 也不会对 filler 自动 ack。consumer 只会看到真实 record:
 
 ```rust
-// Consumer 使用示例
 loop {
     match consumer.poll(Duration::from_secs(5))? {
         Some((ts, data)) => {
-            if data.is_empty() {
-                // Filler entry, 自动 ack 跳过
-                consumer.ack(ts)?;
-                continue;
-            }
-            // 处理数据
             process(ts, &data);
             consumer.ack(ts)?;
         }
         None => {
-            // 超时, 无新数据
+            // timeout, no new real record
         }
     }
 }
@@ -500,10 +490,10 @@ loop {
 - N 个 consumer 同时 poll, push 后全部唤醒, 但只有部分能拿到数据 (取决于数据量)
 - 如果 consumer 数量远大于 push 频率, 大部分唤醒是空跑 (spurious wakeup), 但 poll 循环会重新进入 wait
 
-### 34.5 find_next_available_ts 效率
+### 34.5 poll next-entry efficiency
 
-当前实现为线性扫描 `processed_ts + 1` 到 `latest`, 检查每条是否在 pending 中。
+当前实现不按 timestamp 逐个线性扫描 gap/filler, 而是在 direct read miss 后通过 `query_index_entries(next_ts, i64::MAX)` 查找后续 index entry。
 
 - 正常情况下: `processed_ts + 1` 即可命中, O(1)
-- 大量 filler entries: 可能跳过多个, O(k) 其中 k = filler 数量
+- 大量 filler/gap: 由 TimeIndex range 查询跳过未创建的中间 segment 和 filler entry; 不为 filler 创建 pending。
 - pending 堆积: 最坏 O(pending_length), 但 pending 最多 239 条, 可接受
