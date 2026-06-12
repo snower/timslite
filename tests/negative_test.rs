@@ -42,7 +42,7 @@ fn assert_err_contains<T, E: std::fmt::Display>(result: Result<T, E>, expected: 
         assert!(
             e.to_string().contains(expected),
             "expected error containing '{expected}', got: {}",
-            e.to_string()
+            e
         );
     } else {
         panic!("expected error containing '{expected}', got Ok");
@@ -380,7 +380,7 @@ fn negative_write_invalid_handle() {
 #[test]
 fn negative_read_invalid_handle() {
     let dir = temp_dir();
-    let mut store = make_store(&dir);
+    let store = make_store(&dir);
     let result = store.read_dataset(timslite::DataSetHandle(9999), 1);
     assert_err_contains(result, "not found");
 }
@@ -407,7 +407,7 @@ fn negative_delete_invalid_handle() {
 #[test]
 fn negative_query_invalid_handle() {
     let dir = temp_dir();
-    let mut store = make_store(&dir);
+    let store = make_store(&dir);
     let result = store.query_dataset(timslite::DataSetHandle(9999), 0, 100);
     assert_err_contains(result, "not found");
 }
@@ -708,7 +708,7 @@ fn negative_validation_unicode_names() {
 fn positive_validation_valid_names() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
-    for (i, name) in vec!["valid", "valid-name", "valid_name", "123", "a-b_c"]
+    for (i, name) in ["valid", "valid-name", "valid_name", "123", "a-b_c"]
         .iter()
         .enumerate()
     {
