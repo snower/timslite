@@ -4,6 +4,7 @@
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
+[![codecov](https://codecov.io/github/snower/timslite/graph/badge.svg?token=OSZNPBORFL)](https://codecov.io/github/snower/timslite)
 
 timslite 是一个可嵌入到其它项目中的本地时序数据存储引擎。它面向需要高性能本地写入、精确时间戳读取、范围查询、持久化消费队列和轻量变更日志的应用，不需要单独部署数据库服务。
 
