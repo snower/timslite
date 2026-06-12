@@ -483,3 +483,147 @@ fn test_store_dataset_query_length() {
     assert_eq!(result[0], (1, 3));
     assert_eq!(result[1], (2, 2));
 }
+
+// ─── Read Operations deleted record tests (P1-R-1~4) ────────────────────────
+
+#[test]
+fn test_read_exist_deleted_timestamp_returns_true_for_filler() {
+    // P1-R-1: read_exist(deleted_ts) should return true because filler entry exists
+    // Design: read_exist only checks if index entry exists, not if data is valid
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("ds", "type").unwrap();
+
+    // Write data then delete it
+    let ds_arc = store.get_dataset(&handle).unwrap();
+    let mut ds = ds_arc.lock().unwrap();
+    ds.write(100, b"to_be_deleted").unwrap();
+
+    // Verify it exists before delete
+    assert!(ds.read_exist(100).unwrap());
+
+    // Delete the record (creates filler entry)
+    ds.delete(100).unwrap();
+
+    // After delete, read_exist should return true because filler entry exists
+    // Design: "read_exist 仅表示'索引位置有 entry'，不表示数据有效"
+    assert!(
+        ds.read_exist(100).unwrap(),
+        "deleted timestamp should return true for read_exist (filler exists)"
+    );
+    drop(ds);
+
+    store.close().unwrap();
+}
+
+#[test]
+fn test_read_length_deleted_timestamp_returns_none() {
+    // P1-R-2: read_length(deleted_ts) should return None
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("ds", "type").unwrap();
+
+    // Write data then delete it
+    let ds_arc = store.get_dataset(&handle).unwrap();
+    let mut ds = ds_arc.lock().unwrap();
+    ds.write(100, b"to_be_deleted").unwrap();
+
+    // Verify length before delete
+    let len = ds.read_length(100).unwrap();
+    assert_eq!(len, Some(13));
+
+    // Delete the record
+    ds.delete(100).unwrap();
+
+    // After delete, read_length should return None
+    let len = ds.read_length(100).unwrap();
+    assert!(
+        len.is_none(),
+        "deleted timestamp should return None for read_length"
+    );
+    drop(ds);
+
+    store.close().unwrap();
+}
+
+#[test]
+fn test_query_exist_includes_deleted_timestamps_as_fillers() {
+    // P1-R-3: query_exist should include fillers in bitmap
+    // Design: query_exist returns bitmap where bit=1 means index entry exists (including fillers)
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("ds", "type").unwrap();
+
+    // Write multiple records and delete one
+    let ds_arc = store.get_dataset(&handle).unwrap();
+    let mut ds = ds_arc.lock().unwrap();
+    ds.write(1, b"aaa").unwrap();
+    ds.write(2, b"bbb").unwrap();
+    ds.write(3, b"ccc").unwrap();
+
+    // Delete timestamp 2 (creates filler entry)
+    ds.delete(2).unwrap();
+
+    // query_exist returns bitmap where bit=1 means index entry exists (including fillers)
+    let bitmap = ds.query_exist(1, 3).unwrap();
+    assert_eq!(bitmap.len(), 1, "should have 1 byte for 3 timestamps");
+
+    // All three bits should be set because filler entries exist in the index
+    let ts1_exists = (bitmap[0] & 0x01) != 0;
+    let ts2_exists = (bitmap[0] & 0x02) != 0;
+    let ts3_exists = (bitmap[0] & 0x04) != 0;
+
+    assert!(ts1_exists, "timestamp 1 should exist");
+    assert!(ts2_exists, "timestamp 2 should exist (filler entry)");
+    assert!(ts3_exists, "timestamp 3 should exist");
+    drop(ds);
+
+    store.close().unwrap();
+}
+
+#[test]
+fn test_query_length_skips_deleted_timestamps() {
+    // P1-R-4: query_length should skip deleted timestamps
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("ds", "type").unwrap();
+
+    // Write multiple records and delete one
+    let ds_arc = store.get_dataset(&handle).unwrap();
+    let mut ds = ds_arc.lock().unwrap();
+    ds.write(1, b"aaa").unwrap(); // length 3
+    ds.write(2, b"bb").unwrap(); // length 2
+    ds.write(3, b"cccc").unwrap(); // length 4
+
+    // Delete timestamp 2
+    ds.delete(2).unwrap();
+
+    // query_length should skip deleted timestamps
+    let length_results = ds.query_length(1, 3).unwrap();
+    assert_eq!(length_results.len(), 2, "should have 2 records");
+    assert_eq!(length_results[0], (1, 3), "first should be (1, 3)");
+    assert_eq!(length_results[1], (3, 4), "second should be (3, 4)");
+    drop(ds);
+
+    store.close().unwrap();
+}

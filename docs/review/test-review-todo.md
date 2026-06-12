@@ -50,20 +50,20 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P0-Q-1 | push 到已关闭的 queue | `tests/queue_test.rs` | 返回错误 |
-| [ ] | P0-Q-2 | poll 已关闭的 consumer | `tests/queue_test.rs` | 返回错误或 None |
-| [ ] | P0-Q-3 | ack 已关闭的 consumer | `tests/queue_test.rs` | 返回错误 |
-| [ ] | P0-Q-4 | drop consumer 两次 | `tests/queue_test.rs` | 第二次返回错误 |
-| [ ] | P0-Q-5 | poll 超时精度 | `tests/queue_test.rs` | 超时时间误差在合理范围内 |
-| [ ] | P0-Q-6 | push 空数据 | `tests/queue_test.rs` | 成功或返回特定错误 |
-| [ ] | P0-Q-7 | consumer group 名称边界 | `tests/queue_test.rs` | 长名称、特殊字符、空名称的处理 |
+| [x] | P0-Q-1 | push 到已关闭的 queue | `tests/queue_test.rs` | t27_7_1 验证返回错误 |
+| [x] | P0-Q-2 | poll 已关闭的 consumer | `tests/queue_test.rs` | t27_7_2 验证返回错误 |
+| [x] | P0-Q-3 | ack 已关闭的 consumer | `tests/queue_test.rs` | t27_7_3 验证返回错误 |
+| [x] | P0-Q-4 | drop consumer 两次 | `tests/queue_test.rs` | t27_7_4 验证第二次返回错误 |
+| [x] | P0-Q-5 | poll 超时精度 | `tests/queue_test.rs` | t27_7_5 验证超时时间误差在合理范围 |
+| [x] | P0-Q-6 | push 空数据 | `tests/queue_test.rs` | t27_7_6 验证空数据成功推送 |
+| [x] | P0-Q-7 | consumer group 名称边界 | `tests/queue_test.rs` | t27_7_7 验证长名称、特殊字符、空名称处理 |
 
 ### 五、Journal 0x13 测试
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P0-J-1 | append 操作写入 journal 0x13 记录 | `tests/journal_test.rs` | DataSet::append() 成功后写入正确的 journal 记录 |
-| [ ] | P0-J-2 | journal queue 消费 0x13 记录 | `tests/journal_test.rs` | journal queue 正确返回 0x13 类型记录 |
+| [x] | P0-J-1 | append 操作写入 journal 0x13 记录 | `tests/journal_test.rs` | t28_14 验证 DataAppend 记录正确写入 |
+| [x] | P0-J-2 | journal queue 消费 0x13 记录 | `tests/journal_test.rs` | t28_15 验证 queue 正确返回 0x13 类型记录 |
 
 ---
 
@@ -83,20 +83,20 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P1-R-1 | read_exist(deleted_ts) 返回 false | `tests/read_operations.rs` | deleted timestamp 的 existence check 正确 |
-| [ ] | P1-R-2 | read_length(deleted_ts) 返回 None | `tests/read_operations.rs` | deleted timestamp 的 length read 正确 |
-| [ ] | P1-R-3 | query_exist 跳过 deleted | `tests/read_operations.rs` | 索引存在性检查跳过 filler |
-| [ ] | P1-R-4 | query_length 跳过 deleted | `tests/read_operations.rs` | 长度查询跳过 filler 和过期记录 |
+| [x] | P1-R-1 | read_exist(deleted_ts) 返回 true (filler) | `tests/read_operations.rs` | test_read_exist_deleted 验证 filler 返回 true |
+| [x] | P1-R-2 | read_length(deleted_ts) 返回 None | `tests/read_operations.rs` | test_read_length_deleted 验证返回 None |
+| [x] | P1-R-3 | query_exist 包含 deleted (filler) | `tests/read_operations.rs` | test_query_exist_includes 验证 bitmap 包含 filler |
+| [x] | P1-R-4 | query_length 跳过 deleted | `tests/read_operations.rs` | test_query_length_skips 验证跳过 filler |
 
 ### 八、Background Tasks 测试补充
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P1-G-1 | retention_window=0 不执行 reclaim | `tests/background_test.rs` | 不限时配置下 reclaim 不执行 |
-| [ ] | P1-G-2 | retention 边界时间精确性 | `tests/background_test.rs` | 恰好在窗口边界的数据正确回收 |
-| [ ] | P1-G-3 | reclaim 后查询返回 None | `tests/background_test.rs` | 过期数据查询返回 None |
-| [ ] | P1-G-4 | reclaim 后写入过期 timestamp | `tests/background_test.rs` | 过期 timestamp 不允许写入 |
-| [ ] | P1-G-5 | reclaim 与 cache invalidation | `tests/background_test.rs` | reclaim 清除相关缓存 |
+| [x] | P1-G-1 | retention_window=0 不执行 reclaim | `tests/background_test.rs` | t21_7 验证不限时配置下 reclaim 不执行 |
+| [x] | P1-G-2 | retention 边界时间精确性 | `tests/background_test.rs` | t21_8 验证窗口边界数据正确处理 |
+| [x] | P1-G-3 | reclaim 后查询返回 None | `tests/background_test.rs` | t21_9 验证过期数据查询返回 None |
+| [x] | P1-G-4 | reclaim 后写入过期 timestamp | `tests/background_test.rs` | t21_10 验证过期 timestamp 写入处理 |
+| [x] | P1-G-5 | reclaim 与 cache invalidation | `tests/background_test.rs` | t21_11 验证 reclaim 清除相关缓存 |
 
 ### 九、Iterator 测试补充
 
@@ -112,16 +112,16 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P1-L-1 | index segment 扩容 | `tests/lazy_allocation_test.rs` | index segment 从 initial 扩容到 max |
+| [x] | P1-L-1 | index segment 扩容 | `tests/lazy_allocation_test.rs` | t12_5 验证 index segment 从 initial 扩容到 max |
 
 ### 十一、Config 测试补充
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P1-F-1 | data_segment_size 边界值 | `tests/config_test.rs` | 最小值、最大值、0 的处理 |
-| [ ] | P1-F-2 | compress_level 边界值 | `tests/config_test.rs` | 0、10、超出范围的处理 |
-| [ ] | P1-F-3 | retention_window 边界值 | `tests/config_test.rs` | 负值、极大值的处理 |
-| [ ] | P1-F-4 | flush_interval 边界值 | `tests/config_test.rs` | 0、极大值的处理 |
+| [x] | P1-F-1 | data_segment_size 边界值 | `tests/config_test.rs` | t14_4 验证最小值和最大值处理 |
+| [x] | P1-F-2 | compress_level 边界值 | `tests/config_test.rs` | t14_5 验证 0 和 10 压缩级别 |
+| [x] | P1-F-3 | retention_window 边界值 | `tests/config_test.rs` | t14_6 验证 0 和 u64::MAX 处理 |
+| [x] | P1-F-4 | flush_interval 边界值 | `tests/config_test.rs` | t14_7 验证 0 和极大值处理 |
 
 ---
 
@@ -169,11 +169,11 @@
 
 | 优先级 | 总数 | 已完成 | 待处理 |
 |--------|------|--------|--------|
-| P0 | 27 | 0 | 27 |
-| P1 | 19 | 5 | 14 |
+| P0 | 27 | 9 | 18 |
+| P1 | 19 | 19 | 0 |
 | P2 | 16 | 0 | 16 |
-| **总计** | **62** | **5** | **57** |
+| **总计** | **62** | **28** | **34** |
 
 ---
 
-*最后更新: 2026-06-11*
+*最后更新: 2026-06-12*

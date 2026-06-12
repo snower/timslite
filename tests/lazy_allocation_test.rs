@@ -320,3 +320,64 @@ fn t12_6_retention_reclaim_after_expansion() {
         "non-expired records should remain queryable"
     );
 }
+
+// ─── Index segment expansion test (P1-L-1) ──────────────────────────────────
+
+#[test]
+fn t12_5_index_segment_expansion_from_initial_to_max() {
+    // P1-L-1: Test index segment expansion from initial to max size
+    use timslite::{DataSet, DataSetKey};
+
+    let dir = temp_dir();
+    let ds_dir = dir.join("idx_expand");
+    fs::create_dir_all(&ds_dir).unwrap();
+
+    let id = DataSetKey {
+        name: "idx_expand".into(),
+        dataset_type: "data".into(),
+    };
+
+    // Small initial index segment (4KB) with larger max (64KB)
+    let initial_index_size = 4 * 1024; // 4KB
+    let max_index_size = 64 * 1024; // 64KB
+    let data_segment_size = 64 * 1024 * 1024; // 64MB
+
+    let mut ds = DataSet::create(
+        id.clone(),
+        ds_dir.clone(),
+        data_segment_size,
+        max_index_size,
+        0, // compress_level=0
+        0,
+        data_segment_size,
+        initial_index_size,
+        0,
+    )
+    .unwrap();
+
+    // Write enough records to trigger index segment expansion
+    // Each index entry is ~24 bytes (timestamp + block_offset + in_block_offset)
+    // 4KB can hold ~170 entries, so write more than that
+    let record_count = 200;
+    for i in 1..=record_count {
+        let data = format!("record_{}", i).into_bytes();
+        ds.write(i, &data).unwrap();
+    }
+
+    // Verify all records are readable
+    let entries = ds.query(1, record_count).unwrap();
+    assert_eq!(
+        entries.len(),
+        record_count as usize,
+        "all {} records should be readable after index expansion",
+        record_count
+    );
+
+    // Verify data integrity
+    for (i, (ts, data)) in entries.iter().enumerate() {
+        let expected_ts = (i + 1) as i64;
+        assert_eq!(*ts, expected_ts, "timestamp mismatch at index {}", i);
+        let expected_data = format!("record_{}", expected_ts).into_bytes();
+        assert_eq!(*data, expected_data, "data mismatch at timestamp {}", ts);
+    }
+}

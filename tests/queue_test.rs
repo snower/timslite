@@ -775,3 +775,204 @@ fn t27_7_push_notification_wakes_blocking_consumer_poll() {
     producer.join().unwrap();
     store.close().unwrap();
 }
+
+// ─── Queue boundary tests (P0-Q-1~7) ────────────────────────────────────────
+
+#[test]
+fn t27_7_1_push_to_closed_queue_errors() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+
+    // Push works before close
+    store.queue_push(&q, b"before_close").unwrap();
+
+    // Close the queue
+    store.close_queue(h).unwrap();
+
+    // Push after close should fail
+    let result = store.queue_push(&q, b"after_close");
+    assert!(result.is_err(), "push to closed queue should return error");
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_7_2_poll_closed_consumer_errors() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+
+    // Push some data first
+    store.queue_push(&q, b"data").unwrap();
+
+    // Close the queue
+    store.close_queue(h).unwrap();
+
+    // Poll after close should fail
+    let result = store.queue_poll(&c, Duration::from_millis(50));
+    assert!(result.is_err(), "poll on closed queue should return error");
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_7_3_ack_closed_consumer_errors() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+
+    // Push and poll to get a timestamp
+    let ts = store.queue_push(&q, b"data").unwrap();
+    let polled = store.queue_poll(&c, Duration::from_millis(50)).unwrap().unwrap();
+    assert_eq!(polled.0, ts);
+
+    // Close the queue
+    store.close_queue(h).unwrap();
+
+    // Ack after close should fail
+    let result = store.queue_ack(&c, ts);
+    assert!(result.is_err(), "ack on closed queue should return error");
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_7_4_drop_consumer_twice_errors() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+
+    // Open a consumer group
+    store.open_consumer(&q, "g1").unwrap();
+
+    // First drop should succeed
+    store.drop_consumer(&q, "g1").unwrap();
+
+    // Second drop should fail
+    let result = store.drop_consumer(&q, "g1");
+    assert!(result.is_err(), "drop consumer twice should return error");
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_7_5_poll_timeout_precision() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+
+    // Poll with 200ms timeout on empty queue
+    let start = std::time::Instant::now();
+    let result = store.queue_poll(&c, Duration::from_millis(200)).unwrap();
+    let elapsed = start.elapsed();
+
+    assert!(result.is_none(), "empty queue should return None");
+
+    // Timeout should be within reasonable range (200ms ± 100ms)
+    assert!(
+        elapsed >= Duration::from_millis(150) && elapsed < Duration::from_millis(500),
+        "timeout precision: expected ~200ms, got {:?}",
+        elapsed
+    );
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_7_6_push_empty_data() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+
+    // Push empty data - should succeed (empty message is valid)
+    let ts = store.queue_push(&q, b"").unwrap();
+    assert!(ts > 0);
+
+    // Poll should return the empty data
+    let (rts, data) = store
+        .queue_poll(&c, Duration::from_millis(50))
+        .unwrap()
+        .unwrap();
+    assert_eq!(rts, ts);
+    assert!(data.is_empty(), "empty push should result in empty poll data");
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t27_7_7_consumer_group_name_boundary() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+
+    // Valid: long name (within PATH_COMPONENT_MAX_LEN = 255)
+    let long_name = "a".repeat(200);
+    store.open_consumer(&q, &long_name).unwrap();
+
+    // Valid: name with hyphens and underscores
+    store.open_consumer(&q, "my-group_1").unwrap();
+
+    // Valid: numeric name
+    store.open_consumer(&q, "12345").unwrap();
+
+    // Invalid: empty name
+    let result = store.open_consumer(&q, "");
+    assert!(result.is_err(), "empty consumer group name should fail");
+
+    // Invalid: name with spaces
+    let result = store.open_consumer(&q, "has space");
+    assert!(result.is_err(), "consumer group name with space should fail");
+
+    // Invalid: name with special characters
+    let result = store.open_consumer(&q, "group/name");
+    assert!(result.is_err(), "consumer group name with slash should fail");
+
+    store.close().unwrap();
+}

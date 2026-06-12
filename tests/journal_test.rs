@@ -4,6 +4,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use std::time::Duration;
+
 use timslite::{
     JournalRecord, JournalRecordKind, Store, StoreConfig, JOURNAL_DATASET_NAME,
     JOURNAL_DATASET_TYPE,
@@ -323,6 +325,120 @@ fn t28_13_journal_dataset_openable_and_queryable_at_store_level() {
     assert!(
         journal_queue.is_ok(),
         "should be able to open journal queue"
+    );
+
+    store.close().unwrap();
+}
+
+// ─── Journal 0x13 append tests (P0-J-1~2) ───────────────────────────────────
+
+#[test]
+fn t28_14_append_writes_journal_0x13_record() {
+    // P0-J-1: DataSet::append() should write journal record with kind=DataAppend
+    let dir = temp_dir("append_0x13");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    store
+        .create_dataset("jds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    // Use append to create a new record (forward append: ts > latest)
+    let ds_handle = store.open_dataset("jds", "data").unwrap();
+    store.append_dataset(ds_handle, 1, b"append_data_1").unwrap();
+
+    // Read journal records
+    let records = read_all_journal_records(&mut store);
+
+    // Find the DataAppend record
+    let append_records: Vec<_> = records
+        .iter()
+        .filter(|r| r.kind == JournalRecordKind::DataAppend)
+        .collect();
+
+    assert!(
+        !append_records.is_empty(),
+        "journal should contain at least one DataAppend (0x13) record"
+    );
+
+    // Verify the append record has correct metadata
+    let append_record = append_records.last().unwrap();
+    assert_eq!(
+        append_record.name, "jds",
+        "append record should reference correct dataset"
+    );
+    assert_eq!(
+        append_record.dataset_type, "data",
+        "append record should reference correct type"
+    );
+    assert!(
+        append_record.index_info.is_some(),
+        "append record should have index_info"
+    );
+    assert_eq!(
+        append_record.index_info.unwrap().timestamp,
+        1,
+        "append record timestamp should be 1"
+    );
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t28_15_journal_queue_consumes_0x13_records() {
+    // P0-J-2: journal queue should correctly return 0x13 type records
+    let dir = temp_dir("queue_0x13");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    store
+        .create_dataset("jds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    // Open journal queue BEFORE append operations so we receive the notifications
+    let journal_handle = store
+        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
+        .unwrap();
+    let journal_queue = store.open_queue(journal_handle).unwrap();
+    let journal_consumer = store.open_consumer(&journal_queue, "test_group").unwrap();
+
+    // Use append to create records
+    let ds_handle = store.open_dataset("jds", "data").unwrap();
+    store.append_dataset(ds_handle, 1, b"append_1").unwrap();
+    store.append_dataset(ds_handle, 2, b"append_2").unwrap();
+
+    // Poll journal queue for records
+    let mut append_count = 0;
+    let mut other_count = 0;
+
+    loop {
+        let result = store
+            .queue_poll(&journal_consumer, Duration::from_millis(100))
+            .unwrap();
+        match result {
+            Some((ts, data)) => {
+                let record = JournalRecord::decode(&data).unwrap();
+                if record.kind == JournalRecordKind::DataAppend {
+                    append_count += 1;
+                    // Verify it's one of our append timestamps
+                    let record_ts = record.index_info.unwrap().timestamp;
+                    assert!(
+                        record_ts == 1 || record_ts == 2,
+                        "unexpected append timestamp: {}",
+                        record_ts
+                    );
+                } else {
+                    other_count += 1;
+                }
+                store.queue_ack(&journal_consumer, ts).unwrap();
+            }
+            None => break,
+        }
+    }
+
+    assert!(
+        append_count >= 2,
+        "journal queue should contain at least 2 DataAppend records, got {} (other: {})",
+        append_count,
+        other_count
     );
 
     store.close().unwrap();

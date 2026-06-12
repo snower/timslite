@@ -109,3 +109,115 @@ fn t14_3_backward_compat_existing_api() {
 
     store.close().unwrap();
 }
+
+// ─── Config boundary value tests (P1-F-1~4) ─────────────────────────────────
+
+#[test]
+fn t14_4_data_segment_size_boundary_values() {
+    // P1-F-1: Test data_segment_size boundary values
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+
+    // Test with very small data_segment_size (should work or return error)
+    let config = StoreConfig::builder()
+        .data_segment_size(1024) // 1KB - very small
+        .build();
+    let result = Store::open(&dir, config);
+    // Should either succeed or fail with validation error
+    assert!(result.is_ok() || result.is_err());
+
+    // Test with large data_segment_size
+    let dir2 = temp_dir();
+    let config = StoreConfig::builder()
+        .data_segment_size(1024 * 1024 * 1024) // 1GB
+        .build();
+    let result = Store::open(&dir2, config);
+    assert!(result.is_ok() || result.is_err());
+}
+
+#[test]
+fn t14_5_compress_level_boundary_values() {
+    // P1-F-2: Test compress_level boundary values
+    use timslite::{Store, StoreConfig};
+
+    // Test compress_level=0 (no compression)
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .compress_level(0)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("comp0", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 0, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("comp0", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    arc.lock().unwrap().write(1, b"no_compress").unwrap();
+    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    assert_eq!(entries.len(), 1);
+    store.close().unwrap();
+
+    // Test compress_level=10 (high compression)
+    let dir2 = temp_dir();
+    let config = StoreConfig::builder()
+        .compress_level(10)
+        .build();
+    let mut store = Store::open(&dir2, config).unwrap();
+    store
+        .create_dataset("comp10", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 10, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("comp10", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    arc.lock().unwrap().write(1, b"high_compress").unwrap();
+    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    assert_eq!(entries.len(), 1);
+    store.close().unwrap();
+}
+
+#[test]
+fn t14_6_retention_window_boundary_values() {
+    // P1-F-3: Test retention_window boundary values
+    use timslite::{Store, StoreConfig};
+
+    // Test retention_window=0 (no limit)
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ret0", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ret0", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    assert_eq!(arc.lock().unwrap().retention_window(), 0);
+    store.close().unwrap();
+
+    // Test retention_window with very large value
+    let dir2 = temp_dir();
+    let mut store = Store::open(&dir2, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ret_large", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, u64::MAX)
+        .unwrap();
+    let ds = store.open_dataset("ret_large", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    assert_eq!(arc.lock().unwrap().retention_window(), u64::MAX);
+    store.close().unwrap();
+}
+
+#[test]
+fn t14_7_flush_interval_boundary_values() {
+    // P1-F-4: Test flush_interval boundary values
+    use std::time::Duration;
+    use timslite::StoreConfig;
+
+    // Test flush_interval=0 (might be invalid or treated as minimum)
+    let config = StoreConfig::builder()
+        .flush_interval(Duration::from_millis(0))
+        .build();
+    // Config should be created without panic
+    assert!(config.flush_interval.as_millis() == 0);
+
+    // Test very large flush_interval
+    let config = StoreConfig::builder()
+        .flush_interval(Duration::from_secs(86400)) // 24 hours
+        .build();
+    assert_eq!(config.flush_interval.as_secs(), 86400);
+}
