@@ -8,6 +8,7 @@
 - `[ ]`: 待处理
 - `[x]`: 已完成
 - `[!]`: 阻塞或待决策
+- `[~]`: 延后处理
 
 ---
 
@@ -31,9 +32,9 @@
 | [x] | P0-A-2 | delete 后缓存失效 | `tests/cache_test.rs` | t31_2 验证删除后相关缓存 entry 被清除 |
 | [x] | P0-A-3 | retention reclaim 后缓存失效 | `tests/cache_test.rs` | t31_3 验证过期回收后相关缓存 entry 被清除 |
 | [x] | P0-A-4 | out-of-order write 后缓存失效 | `tests/cache_test.rs` | t31_4 验证乱序写后旧缓存 entry 被清除 |
-| [ ] | P0-A-5 | append migration 后缓存失效 | `src/dataset.rs` | 迁移到 single-record block 后旧缓存失效 |
+| [~] | P0-A-5 | append migration 后缓存失效 | `src/dataset.rs` | 迁移到 single-record block 后旧缓存失效 |
 | [x] | P0-A-6 | cache LRU 淘汰行为 | `tests/cache_test.rs` | t31_5 验证缓存满时最久未访问的 entry 被淘汰 |
-| [ ] | P0-A-7 | cache 空闲回收 | `src/cache.rs` | 30 分钟未访问的 entry 被回收 |
+| [~] | P0-A-7 | cache 空闲回收 | `src/cache.rs` | 30 分钟未访问的 entry 被回收 |
 
 ### 三、Append 语义测试
 
@@ -44,7 +45,7 @@
 | [x] | P0-P-3 | append 空数据 no-op | `tests/append_test.rs` | t32_3 验证 append 空数据不创建新 record |
 | [x] | P0-P-4 | append timestamp 顺序校验 | `tests/append_test.rs` | t32_4 验证 timestamp < latest_written_timestamp 返回错误 |
 | [x] | P0-P-5 | append forward 创建新 record | `tests/append_test.rs` | t32_5 验证 timestamp > latest_written_timestamp 创建新 record |
-| [ ] | P0-P-6 | append 与 queue 通知 | `tests/queue_test.rs` | 创建新 timestamp 时通知 queue |
+| [~] | P0-P-6 | append 与 queue 通知 | `tests/queue_test.rs` | 创建新 timestamp 时通知 queue |
 
 ### 四、Queue 边界测试
 
@@ -131,10 +132,10 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P2-Q-1 | 统一测试命名规范 | 所有测试文件 | 使用描述性名称替代 t{phase}_{number} 格式 |
-| [ ] | P2-Q-2 | 消除硬编码 magic number | 所有测试文件 | 使用命名常量或注释解释参数选择 |
-| [ ] | P2-Q-3 | 添加 negative test | 所有测试文件 | 为每个 API 添加错误路径测试 |
-| [ ] | P2-Q-4 | 测试可重复性改进 | 所有测试文件 | 使用 mock 或可控时间源 |
+| [~] | P2-Q-1 | 统一测试命名规范 | 所有测试文件 | 使用描述性名称替代 t{phase}_{number} 格式 |
+| [~] | P2-Q-2 | 消除硬编码 magic number | 所有测试文件 | 使用命名常量或注释解释参数选择 |
+| [x] | P2-Q-3 | 添加 negative test | `tests/negative_test.rs` | 54 个错误路径测试覆盖 DataSet/Store/Queue/Config/Validation |
+| [~] | P2-Q-4 | 测试可重复性改进 | 所有测试文件 | 使用 mock 或可控时间源 |
 
 ### 十三、FFI 测试
 
@@ -158,22 +159,23 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P2-Z-1 | TestDataset 辅助工具 | `tests/common/mod.rs` (新建) | 封装 dataset 创建和清理 |
-| [ ] | P2-Z-2 | TestStore 辅助工具 | `tests/common/mod.rs` | 封装 store 创建和配置 |
-| [ ] | P2-Z-3 | 代码覆盖率度量 | CI 配置 | 引入 cargo-tarpaulin 或 llvm-cov |
-| [ ] | P2-Z-4 | 模糊测试 | `fuzz/` (新建) | 对序列化/查询边界进行模糊测试 |
+| [~] | P2-Z-1 | TestDataset 辅助工具 | `tests/common/mod.rs` (新建) | 封装 dataset 创建和清理 |
+| [~] | P2-Z-2 | TestStore 辅助工具 | `tests/common/mod.rs` | 封装 store 创建和配置 |
+| [x] | P2-Z-3 | 代码覆盖率度量 | `.github/workflows/ci.yml` | cargo-llvm-cov 已集成到 CI，自动生成 lcov 报告并上传 Codecov |
+| [~] | P2-Z-4 | 模糊测试 | `fuzz/` (新建) | 对序列化/查询边界进行模糊测试 |
 
 ---
 
 ## 统计
 
-| 优先级 | 总数 | 已完成 | 待处理 |
-|--------|------|--------|--------|
+| 优先级 | 总数 | 已完成 | 延后 |
+|--------|------|--------|------|
 | P0 | 27 | 24 | 3 |
 | P1 | 19 | 19 | 0 |
-| P2 | 16 | 8 | 8 |
-| **总计** | **62** | **51** | **11** |
+| P2 | 16 | 10 | 6 |
+| **总计** | **62** | **53** | **9** |
 
 ---
 
 *最后更新: 2026-06-12*
+*本次 review 修复完成，剩余 9 项标记延后处理*
