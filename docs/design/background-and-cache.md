@@ -67,6 +67,7 @@ struct DataSetFlushTarget {
 enum SegmentFlushTarget {
     Data { file_offset: u64 },
     Index { start_timestamp: i64 },
+    QueueState { group_name: String },
 }
 ```
 
@@ -74,8 +75,9 @@ enum SegmentFlushTarget {
 
 - data segment: `file_offset`
 - index segment: `start_timestamp`
+- queue state file: `group_name`
 
-后台 `run_flush()` 只 drain 全局队列并处理队列中出现过的 dataset key; 不遍历全部 dataset。`DataSet::flush()` 只同步当前 dataset 的 dirty segment, 并清除全局队列中属于当前 dataset 的 stale target; 低层 `DataSet::create/open` 绕过 Store 且没有 runtime context 时, `flush()` 退化为同步所有打开 data/index segment, 保持直接使用 API 的可用性。
+后台 `run_flush()` drain 全局队列后按 dataset key 分组, 再逐个执行队列中出现过的精确 target; 不遍历全部 dataset。data/index target 分别同步对应 segment, queue state target 同步对应 consumer group state file。`DataSet::flush()` 同步当前 dataset 的所有打开 data/index segment 和已打开 queue state files, 并清除全局队列中属于当前 dataset 的 stale target; 低层 `DataSet::create/open` 绕过 Store 且没有 runtime context 时, `flush()` 退化为同步所有打开 data/index segment 和 queue state files, 保持直接使用 API 的可用性。
 
 创建新分段文件时, 写入路径必须先把前一个已经完结的分段文件直接 `flush()`:
 
@@ -172,7 +174,7 @@ retention-reclaim (每日 retention_check_hour):
      b. Lock individual dataset mutex
      c. 调用 DataSet::reclaim_expired_segments()
         - 先 close() (flush + idle_close_all)
-        - 计算 threshold = latest_written_timestamp.saturating_sub(retention_window)
+        - 计算 threshold = latest_written_timestamp.saturating_sub(retention_window as i64)
         - 删除 data 分段 (max_timestamp < threshold)
         - 删除 index 分段 (last_entry_timestamp < threshold)
      d. 释放 dataset mutex

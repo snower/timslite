@@ -7,7 +7,7 @@
 //!
 //! Both modes share a `Mutex<ExecutorState>` for concurrency safety.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cache::BlockCache;
 use crate::dataset::DataSetKey;
-use crate::dataset::{DataSet, DataSetFlushTarget, SegmentFlushQueue};
+use crate::dataset::{DataSet, DataSetFlushTarget, SegmentFlushQueue, SegmentFlushTarget};
 use crate::journal::JournalManager;
 
 type DatasetMap = HashMap<DataSetKey, Arc<std::sync::Mutex<DataSet>>>;
@@ -337,8 +337,8 @@ impl BackgroundTasks {
     }
 
     fn run_flush(&self) {
-        let keys = self.drain_flush_dataset_keys();
-        for key in keys {
+        let grouped_targets = self.drain_flush_targets_by_dataset();
+        for (key, targets) in grouped_targets {
             let ds_arc = if JournalManager::is_journal_key(&key) {
                 self.journal_dataset.as_ref().map(Arc::clone)
             } else {
@@ -354,25 +354,25 @@ impl BackgroundTasks {
                 Ok(ds) => ds,
                 Err(_) => continue,
             };
-            if let Err(e) = ds.flush_dirty_segments() {
+            if let Err(e) = ds.sync_queued_flush_targets(targets) {
                 log::error!("[bg flush] failed for {:?}: {}", key, e);
             }
         }
     }
 
-    fn drain_flush_dataset_keys(&self) -> Vec<DataSetKey> {
+    fn drain_flush_targets_by_dataset(&self) -> Vec<(DataSetKey, Vec<SegmentFlushTarget>)> {
         let targets: Vec<DataSetFlushTarget> = {
             let mut queue = self.flush_queue.lock().unwrap();
             queue.drain(..).collect()
         };
-        let mut seen = HashSet::new();
-        let mut keys = Vec::new();
+        let mut grouped = HashMap::<DataSetKey, Vec<SegmentFlushTarget>>::new();
         for target in targets {
-            if seen.insert(target.dataset.clone()) {
-                keys.push(target.dataset);
-            }
+            grouped
+                .entry(target.dataset)
+                .or_default()
+                .push(target.segment);
         }
-        keys
+        grouped.into_iter().collect()
     }
 
     fn run_idle_check(&self) {

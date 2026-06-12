@@ -194,7 +194,7 @@ fn t14_6_retention_window_boundary_values() {
     assert_eq!(arc.lock().unwrap().retention_window(), 0);
     store.close().unwrap();
 
-    // Test retention_window with very large value
+    // Test retention_window with maximum signed timestamp-domain value
     let dir2 = temp_dir();
     let mut store = Store::open(&dir2, StoreConfig::default()).unwrap();
     store
@@ -205,13 +205,29 @@ fn t14_6_retention_window_boundary_values() {
             4 * 1024 * 1024,
             6,
             0,
-            u64::MAX,
+            i64::MAX as u64,
         )
         .unwrap();
     let ds = store.open_dataset("ret_large", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    assert_eq!(arc.lock().unwrap().retention_window(), u64::MAX);
+    assert_eq!(arc.lock().unwrap().retention_window(), i64::MAX as u64);
     store.close().unwrap();
+
+    let dir3 = temp_dir();
+    let mut store = Store::open(&dir3, StoreConfig::default()).unwrap();
+    let err = match store.create_dataset(
+        "ret_too_large",
+        "data",
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        i64::MAX as u64 + 1,
+    ) {
+        Ok(_) => panic!("retention_window above i64::MAX should be rejected"),
+        Err(err) => err,
+    };
+    assert!(format!("{err}").contains("retention_window"));
 }
 
 #[test]

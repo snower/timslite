@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::bg::TickResult;
 use crate::compress::validate_compress_type;
-use crate::config::{DataSetConfigBuilder, StoreConfig};
+use crate::config::{validate_retention_window, DataSetConfigBuilder, StoreConfig};
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
 use crate::queue::{DatasetQueue, DatasetQueueConsumer};
@@ -249,6 +249,7 @@ fn dataset_config_from_ffi(
         )));
     }
     validate_compress_type(raw.compress_type)?;
+    validate_retention_window(raw.retention_window)?;
     Ok(DataSetConfigBuilder::from_store(store_config)
         .data_segment_size(raw.data_segment_size)
         .index_segment_size(raw.index_segment_size)

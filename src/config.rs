@@ -6,6 +6,16 @@
 use std::time::Duration;
 
 use crate::compress::COMPRESS_TYPE_ZSTD;
+use crate::error::{Result, TmslError};
+
+pub(crate) fn validate_retention_window(retention_window: u64) -> Result<()> {
+    if retention_window > i64::MAX as u64 {
+        return Err(TmslError::InvalidData(format!(
+            "retention_window must be <= i64::MAX, got {retention_window}"
+        )));
+    }
+    Ok(())
+}
 
 /// Store-level configuration.
 ///
@@ -351,9 +361,11 @@ impl DataSetConfigBuilder {
     }
 
     /// Build the `DataSetConfig`.
-    pub fn build(self) -> DataSetConfig {
+    pub fn build(self) -> Result<DataSetConfig> {
         let defaults = DataSetConfig::from_store(&StoreConfig::default());
-        DataSetConfig {
+        let retention_window = self.retention_window.unwrap_or(0);
+        validate_retention_window(retention_window)?;
+        Ok(DataSetConfig {
             data_segment_size: self.data_segment_size.unwrap_or(defaults.data_segment_size),
             index_segment_size: self
                 .index_segment_size
@@ -367,9 +379,9 @@ impl DataSetConfigBuilder {
             initial_index_segment_size: self
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
-            retention_window: self.retention_window.unwrap_or(0),
+            retention_window,
             create_time: 0, // Set at dataset creation
-        }
+        })
     }
 }
 
@@ -490,7 +502,7 @@ mod tests {
             .initial_index_segment_size(8 * 1024)
             .build();
 
-        let config = DataSetConfigBuilder::from_store(&store).build();
+        let config = DataSetConfigBuilder::from_store(&store).build().unwrap();
         assert_eq!(config.data_segment_size, 32 * 1024 * 1024);
         assert_eq!(config.index_segment_size, 8 * 1024 * 1024);
         assert_eq!(config.compress_level, 3);
@@ -511,7 +523,8 @@ mod tests {
             .compress_level(9)
             .index_continuous(1)
             .retention_window(30 * 86400)
-            .build();
+            .build()
+            .unwrap();
 
         // Override takes effect
         assert_eq!(config.compress_level, 9);
@@ -523,8 +536,20 @@ mod tests {
 
     #[test]
     fn test_dataset_config_builder_retention_window() {
-        let config = DataSetConfigBuilder::default().retention_window(30).build();
+        let config = DataSetConfigBuilder::default()
+            .retention_window(30)
+            .build()
+            .unwrap();
 
         assert_eq!(config.retention_window, 30);
+    }
+
+    #[test]
+    fn test_dataset_config_builder_rejects_retention_above_i64_max() {
+        let result = DataSetConfigBuilder::default()
+            .retention_window(i64::MAX as u64 + 1)
+            .build();
+
+        assert!(result.is_err());
     }
 }

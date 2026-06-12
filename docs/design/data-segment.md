@@ -331,7 +331,7 @@ impl DataSegment {
 
 > **安全性保证**: 只有 `SEALED|COMPRESSED` block 的解压 payload 才能进入全局 `BlockCache`。pending raw block 仍在写入中, 不能进入全局缓存。sealed raw block 为非法状态。compressed block 一旦写入后不允许原地修改。
 >
-> **Header 起点约束**: 进入 `DataSegment` 后的 `block_segment_offset` 表示相对数据区起点的偏移, 即 `block_offset - segment.file_offset`; 运行时 `data_wrote_position` 也是相对数据区起点的已用字节数。物理文件位置必须通过 `segment.header_len + block_segment_offset` 计算。新建 v1 文件的 `header_len` 为 116, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。索引中的 `block_offset` 是数据区逻辑全局偏移, 不可直接作为文件内 seek 位置。文件 header state 的 `wrote_position` 唯一保存形式是文件内绝对偏移: `header_len + data_wrote_position`。
+> **Header 起点约束**: 进入 `DataSegment` 后的 `block_segment_offset` 表示相对数据区起点的偏移, 即 `block_offset - segment.file_offset`; 运行时 `data_wrote_position` 也是相对数据区起点的已用字节数。物理文件位置必须通过 `segment.header_len + block_segment_offset` 计算。新建 v1 文件的 `header_len` 为 124, 但打开文件时必须使用 header 中的 `meta_length/state_length` 动态计算。索引中的 `block_offset` 是数据区逻辑全局偏移, 不可直接作为文件内 seek 位置。文件 header state 的 `wrote_position` 唯一保存形式是文件内绝对偏移: `header_len + data_wrote_position`。
 
 ### 6.5 生命周期方法
 

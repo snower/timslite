@@ -661,7 +661,7 @@ fn negative_config_zero_segments() {
         .data_segment_size(0)
         .index_segment_size(0);
     // Build should succeed; validation happens at dataset creation
-    let _config = builder.build();
+    let _config = builder.build().unwrap();
 }
 
 /// DataSetConfigBuilder with max values.
@@ -672,9 +672,9 @@ fn negative_config_max_values() {
     let builder = DataSetConfigBuilder::default()
         .data_segment_size(u64::MAX)
         .index_segment_size(u64::MAX)
-        .retention_window(u64::MAX)
+        .retention_window(i64::MAX as u64)
         .compress_level(255);
-    let _config = builder.build();
+    let _config = builder.build().unwrap();
 }
 
 // ============================================================================

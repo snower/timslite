@@ -307,38 +307,26 @@ pub fn open_consumer(&self, group_name: &str) -> Result<DatasetQueueConsumer> {
 
 ### 32.1 Flush 集成 (唯一 Sync 入口)
 
-Queue 状态文件与 Dataset 分段文件采用相同的 Sync 策略 — **仅在后台 flush 任务中统一执行 `mmap.flush()` (MS_SYNC)**。ack 和 poll 操作只更新内存状态, 不触发立即 sync。
+Queue 状态文件与 Dataset 分段文件采用相同的 dirty flush queue 策略。每个 consumer group state file 是一等 flush target: `SegmentFlushTarget::QueueState { group_name }`。ack、poll 和 timeout cleanup 后只更新内存状态并把对应 group 入队, 不触发立即 sync; 后台 flush 任务 drain 队列后同步对应 state file。
 
 ```rust
 // bg/mod.rs flush 逻辑
-fn flush(&self, datasets: &HashMap<DataSetKey, Arc<Mutex<DataSet>>>) {
-    for (_key, dataset_arc) in datasets.iter() {
-        let dataset = dataset_arc.lock().unwrap();
-
-        // Flush dataset segments (现有逻辑)
-        dataset.flush();
-
-        // Flush queue state files (if queue is open)
-        if let Some(ref queue_inner) = dataset.queue_inner {
-            let inner = queue_inner.lock().unwrap();
-            for (_group_name, state_arcs) in inner.consumers.iter() {
-                for state_arc in state_arcs {
-                    if let Ok(mut state) = state_arc.lock() {
-                        state.cleanup_timeout(300);  // 5 分钟超时清理
-                        let _ = state.sync();        // MS_SYNC
-                    }
-                }
-            }
+fn flush_target(dataset: &mut DataSet, target: SegmentFlushTarget) {
+    match target {
+        SegmentFlushTarget::Data { file_offset } => dataset.sync_data_segment(file_offset),
+        SegmentFlushTarget::Index { start_timestamp } => dataset.sync_index_segment(start_timestamp),
+        SegmentFlushTarget::QueueState { group_name } => {
+            dataset.sync_queue_state_file(&group_name)
         }
     }
 }
 ```
 
-**关键**: flush 每 10 分钟执行一次, 统一同步 dataset segments 和 queue state files。状态变更 (ack/poll) 在内存中累积, flush 时一次性持久化。Crash 后可能丢失最近 flush 间隔内的状态变更, 这与 Dataset 分段文件的 crash 安全保证一致。
+**关键**: queue state file 与 data/index segment 共享同一个 dirty flush queue 和 flush 周期。状态变更 (ack/poll/timeout cleanup) 在内存中累积并入队, flush 时按 group 持久化。Crash 后可能丢失最近 flush 间隔内的状态变更, 这与 Dataset 分段文件的 crash 安全保证一致。
 
 ### 32.2 Ack 与 Poll 不执行立即 Sync
 
-`ack()` 和 `poll()` 操作后 **不执行立即 Sync**, 仅更新内存中的状态。状态文件与 Dataset 分段文件采用相同的 Sync 策略 — 由后台 flush 任务统一执行 `mmap.flush()` (MS_SYNC)。
+`ack()` 和 `poll()` 操作后 **不执行立即 Sync**, 仅更新内存中的状态并入队 `QueueState { group_name }`。状态文件与 Dataset 分段文件采用相同的 Sync 策略 — 由后台 flush 任务统一执行 `mmap.flush()` (MS_SYNC)。
 
 **Ack 流程** (仅内存更新):
 

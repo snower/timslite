@@ -687,6 +687,7 @@ impl DatasetQueueConsumer {
                     start_time: now,
                     status: PENDING_STATUS_UNACKED,
                 })?;
+                ds.enqueue_queue_state_flush(&self.group_name);
             }
             Ok(Some((ts, data)))
         } else {
@@ -781,6 +782,11 @@ impl DatasetQueueConsumer {
 
         sf.ack_pending(timestamp)?;
         sf.cleanup_acked();
+        drop(sf);
+        self.dataset
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?
+            .enqueue_queue_state_flush(&self.group_name);
         Ok(())
     }
 }
@@ -803,6 +809,28 @@ pub(crate) fn flush_queue_state_files(inner: &Arc<Mutex<QueueInner>>) -> Result<
             state.sync_to_mmap()?;
             state.flush()?;
         }
+    }
+    Ok(())
+}
+
+/// Flush one consumer state file for a dataset.
+pub(crate) fn flush_queue_state_file(
+    inner: &Arc<Mutex<QueueInner>>,
+    group_name: &str,
+) -> Result<()> {
+    let state_file = {
+        let guard = inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
+        guard.consumers.get(group_name).cloned()
+    };
+    if let Some(sf) = state_file {
+        let mut state = sf
+            .lock()
+            .map_err(|_| TmslError::InvalidData("consumer state mutex poisoned".into()))?;
+        state.cleanup_timeout(DEFAULT_PENDING_TIMEOUT_SECS);
+        state.sync_to_mmap()?;
+        state.flush()?;
     }
     Ok(())
 }

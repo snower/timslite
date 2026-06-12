@@ -24,9 +24,9 @@
 
 | 状态 | ID | 任务 | 主要文件 | 验收标准 |
 |------|----|------|----------|----------|
-| [ ] | P0-1 | 闭合 Queue 状态文件持久化与新版 dirty flush queue 的契约冲突 | `docs/design/background-and-cache.md`, `docs/design/queue-state-file.md`, `docs/design/queue-overview.md`, `src/bg/mod.rs`, `src/dataset.rs`, `src/queue/mod.rs`, queue/background tests | 明确 queue state 是否是一等 flush target；若是，poll/ack/timeout cleanup 后能入队并由后台 flush 周期落盘；若不是，文档明确只在显式 flush/close 等路径同步；测试覆盖无 data/index dirty 时 queue ack/pending 状态的持久化语义 |
-| [ ] | P0-2 | 定义并实现 `retention_window: u64` 与 `i64` timestamp 的安全计算边界 | `docs/design/meta-format.md`, `docs/design/dataset-operations.md`, `docs/design/data-model.md`, `src/config.rs`, `src/meta.rs`, `src/dataset.rs`, `tests/config_test.rs`, retention/background tests | 明确 `retention_window > i64::MAX` 的语义；builder/meta/FFI/open/create 与阈值计算一致；`u64::MAX` 不会因 cast wrap 导致错误过期或错误物理回收；新增或调整边界测试 |
-| [ ] | P0-3 | 收敛 on-disk header/meta active contract，移除旧格式常量漂移 | `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/meta-format.md`, `docs/design/design-decisions.md`, `docs/design/architecture.md`, `src/header.rs`, `src/meta.rs` | 当前真源唯一且一致：`DATA_HEADER_SIZE=124`、`INDEX_HEADER_SIZE=128`、segment `file_size:u64`、dataset/segment `compress_type:u8`、dataset meta TLV length 当前口径一致；旧草案字段或常量被删除或明确标记为历史不可实现 |
+| [x] | P0-1 | 闭合 Queue 状态文件持久化与新版 dirty flush queue 的契约冲突 | `docs/design/background-and-cache.md`, `docs/design/queue-state-file.md`, `docs/design/queue-overview.md`, `src/bg/mod.rs`, `src/dataset.rs`, `src/queue/mod.rs`, queue/background tests | 明确 queue state 是否是一等 flush target；若是，poll/ack/timeout cleanup 后能入队并由后台 flush 周期落盘；若不是，文档明确只在显式 flush/close 等路径同步；测试覆盖无 data/index dirty 时 queue ack/pending 状态的持久化语义 |
+| [x] | P0-2 | 定义并实现 `retention_window: u64` 与 `i64` timestamp 的安全计算边界 | `docs/design/meta-format.md`, `docs/design/dataset-operations.md`, `docs/design/data-model.md`, `src/config.rs`, `src/meta.rs`, `src/dataset.rs`, `tests/config_test.rs`, retention/background tests | 明确 `retention_window > i64::MAX` 的语义；builder/meta/FFI/open/create 与阈值计算一致；`u64::MAX` 不会因 cast wrap 导致错误过期或错误物理回收；新增或调整边界测试 |
+| [x] | P0-3 | 收敛 on-disk header/meta active contract，移除旧格式常量漂移 | `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/meta-format.md`, `docs/design/design-decisions.md`, `docs/design/architecture.md`, `src/header.rs`, `src/meta.rs` | 当前真源唯一且一致：`DATA_HEADER_SIZE=124`、`INDEX_HEADER_SIZE=128`、segment `file_size:u64`、dataset/segment `compress_type:u8`、dataset meta TLV length 当前口径一致；旧草案字段或常量被删除或明确标记为历史不可实现 |
 
 ## P1: 应尽快处理
 
@@ -62,12 +62,13 @@
 | 日期 | ID | 状态 | 处理摘要 | 验证 |
 |------|----|------|----------|------|
 | 2026-06-12 | ALL | [ ] | 根据第 6 轮设计审查报告创建 TODO 跟踪文件，尚未开始修复 | `docs/review/design-review.md` 已读回；待后续逐项处理 |
+| 2026-06-12 | P0-1/P0-2/P0-3 | [x] | 更新相关设计文档；引入 `SegmentFlushTarget::QueueState { group_name }` 并让 poll/ack 入队、后台按 target flush；将 `retention_window` 有效上限固定为 `i64::MAX` 并接入 builder/meta/create/open/FFI；收敛旧 header/meta 常量与字段描述 | `cargo test -- --test-threads=1` 通过 |
 
 ## 完成统计
 
 | 优先级 | 总数 | 已完成 | 未完成 |
 |--------|------|--------|--------|
-| P0 | 3 | 0 | 3 |
+| P0 | 3 | 3 | 0 |
 | P1 | 7 | 0 | 7 |
 | P2 | 4 | 0 | 4 |
-| 合计 | 14 | 0 | 14 |
+| 合计 | 14 | 3 | 11 |

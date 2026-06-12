@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 use crate::cache::BlockCache;
-use crate::config::DataSetConfig;
+use crate::config::{validate_retention_window, DataSetConfig};
 use crate::error::{Result, TmslError};
 use crate::header::{TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
 use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
@@ -18,17 +18,18 @@ use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::query::iter::{QueryIterator, QuerySource};
 use crate::query::length_iter::QueryLengthIterator;
-use crate::queue::{flush_queue_state_files, queue_dir_for, QueueInner};
+use crate::queue::{flush_queue_state_file, flush_queue_state_files, queue_dir_for, QueueInner};
 use crate::segment::data::MAX_RECORD_DATA_SIZE;
 use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
 
 type QueueCondvarPair = Arc<(Mutex<bool>, Condvar)>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum SegmentFlushTarget {
     Data { file_offset: u64 },
     Index { start_timestamp: i64 },
+    QueueState { group_name: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -198,6 +199,7 @@ impl DataSet {
         retention_window: u64,
     ) -> Result<Self> {
         crate::compress::validate_compress_type(compress_type)?;
+        validate_retention_window(retention_window)?;
         let meta_path = base_dir.join("meta");
         if meta_path.exists() {
             return Err(TmslError::AlreadyExists(format!(
@@ -362,6 +364,22 @@ impl DataSet {
         }
     }
 
+    pub(crate) fn enqueue_queue_state_flush(&self, group_name: &str) {
+        let Some(queue) = self.runtime_context.flush_queue.as_ref() else {
+            return;
+        };
+        let target = DataSetFlushTarget {
+            dataset: self.id.clone(),
+            segment: SegmentFlushTarget::QueueState {
+                group_name: group_name.to_string(),
+            },
+        };
+        let mut queue = queue.lock().unwrap();
+        if !queue.iter().any(|queued| queued == &target) {
+            queue.push_back(target);
+        }
+    }
+
     fn remove_queued_flush_targets_for_self(&self) {
         if let Some(queue) = self.runtime_context.flush_queue.as_ref() {
             let mut queue = queue.lock().unwrap();
@@ -369,11 +387,17 @@ impl DataSet {
         }
     }
 
-    fn sync_flush_target(&mut self, target: SegmentFlushTarget) -> Result<()> {
+    pub(crate) fn sync_flush_target(&mut self, target: SegmentFlushTarget) -> Result<()> {
         match target {
             SegmentFlushTarget::Data { file_offset } => self.segments.sync_segment(file_offset),
             SegmentFlushTarget::Index { start_timestamp } => {
                 self.time_index.sync_segment(start_timestamp)
+            }
+            SegmentFlushTarget::QueueState { group_name } => {
+                if let Some(ref inner) = self.queue_inner {
+                    flush_queue_state_file(inner, &group_name)?;
+                }
+                Ok(())
             }
         }
     }
@@ -401,6 +425,24 @@ impl DataSet {
         self.time_index.flush_to_disk()?;
         self.enqueue_dirty_segments();
         let targets = self.dirty_flush_targets();
+        for target in targets {
+            self.sync_flush_target(target)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn sync_queued_flush_targets(
+        &mut self,
+        targets: Vec<SegmentFlushTarget>,
+    ) -> Result<()> {
+        if targets.iter().any(|target| {
+            matches!(
+                target,
+                SegmentFlushTarget::Data { .. } | SegmentFlushTarget::Index { .. }
+            )
+        }) {
+            self.time_index.flush_to_disk()?;
+        }
         for target in targets {
             self.sync_flush_target(target)?;
         }
@@ -1574,6 +1616,49 @@ mod tests {
         ds.flush().unwrap();
 
         assert_eq!(ds.flush_queue_len(), 0);
+    }
+
+    #[test]
+    fn test_queue_state_flush_target_persists_ack_without_segment_dirty() {
+        let ds = make_dirty_queue_dataset("dirty_queue_state_ack", 4096);
+        let flush_queue = ds.runtime_context.flush_queue.as_ref().unwrap().clone();
+        let ds_arc = Arc::new(Mutex::new(ds));
+        let (inner, notify) = ds_arc.lock().unwrap().open_queue().unwrap();
+        let queue = crate::queue::DatasetQueue::new(Arc::clone(&ds_arc), inner, notify);
+        let consumer = queue.open_consumer("group1").unwrap();
+
+        let ts = queue.push(b"row").unwrap();
+        let polled = consumer
+            .poll(std::time::Duration::from_millis(0))
+            .unwrap()
+            .unwrap();
+        assert_eq!(polled.0, ts);
+
+        ds_arc.lock().unwrap().flush().unwrap();
+        assert_eq!(flush_queue.lock().unwrap().len(), 0);
+
+        consumer.ack(ts).unwrap();
+        {
+            let guard = flush_queue.lock().unwrap();
+            assert_eq!(guard.len(), 1);
+            assert!(matches!(
+                &guard[0].segment,
+                SegmentFlushTarget::QueueState { group_name } if group_name == "group1"
+            ));
+        }
+
+        ds_arc
+            .lock()
+            .unwrap()
+            .sync_flush_target(SegmentFlushTarget::QueueState {
+                group_name: "group1".to_string(),
+            })
+            .unwrap();
+
+        let state_path = ds_arc.lock().unwrap().queue_dir().join("group1");
+        let persisted = crate::queue::ConsumerStateFile::open_or_create(state_path, 0).unwrap();
+        assert_eq!(persisted.processed_ts(), ts);
+        assert_eq!(persisted.pending_count(), 0);
     }
 
     #[test]

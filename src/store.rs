@@ -217,7 +217,7 @@ impl Store {
 
         let config = config_builder
             .unwrap_or_else(|| DataSetConfigBuilder::from_store(&self.config))
-            .build();
+            .build()?;
         if self.journal.is_enabled() {
             validate_create_drop_record_inputs(&key, META_VALUES_LEN_V1)?;
         }

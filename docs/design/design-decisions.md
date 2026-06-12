@@ -8,7 +8,7 @@
 | 压缩粒度 | record | Block |
 | 压缩时机 | 立即 | 延迟 (pending overflow 或 exclusive/single-record block 创建时) |
 | 内存映射 | MappedByteBuffer | memmap2::MmapMut, 懒加载/超时关闭(30min) |
-| 元数据 | Protobuf | 可变长度 header (v1 data=116B, index=52B, meta/state 分离) |
+| 元数据 | Protobuf | 可变长度 header (v1 data=124B, index=128B, meta/state 分离) |
 | 索引目录 | 同级子目录 | `data/` + `index/` 独立子目录 |
 | 索引条目 | 16B (ts+offset) | 18B (ts+block+in_block) |
 | 文件头 | 64B | 可变长度 header (meta/state分离) |

@@ -485,6 +485,7 @@ Store 持有一个全局共享 dirty flush queue。Store 管理的每个 `DataSe
 enum SegmentFlushTarget {
     Data { file_offset: u64 },
     Index { start_timestamp: i64 },
+    QueueState { group_name: String },
 }
 
 struct DataSetFlushTarget {
@@ -500,6 +501,6 @@ struct DataSetRuntimeContext {
 }
 ```
 
-普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入、journal 内部写入都复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位 dataset, 不遍历所有 dataset。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment。
+普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入、journal 内部写入和 queue consumer state 变更都复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位 dataset, 再执行 `Data`、`Index`、`QueueState` target, 不遍历所有 dataset。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment 和 queue state files。
 
 > Rust API mutability note: methods that allocate or remove handles, mutate the handle registry, mutate dataset contents, open/close queue producer state, or push queue data require &mut self. Read/query, queue poll/ack, config/cache access, dataset listing, inspect, and background executor tick/query use internal synchronization and keep &self.

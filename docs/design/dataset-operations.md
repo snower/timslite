@@ -230,7 +230,7 @@ DataSet::write(timestamp, data):
 
 **乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
 
-**retention 写入约束**: 当 `retention_window > 0` 时, `timestamp < latest_written_timestamp.saturating_sub(retention_window)` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。正序写入仍允许推进 `latest_written_timestamp`, 并可能使更多旧数据进入过期窗口。
+**retention 写入约束**: 当 `retention_window > 0` 时, `timestamp < latest_written_timestamp.saturating_sub(retention_window as i64)` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。`retention_window` 在 builder、FFI、create/open/meta decode 阶段必须已校验为 `0..=i64::MAX`, 因此该 cast 不允许发生 wrap。正序写入仍允许推进 `latest_written_timestamp`, 并可能使更多旧数据进入过期窗口。
 
 **连续模式稀疏 filler 规则**:
 
@@ -570,7 +570,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - 如果最大已写时间戳对应的 index entry 已被 delete 标记为 filler, 仍返回 `None` (不会回退到更早的有效记录)
 > - 适合流式消费场景: 每次 "拉最新一条" 而不需要提前知道具体时间戳
 >
-> **retention 语义**: 所有读取路径以 `retention_threshold = latest_written_timestamp.saturating_sub(retention_window)` 为可见性下界。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
+> **retention 语义**: 所有读取路径以 `retention_threshold = latest_written_timestamp.saturating_sub(retention_window as i64)` 为可见性下界。`retention_window` 在进入计算前必须已校验为 `0..=i64::MAX`。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
 
 ### 10.4 `latest_written_timestamp`
 
@@ -582,7 +582,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 - 运行期若存在未刷盘的 `in_memory_buffer`, 恢复辅助逻辑会把 buffer 中的最大 timestamp 作为兜底候选; 正常 open 路径下该 buffer 为空
 - 用于:
   - `read(-1)` 快捷路径解析到最大已写 timestamp; 若该 entry 不存在、已删除或已过期, 返回 `None`, 不反向搜索更早有效记录
-  - 数据保留阈值计算 (`latest_written_timestamp.saturating_sub(retention_window)`)
+  - 数据保留阈值计算 (`latest_written_timestamp.saturating_sub(retention_window as i64)`)
   - 连续模式稀疏 filler 的上一个真实写入边界判定
 
 > **读操作接口总览**: 完整的读操作接口文档（含新增的 read_exist/query_exist/read_length/query_length/query_length_iter）见 [数据集读操作](dataset-read-operations.md)。
@@ -599,15 +599,16 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 | `> 0` | 数据保留窗口, 单位必须与业务 timestamp 完全相同 |
 
 > **单位说明**: `retention_window` 不表示固定毫秒。其值必须使用 timestamp unit: 如果业务 timestamp 按秒递增, retention 也按秒; 如果业务 timestamp 按其它单位递增, retention 也按同一单位。调用方需确保二者单位一致。
+> **范围说明**: `retention_window` 的磁盘和 FFI 类型是 `u64`, 但有效范围固定为 `0..=i64::MAX`。builder、DataSetMeta 解析、dataset create/open 和 FFI config decode 都必须拒绝超过 `i64::MAX` 的值, 因为过期阈值与 signed `i64` timestamp 同域计算。
 
 ### 11.2 过期阈值计算
 
 ```
-expiration_threshold = latest_written_timestamp.saturating_sub(retention_window)
+expiration_threshold = latest_written_timestamp.saturating_sub(retention_window as i64)
 ```
 
 - `latest_written_timestamp`: 数据集写入过的最大时间戳 (从索引最后位置恢复; 不存入 meta)
-- `saturating_sub`: 防止 timestamp < retention_window 时下溢
+- `saturating_sub`: 防止 timestamp < retention_window 时下溢; `retention_window as i64` 在进入计算前已由配置/meta 校验保证安全
 - 当 `latest_written_timestamp < retention_window` 时, expiration_threshold = 0 → 无分段满足条件 → 不回收
 
 ### 11.3 回收流程
@@ -615,7 +616,7 @@ expiration_threshold = latest_written_timestamp.saturating_sub(retention_window)
 ```
 DataSet::reclaim_expired_segments():
   1. if retention_window == 0 → return Ok(0)
-  2. threshold = latest_written_timestamp.saturating_sub(retention_window)
+  2. threshold = latest_written_timestamp.saturating_sub(retention_window as i64)
   3. old_last_used_at = self.last_used_at
      self.flush()  -- 确保 in-memory buffer 落盘; flush 内部可能临时 touch
   4. self.time_index.idle_close_all()
@@ -635,7 +636,7 @@ DataSet::reclaim_expired_segments():
 当 `retention_window > 0` 时, 所有读路径共享同一个过期阈值:
 
 ```rust
-retention_threshold = latest_written_timestamp.saturating_sub(retention_window)
+retention_threshold = latest_written_timestamp.saturating_sub(retention_window as i64)
 ```
 
 | 操作 | `timestamp < retention_threshold` 行为 |

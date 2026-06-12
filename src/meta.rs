@@ -6,6 +6,7 @@
 use std::path::Path;
 
 use crate::compress::validate_compress_type;
+use crate::config::validate_retention_window;
 use crate::error::{Result, TmslError};
 use crate::util::{read_i64_le, read_u64_le};
 
@@ -254,6 +255,7 @@ impl DataSetMeta {
                 "meta initial_index_segment_size exceeds index_segment_size".into(),
             ));
         }
+        validate_retention_window(retention_window)?;
 
         Ok(Self {
             data_segment_size,
@@ -494,6 +496,23 @@ mod tests {
     }
 
     #[test]
+    fn test_meta_rejects_retention_window_above_i64_max() {
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            i64::MAX as u64 + 1,
+        );
+
+        let err = DataSetMeta::from_bytes(&meta.to_bytes()).unwrap_err();
+        assert!(format!("{err}").contains("retention_window"));
+    }
+
+    #[test]
     fn test_meta_magic() {
         assert_eq!(&META_MAGIC, b"TMSM");
     }
@@ -564,7 +583,7 @@ mod tests {
             continuous in proptest::num::u8::ANY,
             init_data in proptest::num::u64::ANY,
             init_idx in proptest::num::u64::ANY,
-            retention in proptest::num::u64::ANY,
+            retention in 0u64..=i64::MAX as u64,
         ) {
             let data_seg = data_seg.max(1);
             let idx_seg = idx_seg.max(1);

@@ -164,7 +164,7 @@ Dataset.close()
 | 单 Queue 实例 | 每个 Dataset 只能有一个 DatasetQueue (singleton) |
 | 多 Consumer 实例 | 同一消费组可开多个 Consumer, 共享状态文件 |
 | 4KB 状态文件 | 每个消费组的状态文件固定 4KB, max 239 pending entries |
-| 统一 Sync | 状态文件与 Dataset 分段文件采用相同 Sync 策略, 由后台 flush 任务统一执行 MS_SYNC |
+| 统一 Sync | 状态文件作为 `SegmentFlushTarget::QueueState { group_name }` 进入 dirty flush queue, 由后台 flush 任务统一执行 MS_SYNC |
 | Idle-Close 阻塞 | Queue 打开时 Dataset 不会被 idle-close |
 | 仅正常写入 | push 只使用 auto-increment timestamp, 不支持 correction/out-of-order |
 | 不通知更新 | correction/out-of-order 写入不触发 consumer 通知 |
@@ -393,6 +393,8 @@ pub fn ack(&self, timestamp: i64) -> Result<()> {
 ```
 
 **关键**: ack 后扫描从 `processed_ts` 开始的连续 ack 序列, 更新 `processed_ts`。然后清理已 ack 的 entries, 释放空间。
+
+ack 成功和 poll 分配新 pending entry 都必须把当前消费组入队为 `SegmentFlushTarget::QueueState { group_name }`。该入队动作只声明 state file dirty, 不执行立即 `mmap.flush()`; 后台 flush 周期按 group_name 精确同步对应 4KiB state file。
 
 ### 30.5 多 Consumer poll 分配
 
