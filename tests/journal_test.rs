@@ -344,7 +344,9 @@ fn t28_14_append_writes_journal_0x13_record() {
 
     // Use append to create a new record (forward append: ts > latest)
     let ds_handle = store.open_dataset("jds", "data").unwrap();
-    store.append_dataset(ds_handle, 1, b"append_data_1").unwrap();
+    store
+        .append_dataset(ds_handle, 1, b"append_data_1")
+        .unwrap();
 
     // Read journal records
     let records = read_all_journal_records(&mut store);

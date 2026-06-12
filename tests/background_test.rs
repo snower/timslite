@@ -1,4 +1,4 @@
-﻿//! Manual background execution tests.
+//! Manual background execution tests.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -306,7 +306,15 @@ fn t21_7_retention_window_zero_no_reclaim() {
 
     // Create dataset with retention_window=0 (no limit)
     store
-        .create_dataset("ret_zero", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .create_dataset(
+            "ret_zero",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
 
     let ds = store.open_dataset("ret_zero", "data").unwrap();
@@ -343,7 +351,15 @@ fn t21_8_retention_boundary_time_precision() {
 
     // Create dataset with retention_window=100
     store
-        .create_dataset("ret_boundary", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 100)
+        .create_dataset(
+            "ret_boundary",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            100,
+        )
         .unwrap();
 
     let ds = store.open_dataset("ret_boundary", "data").unwrap();
@@ -378,7 +394,15 @@ fn t21_9_reclaim_expired_data_returns_none() {
 
     // Create dataset with small retention window
     store
-        .create_dataset("ret_expire", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 50)
+        .create_dataset(
+            "ret_expire",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            50,
+        )
         .unwrap();
 
     let ds = store.open_dataset("ret_expire", "data").unwrap();
@@ -399,7 +423,10 @@ fn t21_9_reclaim_expired_data_returns_none() {
 
     // Non-existent timestamp should return None
     let result = ds_lock.read(200).unwrap();
-    assert!(result.is_none(), "non-existent timestamp should return None");
+    assert!(
+        result.is_none(),
+        "non-existent timestamp should return None"
+    );
 
     drop(ds_lock);
     drop(arc);
@@ -417,7 +444,15 @@ fn t21_10_expired_timestamp_write_rejected() {
 
     // Create dataset with retention_window=50
     store
-        .create_dataset("ret_write", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 50)
+        .create_dataset(
+            "ret_write",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            50,
+        )
         .unwrap();
 
     let ds = store.open_dataset("ret_write", "data").unwrap();
@@ -446,7 +481,15 @@ fn t21_11_reclaim_cache_invalidation() {
 
     // Create dataset with retention_window=50
     store
-        .create_dataset("ret_cache", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 50)
+        .create_dataset(
+            "ret_cache",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            50,
+        )
         .unwrap();
 
     let ds = store.open_dataset("ret_cache", "data").unwrap();

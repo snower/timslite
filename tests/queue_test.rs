@@ -844,7 +844,10 @@ fn t27_7_3_ack_closed_consumer_errors() {
 
     // Push and poll to get a timestamp
     let ts = store.queue_push(&q, b"data").unwrap();
-    let polled = store.queue_poll(&c, Duration::from_millis(50)).unwrap().unwrap();
+    let polled = store
+        .queue_poll(&c, Duration::from_millis(50))
+        .unwrap()
+        .unwrap();
     assert_eq!(polled.0, ts);
 
     // Close the queue
@@ -935,7 +938,10 @@ fn t27_7_6_push_empty_data() {
         .unwrap()
         .unwrap();
     assert_eq!(rts, ts);
-    assert!(data.is_empty(), "empty push should result in empty poll data");
+    assert!(
+        data.is_empty(),
+        "empty push should result in empty poll data"
+    );
 
     store.close().unwrap();
 }
@@ -968,11 +974,17 @@ fn t27_7_7_consumer_group_name_boundary() {
 
     // Invalid: name with spaces
     let result = store.open_consumer(&q, "has space");
-    assert!(result.is_err(), "consumer group name with space should fail");
+    assert!(
+        result.is_err(),
+        "consumer group name with space should fail"
+    );
 
     // Invalid: name with special characters
     let result = store.open_consumer(&q, "group/name");
-    assert!(result.is_err(), "consumer group name with slash should fail");
+    assert!(
+        result.is_err(),
+        "consumer group name with slash should fail"
+    );
 
     store.close().unwrap();
 }

@@ -1,4 +1,4 @@
-﻿//! StoreConfig and DataSetConfig builder API tests.
+//! StoreConfig and DataSetConfig builder API tests.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -143,9 +143,7 @@ fn t14_5_compress_level_boundary_values() {
 
     // Test compress_level=0 (no compression)
     let dir = temp_dir();
-    let config = StoreConfig::builder()
-        .compress_level(0)
-        .build();
+    let config = StoreConfig::builder().compress_level(0).build();
     let mut store = Store::open(&dir, config).unwrap();
     store
         .create_dataset("comp0", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 0, 0, 0)
@@ -159,12 +157,18 @@ fn t14_5_compress_level_boundary_values() {
 
     // Test compress_level=10 (high compression)
     let dir2 = temp_dir();
-    let config = StoreConfig::builder()
-        .compress_level(10)
-        .build();
+    let config = StoreConfig::builder().compress_level(10).build();
     let mut store = Store::open(&dir2, config).unwrap();
     store
-        .create_dataset("comp10", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 10, 0, 0)
+        .create_dataset(
+            "comp10",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            10,
+            0,
+            0,
+        )
         .unwrap();
     let ds = store.open_dataset("comp10", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
@@ -194,7 +198,15 @@ fn t14_6_retention_window_boundary_values() {
     let dir2 = temp_dir();
     let mut store = Store::open(&dir2, StoreConfig::default()).unwrap();
     store
-        .create_dataset("ret_large", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, u64::MAX)
+        .create_dataset(
+            "ret_large",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            u64::MAX,
+        )
         .unwrap();
     let ds = store.open_dataset("ret_large", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
