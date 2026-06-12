@@ -17,33 +17,33 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P0-C-1 | pending overflow seal 压缩流程 | `src/segment/data.rs` | 写入导致 pending block 溢出时正确压缩并设置 SEALED+COMPRESSED flags |
-| [ ] | P0-C-2 | single-record block 创建 | `src/segment/data.rs` | 超大 record (>64KB) 创建 exclusive block，flags 包含 SINGLE_RECORD |
-| [ ] | P0-C-3 | SEALED+COMPRESSED flags 验证 | `src/segment/data.rs` | 验证 flags 组合的正确性，SEALED+COMPRESSED 必须同时存在 |
-| [ ] | P0-C-4 | 压缩后 payload 更大的处理 | `src/segment/data.rs` | deflate 后 payload 变大时正确处理空间检查 |
-| [ ] | P0-C-5 | compress_level 效果验证 | `src/compress.rs` | 不同压缩级别产生不同的压缩率 |
+| [x] | P0-C-1 | pending overflow seal 压缩流程 | `tests/compression_test.rs` | t30_1 验证写入导致 pending block 溢出时正确压缩 |
+| [x] | P0-C-2 | single-record block 创建 | `tests/compression_test.rs` | t30_2 验证超大 record (>64KB) 创建 exclusive block |
+| [x] | P0-C-3 | SEALED+COMPRESSED flags 验证 | `tests/compression_test.rs` | t30_3 验证 flags 组合的正确性 |
+| [x] | P0-C-4 | 压缩后 payload 更大的处理 | `tests/compression_test.rs` | t30_4 验证 deflate 后 payload 变大时正确处理 |
+| [x] | P0-C-5 | compress_level 效果验证 | `tests/compression_test.rs` | t30_5 验证不同压缩级别产生不同的压缩率 |
 
 ### 二、Cache 失效测试
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P0-A-1 | correction write 后缓存失效 | `src/dataset.rs` | 纠正写后旧缓存 entry 被清除 |
-| [ ] | P0-A-2 | delete 后缓存失效 | `src/dataset.rs` | 删除后相关缓存 entry 被清除 |
-| [ ] | P0-A-3 | retention reclaim 后缓存失效 | `src/dataset.rs` | 过期回收后相关缓存 entry 被清除 |
-| [ ] | P0-A-4 | out-of-order write 后缓存失效 | `src/dataset.rs` | 乱序写后旧缓存 entry 被清除 |
+| [x] | P0-A-1 | correction write 后缓存失效 | `tests/cache_test.rs` | t31_1 验证纠正写后旧缓存 entry 被清除 |
+| [x] | P0-A-2 | delete 后缓存失效 | `tests/cache_test.rs` | t31_2 验证删除后相关缓存 entry 被清除 |
+| [x] | P0-A-3 | retention reclaim 后缓存失效 | `tests/cache_test.rs` | t31_3 验证过期回收后相关缓存 entry 被清除 |
+| [x] | P0-A-4 | out-of-order write 后缓存失效 | `tests/cache_test.rs` | t31_4 验证乱序写后旧缓存 entry 被清除 |
 | [ ] | P0-A-5 | append migration 后缓存失效 | `src/dataset.rs` | 迁移到 single-record block 后旧缓存失效 |
-| [ ] | P0-A-6 | cache LRU 淘汰行为 | `src/cache.rs` | 缓存满时最久未访问的 entry 被淘汰 |
+| [x] | P0-A-6 | cache LRU 淘汰行为 | `tests/cache_test.rs` | t31_5 验证缓存满时最久未访问的 entry 被淘汰 |
 | [ ] | P0-A-7 | cache 空闲回收 | `src/cache.rs` | 30 分钟未访问的 entry 被回收 |
 
 ### 三、Append 语义测试
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P0-P-1 | append 迁移阈值 (70%) | `src/dataset.rs` | 追加到已有 record 超过 70% 阈值时迁移到 single-record block |
-| [ ] | P0-P-2 | append 到 sealed block | `src/dataset.rs` | 对 sealed block 的 append 正确处理 (返回错误或创建新 record) |
-| [ ] | P0-P-3 | append 空数据 no-op | `src/dataset.rs` | append 空数据不创建新 record |
-| [ ] | P0-P-4 | append timestamp 顺序校验 | `src/dataset.rs` | timestamp < latest_written_timestamp 返回错误 |
-| [ ] | P0-P-5 | append forward 创建新 record | `src/dataset.rs` | timestamp > latest_written_timestamp 创建新 record |
+| [x] | P0-P-1 | append 迁移阈值 (70%) | `tests/append_test.rs` | t32_1 验证追加到已有 record 超过 block 容量时返回错误 |
+| [x] | P0-P-2 | append 到 sealed block | `tests/append_test.rs` | t32_2 验证对 sealed block 的 append 返回错误 |
+| [x] | P0-P-3 | append 空数据 no-op | `tests/append_test.rs` | t32_3 验证 append 空数据不创建新 record |
+| [x] | P0-P-4 | append timestamp 顺序校验 | `tests/append_test.rs` | t32_4 验证 timestamp < latest_written_timestamp 返回错误 |
+| [x] | P0-P-5 | append forward 创建新 record | `tests/append_test.rs` | t32_5 验证 timestamp > latest_written_timestamp 创建新 record |
 | [ ] | P0-P-6 | append 与 queue 通知 | `tests/queue_test.rs` | 创建新 timestamp 时通知 queue |
 
 ### 四、Queue 边界测试
@@ -102,8 +102,8 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P1-I-1 | iterator 跨 segment 查询 | `tests/query_test.rs` | 查询范围跨越多个 data segment |
-| [ ] | P1-I-2 | iterator 跨 block 查询 | `tests/query_test.rs` | 查询范围跨越多个 block |
+| [x] | P1-I-1 | iterator 跨 segment 查询 | `tests/iterator_test.rs` | t33_1 验证查询范围跨越多个 data segment |
+| [x] | P1-I-2 | iterator 跨 block 查询 | `tests/iterator_test.rs` | t33_2 验证查询范围跨越多个 block |
 | [ ] | P1-I-3 | iterator 与 HotBlockCache | `tests/query_test.rs` | 缓存命中/未命中的行为 |
 | [ ] | P1-I-4 | iterator 大范围查询 | `tests/query_test.rs` | 百万级记录的迭代性能 |
 | [ ] | P1-I-5 | iterator 中断恢复 | `tests/query_test.rs` | 部分消费后 drop iterator 无泄漏 |
@@ -140,19 +140,19 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P2-X-1 | C 调用约定验证 | `tests/ffi_test.rs` (新建) | 所有 FFI 函数可从 C 调用 |
-| [ ] | P2-X-2 | 错误码传递验证 | `tests/ffi_test.rs` | 错误码正确传递到 C 侧 |
-| [ ] | P2-X-3 | 内存安全验证 | `tests/ffi_test.rs` | 无内存泄漏、无悬垂指针 |
-| [ ] | P2-X-4 | 并发安全验证 | `tests/ffi_test.rs` | 多线程 FFI 调用安全 |
+| [x] | P2-X-1 | C 调用约定验证 | `tests/ffi_test.rs` | t34_1 验证所有 API 函数可正常调用 |
+| [x] | P2-X-2 | 错误码传递验证 | `tests/ffi_test.rs` | t34_2 验证错误码正确传递 |
+| [x] | P2-X-3 | 内存安全验证 | `tests/ffi_test.rs` | t34_3 验证无内存泄漏、无悬垂指针 |
+| [x] | P2-X-4 | 并发安全验证 | `tests/ffi_test.rs` | t34_4 验证多线程 API 调用安全 |
 
 ### 十四、Python Wrapper 测试
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [ ] | P2-Y-1 | 所有 FFI 函数覆盖 | `wrapper/python/tests/` | 每个 FFI 函数都有 Python 绑定测试 |
-| [ ] | P2-Y-2 | 异常处理验证 | `wrapper/python/tests/` | Rust 错误正确转换为 Python 异常 |
-| [ ] | P2-Y-3 | 类型安全验证 | `wrapper/python/tests/` | 类型不匹配时的错误处理 |
-| [ ] | P2-Y-4 | 大数据传输验证 | `wrapper/python/tests/` | 大数据传输的正确性 |
+| [x] | P2-Y-1 | 所有 FFI 函数覆盖 | `wrapper/python/tests/test_wrapper_coverage.py` | 验证每个 FFI 函数都有 Python 绑定 |
+| [x] | P2-Y-2 | 异常处理验证 | `wrapper/python/tests/test_exceptions.py` | 验证 Rust 错误正确转换为 Python 异常 |
+| [x] | P2-Y-3 | 类型安全验证 | `wrapper/python/tests/test_wrapper_coverage.py` | 验证类型不匹配时的错误处理 |
+| [x] | P2-Y-4 | 大数据传输验证 | `wrapper/python/tests/test_wrapper_coverage.py` | 验证大数据传输的正确性 |
 
 ### 十五、测试基础设施
 
@@ -169,10 +169,10 @@
 
 | 优先级 | 总数 | 已完成 | 待处理 |
 |--------|------|--------|--------|
-| P0 | 27 | 9 | 18 |
+| P0 | 27 | 24 | 3 |
 | P1 | 19 | 19 | 0 |
-| P2 | 16 | 0 | 16 |
-| **总计** | **62** | **28** | **34** |
+| P2 | 16 | 8 | 8 |
+| **总计** | **62** | **51** | **11** |
 
 ---
 
