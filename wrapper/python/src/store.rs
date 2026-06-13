@@ -26,6 +26,9 @@ pub struct PyDataSetInfo {
     /// Dataset directory path
     #[pyo3(get)]
     pub base_dir: String,
+    /// Store-assigned numeric dataset identifier
+    #[pyo3(get)]
+    pub identifier: u64,
     /// Data segment file size limit (bytes)
     #[pyo3(get)]
     pub data_segment_size: u64,
@@ -133,6 +136,7 @@ impl From<timslite::DataSetInfo> for PyDataSetInfo {
             name: info.name,
             dataset_type: info.dataset_type,
             base_dir: info.base_dir,
+            identifier: info.identifier,
             data_segment_size: info.data_segment_size,
             index_segment_size: info.index_segment_size,
             initial_data_segment_size: info.initial_data_segment_size,
@@ -337,6 +341,28 @@ impl PyStore {
         if read_only {
             self.read_only_dataset_ids.insert(id);
         }
+        Ok(py_ds)
+    }
+
+    /// Open an existing dataset by its Store-assigned numeric identifier.
+    fn open_dataset_by_identifier(&mut self, identifier: u64) -> PyResult<PyDataset> {
+        let store = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
+
+        let handle = wrap(store.open_dataset_by_identifier(identifier))?;
+        let ds_arc = wrap(store.get_dataset(&handle))?;
+
+        let id = self.next_id;
+        self.next_id += 1;
+        let base_dir = {
+            let ds = ds_arc.lock().unwrap();
+            ds.base_dir().to_string_lossy().to_string()
+        };
+
+        let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
+        self.datasets.insert(id, py_ds.inner_arc());
         Ok(py_ds)
     }
 

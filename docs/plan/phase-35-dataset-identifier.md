@@ -4,7 +4,7 @@
 
 为每个普通 dataset 分配 Store 内唯一数字 `identifier`, 并支持通过 identifier 打开 dataset。
 
-本阶段只在后续实现时修改代码; 当前文档阶段先冻结设计契约和开发 checklist。
+本阶段已完成代码实现与测试覆盖。
 
 ## 设计来源
 
@@ -33,71 +33,71 @@
 
 ### 1. Store identifier 管理
 
-- [ ] `Store` 增加内存字段: `max_identifier: u64`。
-- [ ] `Store` 增加内存索引: `identifier_to_key: HashMap<u64, DataSetKey>` 或等价结构。
-- [ ] 新增 helper 读取/写入 `{data_dir}/max_identifier`。
-- [ ] 新增 helper 读取/写入 `{dataset_dir}/identifier`。
-- [ ] 所有数字文件解析必须统一边界校验。
+- [x] `Store` 增加内存字段: `max_identifier: u64`。
+- [x] `Store` 增加内存索引: `identifier_to_key: HashMap<u64, DataSetKey>` 或等价结构。
+- [x] 新增 helper 读取/写入 `{data_dir}/max_identifier`。
+- [x] 新增 helper 读取/写入 `{dataset_dir}/identifier`。
+- [x] 所有数字文件解析必须统一边界校验。
 
 ### 2. Store::open
 
-- [ ] 打开 Store 根目录时读取 `max_identifier`, 缺失视为 `0`。
-- [ ] 扫描普通 dataset 时要求同时存在 `meta` 和 `identifier`。
-- [ ] 读取每个 dataset identifier 并建立 `identifier_to_key`。
-- [ ] 检测重复 identifier 并返回 `InvalidData`。
-- [ ] 如果扫描到的最大 identifier 大于根目录 `max_identifier`, 写回修正后的最大值。
-- [ ] `.journal/logs` 不参与 identifier 扫描和分配。
+- [x] 打开 Store 根目录时读取 `max_identifier`, 缺失视为 `0`。
+- [x] 扫描普通 dataset 时要求同时存在 `meta` 和 `identifier`。
+- [x] 读取每个 dataset identifier 并建立 `identifier_to_key`。
+- [x] 检测重复 identifier 并返回 `InvalidData`。
+- [x] 如果扫描到的最大 identifier 大于根目录 `max_identifier`, 写回修正后的最大值。
+- [x] `.journal/logs` 不参与 identifier 扫描和分配。
 
 ### 3. create_dataset
 
-- [ ] 创建普通 dataset 时分配 `next_identifier = max_identifier + 1`。
-- [ ] 溢出返回 `InvalidData`。
-- [ ] 创建 dataset 基础文件后写入 dataset `identifier` 文件。
-- [ ] 写入 dataset `identifier` 后再更新 Store 根目录 `max_identifier`。
-- [ ] 更新内存 `max_identifier` 和 `identifier_to_key`。
-- [ ] create 失败路径不得留下已注册的内存索引。
+- [x] 创建普通 dataset 时分配 `next_identifier = max_identifier + 1`。
+- [x] 溢出返回 `InvalidData`。
+- [x] 创建 dataset 基础文件后写入 dataset `identifier` 文件。
+- [x] 写入 dataset `identifier` 后再更新 Store 根目录 `max_identifier`。
+- [x] 更新内存 `max_identifier` 和 `identifier_to_key`。
+- [x] create 失败路径不得留下已注册的内存索引。
 
 ### 4. Rust API
 
-- [ ] 新增 `Store::open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSetHandle>`。
-- [ ] 新增 `Store::dataset_identifier(&self, handle: DataSetHandle) -> Result<u64>`。
-- [ ] `identifier == 0` 返回 `InvalidData`。
-- [ ] 未找到 identifier 返回 `NotFound`。
-- [ ] 已打开 dataset 的复用/新 handle 行为与 `open_dataset(name,type)` 保持一致。
+- [x] 新增 `Store::open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSetHandle>`。
+- [x] 新增 `Store::dataset_identifier(&self, handle: DataSetHandle) -> Result<u64>`。
+- [x] `identifier == 0` 返回 `InvalidData`。
+- [x] 未找到 identifier 返回 `NotFound`。
+- [x] 已打开 dataset 的复用/新 handle 行为与 `open_dataset(name,type)` 保持一致。
 
 ### 5. Inspect / Listing
 
-- [ ] `DataSetInfo` 增加 `identifier: u64`。
-- [ ] `inspect_dataset(name,type)` 返回该字段。
-- [ ] `get_dataset_names()` / `get_dataset_types(name)` 语义保持不变。
+- [x] `DataSetInfo` 增加 `identifier: u64`。
+- [x] `inspect_dataset(name,type)` 返回该字段。
+- [x] `get_dataset_names()` / `get_dataset_types(name)` 语义保持不变。
 
 ### 6. FFI
 
-- [ ] `include/timslite.h` 增加 `tmsl_dataset_open_by_identifier`。
-- [ ] `include/timslite.h` 增加 `tmsl_dataset_identifier`。
-- [ ] `TmslDataSetInfo` 增加 `uint64_t identifier`。
-- [ ] `src/ffi.rs` 实现对应函数和错误处理。
-- [ ] FFI version 如需调整, 同步更新 header 与 decode 逻辑。
+- [x] `include/timslite.h` 增加 `tmsl_dataset_open_by_identifier`。
+- [x] `include/timslite.h` 增加 `tmsl_dataset_identifier`。
+- [x] `TmslDataSetInfo` 增加 `uint64_t identifier`。
+- [x] `src/ffi.rs` 实现对应函数和错误处理。
+- [x] FFI version 无需调整: 本阶段未修改 versioned config decode 结构。
 
 ### 7. Python Wrapper
 
-- [ ] `PyStore.open_dataset_by_identifier(identifier: int)`。
-- [ ] `PyDataset.identifier()` 或 inspect info 字段暴露。
-- [ ] Python tests 覆盖创建、reopen、按 id 打开。
+- [x] `PyStore.open_dataset_by_identifier(identifier: int)`。
+- [x] `PyDataset.identifier()` 或 inspect info 字段暴露。
+- [x] Python tests 覆盖创建、reopen、按 id 打开。
 
 ## 测试计划
 
-- [ ] 创建多个 dataset 后 identifier 从 1 开始递增。
-- [ ] reopen 后通过 identifier 打开 dataset。
-- [ ] `max_identifier` 缺失时创建首个 dataset 得到 1。
-- [ ] `max_identifier` 落后于 dataset identifier 时, Store open 修正。
-- [ ] 重复 identifier 返回 `InvalidData`。
-- [ ] 非法 identifier 文件内容返回 `InvalidData`。
-- [ ] 缺少 dataset `identifier` 的目录不作为有效 dataset 加载。
-- [ ] `open_dataset_by_identifier(0)` 返回 `InvalidData`。
-- [ ] 不存在的 identifier 返回 `NotFound`。
-- [ ] `.journal/logs` 不分配 public identifier, 不能通过 id 打开。
-- [ ] FFI/Python wrapper 覆盖新 API。
+- [x] 创建多个 dataset 后 identifier 从 1 开始递增。
+- [x] reopen 后通过 identifier 打开 dataset。
+- [x] `max_identifier` 缺失时创建首个 dataset 得到 1。
+- [x] `max_identifier` 落后于 dataset identifier 时, Store open 修正。
+- [x] 重复 identifier 返回 `InvalidData`。
+- [x] 非法 identifier 文件内容返回 `InvalidData`。
+- [x] 缺少 dataset `identifier` 的目录不作为有效 dataset 加载。
+- [x] `open_dataset_by_identifier(0)` 返回 `InvalidData`。
+- [x] 不存在的 identifier 返回 `NotFound`。
+- [x] `.journal/logs` 不分配 public identifier, 不能通过 id 打开。
+- [x] FFI/Python wrapper 覆盖新 API。
 
 ## 验证命令
 

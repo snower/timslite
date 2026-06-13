@@ -224,6 +224,17 @@ void* tmsl_dataset_open(void* store, const char* name, const char* dataset_type,
                         char* err_buf, size_t err_buf_len);
 
 /**
+ * Open an existing dataset by its Store-assigned numeric identifier.
+ * @param store       Opaque store pointer.
+ * @param identifier  Dataset identifier (> 0).
+ * @param err_buf     Buffer for error message.
+ * @param err_buf_len Length of error buffer.
+ * @return Opaque dataset pointer, or NULL on error.
+ */
+void* tmsl_dataset_open_by_identifier(void* store, uint64_t identifier,
+                                      char* err_buf, size_t err_buf_len);
+
+/**
  * Close a dataset.
  * @param dataset      Opaque dataset pointer.
  * @param err_buf      Buffer for error message.
@@ -255,6 +266,17 @@ int tmsl_dataset_flush(void* dataset, char* err_buf, size_t err_buf_len);
  */
 int tmsl_dataset_latest_timestamp(void* dataset, int64_t* out_ts,
                                   char* err_buf, size_t err_buf_len);
+
+/**
+ * Get the Store-assigned numeric identifier of a dataset.
+ * @param dataset        Opaque dataset pointer.
+ * @param out_identifier Output: dataset identifier.
+ * @param err_buf        Buffer for error message.
+ * @param err_buf_len    Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_dataset_identifier(void* dataset, uint64_t* out_identifier,
+                            char* err_buf, size_t err_buf_len);
 
 /**
  * Write a record to a dataset.
@@ -586,6 +608,7 @@ typedef struct TmslDataSetInfo {
     char* name;                       /**< Dataset name (caller must free) */
     char* dataset_type;               /**< Dataset type (caller must free) */
     char* base_dir;                   /**< Dataset directory path (caller must free) */
+    uint64_t identifier;              /**< Store-assigned numeric dataset identifier */
     uint64_t data_segment_size;       /**< Data segment file size limit (bytes) */
     uint64_t index_segment_size;      /**< Index segment file size limit (bytes) */
     uint64_t initial_data_segment_size; /**< Initial data segment file size (bytes) */

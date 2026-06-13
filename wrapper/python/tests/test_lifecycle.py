@@ -39,6 +39,19 @@ class TestLifecycle:
             ds2 = store.open_dataset("test", "events")
             ds2.write(2, b"new")
 
+    def test_open_dataset_by_identifier(self, tmpdir):
+        """Datasets expose stable numeric identifiers across reopen."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("test", "events")
+            ds = store.open_dataset("test", "events")
+            assert ds.identifier == 1
+            assert store.inspect_dataset("test", "events").info.identifier == 1
+
+        with timslite.Store.open(tmpdir) as store:
+            ds = store.open_dataset_by_identifier(1)
+            ds.write(1, b"hello")
+            assert ds.read(1) == (1, b"hello")
+
     def test_operations_on_closed_store_raises(self, tmpdir):
         """Attempting operations on a closed store raises RuntimeError."""
         store = timslite.Store.open(tmpdir)

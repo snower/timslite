@@ -1,6 +1,7 @@
 //! Store: facade that manages all datasets and background tasks.
 
 use std::collections::{HashMap, HashSet};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -22,6 +23,9 @@ use crate::meta::META_VALUES_LEN_V1;
 use crate::queue::{DatasetQueue, DatasetQueueConsumer};
 use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
+const MAX_IDENTIFIER_FILE: &str = "max_identifier";
+const DATASET_IDENTIFIER_FILE: &str = "identifier";
+
 fn validate_dataset_component(label: &str, value: &str) -> Result<()> {
     if is_path_safe_component(value) {
         Ok(())
@@ -37,6 +41,55 @@ fn validate_dataset_path_components(name: &str, dataset_type: &str) -> Result<()
     validate_dataset_component("dataset type", dataset_type)
 }
 
+fn parse_identifier_value(label: &str, content: &str, allow_zero: bool) -> Result<u64> {
+    let value = content.trim();
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(TmslError::InvalidData(format!(
+            "{label} must be a decimal u64 string"
+        )));
+    }
+    let identifier = value.parse::<u64>().map_err(|_| {
+        TmslError::InvalidData(format!("{label} exceeds maximum u64 identifier value"))
+    })?;
+    if !allow_zero && identifier == 0 {
+        return Err(TmslError::InvalidData(format!("{label} must be > 0")));
+    }
+    Ok(identifier)
+}
+
+fn read_identifier_file(path: &Path, label: &str, allow_zero: bool) -> Result<u64> {
+    let content = std::fs::read_to_string(path)?;
+    parse_identifier_value(label, &content, allow_zero)
+}
+
+fn read_max_identifier(data_dir: &Path) -> Result<u64> {
+    let path = data_dir.join(MAX_IDENTIFIER_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(content) => parse_identifier_value(MAX_IDENTIFIER_FILE, &content, true),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(0),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn write_identifier_file(path: &Path, identifier: u64) -> Result<()> {
+    std::fs::write(path, identifier.to_string())?;
+    Ok(())
+}
+
+fn dataset_identifier_path(dataset_dir: &Path) -> PathBuf {
+    dataset_dir.join(DATASET_IDENTIFIER_FILE)
+}
+
+fn read_dataset_identifier(dataset_dir: &Path) -> Result<u64> {
+    let path = dataset_identifier_path(dataset_dir);
+    match read_identifier_file(&path, DATASET_IDENTIFIER_FILE, false) {
+        Err(TmslError::Io(err)) if err.kind() == ErrorKind::NotFound => Err(TmslError::NotFound(
+            format!("dataset identifier not found at {:?}", path),
+        )),
+        other => other,
+    }
+}
+
 /// Opaque handle for FFI consumers.
 #[derive(Clone, Copy)]
 pub struct DataSetHandle(pub u64);
@@ -49,6 +102,8 @@ pub struct Store {
     block_cache: Arc<BlockCache>,
     journal: Arc<JournalManager>,
     bg_tasks: Option<BackgroundTasks>,
+    max_identifier: u64,
+    identifier_to_key: HashMap<u64, DataSetKey>,
     next_handle_id: u64,
     handles: HashMap<u64, DataSetKey>,
     read_only_handles: HashSet<u64>,
@@ -83,6 +138,9 @@ impl Store {
         let runtime_context = Self::dataset_runtime_context(&block_cache, &journal, &flush_queue);
 
         let mut datasets = HashMap::new();
+        let stored_max_identifier = read_max_identifier(&data_dir)?;
+        let mut max_identifier = stored_max_identifier;
+        let mut identifier_to_key: HashMap<u64, DataSetKey> = HashMap::new();
 
         // Scan for existing datasets
         for entry in std::fs::read_dir(&data_dir)? {
@@ -105,16 +163,15 @@ impl Store {
                 );
                 continue;
             }
-            // Scan types (skip internal `data/` and `index/` directories)
+            // Scan dataset types. A valid type directory must contain both
+            // `meta` and `identifier`; internal segment directories are one
+            // level deeper and are filtered by that file-level contract.
             for type_entry in std::fs::read_dir(&path)? {
                 let type_path = type_entry?.path();
                 if !type_path.is_dir() {
                     continue;
                 }
                 let type_name = type_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if type_name == "data" || type_name == "index" {
-                    continue; // Internal subdirectory, not a dataset type
-                }
                 if !is_path_safe_component(type_name) {
                     log::warn!(
                         "[store] skipping dataset type directory with invalid name: {}/{}",
@@ -129,16 +186,48 @@ impl Store {
                 if !type_path.join("meta").exists() {
                     continue;
                 }
+                let identifier_path = dataset_identifier_path(&type_path);
+                if !identifier_path.exists() {
+                    log::warn!(
+                        "[store] skipping dataset without identifier file: {}/{}",
+                        name,
+                        type_name
+                    );
+                    continue;
+                }
+                let identifier = read_dataset_identifier(&type_path)?;
 
                 let key = DataSetKey {
                     name: name.clone(),
                     dataset_type: dataset_type.clone(),
                 };
-                let mut ds = DataSet::open(key.clone(), type_path.clone())?;
-                ds.set_runtime_context(runtime_context.clone());
-                log::info!("[store] loaded existing dataset: {}/{}", name, dataset_type);
-                datasets.insert(key, Arc::new(Mutex::new(ds)));
+                if let Some(existing) = identifier_to_key.insert(identifier, key.clone()) {
+                    return Err(TmslError::InvalidData(format!(
+                        "duplicate dataset identifier {identifier}: {:?} and {:?}",
+                        existing, key
+                    )));
+                }
+                max_identifier = max_identifier.max(identifier);
+                match DataSet::open(key.clone(), type_path.clone()) {
+                    Ok(mut ds) => {
+                        ds.set_identifier(identifier);
+                        ds.set_runtime_context(runtime_context.clone());
+                        log::info!("[store] loaded existing dataset: {}/{}", name, dataset_type);
+                        datasets.insert(key, Arc::new(Mutex::new(ds)));
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "[store] skipping preload of dataset {}/{}: {}",
+                            name,
+                            dataset_type,
+                            err
+                        );
+                    }
+                }
             }
+        }
+        if max_identifier > stored_max_identifier {
+            write_identifier_file(&data_dir.join(MAX_IDENTIFIER_FILE), max_identifier)?;
         }
 
         let datasets = Arc::new(RwLock::new(datasets));
@@ -150,6 +239,8 @@ impl Store {
             block_cache: Arc::clone(&block_cache),
             journal,
             bg_tasks: None,
+            max_identifier,
+            identifier_to_key,
             next_handle_id: 0,
             handles: HashMap::new(),
             read_only_handles: HashSet::new(),
@@ -221,12 +312,16 @@ impl Store {
         if self.journal.is_enabled() {
             validate_create_drop_record_inputs(&key, META_VALUES_LEN_V1)?;
         }
+        let identifier = self
+            .max_identifier
+            .checked_add(1)
+            .ok_or_else(|| TmslError::InvalidData("dataset identifier overflow".into()))?;
 
         // Create new dataset
         let dir = self.data_dir.join(name).join(dataset_type);
         let mut ds = DataSet::create_with_compression(
             key.clone(),
-            dir,
+            dir.clone(),
             config.data_segment_size,
             config.index_segment_size,
             config.compress_level,
@@ -236,6 +331,9 @@ impl Store {
             config.initial_index_segment_size,
             config.retention_window,
         )?;
+        write_identifier_file(&dataset_identifier_path(&dir), identifier)?;
+        write_identifier_file(&self.data_dir.join(MAX_IDENTIFIER_FILE), identifier)?;
+        ds.set_identifier(identifier);
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
@@ -250,6 +348,8 @@ impl Store {
             let mut guard = self.datasets.write().unwrap();
             guard.insert(key.clone(), ds);
         }
+        self.max_identifier = identifier;
+        self.identifier_to_key.insert(identifier, key.clone());
 
         let metadata =
             meta_values_from_file(&self.data_dir.join(name).join(dataset_type).join("meta"))?;
@@ -320,7 +420,17 @@ impl Store {
 
         // Open existing dataset
         let dir = self.data_dir.join(name).join(dataset_type);
+        let identifier = read_dataset_identifier(&dir)?;
+        if let Some(existing) = self.identifier_to_key.get(&identifier) {
+            if existing != &key {
+                return Err(TmslError::InvalidData(format!(
+                    "duplicate dataset identifier {identifier}: {:?} and {:?}",
+                    existing, key
+                )));
+            }
+        }
         let mut ds = DataSet::open(key.clone(), dir)?;
+        ds.set_identifier(identifier);
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
@@ -335,11 +445,51 @@ impl Store {
             let mut guard = self.datasets.write().unwrap();
             guard.insert(key.clone(), ds);
         }
+        self.identifier_to_key.insert(identifier, key.clone());
+        if identifier > self.max_identifier {
+            self.max_identifier = identifier;
+            write_identifier_file(&self.data_dir.join(MAX_IDENTIFIER_FILE), identifier)?;
+        }
 
         let id = self.next_handle_id;
         self.next_handle_id += 1;
         self.handles.insert(id, key);
         Ok(DataSetHandle(id))
+    }
+
+    /// Open an existing dataset by its Store-assigned numeric identifier.
+    pub fn open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSetHandle> {
+        if identifier == 0 {
+            return Err(TmslError::InvalidData(
+                "dataset identifier must be > 0".into(),
+            ));
+        }
+        let key = self
+            .identifier_to_key
+            .get(&identifier)
+            .cloned()
+            .ok_or_else(|| TmslError::NotFound(format!("dataset identifier {identifier}")))?;
+        self.open_dataset(&key.name, &key.dataset_type)
+    }
+
+    /// Return the Store-assigned numeric identifier for a dataset handle.
+    pub fn dataset_identifier(&self, handle: DataSetHandle) -> Result<u64> {
+        if self.read_only_handles.contains(&handle.0) {
+            return Err(TmslError::InvalidData(
+                "read-only internal dataset has no public identifier".into(),
+            ));
+        }
+        let ds_arc = self.get_dataset(&handle)?;
+        let ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        let identifier = ds.identifier();
+        if identifier == 0 {
+            return Err(TmslError::InvalidData(
+                "dataset has no public identifier".into(),
+            ));
+        }
+        Ok(identifier)
     }
 
     /// Close a dataset by handle.
@@ -389,6 +539,9 @@ impl Store {
         };
 
         DataSet::drop_dataset(&base_dir)?;
+        self.identifier_to_key
+            .retain(|_, existing| existing != &key);
+        self.handles.retain(|_, existing| existing != &key);
         self.journal.append_drop(&key, &metadata)?;
         log::info!("[store] dropped dataset: {}/{}", key.name, key.dataset_type);
         Ok(())
@@ -425,6 +578,8 @@ impl Store {
         }
 
         DataSet::drop_dataset(&base_dir)?;
+        self.identifier_to_key
+            .retain(|_, existing| existing != &key);
         self.journal.append_drop(&key, &metadata)?;
         log::info!("[store] dropped dataset: {}/{}", name, dataset_type);
         Ok(())

@@ -165,6 +165,13 @@ impl PyDataset {
         self.id
     }
 
+    /// Store-assigned numeric dataset identifier.
+    #[getter]
+    fn identifier(&self) -> u64 {
+        let ds = self.inner.lock().unwrap();
+        ds.identifier()
+    }
+
     /// Latest successfully written timestamp (0 if the dataset is empty).
     #[getter]
     fn latest_timestamp(&self) -> i64 {

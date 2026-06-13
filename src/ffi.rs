@@ -696,6 +696,31 @@ pub extern "C" fn tmsl_dataset_open(
     })
 }
 
+/// Open a dataset by its Store-assigned numeric identifier.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_open_by_identifier(
+    store: *mut c_void,
+    identifier: u64,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> *mut c_void {
+    ffi_catch_ptr!(err_buf, err_buf_len, {
+        if store.is_null() {
+            return Err(TmslError::InvalidData("store is null".into()));
+        }
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let handle = {
+            let mut store_inner = ffi_store
+                .inner
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.open_dataset_by_identifier(identifier)?
+        };
+        let boxed = register_dataset_child(ffi_store, handle);
+        Ok(Box::into_raw(boxed) as *mut c_void)
+    })
+}
+
 /// Close a dataset.
 #[no_mangle]
 pub extern "C" fn tmsl_dataset_close(
@@ -820,6 +845,31 @@ pub extern "C" fn tmsl_dataset_latest_timestamp(
         };
         let ds = ds_arc.lock().unwrap();
         unsafe { *out_ts = ds.latest_written_timestamp() as c_longlong };
+        Ok(0)
+    })
+}
+
+/// Get the Store-assigned numeric identifier of a dataset.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_identifier(
+    dataset: *mut c_void,
+    out_identifier: *mut u64,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() || out_identifier.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let identifier = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.dataset_identifier(ffi_ds.handle)?
+        };
+        unsafe { *out_identifier = identifier };
         Ok(0)
     })
 }
@@ -1632,6 +1682,8 @@ pub struct TmslDataSetInfo {
     pub dataset_type: *mut c_char,
     /// Dataset directory path (caller must free with tmsl_free_inspect_result)
     pub base_dir: *mut c_char,
+    /// Store-assigned numeric dataset identifier
+    pub identifier: u64,
     /// Data segment file size limit (bytes)
     pub data_segment_size: u64,
     /// Index segment file size limit (bytes)
@@ -1748,6 +1800,7 @@ pub extern "C" fn tmsl_store_inspect_dataset(
             name: name_cstr.into_raw(),
             dataset_type: type_cstr.into_raw(),
             base_dir: base_dir_cstr.into_raw(),
+            identifier: result.info.identifier,
             data_segment_size: result.info.data_segment_size,
             index_segment_size: result.info.index_segment_size,
             initial_data_segment_size: result.info.initial_data_segment_size,
@@ -1867,6 +1920,57 @@ mod tests {
             "store close must reject outstanding dataset handles"
         );
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_dataset_identifier_ffi_api() {
+        let dir = temp_store_dir("timslite_ffi_dataset_identifier");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+        config.enable_journal = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("sensor").unwrap();
+        let ty = CString::new("wave").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        let mut identifier = 0u64;
+        assert_eq!(
+            tmsl_dataset_identifier(dataset, &mut identifier, err.as_mut_ptr(), err_len),
+            0
+        );
+        assert_eq!(identifier, 1);
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+
+        let dataset_by_id =
+            tmsl_dataset_open_by_identifier(store, identifier, err.as_mut_ptr(), err_len);
+        assert!(!dataset_by_id.is_null());
+        assert_eq!(
+            tmsl_dataset_close(dataset_by_id, err.as_mut_ptr(), err_len),
+            0
+        );
         assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
         cleanup_store_dir(&dir);
     }

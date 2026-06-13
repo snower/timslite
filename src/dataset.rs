@@ -145,6 +145,7 @@ pub struct AppendOutcome {
 pub struct DataSet {
     pub id: DataSetKey,
     pub base_dir: PathBuf,
+    identifier: u64,
     pub(crate) config: DataSetConfig,
     segments: DataSegmentSet,
     time_index: TimeIndex,
@@ -247,6 +248,7 @@ impl DataSet {
         Ok(Self {
             id,
             base_dir,
+            identifier: 0,
             config: DataSetConfig {
                 data_segment_size,
                 index_segment_size,
@@ -321,6 +323,7 @@ impl DataSet {
         Ok(Self {
             id,
             base_dir,
+            identifier: 0,
             config,
             segments,
             time_index,
@@ -335,6 +338,14 @@ impl DataSet {
 
     pub(crate) fn set_runtime_context(&mut self, context: DataSetRuntimeContext) {
         self.runtime_context = context;
+    }
+
+    pub(crate) fn set_identifier(&mut self, identifier: u64) {
+        self.identifier = identifier;
+    }
+
+    pub fn identifier(&self) -> u64 {
+        self.identifier
     }
 
     fn enqueue_dirty_segments(&mut self) {
@@ -1307,6 +1318,7 @@ impl DataSet {
             name: self.id.name.clone(),
             dataset_type: self.id.dataset_type.clone(),
             base_dir: self.base_dir.to_string_lossy().to_string(),
+            identifier: self.identifier,
             data_segment_size: self.config.data_segment_size,
             index_segment_size: self.config.index_segment_size,
             initial_data_segment_size: self.config.initial_data_segment_size,
@@ -1414,6 +1426,8 @@ pub struct DataSetInfo {
     pub dataset_type: String,
     /// Dataset directory path
     pub base_dir: String,
+    /// Store-assigned numeric dataset identifier (0 when not Store-managed)
+    pub identifier: u64,
     /// Data segment file size limit (bytes)
     pub data_segment_size: u64,
     /// Index segment file size limit (bytes)
