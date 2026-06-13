@@ -28,7 +28,7 @@
 ```
 每个消费组对应一个独立的 4KB 状态文件, 存储已处理时间戳和处理中列表。
 
-`.journal/logs` 也可打开 queue, 用于实时 poll 消费 journal record。该 queue 是只读消费队列: producer 只能是 `JournalManager.append_*`, 外部 `queue.push()` 必须返回错误, 但 `open_consumer/poll/ack/drop_consumer` 语义与普通 dataset queue 相同。journal queue 以 journal sequence timestamp 作为独立递增消费序列, 每条成功写入的 `0x13` append journal record 都必须投递。
+Journal 使用独立 `JournalQueue`, 不复用 `DatasetQueue`。`JournalQueue` 复用本模块的 `ConsumerStateFile` / `PendingEntry` 文件格式和 at-least-once ack 语义, 但 poll 数据源是 `JournalLog::read(sequence)`, 不依赖 `DataSet::query_index_entries`。journal queue 以 journal sequence 作为独立递增消费序列, 每条成功写入的 journal record 都必须投递。
 
 `group_name` 直接作为 `queue/{group_name}` 状态文件名, 因此必须复用 dataset name/type 的路径安全规则: 非空、最长 255 字节, 且整体匹配 `^[0-9A-Za-z_-]+$`, 只允许数字、大小写英文字母、`-`、`_`; `open_consumer` 和 `drop_consumer` 必须在拼接路径前校验。
 
@@ -103,7 +103,7 @@ impl DataSet {
 |------|------|--------|
 | `open_consumer(group_name)` | 打开消费组 (不存在则创建状态文件) | `DatasetQueueConsumer` |
 | `drop_consumer(group_name)` | 删除消费组 (删除状态文件) | `Result<()>` |
-| `push(data)` | 推送数据 (自动分配 timestamp = latest+1); journal queue 禁止外部 push | `i64` (分配的 timestamp) |
+| `push(data)` | 推送数据 (自动分配 timestamp = latest+1); 仅适用于普通 DatasetQueue | `i64` (分配的 timestamp) |
 | `close()` | 关闭队列 (自动 drop 所有 consumers) | `Result<()>` |
 
 #### DatasetQueueConsumer 方法
@@ -119,15 +119,25 @@ Queue 正式进入 C ABI, 但 C 侧不直接持有 Rust `DatasetQueue` 或 `Data
 
 | 函数 | 说明 | 返回值 |
 |------|------|--------|
-| `tmsl_queue_open(dataset)` | 从 FFI dataset 句柄打开普通 queue 或 `.journal/logs` queue | `usize` queue handle, `0` 表示失败 |
-| `tmsl_queue_close(queue_handle)` | 释放 FFI queue handle; 普通 queue 同时关闭 dataset queue, journal queue 仅释放 FFI handle | `0` 成功, `-1` 错误 |
+| `tmsl_queue_open(dataset)` | 从 FFI dataset 句柄打开普通 queue | `usize` queue handle, `0` 表示失败 |
+| `tmsl_queue_close(queue_handle)` | 释放普通 queue FFI handle 并关闭 dataset queue | `0` 成功, `-1` 错误 |
 | `tmsl_queue_consumer_open(queue_handle, group_name)` | 打开消费组, group_name 复用路径安全规则 | `usize` consumer handle, `0` 表示失败 |
 | `tmsl_queue_consumer_drop(queue_handle, consumer_handle)` | 删除该 consumer 对应消费组并使同组 FFI consumer handle 失效 | `0` 成功, `-1` 错误 |
-| `tmsl_queue_push(queue_handle, data, data_len)` | 普通 queue 写入数据并返回自动分配 timestamp; journal queue 返回错误 | `timestamp`, `-1` 错误 |
+| `tmsl_queue_push(queue_handle, data, data_len)` | 普通 queue 写入数据并返回自动分配 timestamp | `timestamp`, `-1` 错误 |
 | `tmsl_queue_poll(consumer_handle, timeout_ms, ...)` | poll 下一条数据; 成功数据由 `malloc` 分配 | `0` 成功, `-2` 超时, `-1` 错误 |
 | `tmsl_queue_ack(consumer_handle, timestamp)` | ack 已 poll 的 timestamp | `0` 成功, `-1` 错误 |
 
 FFI queue/consumer 是 Store 的子句柄。`tmsl_store_close` 在存在 queue 或 consumer handle 时必须失败; `tmsl_dataset_close` 在该 dataset 仍有 queue handle 时必须失败。`tmsl_queue_close` 会移除该 queue 下所有 FFI consumer handle, 防止 C 侧继续 poll/ack 已关闭 queue。
+
+Journal queue 使用专用 FFI:
+
+| 函数 | 说明 | 返回值 |
+|------|------|--------|
+| `tmsl_journal_queue_open(store)` | 从 Store 打开专用 journal queue | `usize` queue handle, `0` 表示失败 |
+| `tmsl_journal_queue_close(queue_handle)` | 释放 journal queue FFI handle | `0` 成功, `-1` 错误 |
+| `tmsl_journal_queue_consumer_open(queue_handle, group_name)` | 打开 journal 消费组 | `usize` consumer handle, `0` 表示失败 |
+| `tmsl_journal_queue_poll(consumer_handle, timeout_ms, ...)` | poll 下一条 journal payload | `0` 成功, `-2` 超时, `-1` 错误 |
+| `tmsl_journal_queue_ack(consumer_handle, sequence)` | ack 已 poll 的 journal sequence | `0` 成功, `-1` 错误 |
 
 ### 28.5 生命周期
 
@@ -218,7 +228,7 @@ pub struct DataSet {
 
 - `timestamp > latest_written_timestamp`: 创建新 timestamp, 与 normal write 等价, 必须 notify。
 - `timestamp == latest_written_timestamp`: 修改已存在 latest record, 不推进 queue timestamp, 不重新投递, 不 notify。
-- journal queue 例外: journal dataset 自身每条 `0x13` 都是新的 journal sequence timestamp, 必须 notify。
+- journal queue 例外: JournalLog 每条 `0x13` 都是新的 journal sequence, 必须 notify。
 
 通知实现:
 
@@ -338,7 +348,7 @@ pub fn push(&self, data: &[u8]) -> Result<i64> {
 
 **串行化保证**: Dataset 的 `Mutex<DataSet>` 已保证所有 write 操作串行, 不需要额外 queue_mutex。
 
-**Journal queue 特例**: 如果 queue 绑定的是 `.journal/logs`, `push(data)` 必须拒绝外部调用。journal record 只能由 `JournalManager.append_*` 写入; append 成功后仍复用 queue notify 机制唤醒等待 consumer。这里的 append 指 journal record 写入 journal dataset, 其 timestamp 是独立递增 journal sequence, 不等同于业务 dataset 的 `append(ts == latest)` 修改已有 record。
+**Journal queue 特例**: JournalQueue 不提供外部 `push(data)`。journal record 只能由 `JournalManager.append_*` 写入; append 成功后通过 JournalQueue notify 机制唤醒等待 consumer。这里的 append 指 journal record 写入 JournalLog, 其 sequence 独立递增, 不等同于业务 dataset 的 `append(ts == latest)` 修改已有 record。
 
 ### 30.3 Poll 流程
 

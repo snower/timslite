@@ -1,30 +1,22 @@
 # Journal 变更日志设计
 
-## 二十五、Journal: 内置 Dataset 变更日志
+## 二十五、Journal: 专用 Append Log
 
 ### 25.1 目标与边界
 
-> Journal v1 定位为 **pointer-based 辅助日志**: 仅在源 dataset 仍可访问, 且目标数据未被 retention 或未来 checkpoint 清除时, 支撑热迁移、增量同步、审计和有限故障恢复工具。它不是自包含 redo log, 不携带业务 payload、payload checksum 或 record version, 因此不能独立重建业务数据。
->
-> Consumer 处理 `0x11/0x12/0x13` 时必须把 journal record 中的 `index_info` 视为读取指针, 通过源 dataset 的 `read_entry_at_index(index_info)` 拉取当前可读数据; 如果源 dataset 不可访问、索引指向的数据已被回收/删除/覆盖, consumer 必须把该条记录视为不可重放或需要全量校验补偿。
+Journal v1 是 **pointer-based 辅助变更日志**: 用于热迁移、增量同步、审计和有限恢复工具。它不是自包含 redo log, 不携带业务 payload、payload checksum 或 record version, 因此不能独立重建业务数据。
 
-Journal 用于记录 Store/DataSet 的关键变更操作, 后续可服务于数据热迁移、增量同步、审计和故障恢复工具。Journal 自身不引入 WAL、二阶段提交或跨 dataset 事务, 不改变 timslite 当前“高性能、允许最近写入丢失”的 crash 模型。
+处理 `0x11/0x12/0x13` 的 consumer 必须把 journal record 中的 `index_info` 视为读取指针, 在源 dataset 仍可访问且未被 retention/checkpoint 清除时, 通过源 dataset 的 `read_entry_at_index(index_info)` 拉取或验证业务数据。
 
-Journal v1 记录五类事件:
+Journal 不提供事务语义:
 
-| 日志类型 | 含义 | 触发操作 |
-|----------|------|----------|
-| `0x01` | 创建 dataset | `Store::create_dataset*` 成功创建普通 dataset |
-| `0x02` | 删除 dataset | `Store::drop_dataset*` 成功删除普通 dataset |
-| `0x11` | dataset 写入数据 | `DataSet::write*` 成功发布/更新 index entry |
-| `0x12` | dataset 删除数据 | `DataSet::delete*` 成功把 index entry 标记为 filler |
-| `0x13` | dataset append 数据 | `DataSet::append*` 成功创建或追加 record |
+- 主操作成功但 journal append 前 crash: journal 可能缺少该操作。
+- journal append 成功但 flush 前 crash: journal record 可能丢失。
+- journal append 失败不回滚已完成的主操作。
 
-Journal 只记录普通用户 dataset 的操作。内部 journal dataset 自身的创建、打开、写入、flush、retention 和删除流程不得再次写 journal, 避免递归。
+### 25.2 存储模型
 
-### 25.2 底层存储
-
-Journal 底层使用一个内置 dataset:
+Journal 不再复用标准 `DataSet`。底层使用专用 append log, 仅保留 data segment / block / 压缩 / 扩容 / idle-close / queue 中适合 journal 的能力, 删除 TimeIndex / IndexSegment:
 
 ```text
 {data_dir}/
@@ -32,8 +24,13 @@ Journal 底层使用一个内置 dataset:
     └── logs/
         ├── meta
         ├── data/
-        └── index/
+        │   ├── 00000000000000000001
+        │   └── ...
+        └── queue/
+            └── {group_name}
 ```
+
+详细分段格式、sequence 计算、block 读取、flush/idle-close 和 crash recovery 见 [Journal 专用存储设计](journal-storage.md)。
 
 固定标识:
 
@@ -42,66 +39,40 @@ const JOURNAL_DATASET_NAME: &str = ".journal";
 const JOURNAL_DATASET_TYPE: &str = "logs";
 ```
 
-`.journal` 不满足公共 dataset name 规则 `^[0-9A-Za-z_-]+$`, 因此它是 Store 内部保留名称, 但 journal 开启后允许受控读取:
+`.journal/logs` 是 Store 内部保留路径:
 
 - public `create_dataset` 不允许创建 `.journal/logs`。
-- public `open_dataset(".journal", "logs")` 在 `StoreConfig.enable_journal=true` 时允许, 返回只读 DataSet handle, 可执行 `read/query/query_iter/latest_timestamp/open_queue`。
-- public `write/append/delete/drop/close-as-drop` 不允许修改或删除 `.journal/logs`。
-- `Store::open` 扫描普通 dataset 时继续跳过非法目录名; `Journal` 模块单独按固定路径打开或创建 `.journal/logs`。
-- journal dataset 不进入普通可写 dataset registry, 或进入带 read-only 标记的 internal registry; 后台任务若需要 flush/idle-close 它, 必须通过 `JournalManager` 访问。
+- public `open_dataset(".journal", "logs")` 不再返回普通 DataSet handle。
+- journal 读取、查询和 queue 消费使用专用 Store/FFI/Python API。
+- 普通 dataset 扫描始终跳过 `.journal`。
+- `enable_journal=false` 时不创建、不打开、不追加 journal, 专用 journal API 返回 `NotFound`。
 
-#### StoreConfig: enable_journal
+### 25.3 Journal Sequence
 
-```rust
-pub struct StoreConfig {
-    // ... existing fields ...
-    /// 是否启用内置 journal (默认 true)
-    pub enable_journal: bool,
-}
-
-impl StoreConfigBuilder {
-    /// 设置是否启用内置 journal。
-    ///
-    /// - `true` (默认): `Store::open` 自动 open/create `.journal/logs`, 普通操作成功后写入 journal
-    /// - `false`: 不创建、不打开、不追加 journal; `.journal/logs` public open/read/query/open_queue 均返回 NotFound
-    pub fn enable_journal(mut self, enable: bool) -> Self;
-}
-```
-
-`tmsl_store_open(data_dir)` 使用默认配置, 因此默认开启 journal。需要禁用时使用 `tmsl_store_open_with_config` 并设置 FFI 配置中的 `enable_journal = 0`。
-
-Journal dataset 的创建参数:
-
-| 参数 | v1 选择 | 说明 |
-|------|---------|------|
-| `index_continuous` | `0` | journal timestamp 使用连续递增 seq, 不需要连续 filler |
-| `retention_window` | `0` | 默认不自动回收 journal; 未来可加独立保留策略 |
-| segment size / initial size / compress_level | 继承 `StoreConfig` dataset 默认值 | 保持与普通 dataset 相同存储能力 |
-
-### 25.3 Journal Record 时间戳
-
-Journal 作为 dataset record 存储时, 仍需要 dataset timestamp。该 timestamp 是 journal sequence timestamp, 不是业务数据 timestamp, 与当前系统时间无关。
-
-生成规则:
+Journal sequence 是从 `1` 开始的连续 `i64`, 不是业务 timestamp, 与当前系统时间无关。
 
 ```text
-last = journal_dataset.latest_written_timestamp()
-journal_ts = last + 1
+empty journal:
+  next_sequence = 1
+
+append:
+  sequence = next_sequence
+  next_sequence += 1
 ```
 
 要求:
 
-- 第一条 journal record 的 `journal_ts = 1`。
-- 每追加一条 journal record, `journal_ts` 必须等于上一条 journal record 的 timestamp + 1。
-- 同一 journal dataset 内 timestamp 必须连续、有序、无 gap。
-- 不读取当前时间, 不使用 wall-clock/UNIX timestamp, 不受时钟回拨影响。
-- 如果 `last == i64::MAX`, 返回 `InvalidData`。
+- 第一条 journal record 的 sequence 为 `1`。
+- 每追加一条 journal record, sequence 必须等于上一条 sequence + 1。
+- `0` 保留为 queue state 初始 processed position, 不作为 journal record sequence。
+- 如果 `next_sequence > i64::MAX`, 返回 `InvalidData`。
+- 文档和代码中统一使用 `next_sequence` 表示下一条待分配序号; 最新已写序号为 `next_sequence - 1`。
 
-业务数据 timestamp 只出现在 `0x11/0x12/0x13` 的索引信息 TLV 中。
+业务数据 timestamp 只出现在 `0x11/0x12/0x13` 的 `index_info` TLV 中。
 
-### 25.4 日志二进制格式
+### 25.4 Journal Record 二进制格式
 
-每条 journal record 的 payload:
+Journal record payload:
 
 ```text
 ┌──────────────┬───────────────┬────────────────────────────┐
@@ -119,15 +90,12 @@ TLV entry:
 
 约束:
 
-- outer `length` 是所有 TLV entry 的总字节数, 不包含 `log_type` 和 outer `length` 自身。
-- TLV `length` 使用 `u16 LE`, 单个 value 最大 65535 字节。
-- outer `length` 同样使用 `u16 LE`, 因此整条 TLV list 最大 65535 字节。
-- `name` 和 `dataset_type` value 是 UTF-8 字节, 不包含 `\0` 结尾; 普通 dataset 复用路径安全规则, 必须非空、最长 255 字节且匹配 `^[0-9A-Za-z_-]+$`。
-- `metadata` value 最大 65535 字节, 且还必须满足 `(3+name_len)+(3+type_len)+(3+metadata_len) <= 65535`。
-- 所有多字节整数沿用文件格式统一规则: Little Endian。
-- 解析器遇到未知 TLV type 可跳过, 但必须拒绝越界 length。
-
-### 25.5 TLV 字段定义
+- outer `length` 是所有 TLV entry 的总字节数, 不包含 `log_type` 和 outer `length`。
+- TLV `length` 和 outer `length` 均为 `u16 LE`, 最大 65535。
+- encoded journal payload 最大为 65538 字节。
+- 若 encoded payload 加 record header 后超过普通 block 容量, journal segment 使用 `SINGLE_RECORD` block。
+- 所有多字节整数使用 Little Endian。
+- parser 遇到未知 TLV type 可跳过, 但必须拒绝越界 length。
 
 通用 TLV:
 
@@ -137,6 +105,20 @@ TLV entry:
 | `0x02` | dataset type | UTF-8 bytes | 全部 |
 | `0x03` | metadata / index info | 变体 | 全部 |
 | `0x04` | append info | 8 bytes | `0x13` |
+
+`name` 和 `dataset_type` 必须复用普通 dataset 路径安全规则: 非空、最长 255 字节, 且整体匹配 `^[0-9A-Za-z_-]+$`。
+
+### 25.5 日志类型
+
+Journal v1 记录五类事件:
+
+| 日志类型 | 含义 | 触发操作 |
+|----------|------|----------|
+| `0x01` | 创建 dataset | `Store::create_dataset*` 成功创建普通 dataset |
+| `0x02` | 删除 dataset | `Store::drop_dataset*` 成功删除普通 dataset |
+| `0x11` | dataset 写入数据 | `DataSet::write*` 成功发布/更新 index entry |
+| `0x12` | dataset 删除数据 | `DataSet::delete*` 成功把 index entry 标记为 filler |
+| `0x13` | dataset append 数据 | `DataSet::append*` 成功创建或追加 record |
 
 #### 25.5.1 `0x01` 创建 dataset
 
@@ -148,15 +130,7 @@ TLV:
   0x03 metadata  : DataSetMeta 文件除固定 header 外的数据
 ```
 
-`metadata` 定义:
-
-- 来源为 `{dataset}/meta` 文件。
-- 去掉 DataSetMeta 固定 8 字节 header: `magic[4] + version[u16 LE] + meta_data_length[u16 LE]`。
-- value 内容是后续 TLV meta_values 的原始字节。
-- metadata value 长度必须等于 meta 文件 header 中的 `meta_data_length`。
-- journal enabled 时, create/drop 主操作执行前必须预校验 name/type/metadata snapshot 可编码性; create 使用当前 DataSetMeta v1 的 meta_values 长度预估, drop 在删除目录前读取 metadata snapshot 后校验。
-
-创建日志记录应在普通 dataset 的 meta/data/index 初始结构创建成功后写入。若 journal 写入失败, 已创建 dataset 不做回滚; API 应返回 journal 失败错误, 调用方需按“主操作可能已生效”处理。
+`metadata` 来源为 `{dataset}/meta` 文件去掉固定 8 字节 header 后的 TLV meta_values 原始字节。
 
 #### 25.5.2 `0x02` 删除 dataset
 
@@ -165,17 +139,10 @@ log_type = 0x02
 TLV:
   0x01 name      : UTF-8 bytes
   0x02 type      : UTF-8 bytes
-  0x03 metadata  : DataSetMeta 文件除固定 header 外的数据
+  0x03 metadata  : 删除前读取到的 DataSetMeta meta_values
 ```
 
-删除日志使用删除前读取到的 metadata snapshot。推荐流程:
-
-1. 校验目标不是 `.journal/logs`。
-2. 读取并缓存目标 dataset 的 meta TLV bytes。
-3. 执行 dataset close/drop/remove_dir_all。
-4. 写入 `0x02` journal record。
-
-如果第 4 步失败, 删除操作不回滚。调用方应将该错误视为“dataset 已删除但 journal 缺失/不确定”, 后续通过全量扫描或人工修复恢复一致性。
+如果 journal append 失败, 删除操作不回滚。
 
 #### 25.5.3 `0x11` dataset 写入数据
 
@@ -187,7 +154,7 @@ TLV:
   0x03 index_info  : 18 bytes
 ```
 
-`index_info` 固定 18 字节:
+`index_info`:
 
 ```text
 Offset  Size  Type       Field
@@ -196,15 +163,7 @@ Offset  Size  Type       Field
 16      2     u16 LE     in_block_offset
 ```
 
-记录语义:
-
-- `timestamp` 是业务数据 timestamp。
-- `block_offset` 是写入完成后 index entry 中的全局数据区逻辑 offset。
-- `in_block_offset` 是写入完成后 index entry 中的 block 内偏移。
-- correction 原地覆盖时 index entry 不变, 仍写 `0x11` 日志记录该 timestamp 的写入变更。
-- correction 回退为乱序追加、out-of-order rewrite 或连续模式回填时, 使用更新后的 index entry。
-
-写入日志必须在数据写入和 index 发布成功后构造, 因为只有此时才能确定最终 index entry。Journal v1 是变更日志而不是 redo WAL, 因此不要求 journal 先于业务 index 落盘。
+`index_info` 使用写入完成后可读取业务 record 的最终 index entry。correction 原地覆盖时 index entry 不变, 仍写 `0x11`。
 
 #### 25.5.4 `0x12` dataset 删除数据
 
@@ -216,20 +175,7 @@ TLV:
   0x03 index_info  : 18 bytes
 ```
 
-`index_info` 使用删除前的真实 index entry:
-
-```text
-Offset  Size  Type       Field
-0       8     i64 LE     timestamp
-8       8     u64 LE     old_block_offset
-16      2     u16 LE     old_in_block_offset
-```
-
-约束:
-
-- 只有成功删除真实 entry 才写 `0x12`。
-- 如果目标不存在、已是 filler 或过期不可操作, 不写 journal。
-- 删除日志记录旧位置, 便于迁移端或恢复工具理解“哪条已发布 record 被删除”。删除后业务 index 中会被覆盖为 filler sentinel, 但 journal 不记录 sentinel 作为 `index_info`。
+`index_info` 使用删除前的真实旧 entry, 不记录删除后的 filler sentinel。
 
 #### 25.5.5 `0x13` dataset append 数据
 
@@ -242,16 +188,7 @@ TLV:
   0x04 append_info  : 8 bytes
 ```
 
-`index_info` 固定 18 字节, 使用 append 成功后的最终 index entry:
-
-```text
-Offset  Size  Type       Field
-0       8     i64 LE     timestamp
-8       8     u64 LE     block_offset
-16      2     u16 LE     in_block_offset
-```
-
-`append_info` 固定 8 字节:
+`append_info`:
 
 ```text
 Offset  Size  Type       Field
@@ -259,29 +196,19 @@ Offset  Size  Type       Field
 4       4     u32 LE     data_len
 ```
 
-记录语义:
+`0x13` 不携带 append bytes。consumer 必须通过源 dataset 的 `read_entry_at_index(index_info)` 获取完整 record, 再用 `data_offset/data_len` 理解本次追加范围。
 
-- `timestamp` 是业务数据 timestamp。
-- `block_offset` / `in_block_offset` 指向 append 完成后可读取到完整逻辑 record 的最终位置。
-- `data_offset` 是本次 append 数据在逻辑 record data 内的起始偏移。
-- `data_len` 是本次 append 写入的数据长度, 不是追加后的完整 record 长度。
-- 当 append 因 `timestamp > latest_written_timestamp` 创建新 record 时, `data_offset=0`, `data_len=input.len()`, `index_info` 指向新 record。
-- 当 append 原地追加到最新末尾 record 时, `data_offset=old_data_len`, `data_len=input.len()`, `index_info` 保持原 record 起始位置。
-- `0x13` 不携带 append bytes; consumer 必须通过源 dataset 的 `read_entry_at_index(index_info)` 获取完整 record, 再按 `data_offset/data_len` 识别本次追加范围。
-- append 失败不写 `0x13` journal record。
-
-### 25.6 Store/DataSet 写入流程集成
+### 25.6 Store/DataSet 集成
 
 #### Store::open
 
 ```text
 Store::open(data_dir):
   1. 初始化 StoreConfig / BlockCache / BackgroundTasks
-  2. if config.enable_journal:
+  2. if enable_journal:
        JournalManager::open_or_create(data_dir/.journal/logs)
-       - 若不存在, 用内部 dataset create 创建
-       - 若存在, 用内部 dataset open 打开
-       - 不写 create journal
+       - 不创建 TimeIndex / IndexSegment
+       - 不写递归 0x01 journal
      else:
        journal = Disabled
   3. 扫描普通 dataset registry
@@ -289,240 +216,130 @@ Store::open(data_dir):
      - 跳过非法公共目录名
 ```
 
-#### Store::create_dataset
+#### Store::create_dataset / drop_dataset
 
-```text
-create_dataset(name, type, config):
-  1. 校验 name/type 是普通合法名称, 且不是保留 journal 标识
-  2. if enable_journal: 预校验 0x01 create journal record 的 name/type/meta_values 长度可编码
-  3. 创建普通 dataset
-  4. 从 meta 文件提取 meta_values bytes
-  5. if enable_journal: journal.append_create(name, type, meta_values)
-  6. 返回 dataset handle
-```
-
-#### Store::drop_dataset
-
-```text
-drop_dataset(name, type):
-  1. 校验不是 journal dataset
-  2. 读取并缓存 meta_values bytes
-  3. if enable_journal: 预校验 0x02 drop journal record 的 name/type/meta_values 长度可编码
-  4. 关闭并删除普通 dataset
-  5. if enable_journal: journal.append_drop(name, type, meta_values)
-  6. 返回
-```
+创建或删除普通 dataset 成功后, 通过 `JournalManager.append_create/drop` 追加 `0x01/0x02`。journal append 失败不回滚主操作。
 
 #### DataSet runtime context
 
-Store 管理的业务 DataSet 必须持有运行时上下文:
+Store 管理的业务 `DataSet` 持有 `DataSetRuntimeContext`, 其中 journal hook 指向 `JournalManager`。业务 `DataSet::write/append/delete` 在主操作成功后调用 hook:
 
 ```rust
-struct DataSetRuntimeContext {
-    block_cache: Option<Arc<BlockCache>>,
-    journal: Option<Arc<dyn DataSetJournalSink>>,
-    read_only: bool,
+trait DataSetJournalSink {
+    fn record_write(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()>;
+    fn record_delete(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()>;
+    fn record_append(&self, key: &DataSetKey, entry: IndexEntry, data_offset: u32, data_len: u32) -> Result<()>;
 }
 ```
 
-`Store::open/create/open_dataset` 在 DataSet 放入 registry 或返回 handle 前注入该上下文。此后调用方无论通过 `Store::write_dataset/append_dataset/delete_dataset_record` 门面, 还是通过 `Store::get_dataset` 取得 `Arc<Mutex<DataSet>>` 后直接调用 `DataSet::write/append/delete/read/query`, 都应得到一致的 cache 和 journal 语义。独立绕过 Store 直接 `DataSet::create/open` 的低层实例没有 Store 运行时上下文, journal hook 为 no-op。
-`.journal/logs` 使用 `read_only=true` 的 runtime context; public DataSet mutation 必须拒绝, JournalManager 内部追加日志时走 crate-level 写入路径, 避免递归 journal 且不暴露写权限。
+`enable_journal=false` 时 hook 为 no-op。
 
-#### DataSet::write
-
-业务 DataSet 写入需要把最终 `IndexEntry` 返回给自身 journal hook:
-
-```rust
-struct WriteOutcome {
-    index_entry: IndexEntry,
-    branch: WriteBranch, // normal / correction / out_of_order / continuous_backfill
-}
-```
-
-`DataSet::write` 在主写入和 index 发布成功后调用:
-
-```text
-journal.append_data_write(dataset_key, outcome.index_entry)
-```
-
-当 `enable_journal=false` 时, 该 hook 是 no-op, 不影响主写入返回结果。
-
-#### DataSet::append
-
-```text
-DataSet::append(timestamp, data):
-  1. 从 DataSetRuntimeContext 取得 BlockCache / JournalSink
-  2. 执行内部 append_with_cache_outcome(timestamp, data, cache)
-       -> AppendOutcome { index_entry, data_offset, data_len }
-  3. 若 journal sink 存在且本次 append 非空 no-op, 追加 0x13 journal record
-```
-
-`DataSet::append` 在 append 成功后调用:
-
-```text
-journal.append_data_append(dataset_key, outcome.index_entry, outcome.data_offset, outcome.data_len)
-```
-
-当 `enable_journal=false` 时, 该 hook 是 no-op, 不影响主 append 返回结果。`timestamp > latest_written_timestamp` 由 append API 创建新 record 时仍写 `0x13`, 不写 `0x11`, 因为外部语义是 append。
-
-#### DataSet::delete
-
-删除成功时需要返回旧真实 `IndexEntry`:
-
-```rust
-struct DeleteOutcome {
-    old_index_entry: IndexEntry,
-}
-```
-
-`DataSet::delete` 在删除成功后调用:
-
-```text
-journal.append_data_delete(dataset_key, outcome.old_index_entry)
-```
-
-当 `enable_journal=false` 时, 该 hook 是 no-op, 不影响主删除返回结果。
-
-### 25.7 JournalManager 内部接口
+### 25.7 JournalManager API
 
 ```rust
 pub(crate) enum JournalManager {
     Enabled {
-        dataset: Arc<Mutex<DataSet>>,
-        queue: Option<DatasetQueue>,
+        log: Arc<Mutex<JournalLog>>,
+        queue: Mutex<Option<JournalQueue>>,
     },
     Disabled,
 }
 
 impl JournalManager {
     pub(crate) fn open_or_create(data_dir: &Path, config: &StoreConfig) -> Result<Self>;
-    pub(crate) fn open_readonly_dataset(&self) -> Result<Arc<Mutex<DataSet>>>;
-    pub(crate) fn open_queue(&self) -> Result<DatasetQueue>;
     pub(crate) fn append_create(&self, key: &DataSetKey, meta_values: &[u8]) -> Result<Option<i64>>;
     pub(crate) fn append_drop(&self, key: &DataSetKey, meta_values: &[u8]) -> Result<Option<i64>>;
-    pub(crate) fn append_data_write(&self, key: &DataSetKey, entry: &IndexEntry) -> Result<Option<i64>>;
-    pub(crate) fn append_data_delete(&self, key: &DataSetKey, old_entry: &IndexEntry) -> Result<Option<i64>>;
-    pub(crate) fn append_data_append(&self, key: &DataSetKey, entry: &IndexEntry, data_offset: u32, data_len: u32) -> Result<Option<i64>>;
-    pub(crate) fn query_since(&self, after_journal_ts: i64) -> Result<QueryIterator<'_>>;
+    pub(crate) fn append_data_write(&self, key: &DataSetKey, entry: IndexEntry) -> Result<Option<i64>>;
+    pub(crate) fn append_data_delete(&self, key: &DataSetKey, old_entry: IndexEntry) -> Result<Option<i64>>;
+    pub(crate) fn append_data_append(&self, key: &DataSetKey, entry: IndexEntry, data_offset: u32, data_len: u32) -> Result<Option<i64>>;
+    pub(crate) fn latest_sequence(&self) -> Result<Option<i64>>;
+    pub(crate) fn read(&self, sequence: i64) -> Result<Option<(i64, Vec<u8>)>>;
+    pub(crate) fn query(&self, start: i64, end: i64) -> Result<Vec<(i64, Vec<u8>)>>;
+    pub(crate) fn open_queue(&self) -> Result<JournalQueue>;
+    pub(crate) fn flush_dirty(&self) -> Result<()>;
+    pub(crate) fn close(&self) -> Result<()>;
 }
 ```
 
-`append_*` 在 journal enabled 时返回写入 journal dataset 的 `Some(journal_ts)`, 便于调用方或测试确认日志顺序; disabled 时返回 `Ok(None)`。
+`append_*` 在 enabled 时返回 `Some(sequence)`, disabled 时返回 `Ok(None)`。
 
 ### 25.8 读取、查询与实时消费
 
-#### 25.8.1 作为普通 dataset 读取
-
-当 `enable_journal=true` 时, `.journal/logs` 可通过受控 public open 路径打开:
+Journal 使用专用 API:
 
 ```rust
-let journal = store.open_dataset(".journal", "logs")?;
-let latest = journal.latest_written_timestamp()?;
-let one = journal.read(latest)?;
-let rows = journal.query(start_journal_ts, end_journal_ts)?;
-let iter = journal.query_iter(start_journal_ts, end_journal_ts)?;
+let latest = store.journal_latest_sequence()?;
+let one = store.journal_read(sequence)?;
+let rows = store.journal_query(start, end)?;
+let queue = store.open_journal_queue()?;
 ```
 
 约束:
 
-- 返回的 handle 标记为 `read_only_internal=true`。
-- 允许: `read`, `query`, `query_iter`, `latest_written_timestamp`, `open_queue`, `close`。
-- 禁止: `write`, `append`, `delete`, `drop_dataset`, `create_dataset`, `queue.push`。
-- `read/query` 返回的是 journal record payload 原始字节, 调用方可用 journal parser 解码为 `JournalRecord`。
-- `timestamp=-1` 语义保持不变: 读取最大 journal sequence timestamp 对应的日志 record; 若最新日志被未来 retention/checkpoint 删除, 返回 `None`, 不回退。
+- `journal_read(-1)` 不作为特殊 latest 快捷方式; journal 专用 API 使用明确 sequence。
+- `sequence <= 0` 返回 `None` 或 `InvalidData` 由 API 具体定义保持一致, 但不得读取任何文件。
+- `journal_query(start,end)` 中 `start > end` 返回 `InvalidData`。
+- 返回 payload 是 encoded `JournalRecord` 原始字节, 调用方可用 parser 解码。
 
-如果 `enable_journal=false`, `open_dataset(".journal", "logs")` 返回 `NotFound`, 即使磁盘上存在旧 `.journal/logs` 目录也不主动打开。
+#### JournalQueue
 
-#### 25.8.2 通过 Queue 实时 poll
-
-Journal dataset 支持打开 queue 进行实时消费:
+JournalQueue 单独实现, 不复用 `DatasetQueue`, 但复用 queue state file 格式和 at-least-once 语义。
 
 ```rust
 let queue = store.open_journal_queue()?;
 let consumer = queue.open_consumer("migrate-node-a")?;
-while let Some((journal_ts, payload)) = consumer.poll(timeout)? {
+while let Some((sequence, payload)) = consumer.poll(timeout)? {
     let record = JournalRecord::decode(&payload)?;
     apply(record)?;
-    consumer.ack(journal_ts)?;
+    consumer.ack(sequence)?;
 }
 ```
 
-也可以先通过 `open_dataset(".journal", "logs")` 获取只读 handle, 再 `open_queue()`。
-
 Queue 语义:
 
-- journal queue 的 producer 只有 `JournalManager.append_*`。
-- `DatasetQueue::push` 对 journal queue 必须返回 `InvalidData`, 外部不能伪造日志。
-- journal queue 以 journal sequence timestamp 作为独立递增消费序列; 每条成功写入的 `0x13` 都必须投递给 journal queue consumer, 不受普通 dataset queue 的 append 去重语义影响。
-- 每次 journal append 成功后, 复用 Queue 的 notify 机制唤醒等待中的 consumer。
-- 每个消费组维护自己的 4KB queue state 文件: `{data_dir}/.journal/logs/queue/{group}`。
-- `poll(timeout)` 返回 `(journal_ts, payload)`; `journal_ts` 是 journal dataset timestamp, 可作为迁移端 checkpoint。
-- consumer 需要自行 decode payload 并 ack; decode 失败时可以不 ack, 由后续重试或人工处理。
-
-Queue 与 query 的关系:
-
-| 方式 | 适用场景 |
-|------|----------|
-| `query/query_iter` | 批量扫描历史 journal, 补偿缺口, 离线恢复 |
-| `open_queue + poll` | 实时热迁移/同步, 需要持久消费进度和等待唤醒 |
-
-#### 25.8.3 Lagging Consumer Semantics
-
-Journal v1 records `index_info` pointers, not a self-contained historical payload. A consumer that falls behind must treat every `0x11`, `0x12`, and `0x13` record as a best-effort change hint:
-
-1. Decode the journal record and locate the source dataset by name/type.
-2. For `0x11` and `0x13`, call `read_entry_at_index(index_info)` on the source dataset before applying the change.
-3. For `0x12`, use `index_info` as the deleted record's former location and verify against the source dataset only when the source data still exists.
-4. If the source dataset was dropped, retention-reclaimed, checkpointed, corrected, overwritten, or the exact index location no longer resolves, the consumer must mark the record as not replayable from journal alone and fall back to full scan, snapshot compare, or operator repair.
-
-This means a large consumer lag can make a journal record unusable for exact replay even when the journal record itself is still present. The `journal_ts` checkpoint only records how far the consumer has read in `.journal/logs`; it does not guarantee that the source dataset still contains the historical bytes referenced by old journal records.
-
-Strict replay, self-contained hot migration, and crash recovery that must survive arbitrary consumer lag require a future WAL/versioned-payload design, not Journal v1.
+- producer 只有 `JournalManager.append_*`。
+- 外部 push 返回 `InvalidData`。
+- 新 consumer 默认从当前 `latest_sequence.unwrap_or(0)` 开始, 只消费后续新增记录。
+- 每条成功写入的 journal record 都 notify waiting consumers。
+- consumer group state 文件路径为 `{data_dir}/.journal/logs/queue/{group_name}`。
 
 ### 25.9 并发与锁顺序
 
-Journal dataset 是全 Store 共享串行写入点。并发写入不同业务 dataset 时, 业务写入仍可并行到各自 `DataSet` mutex, 但 journal append 会在 `JournalManager.dataset` mutex 上串行。
+Journal 是全 Store 共享串行写入点。并发写不同业务 dataset 时, 业务写入仍可并行到各自 `DataSet` mutex, 但 journal append 会在 `JournalLog` mutex 上串行。
 
 锁顺序:
 
 ```text
 Store datasets registry lock
   -> target DataSet mutex
-     -> JournalManager dataset mutex
+     -> JournalManager / JournalLog mutex
 ```
 
 约束:
 
 - 不允许持有 journal mutex 后再获取普通 dataset mutex。
 - journal append 内部不得调用 Store public create/open/drop/write/delete API。
-- 后台任务如果 flush/idle-close journal, 只能通过 JournalManager 直接操作 journal dataset, 不扫描 public registry 中的 `.journal`。
-- journal queue consumer poll 时遵循 Queue 锁顺序, 不允许在持有 journal mutex 后反向获取普通 dataset mutex。
-- drop dataset 流程不得在持有 datasets registry 写锁时执行 journal append; 应先完成 registry 更新和目录删除, 再写 journal, 避免长时间阻塞其它 Store 操作。
+- 后台任务只能通过 `JournalManager::flush_dirty()` / `close()` 操作 journal。
+- JournalQueue poll 等待时不得持有 JournalLog 或 queue state 锁。
 
 ### 25.10 Crash Safety 与一致性边界
 
-Journal v1 是同步 change log, 不是事务 WAL:
+Journal 专用存储必须保证 read/query/queue 不返回半写记录:
 
-- 主操作成功但 journal append 前 crash: journal 可能缺少该操作。
-- journal append 成功但后续 flush 前 crash: journal record 可能丢失。
-- 主 dataset 与 journal dataset 分属不同文件集合, 不保证 mmap 落盘顺序。
-- journal append 失败时不回滚已完成的主操作。
+- append 写入顺序为 record payload -> block header/state -> segment state。
+- open 时扫描 block 链, 只保留最后一个完整 record 前缀。
+- 如果 header state 比扫描结果更乐观, 以内存扫描结果修正。
+- crash 可能丢失最近未 flush 的 journal records, 但不能读出旧数据或错误数据。
 
-因此:
-
-- 热迁移消费者应记录最后消费的 `journal_ts`, 并能通过全量扫描/校验补偿 journal 缺口。
-- 恢复工具必须把 journal 视为辅助信息, 不能假设它覆盖所有已返回成功的操作。
-- 若未来需要严格故障恢复, 应在独立设计中引入真正 WAL/commit marker/checksum 或二阶段协议, 不复用 v1 journal 语义。
+更完整的扫描规则见 [Journal 专用存储设计](journal-storage.md#crash-recovery)。
 
 ### 25.11 Retention、删除与保留策略
 
-Journal dataset 默认 `retention_window = 0`, 不被普通 retention 策略删除。若 `enable_journal=false`, Store 不会打开或维护 journal retention。未来可增加独立 journal retention 或 checkpoint 机制:
+Journal v1 不参与普通 dataset retention。它不支持 delete 或 invalid_record_count。后续若需要日志回收, 应设计独立 journal checkpoint/retention:
 
-- 基于已消费 `journal_ts` 的安全截断。
-- 基于时间窗口的日志保留。
-- 基于快照 checkpoint 后删除旧 journal segment。
-
-v1 不设计 compaction, journal 删除只能通过后续明确的 journal retention/checkpoint 功能实现。
+- 基于所有消费组最小 ack sequence 的安全截断。
+- 基于外部 snapshot checkpoint 删除旧 segment。
+- 基于时间窗口保留, 但需要日志内额外时间字段或外部元数据。
 
 ### 25.12 解析与兼容性
 
@@ -538,24 +355,17 @@ Journal record parser:
 
 - 未来可新增 log_type, 旧 reader 可跳过未知 log_type。
 - 未来可在现有 log_type 中追加 TLV, 旧 reader 跳过未知 TLV。
-- 已有 TLV type 的语义和二进制类型不可变更; 如需变更, 新增 TLV type 或新 log_type。
+- 已有 TLV type 的语义和二进制类型不可变更。
 
 ### 25.13 模块归属
 
-建议新增源码模块:
-
 ```text
-src/
-└── journal/
-    └── mod.rs
+src/journal/
+├── mod.rs          # JournalManager + facade + DataSetJournalSink impl
+├── record.rs       # JournalRecord encoder/decoder
+├── segment.rs      # JournalSegment mmap segment, block append/read/scan
+├── log.rs          # JournalLog sequence registry and read/query/append
+└── queue.rs        # JournalQueue + JournalQueueConsumer
 ```
 
-模块职责:
-
-- journal record encoder/decoder。
-- metadata snapshot 提取。
-- journal sequence timestamp 生成。
-- `JournalManager` 内部 dataset 生命周期管理。
-- Store/DataSet 操作 hook 的窄接口, 包括 create/drop/write/delete/append。
-
-Journal 不应放入 `DataSet` 本体以避免普通 dataset 依赖 Store; DataSet 可返回 `WriteOutcome/DeleteOutcome`, Store 层负责调用 JournalManager。
+Journal 不放入 `DataSet` 本体。业务 DataSet 只通过 `DataSetJournalSink` hook 通知成功变更。

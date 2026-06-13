@@ -27,7 +27,7 @@ pub struct Store {
     datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,
-    journal: Arc<JournalManager>,   // 内置 .journal/logs 变更日志, 可配置启用/禁用
+    journal: Arc<JournalManager>,   // 内置 .journal/logs 专用 append log, 可配置启用/禁用
     // 内部共享的执行器 (详见 §17.9), 由 BackgroundTasks 持有
     bg_handle: Option<JoinHandle<()>>,
     shutdown_tx: Option<mpsc::Sender<()>>,
@@ -54,7 +54,10 @@ impl Store {
     pub fn drop_dataset_by_name(&mut self, name: &str, dataset_type: &str) -> Result<()>;
     pub fn open_queue(&mut self, handle: DataSetHandle) -> Result<DatasetQueue>;
     pub fn close_queue(&mut self, handle: DataSetHandle) -> Result<()>;
-    pub fn open_journal_queue(&mut self) -> Result<DatasetQueue>;
+    pub fn journal_latest_sequence(&self) -> Result<Option<i64>>;
+    pub fn journal_read(&self, sequence: i64) -> Result<Option<(i64, Vec<u8>)>>;
+    pub fn journal_query(&self, start: i64, end: i64) -> Result<Vec<(i64, Vec<u8>)>>;
+    pub fn open_journal_queue(&mut self) -> Result<JournalQueue>;
     pub fn open_consumer(&mut self, queue: &DatasetQueue, group_name: &str) -> Result<DatasetQueueConsumer>;
     pub fn drop_consumer(&mut self, queue: &DatasetQueue, group_name: &str) -> Result<()>;
     pub fn queue_push(&mut self, queue: &DatasetQueue, data: &[u8]) -> Result<i64>;
@@ -86,16 +89,17 @@ impl Store {
 
 | 操作 | 文件操作 | 目录操作 |
 |------|---------|---------|
-| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 读取/校验 Store 根目录 `max_identifier`; 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs`; 再扫描 `{data_dir}/*/*` 加载已有普通数据集、读取每个 dataset 的 `identifier` 并注入 runtime context | `.journal/logs` 是内部保留 dataset; 普通扫描跳过它; 若扫描最大 identifier 大于 `max_identifier`, 修正根目录文件 |
+| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 读取/校验 Store 根目录 `max_identifier`; 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs` 专用 append log; 再扫描 `{data_dir}/*/*` 加载已有普通数据集、读取每个 dataset 的 `identifier` 并注入 runtime context | `.journal/logs` 是内部保留 journal; 普通扫描跳过它; 若扫描最大 identifier 大于 `max_identifier`, 修正根目录文件 |
 | `Store::create_dataset` | 分配 `next_identifier = max_identifier + 1`; 写入 `meta` 文件; 写入第一个空 data segment + index segment header; 写入 dataset 目录 `identifier`; 更新 Store 根目录 `max_identifier`; 注入 runtime context; journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/identifier` + `{name}/{type}/meta` + `{name}/{type}/data/` + `{name}/{type}/index/` |
 | `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments; 注入 runtime context | 不创建新目录, 仅读取 |
 | `Store::open_dataset_by_identifier` | 通过 Store 内存中的 `identifier -> DataSetKey` 索引定位 `(name,type)`, 再复用 `open_dataset` 语义 | `identifier=0` 返回 `InvalidData`; 未找到返回 `NotFound`; `.journal/logs` 不支持 |
 | `Store::write_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
 | `Store::append_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
 | `Store::delete_dataset_record` | 调用 DataSet public API; DataSet 自行 invalidate 旧 cache key 并写 `0x12` journal | 不删除物理 record, 仅标记 filler/invalid |
-| `Store::read_dataset` / `query_dataset` | 调用 DataSet public API; DataSet 自动使用 runtime context 中的全局 `BlockCache`; retention 统一生效 | `.journal/logs` read-only handle 也允许读取 |
+| `Store::read_dataset` / `query_dataset` | 调用 DataSet public API; DataSet 自动使用 runtime context 中的全局 `BlockCache`; retention 统一生效 | 仅适用于普通 dataset |
+| `Store::journal_latest_sequence/read/query` | 调用 JournalManager 专用 API 读取 encoded journal record payload | `enable_journal=false` 时返回 `NotFound`; 不通过 DataSet handle |
 | `Store::latest_written_timestamp` | 返回 dataset 已写入最大 timestamp | 删除 latest 后仍返回最大已写 timestamp |
-| `Store::open_queue` / `open_journal_queue` | 打开普通 dataset queue 或内置 journal queue | journal queue producer 只允许 `JournalManager` |
+| `Store::open_queue` / `open_journal_queue` | `open_queue` 打开普通 dataset queue; `open_journal_queue` 打开专用 JournalQueue | journal queue producer 只允许 `JournalManager` |
 | `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树; journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
 
 ### 11.3 Dataset name/type 校验
@@ -111,7 +115,7 @@ impl Store {
 
 不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。该 255 字节上限也用于 journal name/type TLV value, 避免主操作成功后才发现 journal 字段不可编码。
 
-内部保留 dataset `.journal/logs` 不适用公共命名规则。`enable_journal=true` 时, public `open_dataset(".journal", "logs")` 允许返回只读 handle, 支持 `read/query/query_iter/latest_timestamp/open_queue`; public create/write/append/delete/drop/queue_push 仍必须拒绝 `.journal`。`enable_journal=false` 时, 所有 `.journal/logs` public open/read/query/open_queue 请求返回 `NotFound`。
+内部保留路径 `.journal/logs` 不适用公共命名规则。它不再作为普通 DataSet handle 暴露; `open_dataset(".journal", "logs")` 必须返回 `NotFound` 或 `InvalidData`。`enable_journal=true` 时, 调用方通过 `journal_read` / `journal_query` / `open_journal_queue` 等专用 API 读取和消费 journal; public create/write/append/delete/drop/queue_push 仍必须拒绝 `.journal`。`enable_journal=false` 时, 所有 journal 专用 API 返回 `NotFound`。
 
 ### 11.3.1 Dataset Identifier
 
@@ -163,8 +167,8 @@ pub struct StoreConfig {
 impl StoreConfigBuilder {
     /// 设置是否启用内置 journal。
     ///
-    /// - `true` (默认): `Store::open` 自动 open/create `.journal/logs`, 普通变更成功后同步追加 journal record
-    /// - `false`: 不创建、不打开、不追加 journal; `.journal/logs` 的 open/read/query/open_queue 均不可用
+    /// - `true` (默认): `Store::open` 自动 open/create `.journal/logs` 专用 append log, 普通变更成功后同步追加 journal record
+    /// - `false`: 不创建、不打开、不追加 journal; journal read/query/open_queue 专用 API 均不可用
     pub fn enable_journal(mut self, enable: bool) -> Self {
         self.enable_journal = Some(enable);
         self
@@ -337,8 +341,7 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_dataset_open_by_identifier(store: *mut c_void,
     identifier: u64,
     err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
-// `name=".journal", dataset_type="logs"` 在 enable_journal=true 时打开只读 journal handle;
-// 该 handle 可 read/query/open_queue, 但 write/append/delete/drop/queue_push 必须返回错误。
+// `.journal/logs` 不再通过 tmsl_dataset_open 暴露; 使用 journal 专用 C ABI。
 #[no_mangle] pub extern "C" fn tmsl_dataset_close(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_drop(store: *mut c_void,
     name: *const c_char, dataset_type: *const c_char,
@@ -413,6 +416,31 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_queue_push(queue_handle: usize, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_longlong;
 #[no_mangle] pub extern "C" fn tmsl_queue_poll(consumer_handle: usize, timeout_ms: c_longlong, out_timestamp: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_queue_ack(consumer_handle: usize, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+// Journal C ABI (dedicated append log, not DataSet)
+#[no_mangle] pub extern "C" fn tmsl_journal_latest_sequence(store: *mut c_void,
+    out_sequence: *mut c_longlong,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_journal_read(store: *mut c_void, sequence: c_longlong,
+    out_sequence: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_journal_query(store: *mut c_void, start_sequence: c_longlong, end_sequence: c_longlong,
+    err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_journal_iter_next(iter: *mut c_void,
+    out_sequence: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_journal_iter_close(iter: *mut c_void);
+#[no_mangle] pub extern "C" fn tmsl_journal_queue_open(store: *mut c_void,
+    err_buf: *mut c_char, err_buf_len: usize) -> usize;
+#[no_mangle] pub extern "C" fn tmsl_journal_queue_close(queue_handle: usize,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_journal_queue_consumer_open(queue_handle: usize, group_name: *const c_char,
+    err_buf: *mut c_char, err_buf_len: usize) -> usize;
+#[no_mangle] pub extern "C" fn tmsl_journal_queue_poll(consumer_handle: usize, timeout_ms: c_longlong,
+    out_sequence: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_journal_queue_ack(consumer_handle: usize, sequence: c_longlong,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 ```
 
 `block_max_size` 不在 Store/Dataset/FFI 配置中暴露。普通聚合 Block 的 payload 上限固定为 `BLOCK_MAX_SIZE=65536`, 是文件格式常量。`write` 与 `append` 的单条 record 纯数据上限固定为 4MiB, 也不作为运行期配置暴露。
@@ -421,6 +449,7 @@ pub struct TmslDatasetConfigFFI {
 > - `tmsl_iter_next` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_dataset_read` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_queue_poll` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
+> - `tmsl_journal_read` / `tmsl_journal_iter_next` / `tmsl_journal_queue_poll` 返回的 `out_data` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_dataset_query_exist` 返回的 `out_bitmap` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_dataset_query_length` 返回的 `out_array` 用 `libc::malloc` 分配 → C 侧必须调用 `tmsl_data_free` 释放
 > - `tmsl_iter_free_data` 保留为兼容别名, 内部等价于 `tmsl_data_free`
@@ -428,19 +457,27 @@ pub struct TmslDatasetConfigFFI {
 > - 所有 FFI 函数用 `catch_unwind` 包裹, panic 时返回 -1/null + err_buf 写错误信息
 
 > **句柄生命周期**:
-> - `store` 是父句柄; `dataset`、`iterator`、`queue`、`consumer` 是子句柄。`tmsl_store_close` 在存在任一未关闭子句柄时返回 -1, 不释放 store。
+> - `store` 是父句柄; `dataset`、`iterator`、普通 queue/consumer、journal iterator、journal queue/consumer 都是子句柄。`tmsl_store_close` 在存在任一未关闭子句柄时返回 -1, 不释放 store。
 > - `iterator` 必须先于创建它的 `dataset` 关闭; `tmsl_dataset_close` 在该 dataset 仍有活动 iterator 时返回 -1。
-> - `queue` 必须先于创建它的 `dataset` 关闭; `tmsl_dataset_close` 在该 dataset 仍有活动 queue handle 时返回 -1。
+> - 普通 `queue` 必须先于创建它的 `dataset` 关闭; `tmsl_dataset_close` 在该 dataset 仍有活动 queue handle 时返回 -1。
+> - journal queue 是 store 级子句柄, 不依赖 dataset handle; 必须在 `tmsl_store_close` 前关闭。
 > - `consumer` 必须先于或随所属 `queue` 关闭; `tmsl_queue_close` 会关闭并移除该 queue 下所有 FFI consumer handle。
 > - `tmsl_dataset_drop` 通过 FFI 调用时要求该 store 下没有活动 dataset/iterator/queue/consumer 子句柄, 避免删除仍被 C 侧持有的对象。
-> - `tmsl_dataset_close` / `tmsl_iter_close` / `tmsl_queue_close` / `tmsl_queue_consumer_drop` 成功后对应句柄立即失效, 之后不得再次传入任何 FFI 函数。
+> - `tmsl_dataset_close` / `tmsl_iter_close` / `tmsl_queue_close` / `tmsl_queue_consumer_drop` / journal close/drop 函数成功后对应句柄立即失效, 之后不得再次传入任何 FFI 函数。
 
 > **Queue FFI 语义**:
 > - `tmsl_queue_open(dataset)` 以 FFI dataset 句柄为入口, 内部使用该 dataset 对应的 Store handle id 调用 `Store::open_queue`。C 侧不直接持有或传入 `DataSetHandle` 数值。
-> - `tmsl_queue_close(queue_handle)` 对普通 dataset queue 调用 `Store::close_queue` 并移除 registry entry; 对 `.journal/logs` queue 只释放 FFI queue/consumer handle, journal queue 本体由 `JournalManager` 管理。
-> - `tmsl_queue_push` 对普通 queue 自动分配 `latest_written_timestamp + 1`; 对 `.journal/logs` queue 返回错误。
+> - `tmsl_queue_close(queue_handle)` 对普通 dataset queue 调用 `Store::close_queue` 并移除 registry entry。
+> - `tmsl_queue_push` 对普通 queue 自动分配 `latest_written_timestamp + 1`。
 > - `tmsl_queue_poll` 返回值: `0=成功并写出数据`, `-2=超时无数据`, `-1=错误`。成功返回的数据必须用 `tmsl_data_free` 释放。
 > - `tmsl_queue_consumer_drop(queue_handle, consumer_handle)` 删除对应消费组状态并使同一 queue/group 下的 FFI consumer handle 全部失效。
+
+> **Journal FFI 语义**:
+> - journal C ABI 以 `store` 为入口, 不需要也不能先打开 `.journal/logs` DataSet handle。
+> - `tmsl_journal_latest_sequence` 在空 journal 时写出 `0`, 有记录时写出最新 sequence。
+> - `tmsl_journal_read` 返回值: `0=成功并写出数据`, `1=未找到`, `-1=错误`。
+> - `tmsl_journal_query` 返回专用 iterator, `tmsl_journal_iter_next` 返回 `0=成功`, `1=结束`, `-1=错误`。
+> - `tmsl_journal_queue_*` 使用专用 JournalQueue, consumer group name 复用 queue 路径安全规则。
 
 ## 十三、C 侧调用示例
 
@@ -522,6 +559,6 @@ struct DataSetRuntimeContext {
 }
 ```
 
-普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入、journal 内部写入和 queue consumer state 变更都复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位 dataset, 再执行 `Data`、`Index`、`QueueState` target, 不遍历所有 dataset。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment 和 queue state files。
+普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入和普通 queue consumer state 变更复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位普通 dataset, 再执行 `Data`、`Index`、`QueueState` target, 不遍历所有 dataset。Journal 使用专用 append log, 不把 journal segment 加入该 dirty queue; 后台 flush 到期时直接调用 `JournalManager::flush_dirty()`。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment 和 queue state files。
 
 > Rust API mutability note: methods that allocate or remove handles, mutate the handle registry, mutate dataset contents, open/close queue producer state, or push queue data require &mut self. Read/query, queue poll/ack, config/cache access, dataset listing, inspect, and background executor tick/query use internal synchronization and keep &self.

@@ -44,6 +44,7 @@
 | 33 | Dirty Segment Flush Queue | ✅ 完成 | [phase-33-dirty-flush-queue.md](docs/plan/phase-33-dirty-flush-queue.md) |
 | 34 | Ordered Segment Registry | ✅ 完成 | [phase-34-ordered-segment-registry.md](docs/plan/phase-34-ordered-segment-registry.md) |
 | 35 | Dataset Identifier | ✅ 完成 | [phase-35-dataset-identifier.md](docs/plan/phase-35-dataset-identifier.md) |
+| 36 | Journal 专用无索引存储 | 📋 计划 | [phase-36-journal-dedicated-storage.md](docs/plan/phase-36-journal-dedicated-storage.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -60,7 +61,7 @@
 ### Phase 28: Journal 变更日志
 - [x] `src/journal/mod.rs` — JournalManager + record encoder/decoder
 - [x] `StoreConfig.enable_journal` — Rust/FFI/header/wrapper 配置同步
-- [x] `.journal/logs` — 默认启用的内置只读 journal dataset
+- [x] `.journal/logs` — Phase 28 历史实现已完成; Phase 36 计划重构为专用无索引 append log
 - [x] 操作 hook — create/drop/write/delete 成功后追加 `0x01/0x02/0x11/0x12`
 - [x] 查询与实时消费 — read/query/query_iter/latest/open_queue + queue poll/ack
 - [x] 验证 — journal/queue/ffi 集成测试、fmt、clippy、全量 cargo test
@@ -85,6 +86,12 @@
 - [x] Python Wrapper — DataSet 类新增方法
 - [x] 集成测试 — 完整测试矩阵覆盖
 - [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy -- -D warnings`
+
+### Phase 36: Journal 专用无索引存储
+- [x] 设计文档 — `docs/design/journal.md` + `docs/design/journal-storage.md`
+- [ ] 实现 — `JournalSegment` / `JournalLog` / `JournalQueue`
+- [ ] API — Rust / FFI / Python 专用 journal read/query/queue
+- [ ] 验证 — journal storage、queue、FFI、Python wrapper 测试与全量检查
 
 ---
 
@@ -125,7 +132,13 @@ docs/plan/
 ├── phase-27-queue-module.md         ← Phase 27: Queue 模块 (DatasetQueue + Consumer)
 ├── phase-28-journal.md              ← Phase 28: Journal 变更日志 (.journal/logs)
 ├── phase-29-dataset-append.md       ← Phase 29: Dataset Append API + Journal 0x13
-└── phase-30-dataset-read-operations.md ← Phase 30: Dataset 读操作优化
+├── phase-30-dataset-read-operations.md ← Phase 30: Dataset 读操作优化
+├── phase-31-store-api-listing.md    ← Phase 31: Store API - Dataset 枚举
+├── phase-32-dataset-inspect.md      ← Phase 32: Dataset Inspect API
+├── phase-33-dirty-flush-queue.md    ← Phase 33: Dirty Segment Flush Queue
+├── phase-34-ordered-segment-registry.md ← Phase 34: Ordered Segment Registry
+├── phase-35-dataset-identifier.md   ← Phase 35: Dataset Identifier
+└── phase-36-journal-dedicated-storage.md ← Phase 36: Journal 专用无索引存储
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

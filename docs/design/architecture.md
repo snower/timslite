@@ -19,7 +19,7 @@ libtimslite (CDylib)
 │   │       │
 │   │       └───IndexSegment  (单个索引文件, Mmap-backed)
 │   │
-│   └── JournalManager (内置 .journal/logs 变更日志)
+│   └── JournalManager (内置 .journal/logs 专用 append log)
 └── FFI                (extern "C" API)
 ```
 
@@ -54,11 +54,13 @@ libtimslite (CDylib)
 │       │   └── 00000000000000000000
 │       └── index/
 │
-└── .journal/                                           # 内部保留 dataset name, public API 只读受控访问
-    └── logs/                                           # journal dataset type
+└── .journal/                                           # 内部保留 journal 根目录
+    └── logs/                                           # 专用 journal append log
         ├── meta
         ├── data/
-        └── index/
+        │   └── 00000000000000000001                    # journal segment, 起始 sequence
+        └── queue/
+            └── {group_name}
 ```
 
 ### 2.1 命名规则
@@ -71,7 +73,7 @@ libtimslite (CDylib)
 
 `dataset_name` 和 `dataset_type` 是目录名, 不做转义或编码。合法值必须非空且整体匹配 `^[0-9A-Za-z_-]+$`: 只允许数字、大小写英文字母、`-`、`_`。任何路径分隔符、`.`、空格、控制字符、非 ASCII 字符、Windows 保留路径写法等都不允许。`Store::create_dataset*` / `open_dataset` / `drop_dataset_by_name` 必须在拼接路径前校验; `Store::open` 扫描已有目录时只加载名称合法且包含 `meta` 的数据集目录。
 
-例外: `.journal/logs` 是 Store 内部保留 dataset。`enable_journal=true` 时 public API 可受控打开它进行 read/query/open_queue 实时消费, 但不能 create/write/append/delete/drop; 普通扫描路径应跳过它, 由 `JournalManager` 单独管理。
+例外: `.journal/logs` 是 Store 内部保留 journal append log, 不再作为普通 `DataSet` 暴露。`enable_journal=true` 时通过 Store 的 journal 专用 read/query/open_queue API 访问; 普通扫描路径应跳过它, 由 `JournalManager` 单独管理。
 
 ### 2.2 隔离保证
 
@@ -119,7 +121,11 @@ src/
 │   ├── iter.rs         # QueryIterator + source cursor 惰性读取
 │   └── hot_block.rs    # 迭代器局部 hot block 结构
 ├── journal/
-│   └── mod.rs          # JournalManager + journal record encoder/decoder
+│   ├── mod.rs          # JournalManager + facade + DataSetJournalSink impl
+│   ├── record.rs       # JournalRecord encoder/decoder
+│   ├── segment.rs      # JournalSegment mmap 分段, block append/read/scan
+│   ├── log.rs          # JournalLog sequence registry + read/query/append
+│   └── queue.rs        # JournalQueue + JournalQueueConsumer
 ├── header.rs           # 可变长度 FileMetadata, meta/state 分离, 运行时 header_len
 ├── ffi.rs              # extern "C" (catch_unwind, opaque handles, memory mgmt)
 ├── error.rs            # TmslError enum + From impls
@@ -145,6 +151,7 @@ src/
 - [设计决策](design-decisions.md) — 关键决策 + 与 TimeStore 差异
 - [索引连续存储](index-continuous.md) — 连续模式稀疏 filler + 逻辑空洞
 - [懒分配与扩容](lazy-allocation.md) — 分段文件懒分配 + 倍率扩容
-- [Journal 变更日志](journal.md) — 内置 `.journal/logs` dataset + 操作日志格式 + queue 实时消费
+- [Journal 变更日志](journal.md) — 专用 `.journal/logs` append log + 操作日志格式 + queue 实时消费
+- [Journal 专用存储](journal-storage.md) — JournalSegment/JournalLog/JournalQueue 底层存储
 - [数据集 Inspect](dataset-inspect.md) — DataSetInfo (不变配置) + DataSetState (可变状态) 完整字段定义
 - [构建配置](cargo-and-config.md) — Cargo.toml 依赖

@@ -407,7 +407,7 @@ for i in 0..bitmap.len() * 8 {
 - `query_length()` — 读取 record header，完全兼容
 - `query_length_iter()` — 读取 record header，完全兼容
 
-`.journal/logs` dataset 的 `runtime_context` 标记为 `read_only=true`，这些读操作可正常调用。
+`.journal/logs` 不再作为普通 `DataSet` 暴露, 因此这些 DataSet 读操作不适用于 journal。Journal 使用专用 `journal_read` / `journal_query` / `open_journal_queue` API。
 
 ### 7.2 Journal 交互
 

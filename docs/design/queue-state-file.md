@@ -9,6 +9,8 @@
 {data_dir}/{dataset_name}/{dataset_type}/queue/{group_name}
 ```
 
+JournalQueue 复用同一状态文件格式, 路径为 `{data_dir}/.journal/logs/queue/{group_name}`。Journal sequence 从 `1` 开始, 因此新状态文件的 `processed_ts=0` 与普通 queue 的 `next_poll_ts = processed_ts + 1` 规则兼容。
+
 `group_name` 是文件名, 不做转义或编码。合法值必须非空、最长 255 字节且整体匹配 `^[0-9A-Za-z_-]+$`: 只允许数字、大小写英文字母、`-`、`_`。任何路径分隔符、`.`、空格、控制字符、非 ASCII 字符都不允许。`open_consumer(group_name)` 与 `drop_consumer(group_name)` 必须在拼接 `queue/{group_name}` 前校验。
 
 **文件结构**:

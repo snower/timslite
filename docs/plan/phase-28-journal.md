@@ -2,6 +2,7 @@
 
 > Goal: implement a configurable built-in `.journal/logs` dataset to record dataset create/drop and data write/delete operations, while supporting normal read/query access and queue-based real-time consumption.
 > Status: completed, with several optional/deep validation items tracked separately.
+> Superseded: Phase 36 replaces the dataset-backed journal storage with a dedicated index-free append log and dedicated journal APIs. This file remains the historical completion record for Phase 28.
 
 ## 28.0 Design Documents
 

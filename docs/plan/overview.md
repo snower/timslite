@@ -36,7 +36,13 @@ Phase 26: GitHub Actions CI/CD               ✅
 Phase 27: Queue 模块 (DatasetQueue + Consumer) ✅ 完成
 Phase 28: Journal 变更日志 (.journal/logs)   ✅ 完成
 Phase 29: Dataset Append API + Journal 0x13 ✅ 完成
-Phase 35: Dataset Identifier              ✅ 完成
+Phase 30: Dataset 读操作优化                 ✅ 完成
+Phase 31: Store API - Dataset 枚举           ✅ 完成
+Phase 32: Dataset Inspect API              ✅ 完成
+Phase 33: Dirty Segment Flush Queue        ✅ 完成
+Phase 34: Ordered Segment Registry         ✅ 完成
+Phase 35: Dataset Identifier               ✅ 完成
+Phase 36: Journal 专用无索引存储             📋 计划
 ```
 
 ## 目录结构变更 (核心)
@@ -146,6 +152,27 @@ Phase 28 (Journal 变更日志: .journal/logs + Store hook + read/query/open_que
           │
           ▼
 Phase 29 (Dataset Append API: latest tail append + 4MiB limit + journal 0x13)
+          │
+          ▼
+Phase 30 (Dataset 读操作优化: exist/length 快速读取 + iterator)
+          │
+          ▼
+Phase 31 (Store API - Dataset 枚举: list/open metadata)
+          │
+          ▼
+Phase 32 (Dataset Inspect API: dataset runtime metadata inspection)
+          │
+          ▼
+Phase 33 (Dirty Segment Flush Queue: 避免 flush 遍历全部 dataset/segment)
+          │
+          ▼
+Phase 34 (Ordered Segment Registry: BTreeMap 段定位)
+          │
+          ▼
+Phase 35 (Dataset Identifier: Store 分配数字 identifier)
+          │
+          ▼
+Phase 36 (Journal 专用无索引存储: JournalSegment + JournalLog + JournalQueue)
 ```
 
 ## 风险与应对
@@ -179,10 +206,12 @@ Phase 29 (Dataset Append API: latest tail append + 4MiB limit + journal 0x13)
 | timestamp=0 冲突 | index segment 命名歧义 | timestamp=0 保留为空位标记, 写入时拒绝 |
 | 超大 record 长度截断 | `u16 data_len` 无法表达 >64KB 数据 | Record header 升级为 `u32 data_len`, 普通聚合 Block 保持 64KB 上限 |
 | Header 扩展读歪数据区 | TLV/state 增长但数据/索引区仍按 116/52 固定起点访问 | Phase 25 改为运行时计算 `header_len`, 所有 Block/Entry 物理定位基于动态 header |
-| Journal 写入放大 | create/drop/write/delete 会额外写 `.journal/logs` | `StoreConfig.enable_journal=false` 可关闭; 默认开启以支持热迁移/恢复工具 |
+| Journal 写入放大 | create/drop/write/delete/append 会额外写 `.journal/logs` | `StoreConfig.enable_journal=false` 可关闭; Phase 36 移除 journal index, 改为专用 append log 降低磁盘放大 |
 | Journal 被误认为事务 WAL | 调用方可能高估 crash 恢复保证 | Phase 28 明确 journal 是 change log, 主操作与 journal append 不回滚、不保证同步落盘 |
 | Journal 递归写入 | `.journal/logs` 自身操作再次写 journal 导致无限递归 | JournalManager 内部路径不走 public hook, 普通扫描跳过 `.journal` |
 | Journal queue 被外部伪造 | 热迁移/恢复消费者读到非系统日志 | `.journal/logs` queue 禁止外部 `push`, producer 仅允许 `JournalManager.append_*` |
+| Journal 专用存储 API 断裂 | `open_dataset(".journal", "logs")` 不再返回 DataSet handle | Phase 36 提供 dedicated Rust/FFI/Python journal read/query/queue API, 文档明确 `.journal/logs` 不是普通 DataSet |
+| Journal sequence off-by-one | queue 可能跳过第一条日志或重复消费 | sequence 从 `1` 开始, 统一使用 `next_sequence` 命名, latest 为 `next_sequence - 1` |
 | Append 修改历史数据 | 旧 timestamp 可能位于 compressed block 或历史段中间, 无法稳定增长 | Phase 29 只允许 `timestamp > latest` 创建或 `timestamp == latest` 且位于未压缩段尾时追加 |
 | Append 造成普通 block 过大 | 最新 record 追加后可能超过普通 pending block 容量 | 直接返回错误, 不迁移到独占 block |
 | 单条 record 过大 | `data_len:u32` 可表达但资源消耗不可控 | `write` 和 `append` 均限制单条 record 纯数据长度不超过 4MiB |
@@ -225,3 +254,10 @@ Phase 29 (Dataset Append API: latest tail append + 4MiB limit + journal 0x13)
 | [phase-27-queue-module.md](phase-27-queue-module.md) | Queue 模块 | ✅ |
 | [phase-28-journal.md](phase-28-journal.md) | Journal 变更日志 | ✅ |
 | [phase-29-dataset-append.md](phase-29-dataset-append.md) | Dataset Append API + Journal 0x13 | ✅ |
+| [phase-30-dataset-read-operations.md](phase-30-dataset-read-operations.md) | Dataset 读操作优化 | ✅ |
+| [phase-31-store-api-listing.md](phase-31-store-api-listing.md) | Store API - Dataset 枚举 | ✅ |
+| [phase-32-dataset-inspect.md](phase-32-dataset-inspect.md) | Dataset Inspect API | ✅ |
+| [phase-33-dirty-flush-queue.md](phase-33-dirty-flush-queue.md) | Dirty Segment Flush Queue | ✅ |
+| [phase-34-ordered-segment-registry.md](phase-34-ordered-segment-registry.md) | Ordered Segment Registry | ✅ |
+| [phase-35-dataset-identifier.md](phase-35-dataset-identifier.md) | Dataset Identifier | ✅ |
+| [phase-36-journal-dedicated-storage.md](phase-36-journal-dedicated-storage.md) | Journal 专用无索引存储 | 📋 |

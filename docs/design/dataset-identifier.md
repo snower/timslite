@@ -8,7 +8,7 @@ identifier 不替代 `(dataset_name, dataset_type)`:
 
 - `(name, type)` 仍是目录路径、日志记录和人工可读管理入口。
 - `identifier` 是 Store 级唯一数字, 只在同一个 Store data directory 内保证唯一。
-- `.journal/logs` 是内部保留 dataset, 不参与 public identifier 分配和 `open_dataset_by_identifier`。
+- `.journal/logs` 是内部保留 journal append log, 不参与 public identifier 分配和 `open_dataset_by_identifier`。
 
 ## 磁盘文件
 

@@ -8,7 +8,7 @@
 
 | 任务 | 间隔 | 行为 |
 |------|------|------|
-| Flush | 可配置, 默认 15s | drain Store 级共享待 flush 队列, 仅定位并同步队列涉及的 dirty data/index segment |
+| Flush | 可配置, 默认 15s | drain Store 级共享待 flush 队列同步普通 dataset dirty data/index/queue state; 直接调用 JournalManager 同步 dirty journal segment / journal queue state |
 | Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + unmmap + close |
 | Cache Eviction | 60s | 扫描缓存池, last_access_at ≥30min → 回收 + 释放内存 → LRU 检查 |
 | Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_window > 0 的 dataset, 回收过期分段 |
@@ -40,14 +40,17 @@
 ```
 flush (默认每 15 秒):
   1. 从 Store 级共享 flush_queue drain 全部 DataSetFlushTarget
-  2. 按 dataset key 去重, 不遍历未出现在队列中的 dataset
-  3. 对每个出现在队列中的 dataset:
-     a. 通过 datasets HashMap 精确 get 普通 dataset; journal key 通过 JournalManager 的 dataset Arc 定位
+  2. 按 dataset key 去重, 不遍历未出现在队列中的普通 dataset
+  3. 对每个出现在队列中的普通 dataset:
+     a. 通过 datasets HashMap 精确 get 普通 dataset; journal 不进入该队列
      b. 执行该 dataset 的 flush_dirty_segments()
         - 先把该 dataset 的 in-memory index buffer flush_to_disk()
         - 收集该 dataset 当前仍 dirty 的 data/index segment
         - 仅对这些 dirty segment target 执行 mmap.flush() — MS_SYNC
        - 如果 target 已在 idle-close 中被 flush+close, 或分段已经不存在, 则跳过
+  4. 若 journal enabled, 直接调用 JournalManager::flush_dirty()
+     - 检查 journal segment / journal queue state 是否 dirty
+     - 仅同步 dirty 对象
   注: flush 不密封 pending block, 不压缩
 ```
 
@@ -78,6 +81,8 @@ enum SegmentFlushTarget {
 - queue state file: `group_name`
 
 后台 `run_flush()` drain 全局队列后按 dataset key 分组, 再逐个执行队列中出现过的精确 target; 不遍历全部 dataset。data/index target 分别同步对应 segment, queue state target 同步对应 consumer group state file。`DataSet::flush()` 同步当前 dataset 的所有打开 data/index segment 和已打开 queue state files, 并清除全局队列中属于当前 dataset 的 stale target; 低层 `DataSet::create/open` 绕过 Store 且没有 runtime context 时, `flush()` 退化为同步所有打开 data/index segment 和 queue state files, 保持直接使用 API 的可用性。
+
+Journal 不把 segment 写入加入 Store 级 `flush_queue`。Journal 是全局单一 append log, 后台 flush 到期时直接调用 `JournalManager::flush_dirty()`; 该方法内部检查 `is_flushed`, clean segment/state file 直接跳过。这样既避免普通 flush queue 被 journal 高频写入污染, 也避免后台为了 journal 扫描普通 dataset。
 
 创建新分段文件时, 写入路径必须先把前一个已经完结的分段文件直接 `flush()`:
 
