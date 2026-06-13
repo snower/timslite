@@ -16,7 +16,7 @@ use crate::dataset::{
 };
 use crate::error::{Result, TmslError};
 use crate::journal::{
-    meta_values_from_file, validate_create_drop_record_inputs, JournalManager,
+    meta_values_from_file, validate_create_drop_record_inputs, JournalManager, JournalQueue,
     JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
 use crate::meta::META_VALUES_LEN_V1;
@@ -134,7 +134,6 @@ impl Store {
             &config,
             Some(Arc::clone(&flush_queue)),
         )?);
-        let journal_dataset = journal.dataset().ok();
         let runtime_context = Self::dataset_runtime_context(&block_cache, &journal, &flush_queue);
 
         let mut datasets = HashMap::new();
@@ -237,7 +236,7 @@ impl Store {
             datasets: Arc::clone(&datasets),
             config: config.clone(),
             block_cache: Arc::clone(&block_cache),
-            journal,
+            journal: Arc::clone(&journal),
             bg_tasks: None,
             max_identifier,
             identifier_to_key,
@@ -251,7 +250,7 @@ impl Store {
             store.bg_tasks = Some(BackgroundTasks::start(
                 datasets,
                 Arc::clone(&flush_queue),
-                journal_dataset.clone(),
+                Arc::clone(&journal),
                 block_cache,
                 config.flush_interval,
                 config.idle_timeout,
@@ -262,7 +261,7 @@ impl Store {
             store.bg_tasks = Some(BackgroundTasks::new(
                 datasets,
                 Arc::clone(&flush_queue),
-                journal_dataset,
+                Arc::clone(&journal),
                 block_cache,
                 config.flush_interval,
                 config.idle_timeout,
@@ -391,14 +390,9 @@ impl Store {
     /// Open an existing dataset (errors if not found).
     pub fn open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetHandle> {
         if name == JOURNAL_DATASET_NAME && dataset_type == JOURNAL_DATASET_TYPE {
-            if !self.journal.is_enabled() {
-                return Err(TmslError::NotFound("journal is disabled".into()));
-            }
-            let id = self.next_handle_id;
-            self.next_handle_id += 1;
-            self.handles.insert(id, JournalManager::key());
-            self.read_only_handles.insert(id);
-            return Ok(DataSetHandle(id));
+            return Err(TmslError::NotFound(
+                "journal is not exposed as a dataset handle".into(),
+            ));
         }
         validate_dataset_path_components(name, dataset_type)?;
 
@@ -591,9 +585,6 @@ impl Store {
             .handles
             .get(&handle.0)
             .ok_or_else(|| crate::error::TmslError::NotFound("dataset handle not found".into()))?;
-        if JournalManager::is_journal_key(key) {
-            return self.journal.dataset();
-        }
         let guard = self.datasets.read().unwrap();
         let ds = guard.get(key).ok_or_else(|| {
             crate::error::TmslError::NotFound(format!("dataset {:?} not found", key))
@@ -905,7 +896,9 @@ impl Store {
             .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?
             .clone();
         if JournalManager::is_journal_key(&key) {
-            return self.journal.open_queue();
+            return Err(TmslError::InvalidData(
+                "journal queue must be opened with open_journal_queue".into(),
+            ));
         }
         let ds_arc = self
             .datasets
@@ -995,8 +988,27 @@ impl Store {
         consumer.ack(timestamp)
     }
 
+    /// Return the latest journal sequence, or None when the journal is empty.
+    pub fn journal_latest_sequence(&self) -> Result<Option<i64>> {
+        self.journal.latest_sequence()
+    }
+
+    /// Read one encoded journal record by sequence.
+    pub fn journal_read(&self, sequence: i64) -> Result<Option<(i64, Vec<u8>)>> {
+        self.journal.read(sequence)
+    }
+
+    /// Query encoded journal records by inclusive sequence range.
+    pub fn journal_query(
+        &self,
+        start_sequence: i64,
+        end_sequence: i64,
+    ) -> Result<Vec<(i64, Vec<u8>)>> {
+        self.journal.query(start_sequence, end_sequence)
+    }
+
     /// Open the built-in journal queue.
-    pub fn open_journal_queue(&mut self) -> Result<DatasetQueue> {
+    pub fn open_journal_queue(&mut self) -> Result<JournalQueue> {
         self.journal.open_queue()
     }
 }

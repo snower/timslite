@@ -501,8 +501,7 @@ int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
  * Open the queue subsystem for a dataset.
  *
  * The dataset argument is the opaque pointer returned by tmsl_dataset_create or
- * tmsl_dataset_open. This function also works for the read-only .journal/logs
- * dataset when journal is enabled.
+ * tmsl_dataset_open. Journal queues use the dedicated tmsl_journal_queue_* API.
  *
  * @param dataset      Opaque dataset pointer.
  * @param err_buf      Buffer for error message.
@@ -514,10 +513,8 @@ size_t tmsl_queue_open(void* dataset, char* err_buf, size_t err_buf_len);
 /**
  * Close a queue handle.
  *
- * For normal dataset queues, this closes the underlying dataset queue. For the
- * journal queue, this only releases the FFI handle because the queue is owned by
- * the internal JournalManager. All FFI consumer handles opened from this queue
- * are invalidated.
+ * Closes the underlying dataset queue and invalidates all FFI consumer handles
+ * opened from this queue.
  *
  * @param queue_handle Queue handle returned by tmsl_queue_open.
  * @param err_buf      Buffer for error message.
@@ -555,8 +552,7 @@ int tmsl_queue_consumer_drop(size_t queue_handle, size_t consumer_handle,
 /**
  * Push data into a normal dataset queue.
  *
- * This assigns timestamp = latest_written_timestamp + 1. Journal queues reject
- * external push and return -1.
+ * This assigns timestamp = latest_written_timestamp + 1.
  *
  * @param queue_handle Queue handle returned by tmsl_queue_open.
  * @param data         Data bytes.
@@ -598,6 +594,143 @@ int tmsl_queue_poll(size_t consumer_handle, int64_t timeout_ms,
  */
 int tmsl_queue_ack(size_t consumer_handle, int64_t timestamp,
                    char* err_buf, size_t err_buf_len);
+
+/* Journal API */
+
+/**
+ * Return the latest journal sequence.
+ *
+ * The journal sequence is one-based. On success, out_sequence is set to 0 when
+ * the journal is empty.
+ *
+ * @param store        Opaque store pointer.
+ * @param out_sequence Output latest sequence, or 0 when empty.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_journal_latest_sequence(void* store, int64_t* out_sequence,
+                                 char* err_buf, size_t err_buf_len);
+
+/**
+ * Read one encoded journal record by sequence.
+ *
+ * On success, allocates out_data via malloc. Caller must free it with
+ * tmsl_data_free.
+ *
+ * @param store          Opaque store pointer.
+ * @param sequence       Journal sequence to read.
+ * @param out_sequence   Output actual sequence.
+ * @param out_data       Output encoded journal record.
+ * @param out_data_len   Output record length.
+ * @param err_buf        Buffer for error message.
+ * @param err_buf_len    Length of error buffer.
+ * @return 0 = found, 1 = not found, -1 = error.
+ */
+int tmsl_journal_read(void* store, int64_t sequence, int64_t* out_sequence,
+                      unsigned char** out_data, size_t* out_data_len,
+                      char* err_buf, size_t err_buf_len);
+
+/**
+ * Query encoded journal records by inclusive sequence range.
+ *
+ * @param store          Opaque store pointer.
+ * @param start_sequence Start sequence, inclusive.
+ * @param end_sequence   End sequence, inclusive.
+ * @param err_buf        Buffer for error message.
+ * @param err_buf_len    Length of error buffer.
+ * @return Opaque journal iterator pointer, or NULL on error.
+ */
+void* tmsl_journal_query(void* store, int64_t start_sequence, int64_t end_sequence,
+                         char* err_buf, size_t err_buf_len);
+
+/**
+ * Get the next encoded journal record from a journal iterator.
+ *
+ * On success, allocates out_data via malloc. Caller must free it with
+ * tmsl_data_free.
+ *
+ * @param iter           Opaque journal iterator pointer.
+ * @param out_sequence   Output journal sequence.
+ * @param out_data       Output encoded journal record.
+ * @param out_data_len   Output record length.
+ * @param err_buf        Buffer for error message.
+ * @param err_buf_len    Length of error buffer.
+ * @return 0 = success, 1 = done, -1 = error.
+ */
+int tmsl_journal_iter_next(void* iter, int64_t* out_sequence,
+                           unsigned char** out_data, size_t* out_data_len,
+                           char* err_buf, size_t err_buf_len);
+
+/**
+ * Close and free a journal iterator.
+ */
+void tmsl_journal_iter_close(void* iter);
+
+/**
+ * Open the built-in journal queue.
+ *
+ * @param store        Opaque store pointer.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque journal queue handle (>0), or 0 on error.
+ */
+size_t tmsl_journal_queue_open(void* store, char* err_buf, size_t err_buf_len);
+
+/**
+ * Close a journal queue handle and invalidate its consumers.
+ *
+ * @param queue_handle Journal queue handle.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_journal_queue_close(size_t queue_handle, char* err_buf, size_t err_buf_len);
+
+/**
+ * Open or create a journal queue consumer group.
+ *
+ * group_name must match ^[0-9A-Za-z_-]+$ and be at most 255 bytes.
+ *
+ * @param queue_handle Journal queue handle.
+ * @param group_name   Consumer group name.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque consumer handle (>0), or 0 on error.
+ */
+size_t tmsl_journal_queue_consumer_open(size_t queue_handle, const char* group_name,
+                                        char* err_buf, size_t err_buf_len);
+
+/**
+ * Poll data from a journal queue consumer.
+ *
+ * On success, allocates out_data via malloc. Caller must free it with
+ * tmsl_data_free.
+ *
+ * @param consumer_handle Journal consumer handle.
+ * @param timeout_ms      Timeout in milliseconds. <=0 performs a nonblocking poll.
+ * @param out_sequence    Output journal sequence.
+ * @param out_data        Output encoded journal record.
+ * @param out_data_len    Output record length.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 = success, -2 = timeout/no data, -1 = error.
+ */
+int tmsl_journal_queue_poll(size_t consumer_handle, int64_t timeout_ms,
+                            int64_t* out_sequence, unsigned char** out_data,
+                            size_t* out_data_len, char* err_buf, size_t err_buf_len);
+
+/**
+ * Ack a previously polled journal queue record.
+ *
+ * @param consumer_handle Journal consumer handle.
+ * @param sequence        Journal sequence to ack.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_journal_queue_ack(size_t consumer_handle, int64_t sequence,
+                           char* err_buf, size_t err_buf_len);
 
 /* ─── Dataset Inspect ─────────────────────────────────────────────────── */
 

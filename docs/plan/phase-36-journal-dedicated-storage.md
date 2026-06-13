@@ -1,6 +1,6 @@
 # Journal Dedicated Storage Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Replace the current dataset-backed journal with a dedicated index-free append log that stores journal records in sequence-addressed data segments and exposes dedicated journal read/query/queue APIs.
 
@@ -49,7 +49,7 @@ Out of scope:
 - Modify: `src/journal/mod.rs`
 - Test: `src/journal/record.rs`
 
-- [ ] **Step 1: Move codec types**
+- [x] **Step 1: Move codec types**
 
 Move the existing journal record definitions into `record.rs`:
 
@@ -72,7 +72,7 @@ pub struct JournalRecord {
 }
 ```
 
-- [ ] **Step 2: Keep public crate-level exports**
+- [x] **Step 2: Keep public crate-level exports**
 
 In `src/journal/mod.rs`:
 
@@ -84,7 +84,7 @@ pub(crate) use record::{
 };
 ```
 
-- [ ] **Step 3: Run codec tests**
+- [x] **Step 3: Run codec tests**
 
 Run:
 
@@ -100,7 +100,7 @@ Expected: existing encode/decode tests still pass.
 - Create: `src/journal/segment.rs`
 - Test: `src/journal/segment.rs`
 
-- [ ] **Step 1: Write failing segment append/read tests**
+- [x] **Step 1: Write failing segment append/read tests**
 
 Tests must cover:
 
@@ -115,7 +115,7 @@ fn journal_segment_uses_single_record_block_for_max_tlv_payload() {}
 fn journal_segment_recovery_truncates_half_written_tail() {}
 ```
 
-- [ ] **Step 2: Define segment state**
+- [x] **Step 2: Define segment state**
 
 ```rust
 pub(crate) struct JournalSegment {
@@ -136,7 +136,7 @@ pub(crate) struct JournalSegment {
 }
 ```
 
-- [ ] **Step 3: Implement append**
+- [x] **Step 3: Implement append**
 
 Required signature:
 
@@ -154,7 +154,7 @@ Rules:
 - Use `SINGLE_RECORD` block when encoded record does not fit normal block capacity.
 - Update block header before updating segment state.
 
-- [ ] **Step 4: Implement read**
+- [x] **Step 4: Implement read**
 
 Required signature:
 
@@ -166,7 +166,7 @@ impl JournalSegment {
 
 Read must scan block headers by `record_count`, only reading/decompressing the target block.
 
-- [ ] **Step 5: Implement recovery scan**
+- [x] **Step 5: Implement recovery scan**
 
 Required signature:
 
@@ -178,7 +178,7 @@ impl JournalSegment {
 
 Recovery keeps only the last complete block/record prefix and repairs in-memory state.
 
-- [ ] **Step 6: Verify segment tests**
+- [x] **Step 6: Verify segment tests**
 
 Run:
 
@@ -195,7 +195,7 @@ Expected: all segment tests pass.
 - Modify: `src/journal/mod.rs`
 - Test: `src/journal/log.rs`
 
-- [ ] **Step 1: Write failing log routing tests**
+- [x] **Step 1: Write failing log routing tests**
 
 Tests must cover:
 
@@ -210,7 +210,7 @@ fn journal_log_recovers_next_sequence_from_latest_segment() {}
 fn journal_log_reads_across_segments_without_index() {}
 ```
 
-- [ ] **Step 2: Define JournalLog**
+- [x] **Step 2: Define JournalLog**
 
 ```rust
 pub(crate) struct JournalLog {
@@ -225,7 +225,7 @@ pub(crate) struct JournalLog {
 }
 ```
 
-- [ ] **Step 3: Implement open_or_create**
+- [x] **Step 3: Implement open_or_create**
 
 Required signature:
 
@@ -237,7 +237,7 @@ impl JournalLog {
 
 It must create `{base_dir}/meta` and `{base_dir}/data/`, never `{base_dir}/index/`.
 
-- [ ] **Step 4: Implement append/read/query**
+- [x] **Step 4: Implement append/read/query**
 
 Required signatures:
 
@@ -253,7 +253,7 @@ impl JournalLog {
 
 Append must allocate `sequence = next_sequence` before selecting the segment. If the latest segment cannot fit the record, flush that completed segment and create a new segment with `base_sequence = sequence` before writing. If the segment becomes full after the append, flush it but do not pre-create the next segment until the next append.
 
-- [ ] **Step 5: Verify log tests**
+- [x] **Step 5: Verify log tests**
 
 Run:
 
@@ -270,7 +270,7 @@ Expected: all log tests pass.
 - Modify: `src/queue/mod.rs` only if `ConsumerStateFile` visibility needs widening.
 - Test: `src/journal/queue.rs`
 
-- [ ] **Step 1: Write failing queue tests**
+- [x] **Step 1: Write failing queue tests**
 
 Tests must cover:
 
@@ -285,7 +285,7 @@ fn journal_queue_polls_realtime_sequence_one_based() {}
 fn journal_queue_ack_persists_processed_sequence() {}
 ```
 
-- [ ] **Step 2: Define JournalQueue types**
+- [x] **Step 2: Define JournalQueue types**
 
 ```rust
 pub struct JournalQueue {
@@ -303,7 +303,7 @@ pub struct JournalQueueConsumer {
 }
 ```
 
-- [ ] **Step 3: Implement poll**
+- [x] **Step 3: Implement poll**
 
 Poll algorithm:
 
@@ -318,11 +318,11 @@ if next < log.next_sequence() && !state.is_in_pending(next) {
 
 No index query and no filler skip logic.
 
-- [ ] **Step 4: Wire notify**
+- [x] **Step 4: Wire notify**
 
 `JournalLog::append` or `JournalManager::append_*` must call JournalQueue notify after successful append.
 
-- [ ] **Step 5: Verify queue tests**
+- [x] **Step 5: Verify queue tests**
 
 Run:
 
@@ -339,7 +339,7 @@ Expected: all JournalQueue tests pass.
 - Modify: `src/store.rs`
 - Test: `tests/journal_test.rs`
 
-- [ ] **Step 1: Write failing integration tests**
+- [x] **Step 1: Write failing integration tests**
 
 Tests must cover:
 
@@ -354,7 +354,7 @@ fn open_dataset_journal_logs_no_longer_returns_dataset_handle() {}
 fn journal_read_query_use_dedicated_api() {}
 ```
 
-- [ ] **Step 2: Replace manager state**
+- [x] **Step 2: Replace manager state**
 
 ```rust
 pub(crate) enum JournalManager {
@@ -366,7 +366,7 @@ pub(crate) enum JournalManager {
 }
 ```
 
-- [ ] **Step 3: Implement dedicated read/query**
+- [x] **Step 3: Implement dedicated read/query**
 
 ```rust
 impl JournalManager {
@@ -376,11 +376,11 @@ impl JournalManager {
 }
 ```
 
-- [ ] **Step 4: Remove public journal DataSet path**
+- [x] **Step 4: Remove public journal DataSet path**
 
 `Store::open_dataset(".journal", "logs")` must no longer return a read-only `DataSetHandle`.
 
-- [ ] **Step 5: Verify integration tests**
+- [x] **Step 5: Verify integration tests**
 
 Run:
 
@@ -397,7 +397,7 @@ Expected: journal integration tests pass with no journal index directory.
 - Modify: `src/store.rs`
 - Test: `tests/background_test.rs`
 
-- [ ] **Step 1: Write failing flush tests**
+- [x] **Step 1: Write failing flush tests**
 
 Tests must cover:
 
@@ -409,7 +409,7 @@ fn background_flush_calls_journal_manager_without_dirty_queue_entry() {}
 fn manual_tick_flushes_dirty_journal_queue_state() {}
 ```
 
-- [ ] **Step 2: Add JournalManager flush API**
+- [x] **Step 2: Add JournalManager flush API**
 
 ```rust
 impl JournalManager {
@@ -417,11 +417,11 @@ impl JournalManager {
 }
 ```
 
-- [ ] **Step 3: Call it from background flush task**
+- [x] **Step 3: Call it from background flush task**
 
 After draining ordinary dataset flush targets, call `journal.flush_dirty()`.
 
-- [ ] **Step 4: Verify background tests**
+- [x] **Step 4: Verify background tests**
 
 Run:
 
@@ -438,7 +438,7 @@ Expected: targeted background/journal tests pass.
 - Modify: `src/lib.rs`
 - Test: `tests/journal_test.rs`
 
-- [ ] **Step 1: Add Store APIs**
+- [x] **Step 1: Add Store APIs**
 
 ```rust
 impl Store {
@@ -449,11 +449,11 @@ impl Store {
 }
 ```
 
-- [ ] **Step 2: Add disabled journal tests**
+- [x] **Step 2: Add disabled journal tests**
 
 `enable_journal=false` must make each API return `NotFound`.
 
-- [ ] **Step 3: Verify Rust API tests**
+- [x] **Step 3: Verify Rust API tests**
 
 Run:
 
@@ -470,7 +470,7 @@ Expected: dedicated journal API tests pass.
 - Modify: `include/timslite.h`
 - Test: `src/ffi.rs`
 
-- [ ] **Step 1: Add FFI tests first**
+- [x] **Step 1: Add FFI tests first**
 
 Tests must cover:
 
@@ -482,7 +482,7 @@ fn ffi_journal_read_and_query_use_store_handle() {}
 fn ffi_journal_queue_poll_ack() {}
 ```
 
-- [ ] **Step 2: Add C ABI functions**
+- [x] **Step 2: Add C ABI functions**
 
 Add declarations and implementations for:
 
@@ -509,7 +509,7 @@ int tmsl_journal_queue_ack(size_t consumer_handle, int64_t sequence,
                            char* err_buf, size_t err_buf_len);
 ```
 
-- [ ] **Step 3: Verify FFI tests**
+- [x] **Step 3: Verify FFI tests**
 
 Run:
 
@@ -526,7 +526,7 @@ Expected: dedicated journal FFI tests pass.
 - Modify: `wrapper/python/src/lib.rs`
 - Test: `wrapper/python/tests/test_journal.py`
 
-- [ ] **Step 1: Add Python tests first**
+- [x] **Step 1: Add Python tests first**
 
 Tests must cover:
 
@@ -536,7 +536,7 @@ def test_journal_queue_poll_ack(tmpdir): ...
 def test_open_dataset_journal_logs_rejected(tmpdir): ...
 ```
 
-- [ ] **Step 2: Add wrapper methods**
+- [x] **Step 2: Add wrapper methods**
 
 ```rust
 impl PyStore {
@@ -547,7 +547,7 @@ impl PyStore {
 }
 ```
 
-- [ ] **Step 3: Verify Python wrapper**
+- [x] **Step 3: Verify Python wrapper**
 
 Run:
 
@@ -565,7 +565,7 @@ Expected: Rust wrapper builds and Python tests pass.
 **Files:**
 - No new files.
 
-- [ ] **Step 1: Run full Rust validation**
+- [x] **Step 1: Run full Rust validation**
 
 Run:
 
@@ -579,7 +579,7 @@ git diff --check
 
 Expected: all commands pass.
 
-- [ ] **Step 2: Verify on-disk layout manually in tests or debug assertion**
+- [x] **Step 2: Verify on-disk layout manually in tests or debug assertion**
 
 Expected journal layout:
 
@@ -595,7 +595,7 @@ Expected absent path:
 .journal/logs/index/
 ```
 
-- [ ] **Step 3: Update completion status**
+- [x] **Step 3: Update completion status**
 
 After implementation and verification, update:
 

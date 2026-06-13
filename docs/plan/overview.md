@@ -42,7 +42,7 @@ Phase 32: Dataset Inspect API              ✅ 完成
 Phase 33: Dirty Segment Flush Queue        ✅ 完成
 Phase 34: Ordered Segment Registry         ✅ 完成
 Phase 35: Dataset Identifier               ✅ 完成
-Phase 36: Journal 专用无索引存储             📋 计划
+Phase 36: Journal 专用无索引存储             ✅ 完成
 ```
 
 ## 目录结构变更 (核心)
@@ -260,4 +260,4 @@ Phase 36 (Journal 专用无索引存储: JournalSegment + JournalLog + JournalQu
 | [phase-33-dirty-flush-queue.md](phase-33-dirty-flush-queue.md) | Dirty Segment Flush Queue | ✅ |
 | [phase-34-ordered-segment-registry.md](phase-34-ordered-segment-registry.md) | Ordered Segment Registry | ✅ |
 | [phase-35-dataset-identifier.md](phase-35-dataset-identifier.md) | Dataset Identifier | ✅ |
-| [phase-36-journal-dedicated-storage.md](phase-36-journal-dedicated-storage.md) | Journal 专用无索引存储 | 📋 |
+| [phase-36-journal-dedicated-storage.md](phase-36-journal-dedicated-storage.md) | Journal 专用无索引存储 | ✅ |

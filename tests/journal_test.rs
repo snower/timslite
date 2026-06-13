@@ -39,12 +39,8 @@ fn test_config() -> StoreConfig {
 }
 
 fn read_all_journal_records(store: &mut Store) -> Vec<JournalRecord> {
-    let journal = store
-        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
-        .unwrap();
-    let ds = store.get_dataset(&journal).unwrap();
-    let mut ds = ds.lock().unwrap();
-    ds.query(1, i64::MAX)
+    store
+        .journal_query(1, i64::MAX)
         .unwrap()
         .into_iter()
         .map(|(_, payload)| JournalRecord::decode(&payload).unwrap())
@@ -73,6 +69,16 @@ fn t28_2_store_open_creates_journal_by_default() {
         .join(JOURNAL_DATASET_TYPE)
         .join("meta")
         .exists());
+    assert!(dir
+        .join(JOURNAL_DATASET_NAME)
+        .join(JOURNAL_DATASET_TYPE)
+        .join("data")
+        .exists());
+    assert!(!dir
+        .join(JOURNAL_DATASET_NAME)
+        .join(JOURNAL_DATASET_TYPE)
+        .join("index")
+        .exists());
     store.close().unwrap();
 }
 
@@ -86,6 +92,10 @@ fn t28_3_disabled_journal_does_not_open_public_handle() {
     let mut store = Store::open(&dir, config).unwrap();
     let result = store.open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE);
     assert!(result.is_err());
+    assert!(store.journal_latest_sequence().is_err());
+    assert!(store.journal_read(1).is_err());
+    assert!(store.journal_query(1, 10).is_err());
+    assert!(store.open_journal_queue().is_err());
     store.close().unwrap();
 }
 
@@ -198,14 +208,11 @@ fn t28_9_public_journal_handle_rejects_append() {
     let dir = temp_dir("readonly_append");
     let mut store = Store::open(&dir, test_config()).unwrap();
 
-    let journal = store
-        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
-        .unwrap();
-
-    let err = store
-        .append_dataset(journal, 1, b"forged")
-        .expect_err("public journal handle must be read-only for append");
-    assert!(err.to_string().contains("read-only internal dataset"));
+    let err = match store.open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE) {
+        Ok(_) => panic!("journal must not be exposed as a public dataset handle"),
+        Err(err) => err,
+    };
+    assert!(err.to_string().contains("journal") || err.to_string().contains("not found"));
 
     store.close().unwrap();
 }
@@ -215,17 +222,10 @@ fn t28_10_direct_journal_dataset_mutations_are_read_only() {
     let dir = temp_dir("direct_journal_read_only");
     let mut store = Store::open(&dir, test_config()).unwrap();
 
-    let journal = store
+    assert!(store
         .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
-        .unwrap();
-
-    {
-        let ds = store.get_dataset(&journal).unwrap();
-        let mut ds = ds.lock().unwrap();
-        assert!(ds.write(1, b"x").is_err());
-        assert!(ds.append(1, b"x").is_err());
-        assert!(ds.delete(1).is_err());
-    }
+        .is_err());
+    assert!(store.journal_latest_sequence().unwrap().is_none());
 
     store.close().unwrap();
 }
@@ -277,29 +277,15 @@ fn t28_12_journal_queue_rejects_external_push() {
         .create_dataset("jq_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
 
-    // Open the journal queue via the public Store API
-    let journal_handle = store
-        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
-        .unwrap();
-    let journal_queue = store.open_queue(journal_handle).unwrap();
-
-    // External push should be rejected (journal queue is read-only producer)
-    let result = journal_queue.push(b"forged_record");
-    assert!(result.is_err(), "journal queue must reject external push()");
-    let err_msg = result.unwrap_err().to_string();
-    assert!(
-        err_msg.contains("read-only"),
-        "error should mention read-only, got: {}",
-        err_msg
-    );
+    let journal_queue = store.open_journal_queue().unwrap();
+    let consumer = journal_queue.open_consumer("test_group").unwrap();
+    assert!(consumer.poll(Duration::from_millis(1)).unwrap().is_none());
 
     store.close().unwrap();
 }
 
 #[test]
-fn t28_13_journal_dataset_openable_and_queryable_at_store_level() {
-    // After Store::open() with enable_journal=true, the built-in journal
-    // dataset must exist and be openable/queryable via the Store API.
+fn t28_13_journal_dedicated_api_queryable_at_store_level() {
     let dir = temp_dir("journal_openable");
     let mut store = Store::open(&dir, test_config()).unwrap();
 
@@ -308,24 +294,16 @@ fn t28_13_journal_dataset_openable_and_queryable_at_store_level() {
         .create_dataset("jds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
 
-    // The journal dataset must be openable via Store API
-    let journal_handle = store
-        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
-        .expect("journal dataset should be openable at Store level");
-
-    // Journal should contain at least one record (the create_dataset event)
     let records = read_all_journal_records(&mut store);
     assert!(
         !records.is_empty(),
         "journal should contain at least one record after dataset creation"
     );
 
-    // Verify the journal dataset handle is valid (can be used for queue)
-    let journal_queue = store.open_queue(journal_handle);
-    assert!(
-        journal_queue.is_ok(),
-        "should be able to open journal queue"
-    );
+    assert!(store
+        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
+        .is_err());
+    assert!(store.open_journal_queue().is_ok());
 
     store.close().unwrap();
 }
@@ -396,11 +374,8 @@ fn t28_15_journal_queue_consumes_0x13_records() {
         .unwrap();
 
     // Open journal queue BEFORE append operations so we receive the notifications
-    let journal_handle = store
-        .open_dataset(JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE)
-        .unwrap();
-    let journal_queue = store.open_queue(journal_handle).unwrap();
-    let journal_consumer = store.open_consumer(&journal_queue, "test_group").unwrap();
+    let journal_queue = store.open_journal_queue().unwrap();
+    let journal_consumer = journal_queue.open_consumer("test_group").unwrap();
 
     // Use append to create records
     let ds_handle = store.open_dataset("jds", "data").unwrap();
@@ -412,9 +387,7 @@ fn t28_15_journal_queue_consumes_0x13_records() {
     let mut other_count = 0;
 
     loop {
-        let result = store
-            .queue_poll(&journal_consumer, Duration::from_millis(100))
-            .unwrap();
+        let result = journal_consumer.poll(Duration::from_millis(100)).unwrap();
         match result {
             Some((ts, data)) => {
                 let record = JournalRecord::decode(&data).unwrap();
@@ -430,7 +403,7 @@ fn t28_15_journal_queue_consumes_0x13_records() {
                 } else {
                     other_count += 1;
                 }
-                store.queue_ack(&journal_consumer, ts).unwrap();
+                journal_consumer.ack(ts).unwrap();
             }
             None => break,
         }

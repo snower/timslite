@@ -12,6 +12,7 @@ use crate::compress::validate_compress_type;
 use crate::config::{validate_retention_window, DataSetConfigBuilder, StoreConfig};
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
+use crate::journal::{JournalQueue, JournalQueueConsumer};
 use crate::queue::{DatasetQueue, DatasetQueueConsumer};
 use crate::store::{DataSetHandle, Store};
 
@@ -167,18 +168,39 @@ struct FfiIterator {
     position: usize,
 }
 
-struct FfiQueueEntry {
-    store: Arc<Mutex<Store>>,
-    handle: DataSetHandle,
-    queue: DatasetQueue,
+struct FfiJournalIterator {
     state: Arc<FfiStoreState>,
-    is_journal: bool,
+    entries: Vec<(i64, Vec<u8>)>,
+    position: usize,
+}
+
+#[derive(Clone)]
+enum FfiQueueKind {
+    Dataset {
+        store: Arc<Mutex<Store>>,
+        handle: DataSetHandle,
+        queue: DatasetQueue,
+    },
+    Journal {
+        queue: JournalQueue,
+    },
+}
+
+struct FfiQueueEntry {
+    kind: FfiQueueKind,
+    state: Arc<FfiStoreState>,
+}
+
+#[derive(Clone)]
+enum FfiConsumerKind {
+    Dataset(DatasetQueueConsumer),
+    Journal(JournalQueueConsumer),
 }
 
 struct FfiConsumerEntry {
     queue_handle: usize,
     group_name: String,
-    consumer: DatasetQueueConsumer,
+    consumer: FfiConsumerKind,
     state: Arc<FfiStoreState>,
 }
 
@@ -275,7 +297,26 @@ fn dataset_has_queue_handle(handle: DataSetHandle) -> crate::error::Result<bool>
     let registry = QUEUE_REGISTRY
         .lock()
         .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
-    Ok(registry.values().any(|entry| entry.handle.0 == handle.0))
+    Ok(registry.values().any(|entry| {
+        matches!(
+            &entry.kind,
+            FfiQueueKind::Dataset { handle: queue_handle, .. } if queue_handle.0 == handle.0
+        )
+    }))
+}
+
+fn alloc_bytes(data: &[u8]) -> crate::error::Result<*mut c_uchar> {
+    let len = data.len().max(1);
+    let ptr = unsafe { libc::malloc(len) as *mut c_uchar };
+    if ptr.is_null() {
+        return Err(TmslError::InvalidData("malloc failed".into()));
+    }
+    if !data.is_empty() {
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+        }
+    }
+    Ok(ptr)
 }
 
 fn remove_consumers_for_queue(queue_handle: usize) -> crate::error::Result<usize> {
@@ -1405,7 +1446,6 @@ pub extern "C" fn tmsl_queue_open(
                     .store
                     .lock()
                     .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
-            let is_journal = store.is_journal_handle(ffi_ds.handle)?;
             let queue = store.open_queue(ffi_ds.handle)?;
             ffi_ds.state.child_handles.fetch_add(1, Ordering::SeqCst);
             QUEUE_REGISTRY
@@ -1414,11 +1454,12 @@ pub extern "C" fn tmsl_queue_open(
                 .insert(
                     id,
                     FfiQueueEntry {
-                        store: Arc::clone(&ffi_ds.store),
-                        handle: ffi_ds.handle,
-                        queue,
+                        kind: FfiQueueKind::Dataset {
+                            store: Arc::clone(&ffi_ds.store),
+                            handle: ffi_ds.handle,
+                            queue,
+                        },
                         state: Arc::clone(&ffi_ds.state),
-                        is_journal,
                     },
                 );
         }
@@ -1436,7 +1477,7 @@ pub extern "C" fn tmsl_queue_close(
     err_len: usize,
 ) -> c_int {
     ffi_catch_int! { err_buf, err_len, {
-        let (store, handle, is_journal, state) = {
+        let (kind, state) = {
             let registry = QUEUE_REGISTRY
                 .lock()
                 .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
@@ -1444,18 +1485,21 @@ pub extern "C" fn tmsl_queue_close(
                 TmslError::NotFound("queue handle not found".into())
             })?;
             (
-                Arc::clone(&entry.store),
-                entry.handle,
-                entry.is_journal,
+                entry.kind.clone(),
                 Arc::clone(&entry.state),
             )
         };
 
-        if !is_journal {
-            let mut store = store
+        match &kind {
+            FfiQueueKind::Dataset { store, handle, .. } => {
+                let mut store = store
                 .lock()
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
-            store.close_queue(handle)?;
+                store.close_queue(*handle)?;
+            }
+            FfiQueueKind::Journal { queue } => {
+                queue.close()?;
+            }
         }
 
         let removed_consumers = remove_consumers_for_queue(queue_handle)?;
@@ -1489,16 +1533,23 @@ pub extern "C" fn tmsl_queue_consumer_open(
         let group_name = unsafe { CStr::from_ptr(group_name) }
             .to_str()
             .map_err(|_| TmslError::InvalidData("invalid group name encoding".into()))?;
-        let (queue, state) = {
+        let (kind, state) = {
             let registry = QUEUE_REGISTRY
                 .lock()
                 .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
             let entry = registry
                 .get(&queue_handle)
                 .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
-            (entry.queue.clone(), Arc::clone(&entry.state))
+            (entry.kind.clone(), Arc::clone(&entry.state))
         };
-        let consumer = queue.open_consumer(group_name)?;
+        let consumer = match kind {
+            FfiQueueKind::Dataset { queue, .. } => {
+                FfiConsumerKind::Dataset(queue.open_consumer(group_name)?)
+            }
+            FfiQueueKind::Journal { queue } => {
+                FfiConsumerKind::Journal(queue.open_consumer(group_name)?)
+            }
+        };
         let id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
         state.child_handles.fetch_add(1, Ordering::SeqCst);
         CONSUMER_REGISTRY
@@ -1526,7 +1577,7 @@ pub extern "C" fn tmsl_queue_consumer_drop(
     err_len: usize,
 ) -> c_int {
     ffi_catch_int! { err_buf, err_len, {
-        let (queue, group_name, state) = {
+        let (kind, group_name, state) = {
             let consumers = CONSUMER_REGISTRY
                 .lock()
                 .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
@@ -1541,18 +1592,26 @@ pub extern "C" fn tmsl_queue_consumer_drop(
             let registry = QUEUE_REGISTRY
                 .lock()
                 .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
-            let queue = registry
+            let kind = registry
                 .get(&queue_handle)
                 .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?
-                .queue
+                .kind
                 .clone();
             (
-                queue,
+                kind,
                 consumer.group_name.clone(),
                 Arc::clone(&consumer.state),
             )
         };
-        queue.drop_consumer(&group_name)?;
+        match kind {
+            FfiQueueKind::Dataset { queue, .. } => queue.drop_consumer(&group_name)?,
+            FfiQueueKind::Journal { .. } => {
+                return Err(TmslError::InvalidData(
+                    "journal queue consumer groups cannot be dropped through dataset queue API"
+                        .into(),
+                ));
+            }
+        }
         let removed = remove_consumers_for_group(queue_handle, &group_name)?;
         state.child_handles.fetch_sub(removed, Ordering::SeqCst);
         Ok::<c_int, TmslError>(0)
@@ -1575,18 +1634,23 @@ pub extern "C" fn tmsl_queue_push(
         if data.is_null() || data_len == 0 {
             return Err(TmslError::InvalidData("data pointer is null or empty".into()));
         }
-        let queue = {
+        let kind = {
             let registry = QUEUE_REGISTRY
                 .lock()
                 .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
             registry
                 .get(&queue_handle)
                 .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?
-                .queue
+                .kind
                 .clone()
         };
         let slice = unsafe { std::slice::from_raw_parts(data, data_len) };
-        let ts = queue.push(slice)?;
+        let ts = match kind {
+            FfiQueueKind::Dataset { queue, .. } => queue.push(slice)?,
+            FfiQueueKind::Journal { .. } => {
+                return Err(TmslError::InvalidData("journal queue is read-only".into()));
+            }
+        };
         Ok::<c_longlong, TmslError>(ts as c_longlong)
     }}
 }
@@ -1625,17 +1689,16 @@ pub extern "C" fn tmsl_queue_poll(
             Duration::from_millis(timeout_ms as u64)
         };
 
-        match consumer.poll(timeout)? {
+        let polled = match consumer {
+            FfiConsumerKind::Dataset(consumer) => consumer.poll(timeout)?,
+            FfiConsumerKind::Journal(consumer) => consumer.poll(timeout)?,
+        };
+
+        match polled {
             Some((ts, data)) => {
                 unsafe {
                     *out_timestamp = ts as c_longlong;
-                    let ptr = libc::malloc(data.len()) as *mut c_uchar;
-                    if ptr.is_null() {
-                        return Err(TmslError::Io(std::io::Error::other(
-                            "malloc failed",
-                        )));
-                    }
-                    std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+                    let ptr = alloc_bytes(&data)?;
                     *out_data = ptr;
                     *out_len = data.len();
                 }
@@ -1665,9 +1728,342 @@ pub extern "C" fn tmsl_queue_ack(
                 .consumer
                 .clone()
         };
-        consumer.ack(timestamp)?;
+        match consumer {
+            FfiConsumerKind::Dataset(consumer) => consumer.ack(timestamp)?,
+            FfiConsumerKind::Journal(consumer) => consumer.ack(timestamp)?,
+        }
         Ok::<c_int, TmslError>(0)
     }}
+}
+
+// ─── Journal FFI functions ─────────────────────────────────────────────────
+
+/// Return the latest journal sequence.
+///
+/// Returns 0 on success and writes 0 when the journal is empty.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_latest_sequence(
+    store: *mut c_void,
+    out_sequence: *mut c_longlong,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if store.is_null() || out_sequence.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let store = ffi_store
+            .inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+        let sequence = store.journal_latest_sequence()?.unwrap_or(0);
+        unsafe {
+            *out_sequence = sequence as c_longlong;
+        }
+        Ok(0)
+    })
+}
+
+/// Read one encoded journal record by sequence.
+///
+/// Returns 0=found, 1=not found, -1=error.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_read(
+    store: *mut c_void,
+    sequence: c_longlong,
+    out_sequence: *mut c_longlong,
+    out_data: *mut *mut c_uchar,
+    out_data_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if store.is_null() || out_sequence.is_null() || out_data.is_null() || out_data_len.is_null()
+        {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let store = ffi_store
+            .inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+        match store.journal_read(sequence)? {
+            Some((seq, data)) => {
+                let ptr = alloc_bytes(&data)?;
+                unsafe {
+                    *out_sequence = seq as c_longlong;
+                    *out_data = ptr;
+                    *out_data_len = data.len();
+                }
+                Ok(0)
+            }
+            None => {
+                unsafe {
+                    *out_data = std::ptr::null_mut();
+                    *out_data_len = 0;
+                }
+                Ok(1)
+            }
+        }
+    })
+}
+
+/// Query encoded journal records by inclusive sequence range.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_query(
+    store: *mut c_void,
+    start_sequence: c_longlong,
+    end_sequence: c_longlong,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> *mut c_void {
+    ffi_catch_ptr!(err_buf, err_buf_len, {
+        if store.is_null() {
+            return Err(TmslError::InvalidData("store is null".into()));
+        }
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let entries = {
+            let store = ffi_store
+                .inner
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store.journal_query(start_sequence, end_sequence)?
+        };
+        ffi_store.state.child_handles.fetch_add(1, Ordering::SeqCst);
+        let iter = Box::new(FfiJournalIterator {
+            state: Arc::clone(&ffi_store.state),
+            entries,
+            position: 0,
+        });
+        Ok(Box::into_raw(iter) as *mut c_void)
+    })
+}
+
+/// Get the next encoded journal record from a journal iterator.
+///
+/// Returns 0=success, 1=done, -1=error.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_iter_next(
+    iter: *mut c_void,
+    out_sequence: *mut c_longlong,
+    out_data: *mut *mut c_uchar,
+    out_data_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if iter.is_null() || out_sequence.is_null() || out_data.is_null() || out_data_len.is_null()
+        {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_iter = unsafe { &mut *(iter as *mut FfiJournalIterator) };
+        if ffi_iter.position >= ffi_iter.entries.len() {
+            return Ok(1);
+        }
+        let (sequence, data) = &ffi_iter.entries[ffi_iter.position];
+        ffi_iter.position += 1;
+        let ptr = alloc_bytes(data)?;
+        unsafe {
+            *out_sequence = *sequence as c_longlong;
+            *out_data = ptr;
+            *out_data_len = data.len();
+        }
+        Ok(0)
+    })
+}
+
+/// Close and free a journal iterator.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_iter_close(iter: *mut c_void) {
+    if !iter.is_null() {
+        let ffi_iter = unsafe { Box::from_raw(iter as *mut FfiJournalIterator) };
+        ffi_iter.state.child_handles.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Open the built-in journal queue.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_queue_open(
+    store: *mut c_void,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> usize {
+    ffi_catch_usize!(err_buf, err_buf_len, {
+        if store.is_null() {
+            return Err(TmslError::InvalidData("store is null".into()));
+        }
+        let ffi_store = unsafe { &*(store as *const FfiStore) };
+        let queue = {
+            let mut store = ffi_store
+                .inner
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store.open_journal_queue()?
+        };
+        let id = NEXT_QUEUE_ID.fetch_add(1, Ordering::Relaxed);
+        ffi_store.state.child_handles.fetch_add(1, Ordering::SeqCst);
+        QUEUE_REGISTRY
+            .lock()
+            .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?
+            .insert(
+                id,
+                FfiQueueEntry {
+                    kind: FfiQueueKind::Journal { queue },
+                    state: Arc::clone(&ffi_store.state),
+                },
+            );
+        Ok(id)
+    })
+}
+
+/// Close a journal queue handle and invalidate its consumers.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_queue_close(
+    queue_handle: usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        let (queue, state) = {
+            let registry = QUEUE_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
+            let entry = registry
+                .get(&queue_handle)
+                .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+            match &entry.kind {
+                FfiQueueKind::Journal { queue } => (queue.clone(), Arc::clone(&entry.state)),
+                FfiQueueKind::Dataset { .. } => {
+                    return Err(TmslError::InvalidData("queue handle is not journal".into()));
+                }
+            }
+        };
+        queue.close()?;
+        let removed_consumers = remove_consumers_for_queue(queue_handle)?;
+        QUEUE_REGISTRY
+            .lock()
+            .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?
+            .remove(&queue_handle)
+            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+        state
+            .child_handles
+            .fetch_sub(removed_consumers + 1, Ordering::SeqCst);
+        Ok(0)
+    })
+}
+
+/// Open a consumer group on the built-in journal queue.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_queue_consumer_open(
+    queue_handle: usize,
+    group_name: *const c_char,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> usize {
+    ffi_catch_usize!(err_buf, err_buf_len, {
+        {
+            let registry = QUEUE_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
+            let entry = registry
+                .get(&queue_handle)
+                .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+            if !matches!(entry.kind, FfiQueueKind::Journal { .. }) {
+                return Err(TmslError::InvalidData("queue handle is not journal".into()));
+            }
+        }
+        let consumer = tmsl_queue_consumer_open(queue_handle, group_name, err_buf, err_buf_len);
+        if consumer == 0 {
+            return Err(TmslError::InvalidData(
+                "failed to open journal queue consumer".into(),
+            ));
+        }
+        Ok(consumer)
+    })
+}
+
+/// Poll data from a journal queue consumer.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_queue_poll(
+    consumer_handle: usize,
+    timeout_ms: c_longlong,
+    out_sequence: *mut c_longlong,
+    out_data: *mut *mut c_uchar,
+    out_data_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if out_sequence.is_null() || out_data.is_null() || out_data_len.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let consumer = {
+            let registry = CONSUMER_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
+            match &registry
+                .get(&consumer_handle)
+                .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?
+                .consumer
+            {
+                FfiConsumerKind::Journal(consumer) => consumer.clone(),
+                FfiConsumerKind::Dataset(_) => {
+                    return Err(TmslError::InvalidData(
+                        "consumer handle is not journal".into(),
+                    ));
+                }
+            }
+        };
+        let timeout = if timeout_ms <= 0 {
+            Duration::from_millis(0)
+        } else {
+            Duration::from_millis(timeout_ms as u64)
+        };
+        match consumer.poll(timeout)? {
+            Some((sequence, data)) => {
+                let ptr = alloc_bytes(&data)?;
+                unsafe {
+                    *out_sequence = sequence as c_longlong;
+                    *out_data = ptr;
+                    *out_data_len = data.len();
+                }
+                Ok(0)
+            }
+            None => Ok(-2),
+        }
+    })
+}
+
+/// Ack a previously polled journal queue record.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_queue_ack(
+    consumer_handle: usize,
+    sequence: c_longlong,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        let consumer = {
+            let registry = CONSUMER_REGISTRY
+                .lock()
+                .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
+            match &registry
+                .get(&consumer_handle)
+                .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?
+                .consumer
+            {
+                FfiConsumerKind::Journal(consumer) => consumer.clone(),
+                FfiConsumerKind::Dataset(_) => {
+                    return Err(TmslError::InvalidData(
+                        "consumer handle is not journal".into(),
+                    ));
+                }
+            }
+        };
+        consumer.ack(sequence)?;
+        Ok(0)
+    })
 }
 
 // ─── Dataset Inspect FFI ──────────────────────────────────────────────────
@@ -2255,6 +2651,187 @@ mod tests {
             0
         );
         assert_eq!(tmsl_queue_close(queue, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_ffi_journal_read_and_query_store_api() {
+        let dir = temp_store_dir("ffi_journal_read_query");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("journalffi").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        let mut latest: c_longlong = 0;
+        assert_eq!(
+            tmsl_journal_latest_sequence(store, &mut latest, err.as_mut_ptr(), err_len),
+            0
+        );
+        assert!(latest >= 1);
+
+        let mut out_seq: c_longlong = 0;
+        let mut out_data: *mut c_uchar = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        assert_eq!(
+            tmsl_journal_read(
+                store,
+                1,
+                &mut out_seq,
+                &mut out_data,
+                &mut out_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(out_seq, 1);
+        assert!(!out_data.is_null());
+        let bytes = unsafe { std::slice::from_raw_parts(out_data, out_len) };
+        let record = crate::journal::JournalRecord::decode(bytes).unwrap();
+        assert_eq!(
+            record.kind,
+            crate::journal::JournalRecordKind::CreateDataset
+        );
+        tmsl_data_free(out_data as *mut c_void);
+
+        let iter = tmsl_journal_query(store, 1, latest, err.as_mut_ptr(), err_len);
+        assert!(!iter.is_null());
+        assert_eq!(
+            tmsl_store_close(store, err.as_mut_ptr(), err_len),
+            -1,
+            "store close must reject outstanding journal iterator"
+        );
+        assert_eq!(
+            tmsl_journal_iter_next(
+                iter,
+                &mut out_seq,
+                &mut out_data,
+                &mut out_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(out_seq, 1);
+        tmsl_data_free(out_data as *mut c_void);
+        tmsl_journal_iter_close(iter);
+
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_ffi_journal_queue_poll_ack() {
+        let dir = temp_store_dir("ffi_journal_queue");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("journalqueueffi").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        let queue = tmsl_journal_queue_open(store, err.as_mut_ptr(), err_len);
+        assert_ne!(queue, 0);
+        assert_eq!(
+            tmsl_store_close(store, err.as_mut_ptr(), err_len),
+            -1,
+            "store close must reject outstanding journal queue"
+        );
+
+        let group = CString::new("journal_group").unwrap();
+        let consumer =
+            tmsl_journal_queue_consumer_open(queue, group.as_ptr(), err.as_mut_ptr(), err_len);
+        assert_ne!(consumer, 0);
+
+        let payload = b"journal-write";
+        assert_eq!(
+            tmsl_dataset_write(
+                dataset,
+                10,
+                payload.as_ptr(),
+                payload.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+
+        let mut out_seq: c_longlong = 0;
+        let mut out_data: *mut c_uchar = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        assert_eq!(
+            tmsl_journal_queue_poll(
+                consumer,
+                100,
+                &mut out_seq,
+                &mut out_data,
+                &mut out_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert!(out_seq > 0);
+        let bytes = unsafe { std::slice::from_raw_parts(out_data, out_len) };
+        let record = crate::journal::JournalRecord::decode(bytes).unwrap();
+        assert_eq!(record.kind, crate::journal::JournalRecordKind::DataWrite);
+        tmsl_data_free(out_data as *mut c_void);
+        assert_eq!(
+            tmsl_journal_queue_ack(consumer, out_seq, err.as_mut_ptr(), err_len),
+            0
+        );
+        assert_eq!(
+            tmsl_journal_queue_close(queue, err.as_mut_ptr(), err_len),
+            0
+        );
+
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
         assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
         cleanup_store_dir(&dir);

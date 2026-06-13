@@ -61,8 +61,8 @@ pub use dataset::{DataSet, DataSetInfo, DataSetInspectResult, DataSetKey, DataSe
 pub use error::{Result, TmslError};
 pub use index::segment::{IndexEntry, BLOCK_OFFSET_FILLER};
 pub use journal::{
-    JournalAppendInfo, JournalIndexInfo, JournalRecord, JournalRecordKind, JOURNAL_DATASET_NAME,
-    JOURNAL_DATASET_TYPE,
+    JournalAppendInfo, JournalIndexInfo, JournalQueue, JournalQueueConsumer, JournalRecord,
+    JournalRecordKind, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
 pub use query::hot_block::HotBlockCache;
 pub use query::iter::{QueryIterator, QuerySource, SourceIndex};

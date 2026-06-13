@@ -114,3 +114,56 @@ impl PyDatasetQueueConsumer {
         Self { inner }
     }
 }
+
+/// Python wrapper for the built-in journal queue.
+#[pyclass(name = "JournalQueue")]
+pub struct PyJournalQueue {
+    inner: timslite::JournalQueue,
+}
+
+#[pymethods]
+impl PyJournalQueue {
+    fn __repr__(&self) -> String {
+        "JournalQueue()".to_string()
+    }
+
+    /// Open or create a journal consumer group.
+    fn open_consumer(&self, group_name: &str) -> PyResult<PyJournalQueueConsumer> {
+        let consumer = wrap(self.inner.open_consumer(group_name))?;
+        Ok(PyJournalQueueConsumer { inner: consumer })
+    }
+
+    /// Close the journal queue handle and unblock waiting polls.
+    fn close(&self) -> PyResult<()> {
+        wrap(self.inner.close())
+    }
+}
+
+impl PyJournalQueue {
+    pub fn new(inner: timslite::JournalQueue) -> Self {
+        Self { inner }
+    }
+}
+
+/// Python wrapper for a journal queue consumer.
+#[pyclass(name = "JournalQueueConsumer")]
+pub struct PyJournalQueueConsumer {
+    inner: timslite::JournalQueueConsumer,
+}
+
+#[pymethods]
+impl PyJournalQueueConsumer {
+    fn __repr__(&self) -> String {
+        "JournalQueueConsumer()".to_string()
+    }
+
+    /// Poll for the next encoded journal record.
+    fn poll(&self, timeout_ms: u64) -> PyResult<Option<(i64, Vec<u8>)>> {
+        wrap(self.inner.poll(Duration::from_millis(timeout_ms)))
+    }
+
+    /// Acknowledge a previously polled journal sequence.
+    fn ack(&self, sequence: i64) -> PyResult<()> {
+        wrap(self.inner.ack(sequence))
+    }
+}

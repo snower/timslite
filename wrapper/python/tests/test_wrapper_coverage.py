@@ -115,6 +115,10 @@ class TestFFICoverage:
             "open_dataset",
             "inspect_dataset",
             "tick_background_tasks",
+            "journal_latest_sequence",
+            "journal_read",
+            "journal_query",
+            "open_journal_queue",
         ]
         for method in expected_methods:
             assert hasattr(timslite.Store, method), f"Missing Store.{method}"
@@ -167,6 +171,8 @@ class TestFFICoverage:
         # But we can verify the classes exist
         assert timslite.DatasetQueue is not None
         assert timslite.DatasetQueueConsumer is not None
+        assert timslite.JournalQueue is not None
+        assert timslite.JournalQueueConsumer is not None
 
     def test_inspect_result_structure(self, tmpdir):
         """InspectResult has expected fields."""

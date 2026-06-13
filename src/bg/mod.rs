@@ -46,7 +46,7 @@ pub struct BackgroundTasks {
     state: Arc<Mutex<ExecutorState>>,
     datasets: Arc<RwLock<DatasetMap>>,
     flush_queue: SegmentFlushQueue,
-    journal_dataset: Option<Arc<std::sync::Mutex<DataSet>>>,
+    journal: Arc<JournalManager>,
     block_cache: Arc<BlockCache>,
     flush_interval: Duration,
     idle_timeout: Duration,
@@ -108,7 +108,7 @@ impl BackgroundTasks {
     pub fn new(
         datasets: Arc<RwLock<DatasetMap>>,
         flush_queue: SegmentFlushQueue,
-        journal_dataset: Option<Arc<std::sync::Mutex<DataSet>>>,
+        journal: Arc<JournalManager>,
         block_cache: Arc<BlockCache>,
         flush_interval: Duration,
         idle_timeout: Duration,
@@ -129,7 +129,7 @@ impl BackgroundTasks {
             })),
             datasets,
             flush_queue,
-            journal_dataset,
+            journal,
             block_cache,
             flush_interval,
             idle_timeout,
@@ -144,7 +144,7 @@ impl BackgroundTasks {
     pub fn start(
         datasets: Arc<RwLock<DatasetMap>>,
         flush_queue: SegmentFlushQueue,
-        journal_dataset: Option<Arc<std::sync::Mutex<DataSet>>>,
+        journal: Arc<JournalManager>,
         block_cache: Arc<BlockCache>,
         flush_interval: Duration,
         idle_timeout: Duration,
@@ -169,7 +169,7 @@ impl BackgroundTasks {
         let thread_state = Arc::clone(&state);
         let thread_datasets = Arc::clone(&datasets);
         let thread_flush_queue = Arc::clone(&flush_queue);
-        let thread_journal_dataset = journal_dataset.clone();
+        let thread_journal = Arc::clone(&journal);
         let thread_block_cache = Arc::clone(&block_cache);
 
         let handle = std::thread::spawn(move || {
@@ -177,7 +177,7 @@ impl BackgroundTasks {
                 state: thread_state,
                 datasets: thread_datasets,
                 flush_queue: thread_flush_queue,
-                journal_dataset: thread_journal_dataset,
+                journal: thread_journal,
                 block_cache: thread_block_cache,
                 flush_interval,
                 idle_timeout,
@@ -193,7 +193,7 @@ impl BackgroundTasks {
             state,
             datasets,
             flush_queue,
-            journal_dataset,
+            journal,
             block_cache,
             flush_interval,
             idle_timeout,
@@ -339,9 +339,10 @@ impl BackgroundTasks {
     fn run_flush(&self) {
         let grouped_targets = self.drain_flush_targets_by_dataset();
         for (key, targets) in grouped_targets {
-            let ds_arc = if JournalManager::is_journal_key(&key) {
-                self.journal_dataset.as_ref().map(Arc::clone)
-            } else {
+            if JournalManager::is_journal_key(&key) {
+                continue;
+            }
+            let ds_arc = {
                 match self.datasets.read() {
                     Ok(guard) => guard.get(&key).cloned(),
                     Err(_) => None,
@@ -357,6 +358,9 @@ impl BackgroundTasks {
             if let Err(e) = ds.sync_queued_flush_targets(targets) {
                 log::error!("[bg flush] failed for {:?}: {}", key, e);
             }
+        }
+        if let Err(e) = self.journal.flush_dirty() {
+            log::error!("[bg flush] failed for journal: {}", e);
         }
     }
 
@@ -543,7 +547,7 @@ mod tests {
             BackgroundTasks::start(
                 datasets,
                 Arc::clone(&flush_queue),
-                None,
+                Arc::new(JournalManager::Disabled),
                 block_cache,
                 flush_interval,
                 idle_timeout,
@@ -554,7 +558,7 @@ mod tests {
             BackgroundTasks::new(
                 datasets,
                 flush_queue,
-                None,
+                Arc::new(JournalManager::Disabled),
                 block_cache,
                 flush_interval,
                 idle_timeout,
@@ -636,7 +640,7 @@ mod tests {
         let bg = BackgroundTasks::new(
             datasets,
             crate::dataset::DataSetRuntimeContext::new_flush_queue(),
-            None,
+            Arc::new(JournalManager::Disabled),
             block_cache,
             flush_interval,
             Duration::from_secs(1800),
@@ -670,7 +674,7 @@ mod tests {
         let bg = BackgroundTasks::new(
             datasets,
             crate::dataset::DataSetRuntimeContext::new_flush_queue(),
-            None,
+            Arc::new(JournalManager::Disabled),
             block_cache,
             Duration::from_secs(3600),
             Duration::from_secs(3600),
@@ -782,7 +786,7 @@ mod tests {
         let bg = Arc::new(BackgroundTasks::new(
             datasets,
             crate::dataset::DataSetRuntimeContext::new_flush_queue(),
-            None,
+            Arc::new(JournalManager::Disabled),
             Arc::new(BlockCache::new(0)),
             Duration::from_millis(1),
             Duration::from_secs(1800),
@@ -853,7 +857,7 @@ mod tests {
         let bg = Arc::new(BackgroundTasks::new(
             datasets,
             flush_queue,
-            None,
+            Arc::new(JournalManager::Disabled),
             Arc::new(BlockCache::new(0)),
             Duration::from_millis(1),
             Duration::from_secs(1800),

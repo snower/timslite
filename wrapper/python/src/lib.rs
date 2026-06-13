@@ -26,6 +26,8 @@ fn timslite(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<query::PyQueryIterator>()?;
     m.add_class::<queue::PyDatasetQueue>()?;
     m.add_class::<queue::PyDatasetQueueConsumer>()?;
+    m.add_class::<queue::PyJournalQueue>()?;
+    m.add_class::<queue::PyJournalQueueConsumer>()?;
 
     Ok(())
 }
