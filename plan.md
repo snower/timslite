@@ -43,6 +43,7 @@
 | 32 | Dataset Inspect API | ✅ 完成 | [phase-32-dataset-inspect.md](docs/plan/phase-32-dataset-inspect.md) |
 | 33 | Dirty Segment Flush Queue | ✅ 完成 | [phase-33-dirty-flush-queue.md](docs/plan/phase-33-dirty-flush-queue.md) |
 | 34 | Ordered Segment Registry | ✅ 完成 | [phase-34-ordered-segment-registry.md](docs/plan/phase-34-ordered-segment-registry.md) |
+| 35 | Dataset Identifier | 📋 计划 | [phase-35-dataset-identifier.md](docs/plan/phase-35-dataset-identifier.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---

@@ -45,6 +45,7 @@ impl Store {
         config_builder: Option<DataSetConfigBuilder>,
     ) -> Result<DataSetHandle>;
     pub fn open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
+    pub fn open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSetHandle>;
     pub fn write_dataset(&mut self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
     pub fn append_dataset(&mut self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
     pub fn delete_dataset_record(&mut self, handle: DataSetHandle, timestamp: i64) -> Result<()>;
@@ -66,6 +67,7 @@ impl Store {
     pub fn dataset_read_length(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<u32>>;
     pub fn dataset_query_length(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
     pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<i64>;
+    pub fn dataset_identifier(&self, handle: DataSetHandle) -> Result<u64>;
     pub fn queue_poll(&self, consumer: &DatasetQueueConsumer, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>;
     pub fn queue_ack(&self, consumer: &DatasetQueueConsumer, timestamp: i64) -> Result<()>;
     pub fn block_cache(&self) -> &Arc<BlockCache>;
@@ -84,9 +86,10 @@ impl Store {
 
 | 操作 | 文件操作 | 目录操作 |
 |------|---------|---------|
-| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs`; 再扫描 `{data_dir}/*/*` 加载已有普通数据集并注入 runtime context | `.journal/logs` 是内部保留 dataset; 普通扫描跳过它 |
-| `Store::create_dataset` | 写入 `meta` 文件; 写入第一个空 data segment + index segment header; 注入 runtime context; journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/data/` + `{name}/{type}/index/` |
+| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 读取/校验 Store 根目录 `max_identifier`; 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs`; 再扫描 `{data_dir}/*/*` 加载已有普通数据集、读取每个 dataset 的 `identifier` 并注入 runtime context | `.journal/logs` 是内部保留 dataset; 普通扫描跳过它; 若扫描最大 identifier 大于 `max_identifier`, 修正根目录文件 |
+| `Store::create_dataset` | 分配 `next_identifier = max_identifier + 1`; 写入 `meta` 文件; 写入第一个空 data segment + index segment header; 写入 dataset 目录 `identifier`; 更新 Store 根目录 `max_identifier`; 注入 runtime context; journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/identifier` + `{name}/{type}/meta` + `{name}/{type}/data/` + `{name}/{type}/index/` |
 | `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments; 注入 runtime context | 不创建新目录, 仅读取 |
+| `Store::open_dataset_by_identifier` | 通过 Store 内存中的 `identifier -> DataSetKey` 索引定位 `(name,type)`, 再复用 `open_dataset` 语义 | `identifier=0` 返回 `InvalidData`; 未找到返回 `NotFound`; `.journal/logs` 不支持 |
 | `Store::write_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
 | `Store::append_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
 | `Store::delete_dataset_record` | 调用 DataSet public API; DataSet 自行 invalidate 旧 cache key 并写 `0x12` journal | 不删除物理 record, 仅标记 filler/invalid |
@@ -109,6 +112,20 @@ impl Store {
 不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。该 255 字节上限也用于 journal name/type TLV value, 避免主操作成功后才发现 journal 字段不可编码。
 
 内部保留 dataset `.journal/logs` 不适用公共命名规则。`enable_journal=true` 时, public `open_dataset(".journal", "logs")` 允许返回只读 handle, 支持 `read/query/query_iter/latest_timestamp/open_queue`; public create/write/append/delete/drop/queue_push 仍必须拒绝 `.journal`。`enable_journal=false` 时, 所有 `.journal/logs` public open/read/query/open_queue 请求返回 `NotFound`。
+
+### 11.3.1 Dataset Identifier
+
+每个普通 dataset 创建时分配一个 Store 内唯一 `u64 identifier`, 持久化在 `{data_dir}/{name}/{type}/identifier`, Store 根目录用 `{data_dir}/max_identifier` 保存已经分配过的最大值。
+
+identifier 规则:
+
+- `0` 为无效值, 第一个普通 dataset 从 `1` 开始。
+- `identifier` 与 `max_identifier` 均使用十进制数字字符串保存。
+- Store open 时读取所有普通 dataset 的 `identifier` 并构建 `identifier -> DataSetKey` 索引。
+- 重复 identifier、非法数字、溢出均视为目录损坏并返回 `InvalidData`。
+- `.journal/logs` 不参与 public identifier 分配, 也不能通过 identifier 打开。
+
+详细磁盘格式、crash 边界和测试要求见 [Dataset Identifier](dataset-identifier.md)。
 
 ### 11.4 StoreConfig: retention_check_hour
 
@@ -317,6 +334,9 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_dataset_open(store: *mut c_void,
     name: *const c_char, dataset_type: *const c_char,
     err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
+#[no_mangle] pub extern "C" fn tmsl_dataset_open_by_identifier(store: *mut c_void,
+    identifier: u64,
+    err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 // `name=".journal", dataset_type="logs"` 在 enable_journal=true 时打开只读 journal handle;
 // 该 handle 可 read/query/open_queue, 但 write/append/delete/drop/queue_push 必须返回错误。
 #[no_mangle] pub extern "C" fn tmsl_dataset_close(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
@@ -327,6 +347,7 @@ pub struct TmslDatasetConfigFFI {
 
 // 数据集状态 — 写入过的最大时间戳 (0 = 空数据集; delete latest 不回退)
 #[no_mangle] pub extern "C" fn tmsl_dataset_latest_timestamp(dataset: *mut c_void, out_ts: *mut c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+#[no_mangle] pub extern "C" fn tmsl_dataset_identifier(dataset: *mut c_void, out_identifier: *mut u64, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // 数据写入 (correction/out-of-order 会通过 Store 的 BlockCache invalidate 旧索引 key)
 #[no_mangle] pub extern "C" fn tmsl_dataset_write(dataset: *mut c_void, timestamp: c_longlong, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;

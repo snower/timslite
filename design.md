@@ -31,6 +31,7 @@
 | 18 | [Journal 变更日志](docs/design/journal.md) | 内置 `.journal/logs` dataset、操作日志格式、Store/DataSet hook、read/query/open_queue 实时消费、热迁移/恢复边界 | 变更日志/热迁移/恢复工具 |
 | 19 | [数据集读操作](docs/design/dataset-read-operations.md) | read/query/query_iter 及新增 read_exist/query_exist/read_length/query_length/query_length_iter 统一描述 | 读操作 API 设计/选型 |
 | 20 | [数据集 Inspect](docs/design/dataset-inspect.md) | DataSetInfo (不变配置) + DataSetState (可变状态) 完整字段定义、Rust/FFI/Python API | 数据集状态监控/运维 |
+| 21 | [Dataset Identifier](docs/design/dataset-identifier.md) | Store 级 `max_identifier`、dataset 级 `identifier` 文件、按 id 打开 dataset API、crash 边界 | 外部系统需要稳定数字 dataset id |
 
 ---
 
@@ -57,6 +58,7 @@
 | `Store` + `create_dataset` + `open_dataset` | [Store 与 FFI](docs/design/store-and-ffi.md) |
 | `DataSet` | [数据集操作](docs/design/dataset-operations.md) |
 | `DataSetMeta` (meta.rs) | [元数据格式](docs/design/meta-format.md) |
+| Dataset Identifier | [Dataset Identifier](docs/design/dataset-identifier.md) |
 | `DataSegmentSet` + `DataSegment` | [数据段管理](docs/design/data-segment.md) |
 | `TimeIndex` + `IndexSegment` | [时间索引](docs/design/time-index.md) |
 | `FileMetadata` + `BlockHeader` | [数据模型](docs/design/data-model.md) |

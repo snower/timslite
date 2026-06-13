@@ -81,6 +81,23 @@ libtimslite (CDylib)
 - 同一名称不同类型之间文件物理隔离
 - `meta` 文件是数据集创建参数的唯一持久化真源, 打开时只校验 meta 自身格式与必需字段, 不与当前 `StoreConfig` 默认值比较
 
+### 2.3 Dataset Identifier Files
+
+Store 根目录新增 `max_identifier`, 每个普通 dataset 目录新增与 `meta` 同级的 `identifier`:
+
+```text
+{data_dir}/
+├── max_identifier
+└── {dataset_name}/
+    └── {dataset_type}/
+        ├── identifier
+        ├── meta
+        ├── data/
+        └── index/
+```
+
+`max_identifier` 和 `identifier` 均为十进制数字字符串。`Store::open` 扫描普通 dataset 时读取 identifier 并建立 `identifier -> (name,type)` 索引; 详细规则见 [Dataset Identifier](dataset-identifier.md)。
+
 ## 二十一、模块结构
 
 ```
