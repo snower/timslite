@@ -1,5 +1,7 @@
 //! Compression utilities.
 
+use std::io::Write;
+
 use crate::error::{Result, TmslError};
 
 pub const COMPRESS_TYPE_ZSTD: u8 = 0;
@@ -19,7 +21,16 @@ pub fn deflate_decompress(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 pub fn zstd_compress(data: &[u8], level: u8) -> Result<Vec<u8>> {
-    zstd::stream::encode_all(data, i32::from(level.min(22)))
+    let mut encoder = zstd::stream::Encoder::new(Vec::new(), i32::from(level.min(22)))
+        .map_err(|e| TmslError::CompressionError(format!("zstd encode error: {e}")))?;
+    encoder
+        .include_checksum(true)
+        .map_err(|e| TmslError::CompressionError(format!("zstd checksum config error: {e}")))?;
+    encoder
+        .write_all(data)
+        .map_err(|e| TmslError::CompressionError(format!("zstd encode error: {e}")))?;
+    encoder
+        .finish()
         .map_err(|e| TmslError::CompressionError(format!("zstd encode error: {e}")))
 }
 
@@ -86,6 +97,21 @@ mod tests {
         let decompressed = decompress(&compressed, COMPRESS_TYPE_ZSTD).unwrap();
 
         assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_zstd_compress_enables_frame_content_checksum() {
+        let original = b"zstd checksum frame header contract ".repeat(200);
+        let compressed = zstd_compress(&original, 6).unwrap();
+
+        assert!(compressed.starts_with(&[0x28, 0xB5, 0x2F, 0xFD]));
+        let frame_header_descriptor = compressed[4];
+        assert_ne!(
+            frame_header_descriptor & 0x04,
+            0,
+            "zstd content checksum flag must be enabled for newly written frames"
+        );
+        assert_eq!(zstd_decompress(&compressed).unwrap(), original);
     }
 
     #[test]

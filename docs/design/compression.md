@@ -98,3 +98,15 @@ Rules:
 - Reads must use the segment header `compress_type` for decompression; this lets mixed future segment algorithms remain decodable if a later version permits them.
 - Unknown `compress_type` values are invalid.
 - The default `StoreConfig` / `DataSetConfig` value is zstd (`0`).
+
+### P1-3 Active Contract: zstd Frame Checksum
+
+For `compress_type = 0` (zstd), every newly encoded zstd frame must enable the zstd content checksum flag.
+
+Rules:
+
+- The checksum is a property of the zstd frame, not a timslite block/header/meta field.
+- Data segments and journal segments both call the shared zstd compression helper, so checksum behavior must be implemented once in that helper.
+- Existing zstd frames without the checksum flag remain readable; zstd decompression must continue to use the standard decoder.
+- Corrupt zstd frames should surface as `DecompressionError` from the zstd decoder. The checksum gives the decoder an additional end-to-end frame integrity check when the frame was written by current code.
+- Deflate (`compress_type = 1`) is unchanged and does not gain an equivalent checksum in this phase.

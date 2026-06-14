@@ -46,6 +46,7 @@
 | 35 | Dataset Identifier | ✅ 完成 | [phase-35-dataset-identifier.md](docs/plan/phase-35-dataset-identifier.md) |
 | 36 | Journal 专用无索引存储 | ✅ 完成 | [phase-36-journal-dedicated-storage.md](docs/plan/phase-36-journal-dedicated-storage.md) |
 | 37 | Journal Record TV Format | ✅ 完成 | [phase-37-journal-record-tv-format.md](docs/plan/phase-37-journal-record-tv-format.md) |
+| 38 | zstd Frame Checksum | ✅ 完成 | [phase-38-zstd-frame-checksum.md](docs/plan/phase-38-zstd-frame-checksum.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -100,6 +101,12 @@
 - [x] 测试 — codec 边界/反例、Store hook 集成、数据变更记录不再包含 name/type
 - [x] 验证 — `cargo fmt -- --check`, `cargo test journal::record -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`
 
+### Phase 38: zstd Frame Checksum
+- [x] 设计文档 — `docs/design/compression.md`
+- [x] 实现 — zstd encoder 开启 content checksum, shared compression helper 统一生效
+- [x] 测试 — zstd frame header checksum flag、zstd roundtrip、deflate 不受影响
+- [x] 验证 — `cargo fmt -- --check`, `cargo test compress -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`
+
 ---
 
 ## 文档结构
@@ -146,7 +153,8 @@ docs/plan/
 ├── phase-34-ordered-segment-registry.md ← Phase 34: Ordered Segment Registry
 ├── phase-35-dataset-identifier.md   ← Phase 35: Dataset Identifier
 ├── phase-36-journal-dedicated-storage.md ← Phase 36: Journal 专用无索引存储
-└── phase-37-journal-record-tv-format.md ← Phase 37: Journal Record TV Format
+├── phase-37-journal-record-tv-format.md ← Phase 37: Journal Record TV Format
+└── phase-38-zstd-frame-checksum.md  ← Phase 38: zstd Frame Checksum
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:
