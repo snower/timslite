@@ -113,8 +113,9 @@ fn t28_4_journal_records_dataset_creation() {
 
     let last = records.last().unwrap();
     assert_eq!(last.kind, JournalRecordKind::CreateDataset);
-    assert_eq!(last.name, "t28_ds");
-    assert_eq!(last.dataset_type, "metrics");
+    assert_eq!(last.dataset_identifier, 1);
+    assert_eq!(last.name.as_deref(), Some("t28_ds"));
+    assert_eq!(last.dataset_type.as_deref(), Some("metrics"));
 
     store.close().unwrap();
 }
@@ -137,8 +138,9 @@ fn t28_5_journal_records_dataset_deletion() {
     assert!(!deletion_records.is_empty());
 
     let last = deletion_records.last().unwrap();
-    assert_eq!(last.name, "t28_ds");
-    assert_eq!(last.dataset_type, "metrics");
+    assert_eq!(last.dataset_identifier, 1);
+    assert_eq!(last.name.as_deref(), Some("t28_ds"));
+    assert_eq!(last.dataset_type.as_deref(), Some("metrics"));
 
     store.close().unwrap();
 }
@@ -238,6 +240,7 @@ fn t28_11_direct_dataset_mutations_use_store_context_journal() {
     let handle = store
         .create_dataset("ctx_ds", "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
+    let identifier = store.dataset_identifier(handle).unwrap();
     {
         let ds = store.get_dataset(&handle).unwrap();
         let mut ds = ds.lock().unwrap();
@@ -249,19 +252,27 @@ fn t28_11_direct_dataset_mutations_use_store_context_journal() {
     let records = read_all_journal_records(&mut store);
     let direct_records: Vec<_> = records
         .iter()
-        .filter(|record| record.name == "ctx_ds" && record.dataset_type == "metrics")
+        .filter(|record| record.dataset_identifier == identifier)
         .collect();
 
     assert!(direct_records.iter().any(|record| {
-        record.kind == JournalRecordKind::DataWrite && record.index_info.unwrap().timestamp == 10
+        record.kind == JournalRecordKind::DataWrite
+            && record.name.is_none()
+            && record.dataset_type.is_none()
+            && record.index_info.unwrap().timestamp == 10
     }));
     assert!(direct_records.iter().any(|record| {
         record.kind == JournalRecordKind::DataAppend
+            && record.name.is_none()
+            && record.dataset_type.is_none()
             && record.index_info.unwrap().timestamp == 20
             && record.append_info.unwrap().data_len == 6
     }));
     assert!(direct_records.iter().any(|record| {
-        record.kind == JournalRecordKind::DataDelete && record.index_info.unwrap().timestamp == 10
+        record.kind == JournalRecordKind::DataDelete
+            && record.name.is_none()
+            && record.dataset_type.is_none()
+            && record.index_info.unwrap().timestamp == 10
     }));
 
     store.close().unwrap();
@@ -322,6 +333,7 @@ fn t28_14_append_writes_journal_0x13_record() {
 
     // Use append to create a new record (forward append: ts > latest)
     let ds_handle = store.open_dataset("jds", "data").unwrap();
+    let identifier = store.dataset_identifier(ds_handle).unwrap();
     store
         .append_dataset(ds_handle, 1, b"append_data_1")
         .unwrap();
@@ -340,16 +352,11 @@ fn t28_14_append_writes_journal_0x13_record() {
         "journal should contain at least one DataAppend (0x13) record"
     );
 
-    // Verify the append record has correct metadata
+    // Verify the append record has correct compact dataset reference.
     let append_record = append_records.last().unwrap();
-    assert_eq!(
-        append_record.name, "jds",
-        "append record should reference correct dataset"
-    );
-    assert_eq!(
-        append_record.dataset_type, "data",
-        "append record should reference correct type"
-    );
+    assert_eq!(append_record.dataset_identifier, identifier);
+    assert_eq!(append_record.name, None);
+    assert_eq!(append_record.dataset_type, None);
     assert!(
         append_record.index_info.is_some(),
         "append record should have index_info"

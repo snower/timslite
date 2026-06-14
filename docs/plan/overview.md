@@ -43,7 +43,7 @@ Phase 33: Dirty Segment Flush Queue        ✅ 完成
 Phase 34: Ordered Segment Registry         ✅ 完成
 Phase 35: Dataset Identifier               ✅ 完成
 Phase 36: Journal 专用无索引存储             ✅ 完成
-Phase 37: Journal Record TV Format         ⏳ 计划中
+Phase 37: Journal Record TV Format         ✅ 完成
 ```
 
 ## 目录结构变更 (核心)
@@ -267,4 +267,4 @@ Phase 37 (Journal Record TV Format: canonical identifier + log_type-scoped TV)
 | [phase-34-ordered-segment-registry.md](phase-34-ordered-segment-registry.md) | Ordered Segment Registry | ✅ |
 | [phase-35-dataset-identifier.md](phase-35-dataset-identifier.md) | Dataset Identifier | ✅ |
 | [phase-36-journal-dedicated-storage.md](phase-36-journal-dedicated-storage.md) | Journal 专用无索引存储 | ✅ |
-| [phase-37-journal-record-tv-format.md](phase-37-journal-record-tv-format.md) | Journal Record TV Format | ⏳ |
+| [phase-37-journal-record-tv-format.md](phase-37-journal-record-tv-format.md) | Journal Record TV Format | ✅ |

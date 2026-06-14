@@ -41,11 +41,11 @@ pub(crate) struct DataSetFlushTarget {
 pub(crate) type SegmentFlushQueue = Arc<Mutex<VecDeque<DataSetFlushTarget>>>;
 
 pub(crate) trait DataSetJournalSink: Send + Sync {
-    fn record_write(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()>;
-    fn record_delete(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()>;
+    fn record_write(&self, identifier: u64, entry: IndexEntry) -> Result<()>;
+    fn record_delete(&self, identifier: u64, entry: IndexEntry) -> Result<()>;
     fn record_append(
         &self,
-        key: &DataSetKey,
+        identifier: u64,
         entry: IndexEntry,
         data_offset: u32,
         data_len: u32,
@@ -501,7 +501,7 @@ impl DataSet {
         let journal = self.runtime_context.journal.clone();
         let outcome = self.write_with_cache_outcome(timestamp, data, cache.as_deref())?;
         if let Some(journal) = journal.as_ref() {
-            journal.record_write(&self.id, outcome.index_entry)?;
+            journal.record_write(self.identifier, outcome.index_entry)?;
         }
         Ok(())
     }
@@ -592,7 +592,7 @@ impl DataSet {
         let outcome = self.append_with_cache_outcome(timestamp, data, cache.as_deref())?;
         if let (Some(outcome), Some(journal)) = (outcome, journal.as_ref()) {
             journal.record_append(
-                &self.id,
+                self.identifier,
                 outcome.index_entry,
                 outcome.data_offset,
                 outcome.data_len,
@@ -790,7 +790,7 @@ impl DataSet {
         let journal = self.runtime_context.journal.clone();
         let outcome = self.delete_with_cache_outcome(timestamp, cache.as_deref())?;
         if let Some(journal) = journal.as_ref() {
-            journal.record_delete(&self.id, outcome.old_index_entry)?;
+            journal.record_delete(self.identifier, outcome.old_index_entry)?;
         }
         Ok(())
     }

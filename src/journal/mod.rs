@@ -90,16 +90,28 @@ impl JournalManager {
         }
     }
 
-    pub(crate) fn append_create(&self, key: &DataSetKey, metadata: &[u8]) -> Result<Option<i64>> {
+    pub(crate) fn append_create(
+        &self,
+        identifier: u64,
+        key: &DataSetKey,
+        metadata: &[u8],
+    ) -> Result<Option<i64>> {
         self.append(JournalRecord::create(
+            identifier,
             &key.name,
             &key.dataset_type,
             metadata.to_vec(),
         ))
     }
 
-    pub(crate) fn append_drop(&self, key: &DataSetKey, metadata: &[u8]) -> Result<Option<i64>> {
+    pub(crate) fn append_drop(
+        &self,
+        identifier: u64,
+        key: &DataSetKey,
+        metadata: &[u8],
+    ) -> Result<Option<i64>> {
         self.append(JournalRecord::drop_dataset(
+            identifier,
             &key.name,
             &key.dataset_type,
             metadata.to_vec(),
@@ -108,38 +120,29 @@ impl JournalManager {
 
     pub(crate) fn append_data_write(
         &self,
-        key: &DataSetKey,
+        identifier: u64,
         entry: IndexEntry,
     ) -> Result<Option<i64>> {
-        self.append(JournalRecord::data_write(
-            &key.name,
-            &key.dataset_type,
-            entry,
-        ))
+        self.append(JournalRecord::data_write(identifier, entry))
     }
 
     pub(crate) fn append_data_delete(
         &self,
-        key: &DataSetKey,
+        identifier: u64,
         entry: IndexEntry,
     ) -> Result<Option<i64>> {
-        self.append(JournalRecord::data_delete(
-            &key.name,
-            &key.dataset_type,
-            entry,
-        ))
+        self.append(JournalRecord::data_delete(identifier, entry))
     }
 
     pub(crate) fn append_data_append(
         &self,
-        key: &DataSetKey,
+        identifier: u64,
         entry: IndexEntry,
         data_offset: u32,
         data_len: u32,
     ) -> Result<Option<i64>> {
         self.append(JournalRecord::data_append(
-            &key.name,
-            &key.dataset_type,
+            identifier,
             entry,
             data_offset,
             data_len,
@@ -233,22 +236,22 @@ impl JournalManager {
 }
 
 impl DataSetJournalSink for JournalManager {
-    fn record_write(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()> {
-        self.append_data_write(key, entry).map(|_| ())
+    fn record_write(&self, identifier: u64, entry: IndexEntry) -> Result<()> {
+        self.append_data_write(identifier, entry).map(|_| ())
     }
 
-    fn record_delete(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()> {
-        self.append_data_delete(key, entry).map(|_| ())
+    fn record_delete(&self, identifier: u64, entry: IndexEntry) -> Result<()> {
+        self.append_data_delete(identifier, entry).map(|_| ())
     }
 
     fn record_append(
         &self,
-        key: &DataSetKey,
+        identifier: u64,
         entry: IndexEntry,
         data_offset: u32,
         data_len: u32,
     ) -> Result<()> {
-        self.append_data_append(key, entry, data_offset, data_len)
+        self.append_data_append(identifier, entry, data_offset, data_len)
             .map(|_| ())
     }
 }

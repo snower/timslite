@@ -45,7 +45,7 @@
 | 34 | Ordered Segment Registry | ✅ 完成 | [phase-34-ordered-segment-registry.md](docs/plan/phase-34-ordered-segment-registry.md) |
 | 35 | Dataset Identifier | ✅ 完成 | [phase-35-dataset-identifier.md](docs/plan/phase-35-dataset-identifier.md) |
 | 36 | Journal 专用无索引存储 | ✅ 完成 | [phase-36-journal-dedicated-storage.md](docs/plan/phase-36-journal-dedicated-storage.md) |
-| 37 | Journal Record TV Format | ⏳ 计划中 | [phase-37-journal-record-tv-format.md](docs/plan/phase-37-journal-record-tv-format.md) |
+| 37 | Journal Record TV Format | ✅ 完成 | [phase-37-journal-record-tv-format.md](docs/plan/phase-37-journal-record-tv-format.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -96,9 +96,9 @@
 
 ### Phase 37: Journal Record TV Format
 - [x] 设计文档 — `docs/design/journal.md`、`docs/design/journal-storage.md`、`docs/design/dataset-identifier.md`、`docs/design/store-and-ffi.md`、`docs/design/meta-format.md`
-- [ ] 实现 — canonical identifier TV 编码、log_type-scoped TV parser、JournalManager/DataSet hook 签名更新
-- [ ] 测试 — codec 边界/反例、Store hook 集成、数据变更记录不再包含 name/type
-- [ ] 验证 — `cargo fmt -- --check`, `cargo test journal::record -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`
+- [x] 实现 — canonical identifier TV 编码、log_type-scoped TV parser、JournalManager/DataSet hook 签名更新
+- [x] 测试 — codec 边界/反例、Store hook 集成、数据变更记录不再包含 name/type
+- [x] 验证 — `cargo fmt -- --check`, `cargo test journal::record -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`
 
 ---
 

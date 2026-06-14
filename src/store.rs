@@ -308,13 +308,13 @@ impl Store {
         let config = config_builder
             .unwrap_or_else(|| DataSetConfigBuilder::from_store(&self.config))
             .build()?;
-        if self.journal.is_enabled() {
-            validate_create_drop_record_inputs(&key, META_VALUES_LEN_V1)?;
-        }
         let identifier = self
             .max_identifier
             .checked_add(1)
             .ok_or_else(|| TmslError::InvalidData("dataset identifier overflow".into()))?;
+        if self.journal.is_enabled() {
+            validate_create_drop_record_inputs(identifier, &key, META_VALUES_LEN_V1)?;
+        }
 
         // Create new dataset
         let dir = self.data_dir.join(name).join(dataset_type);
@@ -352,7 +352,7 @@ impl Store {
 
         let metadata =
             meta_values_from_file(&self.data_dir.join(name).join(dataset_type).join("meta"))?;
-        self.journal.append_create(&key, &metadata)?;
+        self.journal.append_create(identifier, &key, &metadata)?;
 
         let id = self.next_handle_id;
         self.next_handle_id += 1;
@@ -517,26 +517,27 @@ impl Store {
             .remove(&handle.0)
             .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?;
 
-        let (base_dir, metadata) = {
+        let (base_dir, identifier, metadata) = {
             let mut guard = self.datasets.write().unwrap();
             let ds_arc = guard
                 .remove(&key)
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?;
             let mut ds = ds_arc.lock().unwrap();
+            let identifier = ds.identifier();
             let metadata = meta_values_from_file(&ds.base_dir.join("meta"))?;
             if self.journal.is_enabled() {
-                validate_create_drop_record_inputs(&key, metadata.len())?;
+                validate_create_drop_record_inputs(identifier, &key, metadata.len())?;
             }
             let base_dir = ds.base_dir.clone();
             ds.close()?;
-            (base_dir, metadata)
+            (base_dir, identifier, metadata)
         };
 
         DataSet::drop_dataset(&base_dir)?;
         self.identifier_to_key
             .retain(|_, existing| existing != &key);
         self.handles.retain(|_, existing| existing != &key);
-        self.journal.append_drop(&key, &metadata)?;
+        self.journal.append_drop(identifier, &key, &metadata)?;
         log::info!("[store] dropped dataset: {}/{}", key.name, key.dataset_type);
         Ok(())
     }
@@ -557,9 +558,10 @@ impl Store {
         self.handles.retain(|_id, k| *k != key);
 
         let base_dir = self.data_dir.join(name).join(dataset_type);
+        let identifier = read_dataset_identifier(&base_dir)?;
         let metadata = meta_values_from_file(&base_dir.join("meta"))?;
         if self.journal.is_enabled() {
-            validate_create_drop_record_inputs(&key, metadata.len())?;
+            validate_create_drop_record_inputs(identifier, &key, metadata.len())?;
         }
 
         // Remove from open datasets if present
@@ -574,7 +576,7 @@ impl Store {
         DataSet::drop_dataset(&base_dir)?;
         self.identifier_to_key
             .retain(|_, existing| existing != &key);
-        self.journal.append_drop(&key, &metadata)?;
+        self.journal.append_drop(identifier, &key, &metadata)?;
         log::info!("[store] dropped dataset: {}/{}", name, dataset_type);
         Ok(())
     }
