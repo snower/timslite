@@ -184,6 +184,7 @@ impl DataSet {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
+            true,
         )
     }
 
@@ -198,6 +199,7 @@ impl DataSet {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
+        enable_journal: bool,
     ) -> Result<Self> {
         crate::compress::validate_compress_type(compress_type)?;
         validate_retention_window(retention_window)?;
@@ -226,6 +228,7 @@ impl DataSet {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
+            enable_journal,
         );
         meta.write_to_file(&meta_path)?;
 
@@ -258,6 +261,7 @@ impl DataSet {
                 initial_data_segment_size,
                 initial_index_segment_size,
                 retention_window,
+                enable_journal,
                 create_time: meta.create_time,
             },
             segments,
@@ -296,6 +300,7 @@ impl DataSet {
             initial_data_segment_size: meta.initial_data_segment_size,
             initial_index_segment_size: meta.initial_index_segment_size,
             retention_window: meta.retention_window,
+            enable_journal: meta.enable_journal,
             create_time: meta.create_time,
         };
         let retention_window = meta.retention_window;
@@ -1231,6 +1236,11 @@ impl DataSet {
         self.retention_window
     }
 
+    /// Whether this dataset records journal entries when Store journal is enabled.
+    pub fn enable_journal(&self) -> bool {
+        self.config.enable_journal
+    }
+
     /// Latest successfully written timestamp (0 = dataset is empty).
     ///
     /// Recovered from index segments on `open`, then maintained in memory.
@@ -1327,6 +1337,7 @@ impl DataSet {
             compress_level: self.config.compress_level,
             index_continuous: self.config.index_continuous,
             retention_window: self.retention_window,
+            enable_journal: self.config.enable_journal,
             create_time: self.config.create_time,
         };
 
@@ -1444,6 +1455,8 @@ pub struct DataSetInfo {
     pub index_continuous: u8,
     /// Data retention window (same unit as timestamp, 0=no limit)
     pub retention_window: u64,
+    /// Whether this dataset records journal entries when Store journal is enabled.
+    pub enable_journal: bool,
     /// Dataset creation time (Unix milliseconds)
     pub create_time: i64,
 }

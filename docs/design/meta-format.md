@@ -26,7 +26,7 @@
 └─────────────────────────────────────────────────────┘
 ```
 
-`meta_data_length` 是 `u16 LE`, 因此 meta_values 最大 65535 字节。当前 v1 固定 meta_values 长度为 78 字节。journal enabled 时, create/drop 日志会把 meta 文件固定 8 字节头之后的 meta_values 作为 metadata 字段 value; Store 必须在主 create/drop 操作前校验该 snapshot 可被 journal record 编码。
+`meta_data_length` 是 `u16 LE`, 因此 meta_values 最大 65535 字节。当前 v1 固定 meta_values 长度为 82 字节。journal enabled 且该 dataset 自身允许 journal 时, create/drop 日志会把 meta 文件固定 8 字节头之后的 meta_values 作为 metadata 字段 value; Store 必须在主 create/drop 操作前校验该 snapshot 可被 journal record 编码。
 
 ### TLV (Type-Length-Value) 编码
 
@@ -41,6 +41,7 @@ const META_TYPE_INITIAL_DATA_SEGMENT_SIZE: u8 = 0x06;  // u64 LE
 const META_TYPE_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 const META_TYPE_RETENTION_WINDOW: u8   = 0x08;  // u64 LE (timestamp unit)
 const META_TYPE_COMPRESS_TYPE: u8      = 0x09;  // u8 (0=zstd, 1=deflate)
+const META_TYPE_ENABLE_JOURNAL: u8     = 0x0A;  // u8 (0=false, 1=true)
 ```
 
 ### TLV 类型定义
@@ -56,9 +57,11 @@ const META_TYPE_COMPRESS_TYPE: u8      = 0x09;  // u8 (0=zstd, 1=deflate)
 | 0x07 | initial_index_segment_size | 8 | u64 LE | 索引分段初始大小 |
 | 0x08 | retention_window | 8 | u64 LE | 数据保留窗口 (timestamp unit, 0=不限) |
 | 0x09 | compress_type | 1 | u8 | Compression algorithm: 0=zstd, 1=deflate |
+| 0x0A | enable_journal | 1 | u8 | 是否记录本 dataset 的 journal, 0=false, 1=true |
 
 > `block_max_size` 无 TLV type。普通聚合 Block 上限由 `BLOCK_MAX_SIZE=65536` 固定定义, 不是 dataset 创建参数。
 > `retention_window` 磁盘编码为 `u64 LE`, 但有效范围是 `0..=i64::MAX`。builder、FFI config decode、dataset create 和 `DataSetMeta::from_bytes` 均必须拒绝超过 `i64::MAX` 的值, 避免与 signed timestamp 阈值计算发生 wrap 或错误过期。
+> `enable_journal` 是 dataset 级不可变创建参数, 默认 `true`。新 meta 必须写入 canonical 值 `0` 或 `1`; 解析到其它值必须返回 `InvalidData`。缺失该 TLV 的旧 meta 按 `true` 处理。
 >
 > 所有多字节 TLV length/value 均为 Little Endian。时间类字段使用 signed `i64 LE` (`create_time`), size/count/duration 类字段使用 unsigned LE。解析时必须校验 TLV length 与字段类型长度一致; 未知 type 仅按 length 跳过, 但 length 不得越过 `meta_data_length` 边界。
 
@@ -75,6 +78,7 @@ pub struct DataSetMeta {
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
     pub retention_window: u64,   // 数据保留窗口 (timestamp unit, 0=不限)
+    pub enable_journal: bool,    // 是否记录本 dataset 的 journal, 默认 true
 }
 
 impl DataSetMeta {
@@ -82,7 +86,7 @@ impl DataSetMeta {
     pub fn new(data_segment_size: u64, index_segment_size: u64,
                compress_level: u8, compress_type: u8, index_continuous: u8,
                initial_data_segment_size: u64, initial_index_segment_size: u64,
-               retention_window: u64) -> Self;
+               retention_window: u64, enable_journal: bool) -> Self;
 
     /// 序列化: magic + version + meta_data_length + TLV values
     pub fn to_bytes(&self) -> Vec<u8>;
@@ -119,8 +123,10 @@ impl DataSetMeta {
    - `initial_data_segment_size == 0` 的旧 meta → 兼容为 `data_segment_size`
    - `initial_index_segment_size == 0` 的旧 meta → 兼容为 `index_segment_size`
    - `initial_* > segment_size` → 返回错误
+   - `enable_journal` 缺失 → 兼容为 `true`
+   - `enable_journal` 值不为 0/1 → 返回错误
 
-读取成功后, `DataSet` 的 layout/压缩/索引/retention 配置全部来自 meta。当前 `StoreConfig` 中的 data/index segment 默认值、压缩默认值或 retention 默认值不会覆盖已存在数据集, 也不会触发“不一致”错误。
+读取成功后, `DataSet` 的 layout/压缩/索引/retention/journal 配置全部来自 meta。当前 `StoreConfig` 中的 data/index segment 默认值、压缩默认值、retention 默认值或 dataset journal 默认值不会覆盖已存在数据集, 也不会触发“不一致”错误。
 
 ### 向前兼容
 
@@ -156,3 +162,6 @@ Active dataset meta TLV set:
 | 0x07 | initial_index_segment_size | 8 | u64 LE | Initial lazy allocation size for index segments |
 | 0x08 | retention_window | 8 | u64 LE | Retention window in timestamp units, 0=no limit |
 | 0x09 | compress_type | 1 | u8 | Compression algorithm: 0=zstd, 1=deflate |
+| 0x0A | enable_journal | 1 | u8 | Dataset journal recording flag: 0=false, 1=true |
+
+The active `META_VALUES_LEN_V1` is 82 bytes: six `u64/i64` entries at 11 bytes each and four `u8` entries at 4 bytes each.

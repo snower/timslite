@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 #define TMSL_STORE_CONFIG_FFI_VERSION 4u
-#define TMSL_DATASET_CONFIG_FFI_VERSION 2u
+#define TMSL_DATASET_CONFIG_FFI_VERSION 3u
 
 typedef struct TmslStoreConfigFFI {
     uint32_t version;
@@ -48,6 +48,7 @@ typedef struct TmslDatasetConfigFFI {
     uint8_t compress_level;
     uint8_t compress_type; /* 0=zstd (default), 1=deflate */
     uint8_t index_continuous;
+    uint8_t enable_journal; /* 0=false, non-zero=true; default true */
 } TmslDatasetConfigFFI;
 
 /**
@@ -750,6 +751,7 @@ typedef struct TmslDataSetInfo {
     uint8_t compress_level;           /**< Compression level (0-9) */
     uint8_t index_continuous;         /**< Index mode: 0=sparse, 1=continuous */
     uint64_t retention_window;        /**< Data retention window (0=no limit) */
+    uint8_t enable_journal;           /**< Whether this dataset records journal entries */
     int64_t create_time;              /**< Dataset creation time (Unix milliseconds) */
 } TmslDataSetInfo;
 

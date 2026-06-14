@@ -45,6 +45,7 @@ Phase 35: Dataset Identifier               ✅ 完成
 Phase 36: Journal 专用无索引存储             ✅ 完成
 Phase 37: Journal Record TV Format         ✅ 完成
 Phase 38: zstd Frame Checksum              ✅ 完成
+Phase 39: Dataset Journal Toggle           ✅ 完成
 ```
 
 ## 目录结构变更 (核心)
@@ -181,6 +182,9 @@ Phase 37 (Journal Record TV Format: canonical identifier + log_type-scoped TV)
           │
           ▼
 Phase 38 (zstd Frame Checksum: checksum-enabled zstd frames)
+          │
+          ▼
+Phase 39 (Dataset Journal Toggle: per-dataset effective journal switch)
 ```
 
 ## 风险与应对
@@ -223,6 +227,7 @@ Phase 38 (zstd Frame Checksum: checksum-enabled zstd frames)
 | Journal TV 无统一 length | 已知 log_type 内未知字段无法安全跳过 | Phase 37 改为 log_type-scoped fixed schema, known log_type 遇到 schema 外 type 直接 `InvalidData`; 扩展通过新增 log_type 或显式 length extension |
 | Journal data record 只存 identifier | 离线 consumer 若没有 catalog 无法解析 name/type | Phase 37 保留 create/drop 中的 identifier + name + type + metadata, replay 工具先建立 identifier catalog |
 | zstd frame 未带 checksum | compressed block 损坏可能只能被结构解码或上层大小校验发现 | Phase 38 对新写出的 zstd frame 开启 content checksum, 旧 frame 继续可读 |
+| Dataset 级 journal 关闭 | 重要和不重要数据混写时 journal 写放大过高 | Phase 39 新增 `DataSetConfig.enable_journal`, 以全局和 dataset 开关取 AND 得到有效记录状态 |
 | Append 修改历史数据 | 旧 timestamp 可能位于 compressed block 或历史段中间, 无法稳定增长 | Phase 29 只允许 `timestamp > latest` 创建或 `timestamp == latest` 且位于未压缩段尾时追加 |
 | Append 造成普通 block 过大 | 最新 record 追加后可能超过普通 pending block 容量 | 直接返回错误, 不迁移到独占 block |
 | 单条 record 过大 | `data_len:u32` 可表达但资源消耗不可控 | `write` 和 `append` 均限制单条 record 纯数据长度不超过 4MiB |
@@ -274,3 +279,4 @@ Phase 38 (zstd Frame Checksum: checksum-enabled zstd frames)
 | [phase-36-journal-dedicated-storage.md](phase-36-journal-dedicated-storage.md) | Journal 专用无索引存储 | ✅ |
 | [phase-37-journal-record-tv-format.md](phase-37-journal-record-tv-format.md) | Journal Record TV Format | ✅ |
 | [phase-38-zstd-frame-checksum.md](phase-38-zstd-frame-checksum.md) | zstd Frame Checksum | ✅ |
+| [phase-39-dataset-journal-toggle.md](phase-39-dataset-journal-toggle.md) | Dataset Journal Toggle | ✅ |

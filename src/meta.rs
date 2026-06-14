@@ -22,8 +22,9 @@ const META_INITIAL_DATA_SEGMENT_SIZE: u8 = 0x06; // u64 LE
 const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 const META_RETENTION_WINDOW: u8 = 0x08; // u64 LE (0 = no limit)
 const META_COMPRESS_TYPE: u8 = 0x09; // u8
+const META_ENABLE_JOURNAL: u8 = 0x0A; // u8 (0=false, 1=true)
 
-pub(crate) const META_VALUES_LEN_V1: usize = 78;
+pub(crate) const META_VALUES_LEN_V1: usize = 82;
 
 /// Immutable dataset configuration. Written once at creation.
 #[derive(Debug, Clone)]
@@ -37,6 +38,7 @@ pub struct DataSetMeta {
     pub initial_data_segment_size: u64, // 0 = uninitialized (backward compat)
     pub initial_index_segment_size: u64, // 0 = uninitialized (backward compat)
     pub retention_window: u64,          // 0 = no limit (same unit as timestamp)
+    pub enable_journal: bool,
 }
 
 impl DataSetMeta {
@@ -50,6 +52,7 @@ impl DataSetMeta {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
+        enable_journal: bool,
     ) -> Self {
         Self {
             data_segment_size,
@@ -60,6 +63,7 @@ impl DataSetMeta {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
+            enable_journal,
             create_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
@@ -70,10 +74,10 @@ impl DataSetMeta {
     /// Serialize: magic(4) + version(2) + meta_data_length(2) + TLV values
     pub fn to_bytes(&self) -> Vec<u8> {
         // Calculate meta_data_length:
-        // 9 TLV entries: data_seg_size(11) + idx_seg_size(11) + compress_level(4)
+        // 10 TLV entries: data_seg_size(11) + idx_seg_size(11) + compress_level(4)
         //               + compress_type(4) + create_time(11)
         //               + index_continuous(4) + initial_data_seg_size(11) + initial_idx_seg_size(11)
-        //               + retention_window(11) = 78
+        //               + retention_window(11) + enable_journal(4) = 82
         // Each u64 TLV: type(1) + length(2) + value(8) = 11 bytes
         // Each u8 TLV:  type(1) + length(2) + value(1) = 4 bytes
         let meta_data_length: u16 = META_VALUES_LEN_V1 as u16;
@@ -88,6 +92,7 @@ impl DataSetMeta {
                 + (1 + 2 + 8)
                 + (1 + 2 + 8)
                 + (1 + 2 + 8)
+                + (1 + 2 + 1)
         );
 
         let mut buf = Vec::with_capacity(8 + meta_data_length as usize);
@@ -132,6 +137,10 @@ impl DataSetMeta {
         buf.push(META_RETENTION_WINDOW);
         buf.extend_from_slice(&8u16.to_le_bytes());
         buf.extend_from_slice(&self.retention_window.to_le_bytes());
+        // enable_journal
+        buf.push(META_ENABLE_JOURNAL);
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.push(u8::from(self.enable_journal));
 
         buf
     }
@@ -167,6 +176,7 @@ impl DataSetMeta {
         let mut initial_data_segment_size = 0u64;
         let mut initial_index_segment_size = 0u64;
         let mut retention_window = 0u64;
+        let mut enable_journal = true;
 
         let mut off = 8;
         let end = 8 + meta_data_length;
@@ -205,6 +215,17 @@ impl DataSetMeta {
                 }
                 META_RETENTION_WINDOW if len == 8 => {
                     retention_window = read_u64_le(buf[off..off + 8].try_into().unwrap());
+                }
+                META_ENABLE_JOURNAL if len == 1 => {
+                    enable_journal = match buf[off] {
+                        0 => false,
+                        1 => true,
+                        _ => {
+                            return Err(TmslError::InvalidData(
+                                "meta enable_journal must be 0 or 1".into(),
+                            ));
+                        }
+                    };
                 }
                 _ => {} // Skip unknown
             }
@@ -267,6 +288,7 @@ impl DataSetMeta {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
+            enable_journal,
         })
     }
 
@@ -297,6 +319,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             30 * 86400,
+            true,
         );
         let bytes = meta.to_bytes();
 
@@ -313,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_meta_rejects_invalid_compress_type() {
-        let invalid = DataSetMeta::new(1024, 512, 6, 99, 0, 256, 128, 0);
+        let invalid = DataSetMeta::new(1024, 512, 6, 99, 0, 256, 128, 0, true);
 
         assert!(matches!(
             DataSetMeta::from_bytes(&invalid.to_bytes()),
@@ -332,6 +355,7 @@ mod tests {
             256,
             128,
             0,
+            true,
         );
         let mut bytes = meta_with.to_bytes();
         let mut off = 8;
@@ -364,6 +388,7 @@ mod tests {
             256,
             128,
             0,
+            true,
         );
         let mut bytes = meta.to_bytes();
         let mut off = 8;
@@ -396,6 +421,7 @@ mod tests {
             256,
             128,
             0,
+            true,
         );
         assert!(matches!(
             DataSetMeta::from_bytes(&invalid_compress.to_bytes()),
@@ -411,6 +437,7 @@ mod tests {
             256,
             128,
             0,
+            true,
         );
         assert!(matches!(
             DataSetMeta::from_bytes(&invalid_continuous.to_bytes()),
@@ -426,6 +453,7 @@ mod tests {
             2048,
             128,
             0,
+            true,
         );
         assert!(matches!(
             DataSetMeta::from_bytes(&invalid_initial.to_bytes()),
@@ -444,6 +472,7 @@ mod tests {
             256,
             128,
             0,
+            true,
         );
         let bytes = meta.to_bytes();
 
@@ -460,6 +489,7 @@ mod tests {
             256,
             128,
             0,
+            true,
         );
         let parsed_zero = DataSetMeta::from_bytes(&meta_zero.to_bytes()).unwrap();
         assert_eq!(parsed_zero.index_continuous, 0);
@@ -476,6 +506,7 @@ mod tests {
             256,
             128,
             7 * 86400,
+            true,
         );
         let parsed = DataSetMeta::from_bytes(&meta.to_bytes()).unwrap();
         assert_eq!(parsed.retention_window, 7 * 86400);
@@ -490,9 +521,71 @@ mod tests {
             256,
             128,
             0,
+            true,
         );
         let parsed_zero = DataSetMeta::from_bytes(&meta_zero.to_bytes()).unwrap();
         assert_eq!(parsed_zero.retention_window, 0);
+    }
+
+    #[test]
+    fn test_meta_enable_journal_roundtrip_default_and_invalid_value() {
+        let disabled = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+            false,
+        );
+        let parsed = DataSetMeta::from_bytes(&disabled.to_bytes()).unwrap();
+        assert!(!parsed.enable_journal);
+
+        let enabled = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+            true,
+        );
+        let mut bytes = enabled.to_bytes();
+        let mut off = 8;
+        while off + 3 <= bytes.len() {
+            let t = bytes[off];
+            let len = u16::from_le_bytes([bytes[off + 1], bytes[off + 2]]) as usize;
+            let entry_len = 3 + len;
+            if t == META_ENABLE_JOURNAL {
+                bytes.drain(off..off + entry_len);
+                let meta_len = (bytes.len() - 8) as u16;
+                bytes[6..8].copy_from_slice(&meta_len.to_le_bytes());
+                break;
+            }
+            off += entry_len;
+        }
+        let parsed_missing = DataSetMeta::from_bytes(&bytes).unwrap();
+        assert!(parsed_missing.enable_journal);
+
+        let mut invalid = enabled.to_bytes();
+        let mut off = 8;
+        while off + 3 <= invalid.len() {
+            let t = invalid[off];
+            let len = u16::from_le_bytes([invalid[off + 1], invalid[off + 2]]) as usize;
+            if t == META_ENABLE_JOURNAL {
+                invalid[off + 3] = 2;
+                break;
+            }
+            off += 3 + len;
+        }
+        assert!(matches!(
+            DataSetMeta::from_bytes(&invalid),
+            Err(TmslError::InvalidData(_))
+        ));
     }
 
     #[test]
@@ -506,6 +599,7 @@ mod tests {
             256,
             128,
             i64::MAX as u64 + 1,
+            true,
         );
 
         let err = DataSetMeta::from_bytes(&meta.to_bytes()).unwrap_err();
@@ -528,6 +622,7 @@ mod tests {
             100,
             200,
             0,
+            true,
         )
         .to_bytes();
         bytes[0..4].copy_from_slice(b"XXXX");
@@ -551,6 +646,7 @@ mod tests {
             256,
             128,
             86400,
+            true,
         );
         meta.write_to_file(&path).unwrap();
         let loaded = DataSetMeta::read_from_file(&path).unwrap();
@@ -567,7 +663,17 @@ mod tests {
     fn test_meta_roundtrip_zero_values() {
         // from_bytes backward compat: initial_data_segment_size=0 defaults to data_segment_size.
         // So passing 0 for init_data and data_seg=1 → parsed.initial_data_segment_size = 1.
-        let meta = DataSetMeta::new(1, 1, 0, crate::compress::COMPRESS_TYPE_ZSTD, 0, 1, 1, 0);
+        let meta = DataSetMeta::new(
+            1,
+            1,
+            0,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            1,
+            1,
+            0,
+            true,
+        );
         let bytes = meta.to_bytes();
         let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
         assert_eq!(parsed.initial_data_segment_size, 1);
@@ -594,7 +700,7 @@ mod tests {
             let init_idx = init_idx % idx_seg + 1;
             let meta = DataSetMeta::new(
                 data_seg, idx_seg, compress, crate::compress::COMPRESS_TYPE_ZSTD, continuous,
-                init_data, init_idx, retention,
+                init_data, init_idx, retention, true,
             );
             let bytes = meta.to_bytes();
             let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
@@ -606,6 +712,7 @@ mod tests {
             assert_eq!(parsed.initial_data_segment_size, init_data);
             assert_eq!(parsed.initial_index_segment_size, init_idx);
             assert_eq!(parsed.retention_window, retention);
+            assert!(parsed.enable_journal);
         }
     }
 }

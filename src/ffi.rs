@@ -94,7 +94,7 @@ macro_rules! ffi_catch_usize {
 }
 
 pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 4;
-pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 2;
+pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -133,6 +133,7 @@ pub struct TmslDatasetConfigFFI {
     pub compress_level: u8,
     pub compress_type: u8,
     pub index_continuous: u8,
+    pub enable_journal: u8,
 }
 
 struct FfiStoreState {
@@ -280,6 +281,7 @@ fn dataset_config_from_ffi(
         .compress_level(raw.compress_level)
         .compress_type(raw.compress_type)
         .index_continuous(raw.index_continuous)
+        .enable_journal(raw.enable_journal != 0)
         .retention_window(raw.retention_window))
 }
 
@@ -2096,6 +2098,8 @@ pub struct TmslDataSetInfo {
     pub index_continuous: u8,
     /// Data retention window (same unit as timestamp, 0=no limit)
     pub retention_window: u64,
+    /// Whether this dataset records journal entries when Store journal is enabled.
+    pub enable_journal: u8,
     /// Dataset creation time (Unix milliseconds)
     pub create_time: i64,
 }
@@ -2205,6 +2209,7 @@ pub extern "C" fn tmsl_store_inspect_dataset(
             compress_level: result.info.compress_level,
             index_continuous: result.info.index_continuous,
             retention_window: result.info.retention_window,
+            enable_journal: u8::from(result.info.enable_journal),
             create_time: result.info.create_time,
         };
 
@@ -2397,6 +2402,7 @@ mod tests {
             compress_level: 6,
             compress_type: crate::compress::COMPRESS_TYPE_ZSTD,
             index_continuous: 0,
+            enable_journal: 0,
         };
         let name = CString::new("sensor").unwrap();
         let ty = CString::new("wave").unwrap();
@@ -2409,6 +2415,23 @@ mod tests {
             err_len,
         );
         assert!(!dataset.is_null());
+
+        let mut inspect = std::mem::MaybeUninit::<TmslInspectResult>::uninit();
+        assert_eq!(
+            tmsl_store_inspect_dataset(
+                store,
+                name.as_ptr(),
+                ty.as_ptr(),
+                inspect.as_mut_ptr(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        let mut inspect = unsafe { inspect.assume_init() };
+        assert_eq!(inspect.info.enable_journal, 0);
+        assert_eq!(inspect.state.has_journal, 0);
+        tmsl_free_inspect_result(&mut inspect);
 
         let payload = [1u8, 2, 3, 4];
         assert_eq!(

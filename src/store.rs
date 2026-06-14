@@ -19,7 +19,7 @@ use crate::journal::{
     meta_values_from_file, validate_create_drop_record_inputs, JournalManager, JournalQueue,
     JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
-use crate::meta::META_VALUES_LEN_V1;
+use crate::meta::{DataSetMeta, META_VALUES_LEN_V1};
 use crate::queue::{DatasetQueue, DatasetQueueConsumer};
 use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
@@ -114,11 +114,18 @@ impl Store {
         block_cache: &Arc<BlockCache>,
         journal: &Arc<JournalManager>,
         flush_queue: &SegmentFlushQueue,
+        enable_journal: bool,
     ) -> DataSetRuntimeContext {
-        let sink: Arc<dyn DataSetJournalSink> = journal.clone();
+        let journal_sink: Option<Arc<dyn DataSetJournalSink>> =
+            if enable_journal && journal.is_enabled() {
+                let sink: Arc<dyn DataSetJournalSink> = journal.clone();
+                Some(sink)
+            } else {
+                None
+            };
         DataSetRuntimeContext::new(
             Some(Arc::clone(block_cache)),
-            Some(sink),
+            journal_sink,
             Some(Arc::clone(flush_queue)),
         )
     }
@@ -134,8 +141,6 @@ impl Store {
             &config,
             Some(Arc::clone(&flush_queue)),
         )?);
-        let runtime_context = Self::dataset_runtime_context(&block_cache, &journal, &flush_queue);
-
         let mut datasets = HashMap::new();
         let stored_max_identifier = read_max_identifier(&data_dir)?;
         let mut max_identifier = stored_max_identifier;
@@ -210,7 +215,12 @@ impl Store {
                 match DataSet::open(key.clone(), type_path.clone()) {
                     Ok(mut ds) => {
                         ds.set_identifier(identifier);
-                        ds.set_runtime_context(runtime_context.clone());
+                        ds.set_runtime_context(Self::dataset_runtime_context(
+                            &block_cache,
+                            &journal,
+                            &flush_queue,
+                            ds.enable_journal(),
+                        ));
                         log::info!("[store] loaded existing dataset: {}/{}", name, dataset_type);
                         datasets.insert(key, Arc::new(Mutex::new(ds)));
                     }
@@ -308,11 +318,12 @@ impl Store {
         let config = config_builder
             .unwrap_or_else(|| DataSetConfigBuilder::from_store(&self.config))
             .build()?;
+        let effective_journal = self.journal.is_enabled() && config.enable_journal;
         let identifier = self
             .max_identifier
             .checked_add(1)
             .ok_or_else(|| TmslError::InvalidData("dataset identifier overflow".into()))?;
-        if self.journal.is_enabled() {
+        if effective_journal {
             validate_create_drop_record_inputs(identifier, &key, META_VALUES_LEN_V1)?;
         }
 
@@ -329,6 +340,7 @@ impl Store {
             config.initial_data_segment_size,
             config.initial_index_segment_size,
             config.retention_window,
+            config.enable_journal,
         )?;
         write_identifier_file(&dataset_identifier_path(&dir), identifier)?;
         write_identifier_file(&self.data_dir.join(MAX_IDENTIFIER_FILE), identifier)?;
@@ -340,6 +352,7 @@ impl Store {
                 .as_ref()
                 .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
                 .flush_queue(),
+            config.enable_journal,
         ));
 
         let ds = Arc::new(Mutex::new(ds));
@@ -352,7 +365,9 @@ impl Store {
 
         let metadata =
             meta_values_from_file(&self.data_dir.join(name).join(dataset_type).join("meta"))?;
-        self.journal.append_create(identifier, &key, &metadata)?;
+        if effective_journal {
+            self.journal.append_create(identifier, &key, &metadata)?;
+        }
 
         let id = self.next_handle_id;
         self.next_handle_id += 1;
@@ -432,6 +447,7 @@ impl Store {
                 .as_ref()
                 .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
                 .flush_queue(),
+            ds.enable_journal(),
         ));
 
         let ds = Arc::new(Mutex::new(ds));
@@ -517,7 +533,7 @@ impl Store {
             .remove(&handle.0)
             .ok_or_else(|| TmslError::NotFound("dataset handle not found".into()))?;
 
-        let (base_dir, identifier, metadata) = {
+        let (base_dir, identifier, metadata, effective_journal) = {
             let mut guard = self.datasets.write().unwrap();
             let ds_arc = guard
                 .remove(&key)
@@ -525,19 +541,22 @@ impl Store {
             let mut ds = ds_arc.lock().unwrap();
             let identifier = ds.identifier();
             let metadata = meta_values_from_file(&ds.base_dir.join("meta"))?;
-            if self.journal.is_enabled() {
+            let effective_journal = self.journal.is_enabled() && ds.enable_journal();
+            if effective_journal {
                 validate_create_drop_record_inputs(identifier, &key, metadata.len())?;
             }
             let base_dir = ds.base_dir.clone();
             ds.close()?;
-            (base_dir, identifier, metadata)
+            (base_dir, identifier, metadata, effective_journal)
         };
 
         DataSet::drop_dataset(&base_dir)?;
         self.identifier_to_key
             .retain(|_, existing| existing != &key);
         self.handles.retain(|_, existing| existing != &key);
-        self.journal.append_drop(identifier, &key, &metadata)?;
+        if effective_journal {
+            self.journal.append_drop(identifier, &key, &metadata)?;
+        }
         log::info!("[store] dropped dataset: {}/{}", key.name, key.dataset_type);
         Ok(())
     }
@@ -559,8 +578,10 @@ impl Store {
 
         let base_dir = self.data_dir.join(name).join(dataset_type);
         let identifier = read_dataset_identifier(&base_dir)?;
+        let meta = DataSetMeta::read_from_file(&base_dir.join("meta"))?;
+        let effective_journal = self.journal.is_enabled() && meta.enable_journal;
         let metadata = meta_values_from_file(&base_dir.join("meta"))?;
-        if self.journal.is_enabled() {
+        if effective_journal {
             validate_create_drop_record_inputs(identifier, &key, metadata.len())?;
         }
 
@@ -576,7 +597,9 @@ impl Store {
         DataSet::drop_dataset(&base_dir)?;
         self.identifier_to_key
             .retain(|_, existing| existing != &key);
-        self.journal.append_drop(identifier, &key, &metadata)?;
+        if effective_journal {
+            self.journal.append_drop(identifier, &key, &metadata)?;
+        }
         log::info!("[store] dropped dataset: {}/{}", name, dataset_type);
         Ok(())
     }

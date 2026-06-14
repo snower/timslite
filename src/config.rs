@@ -238,6 +238,8 @@ pub struct DataSetConfig {
     pub initial_index_segment_size: u64,
     /// Data validity period in same unit as timestamps. 0 = no limit.
     pub retention_window: u64,
+    /// Whether this dataset records journal entries when the Store journal is enabled.
+    pub enable_journal: bool,
     /// Dataset creation time (Unix milliseconds).
     pub create_time: i64,
 }
@@ -254,6 +256,7 @@ impl DataSetConfig {
             initial_data_segment_size: config.initial_data_segment_size,
             initial_index_segment_size: config.initial_index_segment_size,
             retention_window: 0,
+            enable_journal: true,
             create_time: 0,
         }
     }
@@ -294,6 +297,7 @@ pub struct DataSetConfigBuilder {
     initial_data_segment_size: Option<u64>,
     initial_index_segment_size: Option<u64>,
     retention_window: Option<u64>,
+    enable_journal: Option<bool>,
 }
 
 impl DataSetConfigBuilder {
@@ -309,6 +313,7 @@ impl DataSetConfigBuilder {
             initial_data_segment_size: Some(store.initial_data_segment_size),
             initial_index_segment_size: Some(store.initial_index_segment_size),
             retention_window: Some(0),
+            enable_journal: Some(true),
         }
     }
 
@@ -360,6 +365,12 @@ impl DataSetConfigBuilder {
         self
     }
 
+    /// Set whether this dataset records journal entries when the Store journal is enabled.
+    pub fn enable_journal(mut self, enable: bool) -> Self {
+        self.enable_journal = Some(enable);
+        self
+    }
+
     /// Build the `DataSetConfig`.
     pub fn build(self) -> Result<DataSetConfig> {
         let defaults = DataSetConfig::from_store(&StoreConfig::default());
@@ -380,6 +391,7 @@ impl DataSetConfigBuilder {
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
             retention_window,
+            enable_journal: self.enable_journal.unwrap_or(true),
             create_time: 0, // Set at dataset creation
         })
     }
@@ -490,6 +502,7 @@ mod tests {
         assert_eq!(dataset.data_segment_size, 32 * 1024 * 1024);
         assert_eq!(dataset.compress_level, 3);
         assert_eq!(dataset.retention_window, 0);
+        assert!(dataset.enable_journal);
     }
 
     #[test]
@@ -510,6 +523,7 @@ mod tests {
         assert_eq!(config.initial_data_segment_size, 512 * 1024);
         assert_eq!(config.initial_index_segment_size, 8 * 1024);
         assert_eq!(config.retention_window, 0);
+        assert!(config.enable_journal);
     }
 
     #[test]
@@ -523,6 +537,7 @@ mod tests {
             .compress_level(9)
             .index_continuous(1)
             .retention_window(30 * 86400)
+            .enable_journal(false)
             .build()
             .unwrap();
 
@@ -530,6 +545,7 @@ mod tests {
         assert_eq!(config.compress_level, 9);
         assert_eq!(config.index_continuous, 1);
         assert_eq!(config.retention_window, 30 * 86400);
+        assert!(!config.enable_journal);
         // Store default is inherited
         assert_eq!(config.data_segment_size, 64 * 1024 * 1024);
     }

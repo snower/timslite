@@ -32,6 +32,8 @@ pub struct DataSetInfo {
     pub index_continuous: u8,
     // 数据保留
     pub retention_window: u64,
+    // Journal 配置
+    pub enable_journal: bool,
     // 元数据
     pub create_time: i64,
 }
@@ -97,6 +99,7 @@ typedef struct {
     uint8_t compress_level;
     uint8_t index_continuous;
     uint64_t retention_window;
+    uint8_t enable_journal;
     int64_t create_time;
 } TmslDataSetInfo;
 
@@ -153,6 +156,7 @@ class DataSetInfo:
     compress_level: int
     index_continuous: int
     retention_window: int
+    enable_journal: bool
     create_time: int
 
 class DataSetState:

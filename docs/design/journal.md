@@ -45,7 +45,8 @@ const JOURNAL_DATASET_TYPE: &str = "logs";
 - public `open_dataset(".journal", "logs")` 不再返回普通 DataSet handle。
 - journal 读取、查询和 queue 消费使用专用 Store/FFI/Python API。
 - 普通 dataset 扫描始终跳过 `.journal`。
-- `enable_journal=false` 时不创建、不打开、不追加 journal, 专用 journal API 返回 `NotFound`。
+- `StoreConfig.enable_journal=false` 时不创建、不打开、不追加 journal, 专用 journal API 返回 `NotFound`。
+- 普通 dataset 还拥有自己的不可变 `DataSetConfig.enable_journal` 创建参数, 默认 `true`。只有 `StoreConfig.enable_journal && DataSetConfig.enable_journal` 同时为 true 时, 该 dataset 的 create/drop/write/delete/append 才写 journal。
 
 ### 25.3 Journal Sequence
 
@@ -232,11 +233,19 @@ Store::open(data_dir):
 
 #### Store::create_dataset / drop_dataset
 
-创建或删除普通 dataset 成功后, 通过 `JournalManager.append_create/drop` 追加 `0x01/0x02`。调用方必须传入该 dataset 的非零 identifier、`DataSetKey` 和 meta snapshot。journal append 失败不回滚主操作。
+创建或删除普通 dataset 成功后, 若该 dataset 的有效 journal 开关为 true, 通过 `JournalManager.append_create/drop` 追加 `0x01/0x02`。调用方必须传入该 dataset 的非零 identifier、`DataSetKey` 和 meta snapshot。journal append 失败不回滚主操作。
+
+有效 journal 开关定义为:
+
+```text
+effective_dataset_journal = StoreConfig.enable_journal && DataSetMeta.enable_journal
+```
+
+`DataSetMeta.enable_journal=false` 只跳过该 dataset 的业务变更日志, 不会关闭全局 `.journal/logs`, 也不会影响其它 dataset。create/drop 的 journal 预校验也只在有效开关为 true 时执行。
 
 #### DataSet runtime context
 
-Store 管理的业务 `DataSet` 持有 `DataSetRuntimeContext`, 其中 journal hook 指向 `JournalManager`。业务 `DataSet::write/append/delete` 在主操作成功后调用 hook:
+Store 管理的业务 `DataSet` 持有 `DataSetRuntimeContext`。当该 dataset 的有效 journal 开关为 true 时, context 中的 journal hook 指向 `JournalManager`; 否则 journal hook 为 `None`。业务 `DataSet::write/append/delete` 在主操作成功后调用 hook:
 
 ```rust
 trait DataSetJournalSink {
@@ -246,7 +255,7 @@ trait DataSetJournalSink {
 }
 ```
 
-Store 管理的业务 `DataSet` 在执行 journal hook 前必须已经持有非零 identifier。低层 `DataSet::create/open` 绕过 Store 时没有 Store runtime context, journal hook 仍为 no-op。`enable_journal=false` 时 hook 为 no-op。
+Store 管理的业务 `DataSet` 在执行 journal hook 前必须已经持有非零 identifier。低层 `DataSet::create/open` 绕过 Store 时没有 Store runtime context, journal hook 仍为 no-op。全局 journal disabled 或 dataset journal disabled 时 hook 均为 no-op。
 
 ### 25.7 JournalManager API
 

@@ -89,18 +89,18 @@ impl Store {
 
 | 操作 | 文件操作 | 目录操作 |
 |------|---------|---------|
-| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 读取/校验 Store 根目录 `max_identifier`; 若 `enable_journal=true`, 先单独 open/create 内置 `.journal/logs` 专用 append log; 再扫描 `{data_dir}/*/*` 加载已有普通数据集、读取每个 dataset 的 `identifier` 并注入 runtime context | `.journal/logs` 是内部保留 journal; 普通扫描跳过它; 若扫描最大 identifier 大于 `max_identifier`, 修正根目录文件 |
-| `Store::create_dataset` | 分配 `next_identifier = max_identifier + 1`; 写入 `meta` 文件; 写入第一个空 data segment + index segment header; 写入 dataset 目录 `identifier`; 更新 Store 根目录 `max_identifier`; 注入 runtime context; journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/identifier` + `{name}/{type}/meta` + `{name}/{type}/data/` + `{name}/{type}/index/` |
-| `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments; 注入 runtime context | 不创建新目录, 仅读取 |
+| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 读取/校验 Store 根目录 `max_identifier`; 若 `StoreConfig.enable_journal=true`, 先单独 open/create 内置 `.journal/logs` 专用 append log; 再扫描 `{data_dir}/*/*` 加载已有普通数据集、读取每个 dataset 的 `identifier` 和 `DataSetMeta.enable_journal` 并注入有效 runtime context | `.journal/logs` 是内部保留 journal; 普通扫描跳过它; 若扫描最大 identifier 大于 `max_identifier`, 修正根目录文件 |
+| `Store::create_dataset` | 分配 `next_identifier = max_identifier + 1`; 写入 `meta` 文件; 写入第一个空 data segment + index segment header; 写入 dataset 目录 `identifier`; 更新 Store 根目录 `max_identifier`; 按有效 journal 开关注入 runtime context; 有效 journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/identifier` + `{name}/{type}/meta` + `{name}/{type}/data/` + `{name}/{type}/index/` |
+| `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments; 按有效 journal 开关注入 runtime context | 不创建新目录, 仅读取 |
 | `Store::open_dataset_by_identifier` | 通过 Store 内存中的 `identifier -> DataSetKey` 索引定位 `(name,type)`, 再复用 `open_dataset` 语义 | `identifier=0` 返回 `InvalidData`; 未找到返回 `NotFound`; `.journal/logs` 不支持 |
-| `Store::write_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
-| `Store::append_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 成功后 journal 写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
-| `Store::delete_dataset_record` | 调用 DataSet public API; DataSet 自行 invalidate 旧 cache key 并写 `0x12` journal | 不删除物理 record, 仅标记 filler/invalid |
+| `Store::write_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 有效 journal 开启时成功后写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
+| `Store::append_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 有效 journal 开启时成功后写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
+| `Store::delete_dataset_record` | 调用 DataSet public API; DataSet 自行 invalidate 旧 cache key; 有效 journal 开启时成功后写 `0x12` | 不删除物理 record, 仅标记 filler/invalid |
 | `Store::read_dataset` / `query_dataset` | 调用 DataSet public API; DataSet 自动使用 runtime context 中的全局 `BlockCache`; retention 统一生效 | 仅适用于普通 dataset |
 | `Store::journal_latest_sequence/read/query` | 调用 JournalManager 专用 API 读取 encoded journal record payload | `enable_journal=false` 时返回 `NotFound`; 不通过 DataSet handle |
 | `Store::latest_written_timestamp` | 返回 dataset 已写入最大 timestamp | 删除 latest 后仍返回最大已写 timestamp |
 | `Store::open_queue` / `open_journal_queue` | `open_queue` 打开普通 dataset queue; `open_journal_queue` 打开专用 JournalQueue | journal queue producer 只允许 `JournalManager` |
-| `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树; journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
+| `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树; 有效 journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
 
 ### 11.3 Dataset name/type 校验
 
@@ -180,6 +180,29 @@ impl StoreConfigBuilder {
 - `tmsl_store_open(data_dir)` 使用默认配置, journal 默认开启。
 - 如果宿主希望完全避免 journal 写放大或不希望自动创建 `.journal/`, 必须使用 `tmsl_store_open_with_config` 并设置 `enable_journal=false`。
 - 禁用 journal 不影响普通 dataset 的 create/write/delete/drop 成功语义, 对应 journal hook 为 no-op。
+
+### 11.5.1 DataSetConfig: enable_journal
+
+```rust
+pub struct DataSetConfig {
+    // ... existing fields ...
+    /// 是否记录本 dataset 的 journal (默认 true, 创建后不可变)
+    pub enable_journal: bool,
+}
+
+impl DataSetConfigBuilder {
+    /// 设置本 dataset 是否写入 journal。
+    ///
+    /// - `true` (默认): 当 StoreConfig.enable_journal=true 时, 本 dataset 的 create/drop/write/delete/append 写 journal
+    /// - `false`: 即使 StoreConfig.enable_journal=true, 本 dataset 的所有 journal record 也跳过
+    pub fn enable_journal(mut self, enable: bool) -> Self {
+        self.enable_journal = Some(enable);
+        self
+    }
+}
+```
+
+有效 journal 开关为 `StoreConfig.enable_journal && DataSetConfig.enable_journal`。`DataSetConfig.enable_journal` 写入 dataset meta, reopen 后以 meta 为准; 当前 Store 默认值不会覆盖已有 dataset。
 
 ### 11.6 StoreConfig: enable_background_thread
 
@@ -300,7 +323,9 @@ pub struct TmslDatasetConfigFFI {
     pub initial_index_segment_size: u64,
     pub retention_window: u64,
     pub compress_level: u8,
+    pub compress_type: u8,               // 0=zstd, 1=deflate
     pub index_continuous: u8,            // 0=false, non-zero=true
+    pub enable_journal: u8,              // 0=false, non-zero=true; default true
 }
 
 // Store 管理

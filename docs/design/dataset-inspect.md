@@ -53,6 +53,8 @@ pub struct DataSetInfo {
     // ─── 数据保留 ─────────────────────────────────────────────────────────
     /// 数据保留窗口 (与 timestamp 同单位，0=不限制)
     pub retention_window: u64,
+    /// 是否记录本 dataset 的 journal (创建后不可变)
+    pub enable_journal: bool,
 
     // ─── 元数据 ───────────────────────────────────────────────────────────
     /// 数据集创建时间 (Unix milliseconds)
@@ -165,6 +167,7 @@ typedef struct {
     uint8_t compress_level;
     uint8_t index_continuous;
     uint64_t retention_window;
+    uint8_t enable_journal;
     int64_t create_time;
 } TmslDataSetInfo;
 
@@ -228,6 +231,7 @@ class DataSetInfo:
     compress_level: int
     index_continuous: int
     retention_window: int
+    enable_journal: bool
     create_time: int
 
 class DataSetState:
@@ -285,6 +289,7 @@ fn build_info(&self) -> DataSetInfo {
         compress_level: self.config.compress_level,
         index_continuous: self.config.index_continuous,
         retention_window: self.retention_window,
+        enable_journal: self.config.enable_journal,
         create_time: self.config.create_time, // 需要从 meta 读取
     }
 }

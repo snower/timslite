@@ -76,3 +76,16 @@ class TestConfig:
             ds.write(150, b"middle")  # fills gap within segment range
             results = ds.query_all(1, 300)
             assert len(results) == 3
+
+    def test_create_dataset_enable_journal_false(self, tmpdir):
+        """Dataset-level enable_journal=False suppresses this dataset's records."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("quiet", "data", enable_journal=False)
+            inspect = store.inspect_dataset("quiet", "data")
+            assert inspect.info.enable_journal is False
+            assert inspect.state.has_journal is False
+
+            ds = store.open_dataset("quiet", "data")
+            ds.write(1, b"quiet")
+            store.drop_dataset("quiet", "data")
+            assert store.journal_query(1, 100) == []

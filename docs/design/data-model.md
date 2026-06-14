@@ -486,6 +486,9 @@ pub struct DataSetConfig {
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
     pub retention_window: u64, // same unit as timestamp, 0=no limit
+    pub enable_journal: bool,  // default true, persisted in meta
     pub create_time: i64,      // unix milliseconds
 }
 ```
+
+`DataSetConfig.enable_journal` is a dataset creation/open setting, not a Store runtime setting. Journal records for a dataset are emitted only when `StoreConfig.enable_journal && DataSetConfig.enable_journal` is true.

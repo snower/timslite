@@ -80,6 +80,26 @@ fn t14_2_create_with_builder_override() {
 }
 
 #[test]
+fn t39_1_dataset_config_builder_defaults_and_overrides_journal() {
+    use timslite::{DataSetConfigBuilder, StoreConfig};
+
+    let store_config = StoreConfig::builder().enable_journal(false).build();
+    let default_dataset = DataSetConfigBuilder::from_store(&store_config)
+        .build()
+        .unwrap();
+    assert!(
+        default_dataset.enable_journal,
+        "dataset journal defaults to true independent of the global store switch"
+    );
+
+    let disabled_dataset = DataSetConfigBuilder::from_store(&store_config)
+        .enable_journal(false)
+        .build()
+        .unwrap();
+    assert!(!disabled_dataset.enable_journal);
+}
+
+#[test]
 fn t14_3_backward_compat_existing_api() {
     use timslite::{Store, StoreConfig};
 

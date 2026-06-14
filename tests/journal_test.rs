@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use timslite::{
-    JournalRecord, JournalRecordKind, Store, StoreConfig, JOURNAL_DATASET_NAME,
-    JOURNAL_DATASET_TYPE,
+    DataSetConfigBuilder, JournalRecord, JournalRecordKind, Store, StoreConfig,
+    JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -422,6 +422,111 @@ fn t28_15_journal_queue_consumes_0x13_records() {
         append_count,
         other_count
     );
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t39_1_dataset_journal_disabled_skips_all_record_kinds() {
+    let dir = temp_dir("dataset_journal_disabled");
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
+
+    let quiet_handle = store
+        .create_dataset_with_config(
+            "quiet",
+            "data",
+            Some(DataSetConfigBuilder::from_store(&config).enable_journal(false)),
+        )
+        .unwrap();
+    let quiet_identifier = store.dataset_identifier(quiet_handle).unwrap();
+
+    store
+        .write_dataset(quiet_handle, 10, b"quiet_write")
+        .unwrap();
+    store
+        .append_dataset(quiet_handle, 20, b"quiet_append")
+        .unwrap();
+    store.delete_dataset_record(quiet_handle, 10).unwrap();
+
+    let loud_handle = store
+        .create_dataset_with_config("loud", "data", None)
+        .unwrap();
+    let loud_identifier = store.dataset_identifier(loud_handle).unwrap();
+    store.write_dataset(loud_handle, 10, b"loud_write").unwrap();
+    store
+        .append_dataset(loud_handle, 20, b"loud_append")
+        .unwrap();
+    store.delete_dataset_record(loud_handle, 10).unwrap();
+
+    store.drop_dataset(quiet_handle).unwrap();
+    store.drop_dataset(loud_handle).unwrap();
+
+    let records = read_all_journal_records(&mut store);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.dataset_identifier != quiet_identifier),
+        "disabled dataset should not emit create/drop/write/delete/append records"
+    );
+    assert!(records.iter().any(|record| {
+        record.dataset_identifier == loud_identifier
+            && record.kind == JournalRecordKind::CreateDataset
+    }));
+    assert!(records.iter().any(|record| {
+        record.dataset_identifier == loud_identifier && record.kind == JournalRecordKind::DataWrite
+    }));
+    assert!(records.iter().any(|record| {
+        record.dataset_identifier == loud_identifier && record.kind == JournalRecordKind::DataAppend
+    }));
+    assert!(records.iter().any(|record| {
+        record.dataset_identifier == loud_identifier && record.kind == JournalRecordKind::DataDelete
+    }));
+    assert!(records.iter().any(|record| {
+        record.dataset_identifier == loud_identifier
+            && record.kind == JournalRecordKind::DropDataset
+    }));
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t39_2_dataset_journal_disabled_persists_after_reopen() {
+    let dir = temp_dir("dataset_journal_disabled_reopen");
+    let config = test_config();
+
+    {
+        let mut store = Store::open(&dir, config.clone()).unwrap();
+        let quiet_handle = store
+            .create_dataset_with_config(
+                "quiet",
+                "data",
+                Some(DataSetConfigBuilder::from_store(&config).enable_journal(false)),
+            )
+            .unwrap();
+        let inspect = store.inspect_dataset("quiet", "data").unwrap();
+        assert!(!inspect.info.enable_journal);
+        assert!(!inspect.state.has_journal);
+        store.close_dataset(quiet_handle).unwrap();
+        store.close().unwrap();
+    }
+
+    let mut store = Store::open(&dir, config).unwrap();
+    let quiet_handle = store.open_dataset("quiet", "data").unwrap();
+    let quiet_identifier = store.dataset_identifier(quiet_handle).unwrap();
+    let inspect = store.inspect_dataset("quiet", "data").unwrap();
+    assert!(!inspect.info.enable_journal);
+    assert!(!inspect.state.has_journal);
+
+    store
+        .write_dataset(quiet_handle, 10, b"quiet_after_reopen")
+        .unwrap();
+    store.drop_dataset(quiet_handle).unwrap();
+
+    let records = read_all_journal_records(&mut store);
+    assert!(records
+        .iter()
+        .all(|record| record.dataset_identifier != quiet_identifier));
 
     store.close().unwrap();
 }

@@ -53,6 +53,9 @@ pub struct PyDataSetInfo {
     /// Data retention window (same unit as timestamp, 0=no limit)
     #[pyo3(get)]
     pub retention_window: u64,
+    /// Whether this dataset records journal entries when Store journal is enabled
+    #[pyo3(get)]
+    pub enable_journal: bool,
     /// Dataset creation time (Unix milliseconds)
     #[pyo3(get)]
     pub create_time: i64,
@@ -145,6 +148,7 @@ impl From<timslite::DataSetInfo> for PyDataSetInfo {
             compress_level: info.compress_level,
             index_continuous: info.index_continuous,
             retention_window: info.retention_window,
+            enable_journal: info.enable_journal,
             create_time: info.create_time,
         }
     }
@@ -269,7 +273,7 @@ impl PyStore {
     ///
     /// Only `name` and `dataset_type` are required. All other parameters
     /// inherit from StoreConfig defaults unless overridden.
-    #[pyo3(signature = (name, dataset_type, *, data_segment_size=None, index_segment_size=None, compress_level=None, index_continuous=false, initial_data_segment_size=None, initial_index_segment_size=None))]
+    #[pyo3(signature = (name, dataset_type, *, data_segment_size=None, index_segment_size=None, compress_level=None, index_continuous=false, initial_data_segment_size=None, initial_index_segment_size=None, enable_journal=true))]
     #[allow(clippy::too_many_arguments)]
     fn create_dataset(
         &mut self,
@@ -281,6 +285,7 @@ impl PyStore {
         index_continuous: bool,
         initial_data_segment_size: Option<u64>,
         initial_index_segment_size: Option<u64>,
+        enable_journal: bool,
     ) -> PyResult<()> {
         let store = self
             .inner
@@ -306,6 +311,7 @@ impl PyStore {
         if let Some(v) = initial_index_segment_size {
             builder = builder.initial_index_segment_size(v);
         }
+        builder = builder.enable_journal(enable_journal);
 
         wrap(store.create_dataset_with_config(name, dataset_type, Some(builder)))?;
         Ok(())

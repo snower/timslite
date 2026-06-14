@@ -47,6 +47,7 @@
 | 36 | Journal 专用无索引存储 | ✅ 完成 | [phase-36-journal-dedicated-storage.md](docs/plan/phase-36-journal-dedicated-storage.md) |
 | 37 | Journal Record TV Format | ✅ 完成 | [phase-37-journal-record-tv-format.md](docs/plan/phase-37-journal-record-tv-format.md) |
 | 38 | zstd Frame Checksum | ✅ 完成 | [phase-38-zstd-frame-checksum.md](docs/plan/phase-38-zstd-frame-checksum.md) |
+| 39 | Dataset Journal Toggle | ✅ 完成 | [phase-39-dataset-journal-toggle.md](docs/plan/phase-39-dataset-journal-toggle.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -107,6 +108,13 @@
 - [x] 测试 — zstd frame header checksum flag、zstd roundtrip、deflate 不受影响
 - [x] 验证 — `cargo fmt -- --check`, `cargo test compress -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`
 
+### Phase 39: Dataset Journal Toggle
+- [x] 设计文档 — `docs/design/journal.md`, `docs/design/meta-format.md`, `docs/design/store-and-ffi.md`, `docs/design/data-model.md`
+- [x] 计划文档 — `docs/plan/phase-39-dataset-journal-toggle.md`, `docs/plan/overview.md`, `plan.md`
+- [x] 实现 — Rust config/meta/dataset/store, FFI/header, Python wrapper
+- [x] 测试 — config/meta roundtrip, Store hook integration, FFI/Python create kwargs
+- [x] 验证 — fmt, targeted tests, full cargo test, cargo check, wrapper pytest, diff hygiene
+
 ---
 
 ## 文档结构
@@ -154,7 +162,8 @@ docs/plan/
 ├── phase-35-dataset-identifier.md   ← Phase 35: Dataset Identifier
 ├── phase-36-journal-dedicated-storage.md ← Phase 36: Journal 专用无索引存储
 ├── phase-37-journal-record-tv-format.md ← Phase 37: Journal Record TV Format
-└── phase-38-zstd-frame-checksum.md  ← Phase 38: zstd Frame Checksum
+├── phase-38-zstd-frame-checksum.md  ← Phase 38: zstd Frame Checksum
+└── phase-39-dataset-journal-toggle.md ← Phase 39: Dataset Journal Toggle
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:
