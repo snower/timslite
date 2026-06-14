@@ -6,7 +6,7 @@
 
 identifier 不替代 `(dataset_name, dataset_type)`:
 
-- `(name, type)` 仍是目录路径、日志记录和人工可读管理入口。
+- `(name, type)` 仍是目录路径、create/drop journal 记录和人工可读管理入口。
 - `identifier` 是 Store 级唯一数字, 只在同一个 Store data directory 内保证唯一。
 - `.journal/logs` 是内部保留 journal append log, 不参与 public identifier 分配和 `open_dataset_by_identifier`。
 
@@ -127,9 +127,12 @@ dataset.identifier() -> int
 
 ## 与 Journal 的关系
 
-Journal v1 create/drop 记录仍以 name/type 为主, 不强制在 TLV 中加入 identifier。identifier 文件属于 dataset 目录元数据, 热迁移工具可以通过 create 记录中的 name/type 打开源 dataset 后读取 identifier。
+Journal record 使用 `identifier` 作为高频数据变更记录的紧凑 dataset 引用。
 
-未来若需要跨 Store 保留相同 identifier, 应在 journal 或 snapshot 设计中显式定义迁移策略; v1 只保证单 Store data directory 内唯一。
+- `0x11`、`0x12`、`0x13` 只存 canonical identifier TV 和固定 payload 字段, 不再重复 `(name,type)` 字符串。
+- `0x01` create 和 `0x02` drop 记录保留 identifier、`name`、`dataset_type` 和 metadata, 使审计、迁移和 dataset 删除后的历史解释仍然自描述。
+- 处理数据变更记录的 consumer 通过当前 Store 的 `identifier -> DataSetKey` 索引解析目标 dataset; 离线 replay 工具可通过 create/drop catalog 记录建立同样映射。
+- `identifier` 仍是 Store-local。跨 Store 迁移若需要保留源 identifier, 必须显式定义源 id 到目标 dataset 的映射; journal record 格式本身不保证全局唯一。
 
 ## 测试要求
 

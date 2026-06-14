@@ -139,8 +139,8 @@ reserved: u32
 - 普通 pending block 聚合多条 journal record。
 - 当下一条 record 放不进当前 pending block 时, seal + compress 当前 block, 再创建新 block。
 - 如果单条 journal record 加上 record header 超过普通 block 容量, 使用 `SINGLE_RECORD` block。
-- single-record block 允许超过普通 64KiB block payload 上限, 但仍必须受 journal record 最大长度约束。
-- journal TLV outer length 仍为 `u16`, encoded payload 最大 65538 字节 (`log_type:u8 + length:u16 + tlv_list`)。
+- single-record block 允许超过普通 64KiB block payload 上限, 但仍必须受 journal record 字段长度和 `u32 data_len` 约束。
+- journal record payload 使用 `log_type:u8 + TV list`, 不再包含 outer `length:u16`; `JournalLog` 以 record header 的 `data_len` 作为 encoded payload 边界。
 - `payload + record_header` 超出普通 block 时走 single-record, 不截断。
 
 ## Append 流程

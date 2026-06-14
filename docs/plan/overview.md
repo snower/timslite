@@ -43,6 +43,7 @@ Phase 33: Dirty Segment Flush Queue        ✅ 完成
 Phase 34: Ordered Segment Registry         ✅ 完成
 Phase 35: Dataset Identifier               ✅ 完成
 Phase 36: Journal 专用无索引存储             ✅ 完成
+Phase 37: Journal Record TV Format         ⏳ 计划中
 ```
 
 ## 目录结构变更 (核心)
@@ -173,6 +174,9 @@ Phase 35 (Dataset Identifier: Store 分配数字 identifier)
           │
           ▼
 Phase 36 (Journal 专用无索引存储: JournalSegment + JournalLog + JournalQueue)
+          │
+          ▼
+Phase 37 (Journal Record TV Format: canonical identifier + log_type-scoped TV)
 ```
 
 ## 风险与应对
@@ -212,6 +216,8 @@ Phase 36 (Journal 专用无索引存储: JournalSegment + JournalLog + JournalQu
 | Journal queue 被外部伪造 | 热迁移/恢复消费者读到非系统日志 | `.journal/logs` queue 禁止外部 `push`, producer 仅允许 `JournalManager.append_*` |
 | Journal 专用存储 API 断裂 | `open_dataset(".journal", "logs")` 不再返回 DataSet handle | Phase 36 提供 dedicated Rust/FFI/Python journal read/query/queue API, 文档明确 `.journal/logs` 不是普通 DataSet |
 | Journal sequence off-by-one | queue 可能跳过第一条日志或重复消费 | sequence 从 `1` 开始, 统一使用 `next_sequence` 命名, latest 为 `next_sequence - 1` |
+| Journal TV 无统一 length | 已知 log_type 内未知字段无法安全跳过 | Phase 37 改为 log_type-scoped fixed schema, known log_type 遇到 schema 外 type 直接 `InvalidData`; 扩展通过新增 log_type 或显式 length extension |
+| Journal data record 只存 identifier | 离线 consumer 若没有 catalog 无法解析 name/type | Phase 37 保留 create/drop 中的 identifier + name + type + metadata, replay 工具先建立 identifier catalog |
 | Append 修改历史数据 | 旧 timestamp 可能位于 compressed block 或历史段中间, 无法稳定增长 | Phase 29 只允许 `timestamp > latest` 创建或 `timestamp == latest` 且位于未压缩段尾时追加 |
 | Append 造成普通 block 过大 | 最新 record 追加后可能超过普通 pending block 容量 | 直接返回错误, 不迁移到独占 block |
 | 单条 record 过大 | `data_len:u32` 可表达但资源消耗不可控 | `write` 和 `append` 均限制单条 record 纯数据长度不超过 4MiB |
@@ -261,3 +267,4 @@ Phase 36 (Journal 专用无索引存储: JournalSegment + JournalLog + JournalQu
 | [phase-34-ordered-segment-registry.md](phase-34-ordered-segment-registry.md) | Ordered Segment Registry | ✅ |
 | [phase-35-dataset-identifier.md](phase-35-dataset-identifier.md) | Dataset Identifier | ✅ |
 | [phase-36-journal-dedicated-storage.md](phase-36-journal-dedicated-storage.md) | Journal 专用无索引存储 | ✅ |
+| [phase-37-journal-record-tv-format.md](phase-37-journal-record-tv-format.md) | Journal Record TV Format | ⏳ |

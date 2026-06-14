@@ -68,45 +68,56 @@ append:
 - 如果 `next_sequence > i64::MAX`, 返回 `InvalidData`。
 - 文档和代码中统一使用 `next_sequence` 表示下一条待分配序号; 最新已写序号为 `next_sequence - 1`。
 
-业务数据 timestamp 只出现在 `0x11/0x12/0x13` 的 `index_info` TLV 中。
+业务数据 timestamp 只出现在 `0x11/0x12/0x13` 的 `index_info` TV field 中。
 
 ### 25.4 Journal Record 二进制格式
 
 Journal record payload:
 
 ```text
-┌──────────────┬───────────────┬────────────────────────────┐
-│ log_type:u8  │ length:u16 LE │ TLV 列表 (length bytes)     │
-└──────────────┴───────────────┴────────────────────────────┘
+┌──────────────┬──────────────────────────────┐
+│ log_type:u8  │ TV / type-defined value list │
+└──────────────┴──────────────────────────────┘
 ```
 
-TLV entry:
+Journal record payload 不再包含 outer `length:u16`。底层 `JournalSegment` 的每条 record 已经有
+`payload_len:u32 + sequence:i64`, 因此 `JournalRecord::decode()` 以传入 payload slice 的长度作为完整边界。
+
+字段采用 TV / type-defined value 格式:
 
 ```text
-┌─────────┬────────────────┬────────────────────┐
-│ type:u8 │ length:u16 LE  │ value:length bytes │
-└─────────┴────────────────┴────────────────────┘
+┌─────────┬──────────────────────────────────────────────┐
+│ type:u8 │ value bytes, interpreted by log_type + type  │
+└─────────┴──────────────────────────────────────────────┘
 ```
 
 约束:
 
-- outer `length` 是所有 TLV entry 的总字节数, 不包含 `log_type` 和 outer `length`。
-- TLV `length` 和 outer `length` 均为 `u16 LE`, 最大 65535。
-- encoded journal payload 最大为 65538 字节。
-- 若 encoded payload 加 record header 后超过普通 block 容量, journal segment 使用 `SINGLE_RECORD` block。
+- parser 必须先读取 `log_type`, 再按该 `log_type` 的 schema 解析后续字段。
+- 字符串和 metadata 字段在 type 后自带 `u16 LE` length; 固定字段直接使用 schema 定义的固定字节数。
+- field order 使用 canonical 顺序: identifier 在前, 其它字段按本节列出的 type 递增顺序写入。
+- encoder 必须使用 canonical 顺序; decoder 必须拒绝缺失字段、重复字段、字段顺序错误和当前 `log_type` schema 外的字段。
 - 所有多字节整数使用 Little Endian。
-- parser 遇到未知 TLV type 可跳过, 但必须拒绝越界 length。
+- 若 encoded payload 加 record header 后超过普通 block 容量, journal segment 使用 `SINGLE_RECORD` block。
 
-通用 TLV:
+通用 identifier TV:
 
-| TLV type | 名称 | value 类型 | 适用日志 |
-|----------|------|------------|----------|
-| `0x01` | dataset name | UTF-8 bytes | 全部 |
-| `0x02` | dataset type | UTF-8 bytes | 全部 |
-| `0x03` | metadata / index info | 变体 | 全部 |
-| `0x04` | append info | 8 bytes | `0x13` |
+| Type | Value | 合法范围 | 说明 |
+|------|-------|----------|------|
+| `0x01` | `u8` | `1..=255` | identifier 使用 1 字节 |
+| `0x02` | `u16 LE` | `256..=65535` | identifier 使用 2 字节 |
+| `0x03` | `u32 LE` | `65536..=u32::MAX` | identifier 使用 4 字节 |
+| `0x04` | `u64 LE` | `u32::MAX+1..=u64::MAX` | identifier 使用 8 字节 |
 
-`name` 和 `dataset_type` 必须复用普通 dataset 路径安全规则: 非空、最长 255 字节, 且整体匹配 `^[0-9A-Za-z_-]+$`。
+identifier 必须使用 canonical/minimal encoding:
+
+- `0` 非法。
+- 小值必须使用最短 type。例如 identifier `42` 必须编码为 `0x01 + u8(42)`, 不允许编码为 `0x02/0x03/0x04`。
+- decoder 遇到非最短编码必须返回 `InvalidData`。
+
+schema 外的未知 type 不能安全跳过, 因为 TV 没有统一 length。当前版本遇到当前 `log_type` schema 之外的 type 必须返回 `InvalidData`。未来扩展应新增 `log_type`, 或新增明确自带 length 的 extension type。
+
+`name` 和 `dataset_type` 只出现在 create/drop 记录中, 必须复用普通 dataset 路径安全规则: 非空、最长 255 字节, 且整体匹配 `^[0-9A-Za-z_-]+$`。虽然 name/type 字段自带 `u16` length, 仍不得放宽 path component 上限。
 
 ### 25.5 日志类型
 
@@ -124,34 +135,37 @@ Journal v1 记录五类事件:
 
 ```text
 log_type = 0x01
-TLV:
-  0x01 name      : UTF-8 bytes
-  0x02 type      : UTF-8 bytes
-  0x03 metadata  : DataSetMeta 文件除固定 header 外的数据
+TV:
+  0x01..0x04 identifier : canonical dataset identifier
+  0x10 name             : u16 length + UTF-8 bytes
+  0x11 type             : u16 length + UTF-8 bytes
+  0x12 metadata         : u16 length + DataSetMeta 文件除固定 header 外的数据
 ```
 
 `metadata` 来源为 `{dataset}/meta` 文件去掉固定 8 字节 header 后的 TLV meta_values 原始字节。
+create 记录保留 `name`/`type`, 使审计、迁移和离线回放工具在只看 journal stream 时也能建立 identifier 到 dataset key 的初始映射。
 
 #### 25.5.2 `0x02` 删除 dataset
 
 ```text
 log_type = 0x02
-TLV:
-  0x01 name      : UTF-8 bytes
-  0x02 type      : UTF-8 bytes
-  0x03 metadata  : 删除前读取到的 DataSetMeta meta_values
+TV:
+  0x01..0x04 identifier : canonical dataset identifier
+  0x10 name             : u16 length + UTF-8 bytes
+  0x11 type             : u16 length + UTF-8 bytes
+  0x12 metadata         : u16 length + 删除前读取到的 DataSetMeta meta_values
 ```
 
 如果 journal append 失败, 删除操作不回滚。
+drop 记录同样保留 `name`/`type`, 使 dataset 删除后仍能解释历史 identifier。
 
 #### 25.5.3 `0x11` dataset 写入数据
 
 ```text
 log_type = 0x11
-TLV:
-  0x01 name        : UTF-8 bytes
-  0x02 type        : UTF-8 bytes
-  0x03 index_info  : 18 bytes
+TV:
+  0x01..0x04 identifier : canonical dataset identifier
+  0x10 index_info       : 18 bytes
 ```
 
 `index_info`:
@@ -164,28 +178,28 @@ Offset  Size  Type       Field
 ```
 
 `index_info` 使用写入完成后可读取业务 record 的最终 index entry。correction 原地覆盖时 index entry 不变, 仍写 `0x11`。
+`0x11` 不携带 `name`/`type`; consumer 通过 Store 的 `identifier -> DataSetKey` 索引或 create/drop journal catalog 解析目标 dataset。
 
 #### 25.5.4 `0x12` dataset 删除数据
 
 ```text
 log_type = 0x12
-TLV:
-  0x01 name        : UTF-8 bytes
-  0x02 type        : UTF-8 bytes
-  0x03 index_info  : 18 bytes
+TV:
+  0x01..0x04 identifier : canonical dataset identifier
+  0x10 index_info       : 18 bytes
 ```
 
 `index_info` 使用删除前的真实旧 entry, 不记录删除后的 filler sentinel。
+`0x12` 不携带 `name`/`type`; consumer 必须先解析 identifier。
 
 #### 25.5.5 `0x13` dataset append 数据
 
 ```text
 log_type = 0x13
-TLV:
-  0x01 name         : UTF-8 bytes
-  0x02 type         : UTF-8 bytes
-  0x03 index_info   : 18 bytes
-  0x04 append_info  : 8 bytes
+TV:
+  0x01..0x04 identifier : canonical dataset identifier
+  0x10 index_info       : 18 bytes
+  0x11 append_info      : 8 bytes
 ```
 
 `append_info`:
@@ -196,7 +210,7 @@ Offset  Size  Type       Field
 4       4     u32 LE     data_len
 ```
 
-`0x13` 不携带 append bytes。consumer 必须通过源 dataset 的 `read_entry_at_index(index_info)` 获取完整 record, 再用 `data_offset/data_len` 理解本次追加范围。
+`0x13` 不携带 `name`/`type` 或 append bytes。consumer 必须先解析 identifier, 再通过源 dataset 的 `read_entry_at_index(index_info)` 获取完整 record, 并用 `data_offset/data_len` 理解本次追加范围。
 
 ### 25.6 Store/DataSet 集成
 
@@ -218,7 +232,7 @@ Store::open(data_dir):
 
 #### Store::create_dataset / drop_dataset
 
-创建或删除普通 dataset 成功后, 通过 `JournalManager.append_create/drop` 追加 `0x01/0x02`。journal append 失败不回滚主操作。
+创建或删除普通 dataset 成功后, 通过 `JournalManager.append_create/drop` 追加 `0x01/0x02`。调用方必须传入该 dataset 的非零 identifier、`DataSetKey` 和 meta snapshot。journal append 失败不回滚主操作。
 
 #### DataSet runtime context
 
@@ -226,13 +240,13 @@ Store 管理的业务 `DataSet` 持有 `DataSetRuntimeContext`, 其中 journal h
 
 ```rust
 trait DataSetJournalSink {
-    fn record_write(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()>;
-    fn record_delete(&self, key: &DataSetKey, entry: IndexEntry) -> Result<()>;
-    fn record_append(&self, key: &DataSetKey, entry: IndexEntry, data_offset: u32, data_len: u32) -> Result<()>;
+    fn record_write(&self, identifier: u64, entry: IndexEntry) -> Result<()>;
+    fn record_delete(&self, identifier: u64, entry: IndexEntry) -> Result<()>;
+    fn record_append(&self, identifier: u64, entry: IndexEntry, data_offset: u32, data_len: u32) -> Result<()>;
 }
 ```
 
-`enable_journal=false` 时 hook 为 no-op。
+Store 管理的业务 `DataSet` 在执行 journal hook 前必须已经持有非零 identifier。低层 `DataSet::create/open` 绕过 Store 时没有 Store runtime context, journal hook 仍为 no-op。`enable_journal=false` 时 hook 为 no-op。
 
 ### 25.7 JournalManager API
 
@@ -247,11 +261,11 @@ pub(crate) enum JournalManager {
 
 impl JournalManager {
     pub(crate) fn open_or_create(data_dir: &Path, config: &StoreConfig) -> Result<Self>;
-    pub(crate) fn append_create(&self, key: &DataSetKey, meta_values: &[u8]) -> Result<Option<i64>>;
-    pub(crate) fn append_drop(&self, key: &DataSetKey, meta_values: &[u8]) -> Result<Option<i64>>;
-    pub(crate) fn append_data_write(&self, key: &DataSetKey, entry: IndexEntry) -> Result<Option<i64>>;
-    pub(crate) fn append_data_delete(&self, key: &DataSetKey, old_entry: IndexEntry) -> Result<Option<i64>>;
-    pub(crate) fn append_data_append(&self, key: &DataSetKey, entry: IndexEntry, data_offset: u32, data_len: u32) -> Result<Option<i64>>;
+    pub(crate) fn append_create(&self, identifier: u64, key: &DataSetKey, meta_values: &[u8]) -> Result<Option<i64>>;
+    pub(crate) fn append_drop(&self, identifier: u64, key: &DataSetKey, meta_values: &[u8]) -> Result<Option<i64>>;
+    pub(crate) fn append_data_write(&self, identifier: u64, entry: IndexEntry) -> Result<Option<i64>>;
+    pub(crate) fn append_data_delete(&self, identifier: u64, old_entry: IndexEntry) -> Result<Option<i64>>;
+    pub(crate) fn append_data_append(&self, identifier: u64, entry: IndexEntry, data_offset: u32, data_len: u32) -> Result<Option<i64>>;
     pub(crate) fn latest_sequence(&self) -> Result<Option<i64>>;
     pub(crate) fn read(&self, sequence: i64) -> Result<Option<(i64, Vec<u8>)>>;
     pub(crate) fn query(&self, start: i64, end: i64) -> Result<Vec<(i64, Vec<u8>)>>;
@@ -346,16 +360,17 @@ Journal v1 不参与普通 dataset retention。它不支持 delete 或 invalid_r
 Journal record parser:
 
 1. 读取 `log_type`。
-2. 读取 outer `length: u16 LE`。
-3. 校验 payload 至少包含 `length` 字节。
-4. 逐个解析 TLV, 未知 type 跳过。
-5. 对已知日志类型校验必需 TLV 是否存在且长度正确。
+2. 根据 `log_type` 选择固定 schema。
+3. 逐个解析 TV 字段; parser 以传入 payload slice 的末尾作为记录边界。
+4. 校验 identifier 使用 canonical/minimal encoding。
+5. 对已知日志类型校验必需字段存在、字段顺序正确、没有重复字段、长度正确且无剩余字节。
 
 兼容规则:
 
 - 未来可新增 log_type, 旧 reader 可跳过未知 log_type。
-- 未来可在现有 log_type 中追加 TLV, 旧 reader 跳过未知 TLV。
-- 已有 TLV type 的语义和二进制类型不可变更。
+- 已知 log_type 内不能追加无长度字段, 因为 TV 没有统一 length, 旧 reader 无法安全跳过未知 type。
+- 如需扩展已知事件, 应新增 log_type, 或预留一个明确自带 `u16/u32 length` 的 extension type 并在本设计中定义其跳过规则。
+- 已有 type 的语义和二进制类型不可变更。
 
 ### 25.13 模块归属
 

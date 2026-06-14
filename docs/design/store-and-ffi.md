@@ -113,7 +113,7 @@ impl Store {
 - `-`
 - `_`
 
-不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。该 255 字节上限也用于 journal name/type TLV value, 避免主操作成功后才发现 journal 字段不可编码。
+不允许 `.`, `..`, `/`, `\`, 空格、控制字符、非 ASCII 字符或任何其它字符。所有 Store/FFI 创建、打开和按名称删除入口在拼接路径前执行同一校验; 校验失败返回 `InvalidData`。该 255 字节上限也用于 journal create/drop 记录中的 name/type 字段, 避免主操作成功后才发现 journal 字段不可编码。
 
 内部保留路径 `.journal/logs` 不适用公共命名规则。它不再作为普通 DataSet handle 暴露; `open_dataset(".journal", "logs")` 必须返回 `NotFound` 或 `InvalidData`。`enable_journal=true` 时, 调用方通过 `journal_read` / `journal_query` / `open_journal_queue` 等专用 API 读取和消费 journal; public create/write/append/delete/drop/queue_push 仍必须拒绝 `.journal`。`enable_journal=false` 时, 所有 journal 专用 API 返回 `NotFound`。
 
