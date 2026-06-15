@@ -2112,8 +2112,8 @@ pub struct TmslDataSetState {
     pub latest_written_timestamp: i64,
     /// Number of currently open data segments
     pub open_data_segments: u32,
-    /// Number of closed data segments
-    pub closed_data_segments: u32,
+    /// Total number of data segments
+    pub data_segments: u32,
     /// Total record count across all data segments
     pub total_record_count: u64,
     /// Total used space across all data segments (bytes)
@@ -2122,14 +2122,14 @@ pub struct TmslDataSetState {
     pub total_uncompressed_size: u64,
     /// Total invalid record count across all data segments
     pub total_invalid_record_count: u64,
-    /// Global minimum timestamp
+    /// Global minimum timestamp from the index-visible range
     pub min_timestamp: i64,
-    /// Global maximum timestamp
+    /// Global maximum timestamp from the index-visible range
     pub max_timestamp: i64,
     /// Number of currently open index segments
     pub open_index_segments: u32,
-    /// Number of closed index segments
-    pub closed_index_segments: u32,
+    /// Total number of index segments
+    pub index_segments: u32,
     /// Number of in-memory buffered index entries
     pub pending_index_entries: u32,
     /// Index base timestamp (0 if no data)
@@ -2216,7 +2216,7 @@ pub extern "C" fn tmsl_store_inspect_dataset(
         let state = TmslDataSetState {
             latest_written_timestamp: result.state.latest_written_timestamp,
             open_data_segments: result.state.open_data_segments,
-            closed_data_segments: result.state.closed_data_segments,
+            data_segments: result.state.data_segments,
             total_record_count: result.state.total_record_count,
             total_data_size: result.state.total_data_size,
             total_uncompressed_size: result.state.total_uncompressed_size,
@@ -2224,7 +2224,7 @@ pub extern "C" fn tmsl_store_inspect_dataset(
             min_timestamp: result.state.min_timestamp,
             max_timestamp: result.state.max_timestamp,
             open_index_segments: result.state.open_index_segments,
-            closed_index_segments: result.state.closed_index_segments,
+            index_segments: result.state.index_segments,
             pending_index_entries: result.state.pending_index_entries,
             base_timestamp: result.state.base_timestamp.unwrap_or(0),
             read_only: u8::from(result.state.read_only),

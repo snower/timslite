@@ -46,7 +46,7 @@ Phase 36: Journal 专用无索引存储             ✅ 完成
 Phase 37: Journal Record TV Format         ✅ 完成
 Phase 38: zstd Frame Checksum              ✅ 完成
 Phase 39: Dataset Journal Toggle           ✅ 完成
-Phase 40: Dataset Inspect State Cache      ⏳ 文档完成, 待实现
+Phase 40: Dataset Inspect State Cache      ✅ 完成
 ```
 
 ## 目录结构变更 (核心)
@@ -286,4 +286,4 @@ Phase 40 (Dataset Inspect State Cache: archived stats file + total/open segment 
 | [phase-37-journal-record-tv-format.md](phase-37-journal-record-tv-format.md) | Journal Record TV Format | ✅ |
 | [phase-38-zstd-frame-checksum.md](phase-38-zstd-frame-checksum.md) | zstd Frame Checksum | ✅ |
 | [phase-39-dataset-journal-toggle.md](phase-39-dataset-journal-toggle.md) | Dataset Journal Toggle | ✅ |
-| [phase-40-dataset-inspect-state.md](phase-40-dataset-inspect-state.md) | Dataset Inspect State Cache | ⏳ |
+| [phase-40-dataset-inspect-state.md](phase-40-dataset-inspect-state.md) | Dataset Inspect State Cache | ✅ |

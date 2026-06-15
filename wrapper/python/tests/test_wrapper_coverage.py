@@ -190,8 +190,12 @@ class TestFFICoverage:
             # Check state fields
             assert hasattr(result, "state")
             assert hasattr(result.state, "latest_written_timestamp")
+            assert hasattr(result.state, "open_data_segments")
+            assert hasattr(result.state, "data_segments")
             assert hasattr(result.state, "total_record_count")
             assert hasattr(result.state, "total_data_size")
+            assert hasattr(result.state, "open_index_segments")
+            assert hasattr(result.state, "index_segments")
 
 
 class TestEdgeCases:

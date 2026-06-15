@@ -47,7 +47,7 @@ fn test_inspect_basic() {
     // Verify state fields (empty dataset)
     assert_eq!(result.state.latest_written_timestamp, 0);
     assert_eq!(result.state.open_data_segments, 0);
-    assert_eq!(result.state.closed_data_segments, 0);
+    assert_eq!(result.state.data_segments, 0);
     assert_eq!(result.state.total_record_count, 0);
     assert_eq!(result.state.total_data_size, 0);
     assert_eq!(result.state.total_uncompressed_size, 0);
@@ -55,7 +55,7 @@ fn test_inspect_basic() {
     assert_eq!(result.state.min_timestamp, 0);
     assert_eq!(result.state.max_timestamp, 0);
     assert_eq!(result.state.open_index_segments, 0);
-    assert_eq!(result.state.closed_index_segments, 0);
+    assert_eq!(result.state.index_segments, 0);
     assert_eq!(result.state.pending_index_entries, 0);
     assert_eq!(result.state.base_timestamp, None);
     assert!(!result.state.read_only);
@@ -166,9 +166,136 @@ fn test_inspect_state_multi_segment() {
 
     assert_eq!(result.state.latest_written_timestamp, 1000);
     assert_eq!(result.state.total_record_count, 10);
-    assert!(result.state.open_data_segments > 1 || result.state.closed_data_segments > 0);
+    assert!(result.state.data_segments > 1);
     assert_eq!(result.state.min_timestamp, 100);
     assert_eq!(result.state.max_timestamp, 1000);
+}
+
+#[test]
+fn test_inspect_state_file_created_on_dataset_create() {
+    let dir = temp_dir("inspect_state_file_created");
+    let id = DataSetKey {
+        name: "sensor".into(),
+        dataset_type: "temperature".into(),
+    };
+    let _ds = DataSet::create(id, dir.clone(), 1024, 4096, 6, 0, 1024, 4096, 0).unwrap();
+
+    let state_path = dir.join("state");
+    assert!(state_path.exists(), "dataset state file should be created");
+    assert_eq!(std::fs::metadata(state_path).unwrap().len(), 64);
+}
+
+#[test]
+fn test_inspect_counts_archived_segments_after_reopen_without_opening_all_segments() {
+    let dir = temp_dir("inspect_archived_after_reopen");
+    let id = DataSetKey {
+        name: "sensor".into(),
+        dataset_type: "temperature".into(),
+    };
+    let data_segment_size = 256;
+    let mut ds = DataSet::create(
+        id.clone(),
+        dir.clone(),
+        data_segment_size,
+        4096,
+        0,
+        0,
+        data_segment_size,
+        4096,
+        0,
+    )
+    .unwrap();
+
+    for i in 0..10 {
+        ds.write((i + 1) * 100, &[0xAA; 64]).unwrap();
+    }
+    ds.close().unwrap();
+
+    let reopened = DataSet::open(id, dir).unwrap();
+    let result = reopened.inspect().unwrap();
+
+    assert_eq!(result.state.open_data_segments, 0);
+    assert!(result.state.data_segments > 1);
+    assert_eq!(result.state.total_record_count, 10);
+    assert!(result.state.total_data_size > 0);
+    assert!(result.state.total_uncompressed_size > 0);
+    assert_eq!(result.state.total_invalid_record_count, 0);
+    assert_eq!(result.state.min_timestamp, 100);
+    assert_eq!(result.state.max_timestamp, 1000);
+}
+
+#[test]
+fn test_inspect_archived_delete_updates_invalid_count() {
+    let dir = temp_dir("inspect_archived_delete_invalid");
+    let id = DataSetKey {
+        name: "sensor".into(),
+        dataset_type: "temperature".into(),
+    };
+    let data_segment_size = 256;
+    let mut ds = DataSet::create(
+        id,
+        dir,
+        data_segment_size,
+        4096,
+        0,
+        0,
+        data_segment_size,
+        4096,
+        0,
+    )
+    .unwrap();
+
+    for i in 0..10 {
+        ds.write((i + 1) * 100, &[0xAA; 64]).unwrap();
+    }
+    let before = ds.inspect().unwrap();
+    assert!(before.state.data_segments > 1);
+    assert_eq!(before.state.total_invalid_record_count, 0);
+
+    ds.delete(100).unwrap();
+    let after = ds.inspect().unwrap();
+
+    assert_eq!(
+        after.state.total_record_count,
+        before.state.total_record_count
+    );
+    assert_eq!(after.state.total_invalid_record_count, 1);
+}
+
+#[test]
+fn test_inspect_retention_reclaim_subtracts_archived_stats() {
+    let dir = temp_dir("inspect_retention_subtracts_state");
+    let id = DataSetKey {
+        name: "sensor".into(),
+        dataset_type: "temperature".into(),
+    };
+    let data_segment_size = 256;
+    let mut ds = DataSet::create(
+        id,
+        dir,
+        data_segment_size,
+        4096,
+        0,
+        0,
+        data_segment_size,
+        4096,
+        500,
+    )
+    .unwrap();
+
+    for i in 0..10 {
+        ds.write((i + 1) * 100, &[0xAA; 64]).unwrap();
+    }
+    let before = ds.inspect().unwrap();
+
+    let reclaimed = ds.reclaim_expired_segments().unwrap();
+    let after = ds.inspect().unwrap();
+
+    assert!(reclaimed > 0);
+    assert!(after.state.data_segments < before.state.data_segments);
+    assert!(after.state.total_record_count < before.state.total_record_count);
+    assert!(after.state.total_data_size < before.state.total_data_size);
+    assert!(after.state.total_uncompressed_size < before.state.total_uncompressed_size);
 }
 
 #[test]

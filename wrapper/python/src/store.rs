@@ -71,9 +71,9 @@ pub struct PyDataSetState {
     /// Number of currently open data segments
     #[pyo3(get)]
     pub open_data_segments: u32,
-    /// Number of closed data segments
+    /// Total number of data segments
     #[pyo3(get)]
-    pub closed_data_segments: u32,
+    pub data_segments: u32,
     /// Total record count across all data segments
     #[pyo3(get)]
     pub total_record_count: u64,
@@ -86,18 +86,18 @@ pub struct PyDataSetState {
     /// Total invalid record count across all data segments
     #[pyo3(get)]
     pub total_invalid_record_count: u64,
-    /// Global minimum timestamp
+    /// Global minimum timestamp from the index-visible range
     #[pyo3(get)]
     pub min_timestamp: i64,
-    /// Global maximum timestamp
+    /// Global maximum timestamp from the index-visible range
     #[pyo3(get)]
     pub max_timestamp: i64,
     /// Number of currently open index segments
     #[pyo3(get)]
     pub open_index_segments: u32,
-    /// Number of closed index segments
+    /// Total number of index segments
     #[pyo3(get)]
-    pub closed_index_segments: u32,
+    pub index_segments: u32,
     /// Number of in-memory buffered index entries
     #[pyo3(get)]
     pub pending_index_entries: u32,
@@ -159,7 +159,7 @@ impl From<timslite::DataSetState> for PyDataSetState {
         Self {
             latest_written_timestamp: state.latest_written_timestamp,
             open_data_segments: state.open_data_segments,
-            closed_data_segments: state.closed_data_segments,
+            data_segments: state.data_segments,
             total_record_count: state.total_record_count,
             total_data_size: state.total_data_size,
             total_uncompressed_size: state.total_uncompressed_size,
@@ -167,7 +167,7 @@ impl From<timslite::DataSetState> for PyDataSetState {
             min_timestamp: state.min_timestamp,
             max_timestamp: state.max_timestamp,
             open_index_segments: state.open_index_segments,
-            closed_index_segments: state.closed_index_segments,
+            index_segments: state.index_segments,
             pending_index_entries: state.pending_index_entries,
             base_timestamp: state.base_timestamp,
             read_only: state.read_only,

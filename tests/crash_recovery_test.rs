@@ -126,10 +126,8 @@ fn t_crash_recover_index_segment_integrity() {
 
         // Verify inspect shows index segments exist
         let info = ds.inspect().unwrap();
-        let total_index_segments =
-            info.state.open_index_segments + info.state.closed_index_segments;
         assert!(
-            total_index_segments > 0 || info.state.pending_index_entries > 0,
+            info.state.index_segments > 0 || info.state.pending_index_entries > 0,
             "index segments or pending entries should exist after crash recovery: {:?}",
             info.state
         );

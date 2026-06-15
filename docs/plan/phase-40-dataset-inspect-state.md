@@ -51,35 +51,37 @@
   - [x] `docs/plan/phase-40-dataset-inspect-state.md`
   - [x] `docs/plan/overview.md`
   - [x] `plan.md`
-- [ ] Rust 实现
-  - [ ] 新增 dataset state file 类型与 open/create/snapshot/update/sync 逻辑
-  - [ ] DataSet create/open 初始化并持有 dataset state cache
-  - [ ] data segment rollover 时归档旧 active tail 统计
-  - [ ] index segment rollover 时归档旧 active index timestamp 范围
-  - [ ] retention 删除 data/index segment 时扣减或更新 state
-  - [ ] delete 命中已归档 data segment 时更新 `total_invalid_record_count`
-  - [ ] `SegmentFlushTarget::DatasetState` 接入 dirty flush queue
-  - [ ] `DataSetState` 字段重命名为 `data_segments` / `index_segments`
-- [ ] FFI / C header 更新
-  - [ ] `TmslDataSetState` 字段改为 `data_segments` / `index_segments`
-  - [ ] `include/timslite.h` 同步
-- [ ] Python wrapper 更新
-  - [ ] `DataSetState` PyClass 字段改为 `data_segments` / `index_segments`
-  - [ ] Python tests 同步断言
-- [ ] 测试
-  - [ ] 空 dataset state 文件初始化
-  - [ ] rollover 后归档统计 + active tail 统计
-  - [ ] inspect 不打开所有历史分段
-  - [ ] retention 删除归档 data/index segment 后 state 更新
-  - [ ] delete 命中归档 data segment 后 invalid count 更新
-  - [ ] dirty flush queue 同步 `DatasetState`
-- [ ] 验证
-  - [ ] `cargo fmt -- --check`
-  - [ ] `cargo test -- --test-threads=1`
-  - [ ] `cargo check`
-  - [ ] `cargo clippy --all-targets -- -D warnings`
-  - [ ] Python wrapper 构建与 pytest (如本地环境支持)
-  - [ ] `git diff --check`
+- [x] Rust 实现
+  - [x] 新增 dataset state file 类型与 open/create/snapshot/update/sync 逻辑
+  - [x] DataSet create/open 初始化并持有 dataset state cache
+  - [x] data segment rollover 时归档旧 active tail 统计
+  - [x] index segment rollover 时归档旧 active index timestamp 范围
+  - [x] retention 删除 data/index segment 时扣减或更新 state
+  - [x] delete 命中已归档 data segment 时更新 `total_invalid_record_count`
+  - [x] `SegmentFlushTarget::DatasetState` 接入 dirty flush queue
+  - [x] `DataSetState` 字段重命名为 `data_segments` / `index_segments`
+- [x] FFI / C header 更新
+  - [x] `TmslDataSetState` 字段改为 `data_segments` / `index_segments`
+  - [x] `include/timslite.h` 同步
+- [x] Python wrapper 更新
+  - [x] `DataSetState` PyClass 字段改为 `data_segments` / `index_segments`
+  - [x] Python tests 同步断言
+- [x] 测试
+  - [x] 空 dataset state 文件初始化
+  - [x] rollover 后归档统计 + active tail 统计
+  - [x] inspect 不打开所有历史分段
+  - [x] retention 删除归档 data/index segment 后 state 更新
+  - [x] delete 命中归档 data segment 后 invalid count 更新
+  - [x] dirty flush queue 同步 `DatasetState`
+- [x] 验证
+  - [x] `cargo fmt -- --check`
+  - [x] `cargo test -- --test-threads=1`
+  - [x] `cargo check`
+  - [x] `cargo clippy --all-targets -- -D warnings`
+  - [x] `cargo test --manifest-path wrapper/python/Cargo.toml -- --test-threads=1`
+  - [x] `maturin develop --manifest-path wrapper/python/Cargo.toml`
+  - [x] `python -m pytest wrapper/python/tests -q`
+  - [x] `git diff --check`
 
 ## 验收标准
 

@@ -516,6 +516,27 @@ impl IndexSegment {
         Ok(IndexEntry::from_bytes(&buf))
     }
 
+    pub(crate) fn last_timestamp(&mut self) -> Option<i64> {
+        if self.wrote_count == 0 {
+            return None;
+        }
+        self.read_entry_at_index(self.wrote_count - 1)
+            .ok()
+            .map(|entry| entry.timestamp)
+    }
+
+    pub(crate) fn last_timestamp_cached(&self) -> Option<i64> {
+        if self.wrote_count == 0 {
+            return None;
+        }
+        let mmap = self.mmap.as_ref()?;
+        let pos = self.header_size as usize + (self.wrote_count - 1) * INDEX_ENTRY_SIZE;
+        if pos + 8 > mmap.len() {
+            return None;
+        }
+        Some(i64::from_le_bytes(mmap[pos..pos + 8].try_into().ok()?))
+    }
+
     /// Range query: all entries with timestamp in [start_ts, end_ts].
     pub fn query_range(&self, start_ts: i64, end_ts: i64) -> Vec<IndexEntry> {
         let mmap = self.mmap.as_ref().expect("index segment must be open");
@@ -621,6 +642,7 @@ pub(crate) struct IndexSegmentMeta {
     pub entries_capacity: usize,
     pub wrote_count: usize, // record_count from header, enables O(1) range check without opening file
     pub header_size: u64,
+    pub last_timestamp: Option<i64>,
 }
 
 impl IndexSegmentMeta {
@@ -637,6 +659,25 @@ impl IndexSegmentMeta {
             entries_capacity,
             wrote_count,
             header_size,
+            last_timestamp: None,
+        }
+    }
+
+    pub fn new_with_last_timestamp(
+        path: std::path::PathBuf,
+        start_timestamp: i64,
+        entries_capacity: usize,
+        wrote_count: usize,
+        header_size: u64,
+        last_timestamp: Option<i64>,
+    ) -> Self {
+        Self {
+            path,
+            start_timestamp,
+            entries_capacity,
+            wrote_count,
+            header_size,
+            last_timestamp,
         }
     }
 }

@@ -761,15 +761,15 @@ typedef struct TmslDataSetInfo {
 typedef struct TmslDataSetState {
     int64_t latest_written_timestamp; /**< Highest written timestamp */
     uint32_t open_data_segments;      /**< Number of currently open data segments */
-    uint32_t closed_data_segments;    /**< Number of closed data segments */
+    uint32_t data_segments;           /**< Total number of data segments */
     uint64_t total_record_count;      /**< Total record count across all data segments */
     uint64_t total_data_size;         /**< Total used space across all data segments (bytes) */
     uint64_t total_uncompressed_size; /**< Total uncompressed size across all data segments (bytes) */
     uint64_t total_invalid_record_count; /**< Total invalid record count across all data segments */
-    int64_t min_timestamp;            /**< Global minimum timestamp */
-    int64_t max_timestamp;            /**< Global maximum timestamp */
+    int64_t min_timestamp;            /**< Global minimum timestamp from the index-visible range */
+    int64_t max_timestamp;            /**< Global maximum timestamp from the index-visible range */
     uint32_t open_index_segments;     /**< Number of currently open index segments */
-    uint32_t closed_index_segments;   /**< Number of closed index segments */
+    uint32_t index_segments;          /**< Total number of index segments */
     uint32_t pending_index_entries;   /**< Number of in-memory buffered index entries */
     int64_t base_timestamp;           /**< Index base timestamp (0 if no data) */
     uint8_t read_only;                /**< Whether the dataset is in read-only mode */

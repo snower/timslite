@@ -24,11 +24,26 @@ pub(crate) struct DataSegmentMeta {
     pub file_size: u64,
     pub min_timestamp: i64,
     pub max_timestamp: i64,
+    pub record_count: u64,
+    pub data_size: u64,
+    pub total_uncompressed_size: u64,
+    pub invalid_record_count: u64,
 }
 
 pub(crate) enum DataSegmentEntry {
     Open(DataSegment),
     Closed(DataSegmentMeta),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SegmentStats {
+    pub file_offset: u64,
+    pub record_count: u64,
+    pub data_size: u64,
+    pub total_uncompressed_size: u64,
+    pub invalid_record_count: u64,
+    pub min_timestamp: i64,
+    pub max_timestamp: i64,
 }
 
 impl DataSegmentMeta {
@@ -41,6 +56,32 @@ impl DataSegmentMeta {
             return false;
         }
         self.max_timestamp >= start_ts && self.min_timestamp <= end_ts
+    }
+
+    pub(crate) fn stats(&self) -> SegmentStats {
+        SegmentStats {
+            file_offset: self.file_offset,
+            record_count: self.record_count,
+            data_size: self.data_size,
+            total_uncompressed_size: self.total_uncompressed_size,
+            invalid_record_count: self.invalid_record_count,
+            min_timestamp: self.min_timestamp,
+            max_timestamp: self.max_timestamp,
+        }
+    }
+}
+
+impl DataSegment {
+    pub(crate) fn stats_snapshot(&self) -> SegmentStats {
+        SegmentStats {
+            file_offset: self.file_offset,
+            record_count: self.record_count,
+            data_size: self.data_wrote_position,
+            total_uncompressed_size: self.total_uncompressed_size,
+            invalid_record_count: self.invalid_record_count,
+            min_timestamp: self.min_timestamp,
+            max_timestamp: self.max_timestamp,
+        }
     }
 }
 
@@ -89,6 +130,36 @@ impl DataSegmentSet {
 
     pub(crate) fn closed_len(&self) -> usize {
         self.closed_segments().count()
+    }
+
+    pub(crate) fn total_len(&self) -> usize {
+        self.segments.len()
+    }
+
+    pub(crate) fn active_tail_offset(&self) -> Option<u64> {
+        self.segments.last_key_value().map(|(offset, _)| *offset)
+    }
+
+    pub(crate) fn active_tail_stats(&self) -> Option<SegmentStats> {
+        let (_, entry) = self.segments.last_key_value()?;
+        Some(match entry {
+            DataSegmentEntry::Open(seg) => seg.stats_snapshot(),
+            DataSegmentEntry::Closed(meta) => meta.stats(),
+        })
+    }
+
+    pub(crate) fn archivable_stats(
+        &self,
+        archived_until_offset: u64,
+        active_tail_offset: u64,
+    ) -> Vec<SegmentStats> {
+        self.segments
+            .range(archived_until_offset..active_tail_offset)
+            .map(|(_, entry)| match entry {
+                DataSegmentEntry::Open(seg) => seg.stats_snapshot(),
+                DataSegmentEntry::Closed(meta) => meta.stats(),
+            })
+            .collect()
     }
 
     /// Create a new (empty) DataSegmentSet for a freshly created dataset.
@@ -165,6 +236,10 @@ impl DataSegmentSet {
                 file_size: seg.file_size,
                 min_timestamp: seg.min_timestamp,
                 max_timestamp: seg.max_timestamp,
+                record_count: seg.record_count,
+                data_size: seg.data_wrote_position,
+                total_uncompressed_size: seg.total_uncompressed_size,
+                invalid_record_count: seg.invalid_record_count,
             };
             seg.idle_close(6)?;
             self.segments.insert(key, DataSegmentEntry::Closed(meta));
@@ -237,14 +312,17 @@ impl DataSegmentSet {
                 if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
                     if let Ok(offset) = stem.parse::<u64>() {
                         let file_size = std::fs::metadata(&p)?.len();
-                        // Read min/max timestamps from file header
-                        let (min_ts, max_ts) = read_segment_timestamps(&p);
+                        let stats = read_segment_stats(&p);
                         metas.push(DataSegmentMeta {
                             path: p,
                             file_offset: offset,
                             file_size,
-                            min_timestamp: min_ts,
-                            max_timestamp: max_ts,
+                            min_timestamp: stats.min_timestamp,
+                            max_timestamp: stats.max_timestamp,
+                            record_count: stats.record_count,
+                            data_size: stats.data_size,
+                            total_uncompressed_size: stats.total_uncompressed_size,
+                            invalid_record_count: stats.invalid_record_count,
                         });
                     }
                 }
@@ -516,18 +594,19 @@ impl DataSegmentSet {
     /// Routes by `absolute_offset` (same coordinate as index entries' block_offset,
     /// relative to data area starts across the data stream). Opens the segment lazily
     /// if it is currently closed, then closes it again after the increment.
-    pub fn increment_invalid_record_count(&mut self, absolute_offset: u64) -> Result<()> {
+    pub fn increment_invalid_record_count(&mut self, absolute_offset: u64) -> Result<bool> {
         let seg_start = self.segment_offset_for(absolute_offset);
         if let Some(DataSegmentEntry::Open(seg)) = self.segments.get_mut(&seg_start) {
             seg.increment_invalid_record_count()?;
-            return Ok(());
+            return Ok(false);
         }
         // Closed segments — open briefly, increment, then idle_close back.
-        if let Some(DataSegmentEntry::Closed(meta)) = self.segments.get(&seg_start) {
+        if let Some(DataSegmentEntry::Closed(meta)) = self.segments.get_mut(&seg_start) {
             let mut seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
             seg.increment_invalid_record_count()?;
+            meta.invalid_record_count = seg.invalid_record_count;
             seg.idle_close(self.compress_level)?;
-            return Ok(());
+            return Ok(true);
         }
         Err(TmslError::NotFound(format!(
             "no segment contains offset {}",
@@ -630,12 +709,13 @@ impl DataSegmentSet {
 
     /// Delete data segments whose `max_timestamp` is strictly less than `threshold`.
     /// Must be called only when all data segments are closed (via idle_close_all).
-    /// Returns the number of files removed.
-    pub fn reclaim_expired_segments(&mut self, threshold: i64) -> Result<usize> {
-        let before = self.segments.len();
+    /// Returns stats for files removed.
+    pub(crate) fn reclaim_expired_segments(&mut self, threshold: i64) -> Result<Vec<SegmentStats>> {
+        let mut removed = Vec::new();
         self.segments.retain(|_, entry| {
             if let DataSegmentEntry::Closed(meta) = entry {
                 if meta.max_timestamp < threshold && meta.max_timestamp != TIMESTAMP_MAX_SENTINEL {
+                    removed.push(meta.stats());
                     let _ = std::fs::remove_file(&meta.path);
                     log::info!("[retention] deleted data segment: {:?}", meta.path);
                     return false;
@@ -643,7 +723,7 @@ impl DataSegmentSet {
             }
             true
         });
-        Ok(before - self.segments.len())
+        Ok(removed)
     }
 }
 
@@ -651,26 +731,50 @@ impl DataSegmentSet {
 
 use crate::header::FIXED_PREFIX_SIZE;
 
-/// Read min_timestamp and max_timestamp from a data segment file header.
+/// Read inspect stats from a data segment file header.
 /// Opens the file, maps it briefly, reads the header, and unmaps.
 /// Returns sentinel values on any error.
-fn read_segment_timestamps(path: &Path) -> (i64, i64) {
-    read_segment_timestamps_inner(path).unwrap_or((TIMESTAMP_MIN_SENTINEL, TIMESTAMP_MAX_SENTINEL))
+fn read_segment_stats(path: &Path) -> SegmentStats {
+    read_segment_stats_inner(path).unwrap_or(SegmentStats {
+        file_offset: 0,
+        record_count: 0,
+        data_size: 0,
+        total_uncompressed_size: 0,
+        invalid_record_count: 0,
+        min_timestamp: TIMESTAMP_MIN_SENTINEL,
+        max_timestamp: TIMESTAMP_MAX_SENTINEL,
+    })
 }
 
-fn read_segment_timestamps_inner(path: &Path) -> Result<(i64, i64)> {
+fn read_segment_stats_inner(path: &Path) -> Result<SegmentStats> {
     use std::fs::OpenOptions;
     let file = OpenOptions::new().read(true).open(path)?;
     let file_len = file.metadata()?.len();
     if file_len < FIXED_PREFIX_SIZE as u64 {
-        return Ok((TIMESTAMP_MIN_SENTINEL, TIMESTAMP_MAX_SENTINEL));
+        return Ok(SegmentStats {
+            file_offset: 0,
+            record_count: 0,
+            data_size: 0,
+            total_uncompressed_size: 0,
+            invalid_record_count: 0,
+            min_timestamp: TIMESTAMP_MIN_SENTINEL,
+            max_timestamp: TIMESTAMP_MAX_SENTINEL,
+        });
     }
     // Use read-only mmap to avoid write-lock on Windows
     let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
     let meta = DataFileMetadata::read_from(&mmap)?;
     drop(mmap);
     drop(file);
-    Ok((meta.min_timestamp, meta.max_timestamp))
+    Ok(SegmentStats {
+        file_offset: meta.file_offset as u64,
+        record_count: meta.record_count,
+        data_size: meta.wrote_position.saturating_sub(meta.header_size),
+        total_uncompressed_size: meta.total_uncompressed_size,
+        invalid_record_count: meta.invalid_record_count,
+        min_timestamp: meta.min_timestamp,
+        max_timestamp: meta.max_timestamp,
+    })
 }
 
 #[cfg(test)]
@@ -705,6 +809,10 @@ mod tests {
                 file_size: set.initial_segment_size,
                 min_timestamp: TIMESTAMP_MIN_SENTINEL,
                 max_timestamp: TIMESTAMP_MAX_SENTINEL,
+                record_count: 0,
+                data_size: 0,
+                total_uncompressed_size: 0,
+                invalid_record_count: 0,
             }),
         );
         path

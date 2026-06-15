@@ -11,6 +11,7 @@ use std::time::Instant;
 
 use crate::cache::BlockCache;
 use crate::config::{validate_retention_window, DataSetConfig};
+use crate::dataset_state::DatasetStateFile;
 use crate::error::{Result, TmslError};
 use crate::header::{TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
 use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
@@ -30,6 +31,7 @@ pub(crate) enum SegmentFlushTarget {
     Data { file_offset: u64 },
     Index { start_timestamp: i64 },
     QueueState { group_name: String },
+    DatasetState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -152,6 +154,7 @@ pub struct DataSet {
     last_used_at: Instant,
     latest_written_timestamp: i64, // Highest written timestamp, not latest valid record
     retention_window: u64,         // 0 = no limit (same unit as timestamp)
+    dataset_state: DatasetStateFile,
     queue_inner: Option<Arc<Mutex<QueueInner>>>,
     queue_notify: Option<Arc<(Mutex<bool>, Condvar)>>,
     runtime_context: DataSetRuntimeContext,
@@ -247,6 +250,7 @@ impl DataSet {
             compress_level,
             compress_type,
         )?;
+        let dataset_state = DatasetStateFile::open_or_create(&base_dir)?;
 
         Ok(Self {
             id,
@@ -269,6 +273,7 @@ impl DataSet {
             last_used_at: Instant::now(),
             latest_written_timestamp: 0,
             retention_window,
+            dataset_state,
             queue_inner: None,
             queue_notify: None,
             runtime_context: DataSetRuntimeContext::default(),
@@ -321,6 +326,7 @@ impl DataSet {
             config.compress_level,
             config.compress_type,
         )?;
+        let dataset_state = DatasetStateFile::open_or_create(&base_dir)?;
 
         // Recover latest_written_timestamp from index segments
         let latest_written_timestamp = Self::recover_latest_timestamp(&time_index);
@@ -335,6 +341,7 @@ impl DataSet {
             last_used_at: Instant::now(),
             latest_written_timestamp,
             retention_window,
+            dataset_state,
             queue_inner: None,
             queue_notify: None,
             runtime_context: DataSetRuntimeContext::default(),
@@ -351,6 +358,68 @@ impl DataSet {
 
     pub fn identifier(&self) -> u64 {
         self.identifier
+    }
+
+    fn data_segment_offset_for(&self, block_offset: u64) -> u64 {
+        (block_offset / self.config.data_segment_size) * self.config.data_segment_size
+    }
+
+    fn archive_completed_data_segments(&mut self) {
+        let Some(active_tail_offset) = self.segments.active_tail_offset() else {
+            return;
+        };
+        let archived_until = self.dataset_state.archived_until_offset();
+        if active_tail_offset <= archived_until {
+            return;
+        }
+        let stats = self
+            .segments
+            .archivable_stats(archived_until, active_tail_offset);
+        self.dataset_state
+            .archive_data_segments(active_tail_offset, &stats);
+    }
+
+    fn add_archived_invalid_if_needed(&mut self, block_offset: u64) {
+        let seg_offset = self.data_segment_offset_for(block_offset);
+        if seg_offset < self.dataset_state.archived_until_offset() {
+            self.dataset_state.add_invalid_record();
+        }
+    }
+
+    fn refresh_archived_index_timestamp_range(&mut self) {
+        match self.time_index.archived_timestamp_range_snapshot() {
+            Some((min_ts, max_ts)) => self.dataset_state.set_timestamp_range(min_ts, max_ts),
+            None => self
+                .dataset_state
+                .set_timestamp_range(TIMESTAMP_MIN_SENTINEL, TIMESTAMP_MAX_SENTINEL),
+        }
+    }
+
+    fn flush_time_index_to_disk(&mut self) -> Result<()> {
+        let index_segments_before = self.time_index.total_len();
+        self.time_index.flush_to_disk()?;
+        if self.time_index.total_len() != index_segments_before {
+            self.refresh_archived_index_timestamp_range();
+        }
+        Ok(())
+    }
+
+    fn inspect_timestamp_range(&self) -> (i64, i64) {
+        let archived = self.dataset_state.snapshot();
+        let mut min_ts =
+            (archived.min_timestamp != TIMESTAMP_MIN_SENTINEL).then_some(archived.min_timestamp);
+        let mut max_ts =
+            (archived.max_timestamp != TIMESTAMP_MAX_SENTINEL).then_some(archived.max_timestamp);
+
+        if let Some((active_min, active_max)) = self.time_index.active_timestamp_range_snapshot() {
+            min_ts = Some(min_ts.map_or(active_min, |min| min.min(active_min)));
+            max_ts = Some(max_ts.map_or(active_max, |max| max.max(active_max)));
+        }
+
+        match (min_ts, max_ts) {
+            (Some(min), Some(max)) => (min, max),
+            _ => (0, 0),
+        }
     }
 
     fn enqueue_dirty_segments(&mut self) {
@@ -377,6 +446,12 @@ impl DataSet {
                     },
                 });
             }
+        }
+        if self.dataset_state.take_flush_enqueue_marker() {
+            queue.push_back(DataSetFlushTarget {
+                dataset: self.id.clone(),
+                segment: SegmentFlushTarget::DatasetState,
+            });
         }
     }
 
@@ -415,6 +490,7 @@ impl DataSet {
                 }
                 Ok(())
             }
+            SegmentFlushTarget::DatasetState => self.dataset_state.sync(),
         }
     }
 
@@ -434,11 +510,14 @@ impl DataSet {
                 });
             }
         }
+        if self.dataset_state.is_dirty() {
+            targets.push(SegmentFlushTarget::DatasetState);
+        }
         targets
     }
 
     pub(crate) fn flush_dirty_segments(&mut self) -> Result<()> {
-        self.time_index.flush_to_disk()?;
+        self.flush_time_index_to_disk()?;
         self.enqueue_dirty_segments();
         let targets = self.dirty_flush_targets();
         for target in targets {
@@ -457,7 +536,7 @@ impl DataSet {
                 SegmentFlushTarget::Data { .. } | SegmentFlushTarget::Index { .. }
             )
         }) {
-            self.time_index.flush_to_disk()?;
+            self.flush_time_index_to_disk()?;
         }
         for target in targets {
             self.sync_flush_target(target)?;
@@ -472,6 +551,22 @@ impl DataSet {
             .as_ref()
             .map(|queue| queue.lock().unwrap().len())
             .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    fn flush_queue_segments(&self) -> Vec<SegmentFlushTarget> {
+        self.runtime_context
+            .flush_queue
+            .as_ref()
+            .map(|queue| {
+                queue
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|target| target.segment.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Delete an entire dataset directory (destructive, not recoverable).
@@ -555,8 +650,13 @@ impl DataSet {
             let (seg_offset, block_rel_offset, in_block_offset) =
                 self.segments.append(timestamp, data)?;
             let block_offset = seg_offset + block_rel_offset;
+            let index_segments_before = self.time_index.total_len();
             self.time_index
                 .add_entry(timestamp, block_offset, in_block_offset)?;
+            self.archive_completed_data_segments();
+            if self.time_index.total_len() != index_segments_before {
+                self.refresh_archived_index_timestamp_range();
+            }
             self.latest_written_timestamp = timestamp;
             self.last_used_at = Instant::now();
             self.enqueue_dirty_segments();
@@ -569,12 +669,17 @@ impl DataSet {
             let (seg_offset, block_rel_offset, in_block_offset) =
                 self.segments.append(timestamp, data)?;
             let block_offset = seg_offset + block_rel_offset;
+            let index_segments_before = self.time_index.total_len();
             self.time_index.add_sparse_continuous_entry(
                 self.latest_written_timestamp,
                 timestamp,
                 block_offset,
                 in_block_offset,
             )?;
+            self.archive_completed_data_segments();
+            if self.time_index.total_len() != index_segments_before {
+                self.refresh_archived_index_timestamp_range();
+            }
             self.latest_written_timestamp = timestamp;
             self.last_used_at = Instant::now();
             self.enqueue_dirty_segments();
@@ -708,14 +813,20 @@ impl DataSet {
             self.segments.append(timestamp, data)?;
         let new_block_offset = seg_offset + block_rel_offset;
 
+        let index_segments_before = self.time_index.total_len();
         let old_entry =
             self.time_index
                 .update_entry(timestamp, new_block_offset, in_block_offset)?;
+        if self.time_index.total_len() != index_segments_before {
+            self.refresh_archived_index_timestamp_range();
+        }
 
         if old_entry.block_offset != BLOCK_OFFSET_FILLER {
             self.invalidate_cache_for_entry(&old_entry, cache);
+            self.archive_completed_data_segments();
             self.segments
                 .increment_invalid_record_count(old_entry.block_offset)?;
+            self.add_archived_invalid_if_needed(old_entry.block_offset);
         }
 
         // latest_written_timestamp unchanged
@@ -832,6 +943,7 @@ impl DataSet {
         // Old entry references real data; increment invalid_record_count on its segment
         self.segments
             .increment_invalid_record_count(old_entry.block_offset)?;
+        self.add_archived_invalid_if_needed(old_entry.block_offset);
 
         self.last_used_at = Instant::now();
         self.enqueue_dirty_segments();
@@ -1104,9 +1216,10 @@ impl DataSet {
             self.flush_dirty_segments()?;
             self.remove_queued_flush_targets_for_self();
         } else {
-            self.time_index.flush_to_disk()?;
+            self.flush_time_index_to_disk()?;
             self.segments.sync_all()?;
             self.time_index.sync_all()?;
+            self.dataset_state.sync()?;
         }
         // Flush queue state files if open
         if let Some(ref inner) = self.queue_inner {
@@ -1181,7 +1294,7 @@ impl DataSet {
     /// position. Deleted/filler entries still define the written timestamp.
     fn recover_latest_timestamp(time_index: &TimeIndex) -> i64 {
         let latest_closed = time_index
-            .closed_index_segments()
+            .closed_index_segment_metas()
             .filter(|meta| meta.wrote_count > 0)
             .max_by_key(|meta| meta.start_timestamp)
             .and_then(|meta| last_entry_timestamp(&meta.path).ok().flatten());
@@ -1303,10 +1416,19 @@ impl DataSet {
             .reclaim_expired_segments(threshold, self.config.index_segment_size)?;
 
         // Reclaim data segments using cached max_timestamp in Closed registry entries.
-        let data_reclaimed = self.segments.reclaim_expired_segments(threshold)?;
+        let data_reclaimed_stats = self.segments.reclaim_expired_segments(threshold)?;
+        let archived_until = self.dataset_state.archived_until_offset();
+        for stats in &data_reclaimed_stats {
+            if stats.file_offset < archived_until {
+                self.dataset_state.subtract_data_segment(*stats);
+            }
+        }
+
+        self.refresh_archived_index_timestamp_range();
 
         self.last_used_at = last_used_at;
-        Ok(idx_reclaimed + data_reclaimed)
+        self.enqueue_dirty_segments();
+        Ok(idx_reclaimed + data_reclaimed_stats.len())
     }
 
     /// Get a reference to the block cache (for FFI and Python wrapper).
@@ -1341,51 +1463,25 @@ impl DataSet {
             create_time: self.config.create_time,
         };
 
-        // Aggregate data segment state
-        let open_ds = self.segments.open_len() as u32;
-        let closed_ds = self.segments.closed_len() as u32;
-        let mut total_record_count: u64 = 0;
-        let mut total_data_size: u64 = 0;
-        let mut total_uncompressed_size: u64 = 0;
-        let mut total_invalid_record_count: u64 = 0;
-        let mut min_timestamp = i64::MAX;
-        let mut max_timestamp = i64::MIN;
+        let archived = self.dataset_state.snapshot();
+        let active_tail = self.segments.active_tail_stats();
+        let total_record_count =
+            archived.total_record_count + active_tail.map(|stats| stats.record_count).unwrap_or(0);
+        let total_data_size =
+            archived.total_data_size + active_tail.map(|stats| stats.data_size).unwrap_or(0);
+        let total_uncompressed_size = archived.total_uncompressed_size
+            + active_tail
+                .map(|stats| stats.total_uncompressed_size)
+                .unwrap_or(0);
+        let total_invalid_record_count = archived.total_invalid_record_count
+            + active_tail
+                .map(|stats| stats.invalid_record_count)
+                .unwrap_or(0);
 
-        // Open segments
-        for seg in self.segments.open_segments() {
-            total_record_count += seg.record_count;
-            total_data_size += seg.data_wrote_position;
-            total_uncompressed_size += seg.total_uncompressed_size;
-            total_invalid_record_count += seg.invalid_record_count;
-            if seg.min_timestamp != TIMESTAMP_MIN_SENTINEL && seg.min_timestamp < min_timestamp {
-                min_timestamp = seg.min_timestamp;
-            }
-            if seg.max_timestamp != TIMESTAMP_MAX_SENTINEL && seg.max_timestamp > max_timestamp {
-                max_timestamp = seg.max_timestamp;
-            }
-        }
-
-        // Closed segments
-        for seg in self.segments.closed_segments() {
-            if seg.min_timestamp != TIMESTAMP_MIN_SENTINEL && seg.min_timestamp < min_timestamp {
-                min_timestamp = seg.min_timestamp;
-            }
-            if seg.max_timestamp != TIMESTAMP_MAX_SENTINEL && seg.max_timestamp > max_timestamp {
-                max_timestamp = seg.max_timestamp;
-            }
-        }
-
-        // If no valid timestamps found, use 0
-        if min_timestamp == i64::MAX {
-            min_timestamp = 0;
-        }
-        if max_timestamp == i64::MIN {
-            max_timestamp = 0;
-        }
+        let (min_timestamp, max_timestamp) = self.inspect_timestamp_range();
 
         // Aggregate index state
         let open_idx = self.time_index.open_len() as u32;
-        let closed_idx = self.time_index.closed_len() as u32;
         let pending_entries = self.time_index.in_memory_buffer.len() as u32;
         let base_timestamp = self.time_index.base_timestamp;
 
@@ -1403,8 +1499,8 @@ impl DataSet {
 
         let state = DataSetState {
             latest_written_timestamp: self.latest_written_timestamp,
-            open_data_segments: open_ds,
-            closed_data_segments: closed_ds,
+            open_data_segments: self.segments.open_len() as u32,
+            data_segments: self.segments.total_len() as u32,
             total_record_count,
             total_data_size,
             total_uncompressed_size,
@@ -1412,7 +1508,7 @@ impl DataSet {
             min_timestamp,
             max_timestamp,
             open_index_segments: open_idx,
-            closed_index_segments: closed_idx,
+            index_segments: self.time_index.total_len() as u32,
             pending_index_entries: pending_entries,
             base_timestamp,
             read_only: self.runtime_context.read_only,
@@ -1470,8 +1566,8 @@ pub struct DataSetState {
     pub latest_written_timestamp: i64,
     /// Number of currently open data segments
     pub open_data_segments: u32,
-    /// Number of closed data segments (only metadata in memory)
-    pub closed_data_segments: u32,
+    /// Total number of data segments
+    pub data_segments: u32,
     /// Total record count across all data segments (includes deleted and expired)
     pub total_record_count: u64,
     /// Total used space across all data segments (bytes, excluding header)
@@ -1480,14 +1576,14 @@ pub struct DataSetState {
     pub total_uncompressed_size: u64,
     /// Total invalid record count across all data segments (deleted/expired/overwritten)
     pub total_invalid_record_count: u64,
-    /// Global minimum timestamp (across all data segments)
+    /// Global minimum timestamp from the index-visible range
     pub min_timestamp: i64,
-    /// Global maximum timestamp (across all data segments)
+    /// Global maximum timestamp from the index-visible range
     pub max_timestamp: i64,
     /// Number of currently open index segments
     pub open_index_segments: u32,
-    /// Number of closed index segments
-    pub closed_index_segments: u32,
+    /// Total number of index segments
+    pub index_segments: u32,
     /// Number of in-memory buffered index entries pending flush
     pub pending_index_entries: u32,
     /// Index base timestamp (first entry's timestamp), None if no data
@@ -1590,7 +1686,11 @@ mod tests {
         let mut ds = make_dirty_queue_dataset("dirty_queue_once", 4096);
 
         ds.write(100, b"first").unwrap();
-        assert_eq!(ds.flush_queue_len(), 1);
+        let targets = ds.flush_queue_segments();
+        assert_eq!(targets.len(), 1);
+        assert!(targets
+            .iter()
+            .any(|target| matches!(target, SegmentFlushTarget::Data { .. })));
         assert!(!ds.segments.open_segments().next().unwrap().is_flushed);
 
         ds.write(200, b"second").unwrap();
@@ -1618,6 +1718,10 @@ mod tests {
         assert!(!ds.segments.open_segments().next().unwrap().is_flushed);
 
         ds.write(200, &[0xBB; 32]).unwrap();
+        let targets = ds.flush_queue_segments();
+        assert!(targets
+            .iter()
+            .any(|target| matches!(target, SegmentFlushTarget::DatasetState)));
 
         let first = ds
             .segments

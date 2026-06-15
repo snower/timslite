@@ -44,6 +44,7 @@ mod block;
 mod cache;
 mod compress;
 mod dataset;
+mod dataset_state;
 mod ffi;
 mod header;
 mod index;

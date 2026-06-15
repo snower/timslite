@@ -56,7 +56,7 @@ impl TimeIndex {
             })
     }
 
-    pub(crate) fn closed_index_segments(&self) -> impl Iterator<Item = &IndexSegmentMeta> {
+    pub(crate) fn closed_index_segment_metas(&self) -> impl Iterator<Item = &IndexSegmentMeta> {
         self.index_segments
             .values()
             .filter_map(|entry| match entry {
@@ -70,7 +70,96 @@ impl TimeIndex {
     }
 
     pub(crate) fn closed_len(&self) -> usize {
-        self.closed_index_segments().count()
+        self.closed_index_segment_metas().count()
+    }
+
+    pub(crate) fn total_len(&self) -> usize {
+        self.index_segments.len()
+    }
+
+    fn segment_timestamp_range(entry: &IndexSegmentEntryState) -> Option<(i64, i64)> {
+        match entry {
+            IndexSegmentEntryState::Open(seg) => {
+                if seg.wrote_count == 0 {
+                    None
+                } else {
+                    seg.last_timestamp_cached()
+                        .map(|last| (seg.start_timestamp, last))
+                }
+            }
+            IndexSegmentEntryState::Closed(meta) => {
+                if meta.wrote_count == 0 {
+                    None
+                } else {
+                    meta.last_timestamp.map(|last| (meta.start_timestamp, last))
+                }
+            }
+        }
+    }
+
+    pub(crate) fn timestamp_range_snapshot(&self) -> Option<(i64, i64)> {
+        let mut min_ts: Option<i64> = None;
+        let mut max_ts: Option<i64> = None;
+
+        for entry in self.index_segments.values() {
+            if let Some((seg_min, seg_max)) = Self::segment_timestamp_range(entry) {
+                min_ts = Some(min_ts.map_or(seg_min, |min| min.min(seg_min)));
+                max_ts = Some(max_ts.map_or(seg_max, |max| max.max(seg_max)));
+            }
+        }
+
+        for entry in &self.in_memory_buffer {
+            min_ts = Some(min_ts.map_or(entry.timestamp, |min| min.min(entry.timestamp)));
+            max_ts = Some(max_ts.map_or(entry.timestamp, |max| max.max(entry.timestamp)));
+        }
+
+        match (min_ts, max_ts) {
+            (Some(min), Some(max)) => Some((min, max)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn archived_timestamp_range_snapshot(&self) -> Option<(i64, i64)> {
+        let active_key = self.index_segments.last_key_value().map(|(key, _)| *key);
+        let mut min_ts: Option<i64> = None;
+        let mut max_ts: Option<i64> = None;
+
+        for (key, entry) in &self.index_segments {
+            if Some(*key) == active_key {
+                continue;
+            }
+            if let Some((seg_min, seg_max)) = Self::segment_timestamp_range(entry) {
+                min_ts = Some(min_ts.map_or(seg_min, |min| min.min(seg_min)));
+                max_ts = Some(max_ts.map_or(seg_max, |max| max.max(seg_max)));
+            }
+        }
+
+        match (min_ts, max_ts) {
+            (Some(min), Some(max)) => Some((min, max)),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn active_timestamp_range_snapshot(&self) -> Option<(i64, i64)> {
+        let mut min_ts: Option<i64> = None;
+        let mut max_ts: Option<i64> = None;
+
+        if let Some((_, entry)) = self.index_segments.last_key_value() {
+            if let Some((seg_min, seg_max)) = Self::segment_timestamp_range(entry) {
+                min_ts = Some(seg_min);
+                max_ts = Some(seg_max);
+            }
+        }
+
+        for entry in &self.in_memory_buffer {
+            min_ts = Some(min_ts.map_or(entry.timestamp, |min| min.min(entry.timestamp)));
+            max_ts = Some(max_ts.map_or(entry.timestamp, |max| max.max(entry.timestamp)));
+        }
+
+        match (min_ts, max_ts) {
+            (Some(min), Some(max)) => Some((min, max)),
+            _ => None,
+        }
     }
 
     fn open_index_segment(&mut self, start_timestamp: i64) -> Result<&mut IndexSegment> {
@@ -784,12 +873,14 @@ impl TimeIndex {
             else {
                 continue;
             };
-            let meta = IndexSegmentMeta::new(
+            let last_timestamp = seg.last_timestamp();
+            let meta = IndexSegmentMeta::new_with_last_timestamp(
                 seg.path.clone(),
                 seg.start_timestamp,
                 seg.entries_capacity,
                 seg.wrote_count,
                 seg.header_size,
+                last_timestamp,
             );
             seg.idle_close()?;
             self.index_segments
@@ -872,16 +963,18 @@ impl TimeIndex {
                 if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
                     if let Ok(start_ts) = stem.parse::<i64>() {
                         let file_size = std::fs::metadata(&p)?.len();
-                        let (wrote_count, header_size) = Self::read_record_count_from_file(&p);
+                        let (wrote_count, header_size, last_timestamp) =
+                            Self::read_record_count_from_file(&p);
                         let entries_capacity = ((file_size.saturating_sub(header_size))
                             / INDEX_ENTRY_SIZE as u64)
                             as usize;
-                        metas.push(IndexSegmentMeta::new(
+                        metas.push(IndexSegmentMeta::new_with_last_timestamp(
                             p,
                             start_ts,
                             entries_capacity,
                             wrote_count,
                             header_size,
+                            last_timestamp,
                         ));
                     }
                 }
@@ -917,18 +1010,28 @@ impl TimeIndex {
     }
 
     /// Read wrote_count from the file header without fully opening the segment.
-    fn read_record_count_from_file(path: &Path) -> (usize, u64) {
+    fn read_record_count_from_file(path: &Path) -> (usize, u64, Option<i64>) {
         if let Ok(file) = std::fs::OpenOptions::new().read(true).open(path) {
             if let Ok(mmap) = unsafe { memmap2::MmapOptions::new().map(&file) } {
                 if let Ok(metadata) = IndexFileMetadata::read_from(&mmap) {
                     let header_size = metadata.header_size;
                     let count = ((metadata.wrote_position.saturating_sub(header_size))
                         / INDEX_ENTRY_SIZE as u64) as usize;
-                    return (count, header_size);
+                    let last_timestamp = if count == 0 {
+                        None
+                    } else {
+                        let pos = header_size as usize + (count - 1) * INDEX_ENTRY_SIZE;
+                        if pos + 8 <= mmap.len() {
+                            Some(i64::from_le_bytes(mmap[pos..pos + 8].try_into().unwrap()))
+                        } else {
+                            None
+                        }
+                    };
+                    return (count, header_size, last_timestamp);
                 }
             }
         }
-        (0, INDEX_HEADER_SIZE)
+        (0, INDEX_HEADER_SIZE, None)
     }
 }
 
@@ -1039,7 +1142,7 @@ mod tests {
         idx.idle_close_all().unwrap();
         assert_eq!(idx.open_len(), 0);
         assert_eq!(
-            idx.closed_index_segments()
+            idx.closed_index_segment_metas()
                 .map(|meta| meta.start_timestamp)
                 .collect::<Vec<_>>(),
             vec![100, 104]
