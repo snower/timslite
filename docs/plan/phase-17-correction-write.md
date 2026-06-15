@@ -175,20 +175,13 @@ pub fn find_entry(&mut self, timestamp: i64) -> Result<Option<IndexEntry>> {
     if let Some(entry) = self.in_memory_buffer.iter().find(|e| e.timestamp == timestamp) {
         return Ok(Some(*entry));
     }
-    // 2. open segments
-    for seg in &self.index_segments {
+    // 2. unified segment registry (open hit or temporary open)
+    for (_start, segment_entry) in &mut self.index_segments {
+        let mut seg = segment_entry.ensure_open(self.segment_size)?;
         if let Some(entry) = seg.find_exact_cs(timestamp, ic) {
             return Ok(Some(entry));
         }
-    }
-    // 3. closed segments (临时打开 → 查询 → idle_close)
-    for meta in &self.closed_index_segments {
-        let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-        if let Some(entry) = seg.find_exact_cs(timestamp, ic) {
-            seg.idle_close()?;
-            return Ok(Some(entry));
-        }
-        seg.idle_close()?;
+        segment_entry.idle_close_if_needed()?;
     }
     Ok(None)
 }

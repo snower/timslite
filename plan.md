@@ -48,6 +48,7 @@
 | 37 | Journal Record TV Format | ✅ 完成 | [phase-37-journal-record-tv-format.md](docs/plan/phase-37-journal-record-tv-format.md) |
 | 38 | zstd Frame Checksum | ✅ 完成 | [phase-38-zstd-frame-checksum.md](docs/plan/phase-38-zstd-frame-checksum.md) |
 | 39 | Dataset Journal Toggle | ✅ 完成 | [phase-39-dataset-journal-toggle.md](docs/plan/phase-39-dataset-journal-toggle.md) |
+| 40 | Dataset Inspect State Cache | ⏳ 文档完成, 待实现 | [phase-40-dataset-inspect-state.md](docs/plan/phase-40-dataset-inspect-state.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -115,6 +116,14 @@
 - [x] 测试 — config/meta roundtrip, Store hook integration, FFI/Python create kwargs
 - [x] 验证 — fmt, targeted tests, full cargo test, cargo check, wrapper pytest, diff hygiene
 
+### Phase 40: Dataset Inspect State Cache
+- [x] 设计文档 — dataset state 文件、active tail 统计、`SegmentFlushTarget::DatasetState`、`DataSetState` 字段语义
+- [x] 计划文档 — `docs/plan/phase-40-dataset-inspect-state.md`, `docs/plan/overview.md`, `plan.md`
+- [ ] 实现 — dataset state file、rollover/retention/delete 更新、flush target 接入
+- [ ] API 同步 — Rust/FFI/C header/Python 字段改为 `data_segments` / `index_segments`
+- [ ] 测试 — state file 初始化、归档统计、retention/delete 更新、flush queue、inspect 不全量打开分段
+- [ ] 验证 — fmt, cargo test, cargo check, clippy, wrapper pytest, diff hygiene
+
 ---
 
 ## 文档结构
@@ -163,7 +172,8 @@ docs/plan/
 ├── phase-36-journal-dedicated-storage.md ← Phase 36: Journal 专用无索引存储
 ├── phase-37-journal-record-tv-format.md ← Phase 37: Journal Record TV Format
 ├── phase-38-zstd-frame-checksum.md  ← Phase 38: zstd Frame Checksum
-└── phase-39-dataset-journal-toggle.md ← Phase 39: Dataset Journal Toggle
+├── phase-39-dataset-journal-toggle.md ← Phase 39: Dataset Journal Toggle
+└── phase-40-dataset-inspect-state.md ← Phase 40: Dataset Inspect State Cache
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

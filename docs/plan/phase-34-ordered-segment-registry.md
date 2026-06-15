@@ -10,9 +10,9 @@
 
 ## 34.1 Scope
 
-- [x] Merge `DataSegmentSet.segments` and `closed_segments` into one `BTreeMap<u64, DataSegmentEntry>`.
+- [x] Merge separate open/closed data segment collections into one `BTreeMap<u64, DataSegmentEntry>`.
 - [x] Route data reads and invalid-record updates by computed segment file offset.
-- [x] Merge `TimeIndex.index_segments` and `closed_index_segments` into one `BTreeMap<i64, IndexSegmentEntry>`.
+- [x] Merge separate open/closed index segment collections into one `BTreeMap<i64, IndexSegmentEntry>`.
 - [x] Route continuous index point lookup/update/delete by computed `segment_start`.
 - [x] Route non-continuous index point lookup/update/delete through binary-selected candidate segments instead of opening every closed segment.
 - [x] Limit range query closed-segment opens to ordered candidate ranges where practical.

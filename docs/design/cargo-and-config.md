@@ -30,7 +30,7 @@ proptest = "1"
 
 | 依赖 | 用途 |
 |---|---|
-| `memmap2` | mmap-backed data/index/queue state 文件 |
+| `memmap2` | mmap-backed data/index/queue state/dataset state 文件 |
 | `miniz_oxide` | deflate 压缩/解压支持 |
 | `zstd` | 默认 zstd 压缩/解压支持 |
 | `log` | 日志门面 |

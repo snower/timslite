@@ -145,7 +145,7 @@ pub fn reclaim_expired_segments(&mut self, threshold: i64) -> Result<usize> {
 }
 ```
 
-- 使用 closed_segments 中缓存的 `max_timestamp`, 无需打开文件
+- 使用 data segment registry 中缓存的 `max_timestamp`, 无需打开文件
 - `retain()` 同时完成筛选和删除
 
 ### 2.5 `src/index/mod.rs` — TimeIndex
@@ -156,8 +156,9 @@ pub fn reclaim_expired_segments(
     &mut self, threshold: i64, max_file_size: u64,
 ) -> Result<usize> {
     let mut reclaimed = 0;
-    let before_len = self.closed_index_segments.len();
-    self.closed_index_segments.retain(|meta| {
+    let before_len = self.index_segments.len();
+    self.index_segments.retain(|_start, entry| {
+        let meta = entry.meta();
         match IndexSegment::last_entry_timestamp(&meta.path, max_file_size) {
             Ok(last_ts) => {
                 if last_ts < threshold {
@@ -169,7 +170,7 @@ pub fn reclaim_expired_segments(
             Err(_) => true,  // 读取失败时保留 (安全)
         }
     });
-    reclaimed = before_len - self.closed_index_segments.len();
+    reclaimed = before_len - self.index_segments.len();
     Ok(reclaimed)
 }
 ```

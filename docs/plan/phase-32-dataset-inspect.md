@@ -10,6 +10,8 @@
 
 设计文档: [dataset-inspect.md](../design/dataset-inspect.md)
 
+> Phase 40 在本接口基础上优化统计来源: `data_segments` / `index_segments` 表示分段总数, `open_data_segments` / `open_index_segments` 表示打开数; `total_*` 统计通过 dataset state 文件覆盖整个 dataset。
+
 ## 设计要点
 
 ### 数据结构
@@ -43,7 +45,7 @@ pub struct DataSetState {
     pub latest_written_timestamp: i64,
     // 数据段
     pub open_data_segments: u32,
-    pub closed_data_segments: u32,
+    pub data_segments: u32,
     pub total_record_count: u64,
     pub total_data_size: u64,
     pub total_uncompressed_size: u64,
@@ -52,7 +54,7 @@ pub struct DataSetState {
     pub max_timestamp: i64,
     // 索引段
     pub open_index_segments: u32,
-    pub closed_index_segments: u32,
+    pub index_segments: u32,
     pub pending_index_entries: u32,
     pub base_timestamp: Option<i64>,
     // 运行时上下文
@@ -106,7 +108,7 @@ typedef struct {
 typedef struct {
     int64_t latest_written_timestamp;
     uint32_t open_data_segments;
-    uint32_t closed_data_segments;
+    uint32_t data_segments;
     uint64_t total_record_count;
     uint64_t total_data_size;
     uint64_t total_uncompressed_size;
@@ -114,7 +116,7 @@ typedef struct {
     int64_t min_timestamp;
     int64_t max_timestamp;
     uint32_t open_index_segments;
-    uint32_t closed_index_segments;
+    uint32_t index_segments;
     uint32_t pending_index_entries;
     int64_t base_timestamp;
     uint8_t read_only;
@@ -162,7 +164,7 @@ class DataSetInfo:
 class DataSetState:
     latest_written_timestamp: int
     open_data_segments: int
-    closed_data_segments: int
+    data_segments: int
     total_record_count: int
     total_data_size: int
     total_uncompressed_size: int
@@ -170,7 +172,7 @@ class DataSetState:
     min_timestamp: int
     max_timestamp: int
     open_index_segments: int
-    closed_index_segments: int
+    index_segments: int
     pending_index_entries: int
     base_timestamp: Optional[int]
     read_only: bool

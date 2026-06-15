@@ -31,7 +31,9 @@ libtimslite (CDylib)
 {data_dir}/
 ├── {dataset_name_1}/
 │   ├── {dataset_type_A}/
+│   │   ├── identifier                               # Store 分配的 dataset 数字 identifier
 │   │   ├── meta                                     # 数据集元数据 (magic+version+meta_data_length+TLV)
+│   │   ├── state                                    # inspect 归档统计缓存
 │   │   ├── data/
 │   │   │   ├── 00000000000000000000                  # data segment, 起始offset (20位,0填充)
 │   │   │   ├── 00000000000067108864                  # offset = 64MB
@@ -41,7 +43,9 @@ libtimslite (CDylib)
 │   │       └── 0000000000001700000000
 │   │
 │   └── {dataset_type_B}/
+│       ├── identifier
 │       ├── meta
+│       ├── state
 │       ├── data/
 │       │   └── 00000000000000000000
 │       └── index/
@@ -49,7 +53,9 @@ libtimslite (CDylib)
 │
 ├── {dataset_name_2}/
 │   └── {dataset_type_C}/
+│       ├── identifier
 │       ├── meta
+│       ├── state
 │       ├── data/
 │       │   └── 00000000000000000000
 │       └── index/
@@ -67,7 +73,9 @@ libtimslite (CDylib)
 
 | 文件类型 | 目录 | 命名格式 | 示例 |
 |---------|------|---------|------|
+| 数据集标识 | `{name}/{type}/` | 固定文件名 `identifier` | `{name}/{type}/identifier` |
 | 数据集元数据 | `{name}/{type}/` | 固定文件名 `meta` | `{name}/{type}/meta` |
+| 数据集状态缓存 | `{name}/{type}/` | 固定文件名 `state` | `{name}/{type}/state` |
 | 数据段(DataSegment) | `{name}/{type}/data/` | 20位十进制, 起始字节offset, 零填充 | `00000000000000000000` |
 | 索引段(IndexSegment) | `{name}/{type}/index/` | 20位十进制, 起始秒级timestamp, 零填充 | `0000000000001700000000` |
 
@@ -94,6 +102,7 @@ Store 根目录新增 `max_identifier`, 每个普通 dataset 目录新增与 `me
     └── {dataset_type}/
         ├── identifier
         ├── meta
+        ├── state
         ├── data/
         └── index/
 ```
@@ -153,5 +162,5 @@ src/
 - [懒分配与扩容](lazy-allocation.md) — 分段文件懒分配 + 倍率扩容
 - [Journal 变更日志](journal.md) — 专用 `.journal/logs` append log + 操作日志格式 + queue 实时消费
 - [Journal 专用存储](journal-storage.md) — JournalSegment/JournalLog/JournalQueue 底层存储
-- [数据集 Inspect](dataset-inspect.md) — DataSetInfo (不变配置) + DataSetState (可变状态) 完整字段定义
+- [数据集 Inspect](dataset-inspect.md) — DataSetInfo (不变配置) + DataSetState (可变状态) + dataset state 文件
 - [构建配置](cargo-and-config.md) — Cargo.toml 依赖

@@ -1,0 +1,90 @@
+# Phase 40: Dataset Inspect State Cache
+
+## 概述
+
+优化 `DataSetInspectResult::state` 的统计来源，避免 `total_record_count`、`total_data_size`、`total_uncompressed_size`、`total_invalid_record_count` 只统计当前打开的数据分段。
+
+新增 dataset 目录下与 `meta` 同级的 `state` 文件，保存已经归档的 data/index 分段统计缓存。普通 inspect 读取该缓存并叠加当前 active tail data segment 与 active index segment 的状态，从而返回整个 dataset 的统计信息，而不需要打开所有历史分段。
+
+设计文档:
+
+- [dataset-inspect.md](../design/dataset-inspect.md)
+- [background-and-cache.md](../design/background-and-cache.md)
+- [data-segment.md](../design/data-segment.md)
+- [store-and-ffi.md](../design/store-and-ffi.md)
+
+## 设计确认
+
+- active tail data segment 定义为最高 `file_offset` 的数据分段，与 open/closed 状态无关。
+- `state` 文件记录归档水位 `archived_until_offset`，表示已纳入归档统计的 data segment `file_offset` 排他上界。
+- `state` 文件保存归档 data segment 的 `total_record_count`、`total_data_size`、`total_uncompressed_size`、`total_invalid_record_count`。
+- `min_timestamp` / `max_timestamp` 不从 data segment 统计做加减推导，只在 index segment 新增/删除时维护，inspect 时叠加 active index segment 范围。
+- `state` 文件是可重建的持久化缓存，不是数据正确性的唯一真源；普通读写流程不依赖它。
+- `SegmentFlushTarget` 新增 `DatasetState`，dataset state 文件与 data/index segment、queue state file 共用 dirty flush queue。
+- 不新增普通 inspect 所需的“读取全部 data segment header stats” helper；后续若需要重建 state 文件，走单独维护流程。
+- `DataSetState` 分段字段改为总数 + 打开数: `data_segments`、`open_data_segments`、`index_segments`、`open_index_segments`，不再返回关闭数。
+
+## 文件格式
+
+`{dataset_dir}/state` 为固定 64 bytes 二进制文件，所有多字节整数为 little-endian：
+
+| Offset | 字段 | 类型 | 说明 |
+|--------|------|------|------|
+| 0 | magic | `[u8; 4]` | ASCII `DSSF` |
+| 4 | version | `u32` | 当前为 `1` |
+| 8 | archived_until_offset | `u64` | 已归档 data segment offset 排他上界 |
+| 16 | min_timestamp | `i64` | 已归档 index segment 最小 timestamp |
+| 24 | max_timestamp | `i64` | 已归档 index segment 最大 timestamp |
+| 32 | total_record_count | `u64` | 已归档 data segment record 总数 |
+| 40 | total_data_size | `u64` | 已归档 data segment 数据区已用字节数 |
+| 48 | total_uncompressed_size | `u64` | 已归档 data segment 未压缩逻辑大小 |
+| 56 | total_invalid_record_count | `u64` | 已归档 data segment 无效 record 总数 |
+
+## 实现任务
+
+- [x] 设计文档更新
+  - [x] `docs/design/dataset-inspect.md`
+  - [x] `docs/design/background-and-cache.md`
+  - [x] `docs/design/data-segment.md`
+  - [x] `docs/design/store-and-ffi.md`
+- [x] 计划文档更新
+  - [x] `docs/plan/phase-40-dataset-inspect-state.md`
+  - [x] `docs/plan/overview.md`
+  - [x] `plan.md`
+- [ ] Rust 实现
+  - [ ] 新增 dataset state file 类型与 open/create/snapshot/update/sync 逻辑
+  - [ ] DataSet create/open 初始化并持有 dataset state cache
+  - [ ] data segment rollover 时归档旧 active tail 统计
+  - [ ] index segment rollover 时归档旧 active index timestamp 范围
+  - [ ] retention 删除 data/index segment 时扣减或更新 state
+  - [ ] delete 命中已归档 data segment 时更新 `total_invalid_record_count`
+  - [ ] `SegmentFlushTarget::DatasetState` 接入 dirty flush queue
+  - [ ] `DataSetState` 字段重命名为 `data_segments` / `index_segments`
+- [ ] FFI / C header 更新
+  - [ ] `TmslDataSetState` 字段改为 `data_segments` / `index_segments`
+  - [ ] `include/timslite.h` 同步
+- [ ] Python wrapper 更新
+  - [ ] `DataSetState` PyClass 字段改为 `data_segments` / `index_segments`
+  - [ ] Python tests 同步断言
+- [ ] 测试
+  - [ ] 空 dataset state 文件初始化
+  - [ ] rollover 后归档统计 + active tail 统计
+  - [ ] inspect 不打开所有历史分段
+  - [ ] retention 删除归档 data/index segment 后 state 更新
+  - [ ] delete 命中归档 data segment 后 invalid count 更新
+  - [ ] dirty flush queue 同步 `DatasetState`
+- [ ] 验证
+  - [ ] `cargo fmt -- --check`
+  - [ ] `cargo test -- --test-threads=1`
+  - [ ] `cargo check`
+  - [ ] `cargo clippy --all-targets -- -D warnings`
+  - [ ] Python wrapper 构建与 pytest (如本地环境支持)
+  - [ ] `git diff --check`
+
+## 验收标准
+
+- inspect 返回的 `total_*` 覆盖整个 dataset，而不是仅覆盖打开分段。
+- inspect 返回 data/index 分段总数和打开数，不再返回关闭数。
+- 普通 inspect 不打开全部历史 data/index segment。
+- dataset state file 变更通过 `SegmentFlushTarget::DatasetState` 进入统一 flush 机制。
+- state file 异常不改变普通数据文件读写的正确性边界。

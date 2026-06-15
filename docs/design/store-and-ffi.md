@@ -569,6 +569,7 @@ enum SegmentFlushTarget {
     Data { file_offset: u64 },
     Index { start_timestamp: i64 },
     QueueState { group_name: String },
+    DatasetState,
 }
 
 struct DataSetFlushTarget {
@@ -584,6 +585,6 @@ struct DataSetRuntimeContext {
 }
 ```
 
-普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入和普通 queue consumer state 变更复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位普通 dataset, 再执行 `Data`、`Index`、`QueueState` target, 不遍历所有 dataset。Journal 使用专用 append log, 不把 journal segment 加入该 dirty queue; 后台 flush 到期时直接调用 `JournalManager::flush_dirty()`。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment 和 queue state files。
+普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入、普通 queue consumer state 变更和 dataset inspect state 缓存变更复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位普通 dataset, 再执行 `Data`、`Index`、`QueueState`、`DatasetState` target, 不遍历所有 dataset。Journal 使用专用 append log, 不把 journal segment 加入该 dirty queue; 后台 flush 到期时直接调用 `JournalManager::flush_dirty()`。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment、queue state files 和 dataset state file。
 
 > Rust API mutability note: methods that allocate or remove handles, mutate the handle registry, mutate dataset contents, open/close queue producer state, or push queue data require &mut self. Read/query, queue poll/ack, config/cache access, dataset listing, inspect, and background executor tick/query use internal synchronization and keep &self.

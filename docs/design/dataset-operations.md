@@ -621,11 +621,12 @@ DataSet::reclaim_expired_segments():
      self.flush()  -- 确保 in-memory buffer 落盘; flush 内部可能临时 touch
   4. self.time_index.idle_close_all()
      self.segments.idle_close_all()
-     确保所有分段进入 closed/closed_index_segments 集合
+     确保所有打开分段完成 sync + unmap, 但分段注册表仍保留统一 BTreeMap 条目
   5. self.time_index.reclaim_expired_segments(threshold, index_segment_size)
      逐个检查索引段 last_entry_timestamp() < threshold → 删除
   6. self.segments.reclaim_expired_segments(threshold)
-     逐个检查 closed_segments[].max_timestamp < threshold → 删除
+     逐个检查 data segment meta 中的 max_timestamp < threshold → 删除
+     删除已归档 data/index segment 时同步扣减或更新 dataset state 文件
   7. self.last_used_at = old_last_used_at
      retention 是维护任务, 不延长 dataset 热度或重置 idle 计时
   8. return Ok(已删除总数)
