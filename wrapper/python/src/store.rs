@@ -273,6 +273,8 @@ impl PyStore {
     ///
     /// Only `name` and `dataset_type` are required. All other parameters
     /// inherit from StoreConfig defaults unless overridden.
+    ///
+    /// Returns a Dataset object for read/write operations.
     #[pyo3(signature = (name, dataset_type, *, data_segment_size=None, index_segment_size=None, compress_level=None, index_continuous=false, initial_data_segment_size=None, initial_index_segment_size=None, enable_journal=true))]
     #[allow(clippy::too_many_arguments)]
     fn create_dataset(
@@ -286,7 +288,7 @@ impl PyStore {
         initial_data_segment_size: Option<u64>,
         initial_index_segment_size: Option<u64>,
         enable_journal: bool,
-    ) -> PyResult<()> {
+    ) -> PyResult<PyDataset> {
         let store = self
             .inner
             .as_mut()
@@ -313,8 +315,19 @@ impl PyStore {
         }
         builder = builder.enable_journal(enable_journal);
 
-        wrap(store.create_dataset_with_config(name, dataset_type, Some(builder)))?;
-        Ok(())
+        let handle = wrap(store.create_dataset_with_config(name, dataset_type, Some(builder)))?;
+        let ds_arc = wrap(store.get_dataset(&handle))?;
+
+        let id = self.next_id;
+        self.next_id += 1;
+        let base_dir = {
+            let ds = ds_arc.lock().unwrap();
+            ds.base_dir().to_string_lossy().to_string()
+        };
+
+        let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
+        self.datasets.insert(id, py_ds.inner_arc());
+        Ok(py_ds)
     }
 
     /// Open an existing dataset.
