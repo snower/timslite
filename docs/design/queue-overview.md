@@ -227,7 +227,7 @@ Dataset.close()
 |------|------|
 | 单 Queue 实例 | 每个 Dataset 只能有一个 DatasetQueue (singleton) |
 | 多 Consumer 实例 | 同一消费组可开多个 Consumer, 共享状态文件 |
-| 4KB 状态文件 | 每个消费组的状态文件固定 4KB, QSTF v2 max 226 pending entries |
+| 4KB 状态文件 | 每个消费组的状态文件固定 4KB, QSTF v1 max 226 pending entries |
 | 组级配置 | 同一 `group_name` 的活动 consumer 必须使用一致的 `QueueConsumerConfig` |
 | Visibility Retry | 未 ack pending 只有运行超时或 reopen 恢复后才可重试; retry 超限后按连续完成规则丢弃 |
 | 统一 Sync | 状态文件作为 `SegmentFlushTarget::QueueState { group_name }` 进入 dirty flush queue, 由后台 flush 任务统一执行 MS_SYNC |

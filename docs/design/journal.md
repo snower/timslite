@@ -306,7 +306,7 @@ let queue = store.open_journal_queue()?;
 
 #### JournalQueue
 
-JournalQueue 单独实现, 不复用 `DatasetQueue`, 但复用 queue state file v2 格式、`QueueConsumerConfig` 和 at-least-once retry/ack 语义。
+JournalQueue 单独实现, 不复用 `DatasetQueue`, 但复用 queue state file v1 格式、`QueueConsumerConfig` 和 at-least-once retry/ack 语义。
 
 ```rust
 let queue = store.open_journal_queue()?;

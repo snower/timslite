@@ -27,7 +27,7 @@
 | 14 | [构建配置](docs/design/cargo-and-config.md) | Cargo.toml 依赖、构建/测试/基准命令、GitHub Actions CI | 项目构建 |
 | 15 | [查询迭代器](docs/design/query-iterator.md) | Virtual Iterator 惰性查询、HotBlockCache 读取循环级缓存、FFI 迭代器重构 | 查询性能优化 |
 | 16 | [Queue 架构与 API](docs/design/queue-overview.md) | DatasetQueue/Consumer 类型、consumer retry 配置、API 设计、生命周期、并发控制、Dataset 集成 | 队列功能开发 |
-| 17 | [Queue 状态文件](docs/design/queue-state-file.md) | 消费组 4KB mmap QSTF v2 状态文件、18B Pending Entry、retry_count、Crash 恢复、同步策略 | 队列持久化/恢复 |
+| 17 | [Queue 状态文件](docs/design/queue-state-file.md) | 消费组 4KB mmap QSTF v1 状态文件、18B Pending Entry、retry_count、Crash 恢复、同步策略 | 队列持久化/恢复 |
 | 18 | [Journal 变更日志](docs/design/journal.md) | 专用 `.journal/logs` append log、操作日志格式、Store/DataSet hook、专用 read/query/queue API、热迁移/恢复边界 | 变更日志/热迁移/恢复工具 |
 | 18.1 | [Journal 专用存储](docs/design/journal-storage.md) | JournalSegment/JournalLog/JournalQueue、sequence 路由、无索引分段存储、crash 可见边界 | Journal 存储优化 |
 | 19 | [数据集读操作](docs/design/dataset-read-operations.md) | read/query/query_iter 及新增 read_exist/query_exist/read_length/query_length/query_length_iter 统一描述 | 读操作 API 设计/选型 |

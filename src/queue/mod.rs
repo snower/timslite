@@ -32,7 +32,7 @@ use crate::util::{
 pub const QUEUE_STATE_MAGIC: &[u8; 4] = b"QSTF";
 
 /// Queue state file version.
-pub const QUEUE_STATE_VERSION: u32 = 2;
+pub const QUEUE_STATE_VERSION: u32 = 1;
 
 /// Fixed state file size (4KB).
 pub const STATE_FILE_SIZE: usize = 4096;
@@ -1013,6 +1013,7 @@ mod tests {
 
     #[test]
     fn pending_entry_round_trip() {
+        assert_eq!(QUEUE_STATE_VERSION, 1);
         assert_eq!(PENDING_ENTRY_SIZE, 18);
         assert_eq!(MAX_PENDING_ENTRIES, 226);
         let entry = PendingEntry {

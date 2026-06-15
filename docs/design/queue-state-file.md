@@ -20,7 +20,7 @@ JournalQueue 复用同一状态文件格式, 路径为 `{data_dir}/.journal/logs
 Offset  Size    Field                   Description
 ──────────────────────────────────────────────────────────────
 0       4       magic                   "QSTF" (Queue State File)
-4       4       version                 u32, 当前 = 2
+4       4       version                 u32, 当前 = 1
 8       2       state_length            u16, processed_ts 字节数 (固定 8)
 10      8       processed_ts            i64, 已处理的连续最大时间戳/sequence
 18      2       pending_length          u16, pending entries 数量
@@ -31,7 +31,7 @@ Offset  Size    Field                   Description
 
 **总大小**: 固定 4096 字节 (4KB)。
 
-当前仍处于首次开发阶段, 不要求兼容旧草案格式。实现只接受 version 2 与 18B pending entry; 旧 version 或旧 entry size 均视为无效状态文件。
+当前仍处于首次开发阶段, 不要求兼容旧草案格式。状态文件版本保持为 `1`, 但当前有效格式的 `pending_value_size` 固定为 18; version 不是旧草案兼容标记, `pending_value_size` 不匹配时视为无效状态文件。
 
 ### 31.2 Pending Entry 格式
 
@@ -129,7 +129,7 @@ pub(crate) struct PendingEntry {
 
 `ConsumerStateFile::open_or_create(path, initial_processed_ts)` 负责打开或创建状态文件:
 
-1. 新文件写入 version 2、`pending_value_size=18`、空 pending 列表。
+1. 新文件写入 version 1、`pending_value_size=18`、空 pending 列表。
 2. 现有文件校验 magic/version/state_length/pending_value_size/pending_length 边界。
 3. 现有文件加载后先按连续已完成 pending 推进 `processed_ts` 并清理前缀。
 4. 所有仍未 ack 的 pending 保留, 但 `start_time` 置为 `0`, 表示恢复后首次 poll 可立即重试。

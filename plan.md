@@ -126,7 +126,7 @@
 - [x] 验证 — fmt, cargo test, cargo check, clippy, wrapper pytest, diff hygiene
 
 ### Phase 41: Queue Consumer Retry / Visibility Timeout
-- [x] 设计文档 — QSTF v2、18B pending entry、`QueueConsumerConfig`、retry/丢弃语义、JournalQueue 同步
+- [x] 设计文档 — QSTF v1、18B pending entry、`QueueConsumerConfig`、retry/丢弃语义、JournalQueue 同步
 - [x] 计划文档 — `docs/plan/phase-41-queue-consumer-retry.md`, `docs/plan/overview.md`, `plan.md`
 - [x] 测试 RED — state file、普通 queue、JournalQueue、FFI/Python 配置入口
 - [x] 实现 — Rust queue/journal retry 逻辑、FFI/C header、Python wrapper

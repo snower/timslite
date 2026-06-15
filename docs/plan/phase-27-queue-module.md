@@ -2,7 +2,7 @@
 
 > 目标: 在 Dataset 之上实现队列语义, 支持多消费组、多 Consumer 实例、持久化消费进度、等待/通知机制。
 
-> 更新: Phase 41 已将状态文件升级为 QSTF v2, pending entry 从 17B 改为 18B 并新增 `retry_count`; 后台 timeout cleanup 已被 poll-time retry/丢弃逻辑取代。本文保留 Phase 27 建设背景, 当前契约以 Phase 41 和 `docs/design/queue-state-file.md` 为准。
+> 更新: Phase 41 保持 QSTF version=1, 将 pending entry 从 17B 改为 18B 并新增 `retry_count`; 后台 timeout cleanup 已被 poll-time retry/丢弃逻辑取代。本文保留 Phase 27 建设背景, 当前契约以 Phase 41 和 `docs/design/queue-state-file.md` 为准。
 
 ## 27.0 设计文档
 
