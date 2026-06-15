@@ -38,8 +38,20 @@ impl PyDatasetQueue {
     /// Multiple consumers in the same group share progress via the
     /// shared 4KB mmap state file. The first call for a group creates
     /// the state file; subsequent calls open the existing file.
-    fn open_consumer(&self, group_name: &str) -> PyResult<PyDatasetQueueConsumer> {
-        let consumer = wrap(self.inner.open_consumer(group_name))?;
+    #[pyo3(signature = (group_name, running_expired_seconds=900, max_retry_count=3))]
+    fn open_consumer(
+        &self,
+        group_name: &str,
+        running_expired_seconds: u64,
+        max_retry_count: u16,
+    ) -> PyResult<PyDatasetQueueConsumer> {
+        let config = wrap(
+            timslite::QueueConsumerConfig::builder()
+                .running_expired_seconds(running_expired_seconds)
+                .max_retry_count(max_retry_count)
+                .build(),
+        )?;
+        let consumer = wrap(self.inner.open_consumer_with_config(group_name, config))?;
         Ok(PyDatasetQueueConsumer { inner: consumer })
     }
 
@@ -128,8 +140,20 @@ impl PyJournalQueue {
     }
 
     /// Open or create a journal consumer group.
-    fn open_consumer(&self, group_name: &str) -> PyResult<PyJournalQueueConsumer> {
-        let consumer = wrap(self.inner.open_consumer(group_name))?;
+    #[pyo3(signature = (group_name, running_expired_seconds=900, max_retry_count=3))]
+    fn open_consumer(
+        &self,
+        group_name: &str,
+        running_expired_seconds: u64,
+        max_retry_count: u16,
+    ) -> PyResult<PyJournalQueueConsumer> {
+        let config = wrap(
+            timslite::QueueConsumerConfig::builder()
+                .running_expired_seconds(running_expired_seconds)
+                .max_retry_count(max_retry_count)
+                .build(),
+        )?;
+        let consumer = wrap(self.inner.open_consumer_with_config(group_name, config))?;
         Ok(PyJournalQueueConsumer { inner: consumer })
     }
 

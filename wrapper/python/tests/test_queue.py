@@ -1,5 +1,7 @@
 ﻿"""Functional tests for the Queue module (DatasetQueue + DatasetQueueConsumer)."""
 
+import time
+
 import pytest
 import timslite
 
@@ -122,13 +124,79 @@ class TestConsumerGroups:
 
             r1 = c1.poll(50)
             assert r1 is not None
-            ts1, _ = r1
+            ts1, data1 = r1
+            assert ts1 == 1
+            assert data1 == b"shared_item"
 
-            r2 = c2.poll(50)
-            assert r2 is not None
-            ts2, data2 = r2
-            assert ts2 == ts1
-            assert data2 == b"shared_item"
+            assert c2.poll(10) is None
+
+            q.close()
+
+    def test_same_group_unexpired_pending_allows_next_record(self, tmpdir):
+        cfg = timslite.StoreConfig(enable_background_thread=False)
+        with timslite.Store.open(tmpdir, cfg) as store:
+            store.create_dataset("events", "events")
+            ds = store.open_dataset("events", "events")
+            q = store.open_queue(ds.id)
+            c1 = q.open_consumer(
+                "shared",
+                running_expired_seconds=60,
+                max_retry_count=3,
+            )
+            c2 = q.open_consumer(
+                "shared",
+                running_expired_seconds=60,
+                max_retry_count=3,
+            )
+
+            q.push(b"first")
+            q.push(b"second")
+
+            assert c1.poll(50) == (1, b"first")
+            assert c2.poll(50) == (2, b"second")
+
+            c1.ack(1)
+            c2.ack(2)
+            q.close()
+
+    def test_retry_limit_drops_expired_pending(self, tmpdir):
+        cfg = timslite.StoreConfig(enable_background_thread=False)
+        with timslite.Store.open(tmpdir, cfg) as store:
+            store.create_dataset("events", "events")
+            ds = store.open_dataset("events", "events")
+            q = store.open_queue(ds.id)
+            c = q.open_consumer(
+                "retry",
+                running_expired_seconds=1,
+                max_retry_count=1,
+            )
+
+            q.push(b"first")
+            q.push(b"second")
+
+            assert c.poll(50) == (1, b"first")
+            time.sleep(1.1)
+            assert c.poll(50) == (1, b"first")
+            time.sleep(1.1)
+            assert c.poll(50) == (2, b"second")
+
+            c.ack(2)
+            q.close()
+
+    def test_same_group_config_mismatch_raises(self, tmpdir):
+        cfg = timslite.StoreConfig(enable_background_thread=False)
+        with timslite.Store.open(tmpdir, cfg) as store:
+            store.create_dataset("events", "events")
+            ds = store.open_dataset("events", "events")
+            q = store.open_queue(ds.id)
+            q.open_consumer("shared")
+
+            with pytest.raises(timslite.TmslError):
+                q.open_consumer(
+                    "shared",
+                    running_expired_seconds=30,
+                    max_retry_count=3,
+                )
 
             q.close()
 

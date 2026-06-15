@@ -2,6 +2,8 @@
 
 > 目标: 在 Dataset 之上实现队列语义, 支持多消费组、多 Consumer 实例、持久化消费进度、等待/通知机制。
 
+> 更新: Phase 41 已将状态文件升级为 QSTF v2, pending entry 从 17B 改为 18B 并新增 `retry_count`; 后台 timeout cleanup 已被 poll-time retry/丢弃逻辑取代。本文保留 Phase 27 建设背景, 当前契约以 Phase 41 和 `docs/design/queue-state-file.md` 为准。
+
 ## 27.0 设计文档
 
 - [Queue 架构与 API](../design/queue-overview.md)
@@ -16,21 +18,21 @@
 - [x] **创建 `src/queue/mod.rs`** — 模块入口, 导出核心类型
 - [x] **实现 `ConsumerStateFile` 结构**
   - [x] 字段: `path: PathBuf`, `mmap: MmapMut`, `processed_ts: i64`, `pending_entries: Vec<PendingEntry>`
-  - [x] 常量: `STATE_FILE_SIZE = 4096`, `PENDING_ENTRY_SIZE = 17`, `MAX_PENDING_ENTRIES = 239`
+  - [x] 常量: `STATE_FILE_SIZE = 4096`, `PENDING_ENTRY_SIZE = 18`, `MAX_PENDING_ENTRIES = 226`
 - [x] **实现 `PendingEntry` 结构**
-  - [x] 字段: `timestamp: i64`, `start_time: i64`, `status: u8` (0=待ack, 1=已ack)
+  - [x] 字段: `timestamp: i64`, `start_time: i64`, `status: u8` (0=待ack, 1=已ack), `retry_count: u8`
 - [x] **实现状态文件操作**
   - [x] `open_or_create(path, initial_processed_ts)` — 打开或创建 4KB mmap 文件
   - [x] `sync()` — 将内存状态写入 mmap (不立即 flush, 由后台任务统一同步)
-  - [x] `add_pending(entry)` — 添加 pending entry (容量检查: max 239)
+  - [x] `add_pending(entry)` — 添加 pending entry (容量检查: max 226)
   - [x] `find_pending(timestamp)` / `find_pending_mut(timestamp)` — 查找待 ack entry
   - [x] `is_in_pending(timestamp)` — 检查 timestamp 是否在 pending 中
   - [x] `update_processed_ts()` — 扫描连续 ack, 更新 processed_ts
   - [x] `cleanup_acked()` — 清理已 ack entries
-  - [x] `cleanup_timeout(timeout_secs)` — 清理超时 pending entries (默认 300s)
+  - [x] `take_retryable_pending(config, now)` — poll 时处理过期 retry 和 retry 超限丢弃
 - [x] **实现状态文件序列化**
   - [x] Header: magic "QSTF" (4B) + version (4B) + state_length (2B) + processed_ts (8B) + pending_length (2B) + pending_value_size (1B)
-  - [x] Pending entry: timestamp (8B) + start_time (8B) + status (1B)
+  - [x] Pending entry: timestamp (8B) + start_time (8B) + status (1B) + retry_count (1B)
   - [x] 读取/写入辅助函数: `read_i64()`, `write_i64()`, `read_u16()`, `write_u16()`, `read_u32()`, `write_u32()`
 
 ### 测试策略
@@ -40,7 +42,7 @@
   - 重新打开, 验证 processed_ts 和 pending_entries 恢复
 - [x] **单元测试**: `test_state_file_pending_operations`
   - 添加/查找/清理 pending entries
-  - 验证容量限制 (239 entries)
+  - 验证容量限制 (226 entries)
 - [x] **单元测试**: `test_state_file_processed_ts_update`
   - 连续 ack 后 update_processed_ts()
   - 非连续 ack 不更新 processed_ts
@@ -267,11 +269,11 @@
   - [x] `open_existing()` 时验证 magic/version
   - [x] 读取 processed_ts 和 pending_entries
   - [x] 恢复时调用 `cleanup_acked()` 清理已 ack 但未清理的 entries
-  - [x] 所有 `status=0` 的 pending entries 保留 (重新可 poll)
-- [x] **实现超时清理**
-  - [x] `cleanup_timeout(timeout_secs)` 清理超时 pending entries
-  - [x] 默认超时: 300 秒 (5 分钟)
-  - [x] 超时后 pending entry 被移除, 数据重新可 poll
+  - [x] 所有 `status=0` 的 pending entries 保留并设置 `start_time=0`, 下次 poll 按 retry 规则处理
+- [x] **实现 poll-time retry/丢弃**
+  - [x] `running_expired_seconds` 控制运行中未 ack pending 的可重试时间
+  - [x] `max_retry_count` 控制重试上限; 超限后标记完成并按连续完成前缀推进 `processed_ts`
+  - [x] 后台任务不删除超时 pending
 
 ### 测试策略
 
@@ -279,10 +281,10 @@
   - 创建状态文件, 添加 pending entries
   - 模拟 crash (不 sync, 直接 drop)
   - 重新打开, 验证状态恢复
-- [x] **单元测试**: `test_state_file_timeout_cleanup`
+- [x] **单元测试**: `test_state_file_retry_scan`
   - 添加 pending entry, start_time 设为过去时间
-  - 调用 cleanup_timeout
-  - 验证超时 entry 被清理
+  - 调用 retryable pending scan
+  - 验证 retry_count 递增或超限 entry 被标记完成
 
 ### 验收标准
 
@@ -290,7 +292,7 @@
 - [x] `cargo clippy -- -D warnings` 无警告
 - [x] 所有单元测试通过
 - [x] crash 后状态文件正确恢复
-- [x] 超时 pending entries 被正确清理
+- [x] 过期 pending entries 被正确重试或按上限丢弃
 
 ---
 
@@ -303,7 +305,6 @@
 - [x] **修改 `bg/mod.rs` flush 逻辑**
   - [x] 遍历所有 dataset 时, 检查 `dataset.queue_inner`
   - [x] 若 queue 打开, 遍历所有 consumer state files
-  - [x] 调用 `cleanup_timeout(300)` 清理超时 pending
   - [x] 调用 `sync()` 写入 mmap
   - [x] 注意: 不立即 flush, 由 dataset.flush() 统一同步
 - [x] **验证 idle-close 阻塞**
@@ -315,10 +316,10 @@
   - open_queue, push, poll, ack
   - 触发 flush
   - 验证状态文件已同步到磁盘
-- [x] **单元测试**: `test_flush_cleanup_timeout`
-  - 添加超时 pending entry
+- [x] **单元测试**: `test_flush_preserves_retry_state`
+  - 添加 pending entry
   - 触发 flush
-  - 验证超时 entry 被清理
+  - 验证 flush 仅同步状态, 不删除未 ack pending
 
 ### 验收标准
 

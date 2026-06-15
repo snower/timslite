@@ -217,12 +217,123 @@ fn t27_2_2_two_consumers_same_group() {
         .queue_poll(&c1, Duration::from_millis(50))
         .unwrap()
         .unwrap();
+    assert_eq!(ts, 1);
+    assert!(store
+        .queue_poll(&c2, Duration::from_millis(10))
+        .unwrap()
+        .is_none());
+
+    store.close().unwrap();
+}
+
+#[test]
+fn t41_1_same_group_unexpired_pending_does_not_block_next_record() {
+    use timslite::{QueueConsumerConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t41q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t41q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let config = QueueConsumerConfig::builder()
+        .running_expired_seconds(60)
+        .max_retry_count(3)
+        .build()
+        .unwrap();
+    let c1 = q.open_consumer_with_config("shared", config).unwrap();
+    let c2 = q.open_consumer_with_config("shared", config).unwrap();
+
+    store.queue_push(&q, b"first").unwrap();
+    store.queue_push(&q, b"second").unwrap();
+
+    let (ts1, data1) = store
+        .queue_poll(&c1, Duration::from_millis(50))
+        .unwrap()
+        .unwrap();
+    assert_eq!(ts1, 1);
+    assert_eq!(data1, b"first");
+
     let (ts2, data2) = store
         .queue_poll(&c2, Duration::from_millis(50))
         .unwrap()
         .unwrap();
-    assert_eq!(ts2, ts);
-    assert_eq!(data2, b"shared_item");
+    assert_eq!(ts2, 2);
+    assert_eq!(data2, b"second");
+
+    store.queue_ack(&c1, ts1).unwrap();
+    store.queue_ack(&c2, ts2).unwrap();
+    store.close().unwrap();
+}
+
+#[test]
+fn t41_2_expired_pending_retries_once_then_drops_and_advances() {
+    use timslite::{QueueConsumerConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t41q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t41q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    let config = QueueConsumerConfig::builder()
+        .running_expired_seconds(1)
+        .max_retry_count(1)
+        .build()
+        .unwrap();
+    let c = q.open_consumer_with_config("retry", config).unwrap();
+
+    store.queue_push(&q, b"first").unwrap();
+    store.queue_push(&q, b"second").unwrap();
+
+    let (ts1, data1) = store
+        .queue_poll(&c, Duration::from_millis(50))
+        .unwrap()
+        .unwrap();
+    assert_eq!(ts1, 1);
+    assert_eq!(data1, b"first");
+
+    std::thread::sleep(Duration::from_millis(1100));
+    let (retry_ts, retry_data) = store
+        .queue_poll(&c, Duration::from_millis(50))
+        .unwrap()
+        .unwrap();
+    assert_eq!(retry_ts, 1);
+    assert_eq!(retry_data, b"first");
+
+    std::thread::sleep(Duration::from_millis(1100));
+    let (next_ts, next_data) = store
+        .queue_poll(&c, Duration::from_millis(50))
+        .unwrap()
+        .unwrap();
+    assert_eq!(next_ts, 2);
+    assert_eq!(next_data, b"second");
+
+    store.queue_ack(&c, next_ts).unwrap();
+    store.close().unwrap();
+}
+
+#[test]
+fn t41_3_same_group_rejects_config_mismatch() {
+    use timslite::{QueueConsumerConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t41q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t41q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+
+    q.open_consumer("shared").unwrap();
+    let mismatched = QueueConsumerConfig::builder()
+        .running_expired_seconds(30)
+        .max_retry_count(3)
+        .build()
+        .unwrap();
+    assert!(q.open_consumer_with_config("shared", mismatched).is_err());
 
     store.close().unwrap();
 }

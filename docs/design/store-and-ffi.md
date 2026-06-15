@@ -434,9 +434,17 @@ pub struct TmslDatasetConfigFFI {
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // Queue C ABI
+#[repr(C)]
+pub struct TmslQueueConsumerConfigFFI {
+    pub version: u32,
+    pub running_expired_seconds: u32,
+    pub max_retry_count: u32,
+}
+
 #[no_mangle] pub extern "C" fn tmsl_queue_open(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> usize;
 #[no_mangle] pub extern "C" fn tmsl_queue_close(queue_handle: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_queue_consumer_open(queue_handle: usize, group_name: *const c_char, err_buf: *mut c_char, err_buf_len: usize) -> usize;
+#[no_mangle] pub extern "C" fn tmsl_queue_consumer_open_with_config(queue_handle: usize, group_name: *const c_char, config: *const TmslQueueConsumerConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> usize;
 #[no_mangle] pub extern "C" fn tmsl_queue_consumer_drop(queue_handle: usize, consumer_handle: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_queue_push(queue_handle: usize, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_longlong;
 #[no_mangle] pub extern "C" fn tmsl_queue_poll(consumer_handle: usize, timeout_ms: c_longlong, out_timestamp: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
@@ -461,6 +469,8 @@ pub struct TmslDatasetConfigFFI {
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_journal_queue_consumer_open(queue_handle: usize, group_name: *const c_char,
     err_buf: *mut c_char, err_buf_len: usize) -> usize;
+#[no_mangle] pub extern "C" fn tmsl_journal_queue_consumer_open_with_config(queue_handle: usize, group_name: *const c_char,
+    config: *const TmslQueueConsumerConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> usize;
 #[no_mangle] pub extern "C" fn tmsl_journal_queue_poll(consumer_handle: usize, timeout_ms: c_longlong,
     out_sequence: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
@@ -494,6 +504,8 @@ pub struct TmslDatasetConfigFFI {
 > - `tmsl_queue_open(dataset)` 以 FFI dataset 句柄为入口, 内部使用该 dataset 对应的 Store handle id 调用 `Store::open_queue`。C 侧不直接持有或传入 `DataSetHandle` 数值。
 > - `tmsl_queue_close(queue_handle)` 对普通 dataset queue 调用 `Store::close_queue` 并移除 registry entry。
 > - `tmsl_queue_push` 对普通 queue 自动分配 `latest_written_timestamp + 1`。
+> - `tmsl_queue_consumer_open` 使用默认 consumer 配置; `tmsl_queue_consumer_open_with_config` 接受 `TmslQueueConsumerConfigFFI { version=1, running_expired_seconds<=65535, max_retry_count<=255 }`。
+> - 同一 queue/group 的活动 consumer 必须使用一致配置; 不一致时 open 返回错误。
 > - `tmsl_queue_poll` 返回值: `0=成功并写出数据`, `-2=超时无数据`, `-1=错误`。成功返回的数据必须用 `tmsl_data_free` 释放。
 > - `tmsl_queue_consumer_drop(queue_handle, consumer_handle)` 删除对应消费组状态并使同一 queue/group 下的 FFI consumer handle 全部失效。
 
@@ -502,7 +514,7 @@ pub struct TmslDatasetConfigFFI {
 > - `tmsl_journal_latest_sequence` 在空 journal 时写出 `0`, 有记录时写出最新 sequence。
 > - `tmsl_journal_read` 返回值: `0=成功并写出数据`, `1=未找到`, `-1=错误`。
 > - `tmsl_journal_query` 返回专用 iterator, `tmsl_journal_iter_next` 返回 `0=成功`, `1=结束`, `-1=错误`。
-> - `tmsl_journal_queue_*` 使用专用 JournalQueue, consumer group name 复用 queue 路径安全规则。
+> - `tmsl_journal_queue_*` 使用专用 JournalQueue, consumer group name 复用 queue 路径安全规则, consumer retry 配置与普通 queue 相同。
 
 ## 十三、C 侧调用示例
 

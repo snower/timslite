@@ -49,6 +49,7 @@
 | 38 | zstd Frame Checksum | ✅ 完成 | [phase-38-zstd-frame-checksum.md](docs/plan/phase-38-zstd-frame-checksum.md) |
 | 39 | Dataset Journal Toggle | ✅ 完成 | [phase-39-dataset-journal-toggle.md](docs/plan/phase-39-dataset-journal-toggle.md) |
 | 40 | Dataset Inspect State Cache | ✅ 完成 | [phase-40-dataset-inspect-state.md](docs/plan/phase-40-dataset-inspect-state.md) |
+| 41 | Queue Consumer Retry / Visibility Timeout | ✅ 完成 | [phase-41-queue-consumer-retry.md](docs/plan/phase-41-queue-consumer-retry.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 
 ---
@@ -124,6 +125,13 @@
 - [x] 测试 — state file 初始化、归档统计、retention/delete 更新、flush queue、inspect 不全量打开分段
 - [x] 验证 — fmt, cargo test, cargo check, clippy, wrapper pytest, diff hygiene
 
+### Phase 41: Queue Consumer Retry / Visibility Timeout
+- [x] 设计文档 — QSTF v2、18B pending entry、`QueueConsumerConfig`、retry/丢弃语义、JournalQueue 同步
+- [x] 计划文档 — `docs/plan/phase-41-queue-consumer-retry.md`, `docs/plan/overview.md`, `plan.md`
+- [x] 测试 RED — state file、普通 queue、JournalQueue、FFI/Python 配置入口
+- [x] 实现 — Rust queue/journal retry 逻辑、FFI/C header、Python wrapper
+- [x] 验证 — fmt, targeted/full cargo tests, check, clippy, wrapper pytest, diff hygiene
+
 ---
 
 ## 文档结构
@@ -173,7 +181,8 @@ docs/plan/
 ├── phase-37-journal-record-tv-format.md ← Phase 37: Journal Record TV Format
 ├── phase-38-zstd-frame-checksum.md  ← Phase 38: zstd Frame Checksum
 ├── phase-39-dataset-journal-toggle.md ← Phase 39: Dataset Journal Toggle
-└── phase-40-dataset-inspect-state.md ← Phase 40: Dataset Inspect State Cache
+├── phase-40-dataset-inspect-state.md ← Phase 40: Dataset Inspect State Cache
+└── phase-41-queue-consumer-retry.md  ← Phase 41: Queue Consumer Retry / Visibility Timeout
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

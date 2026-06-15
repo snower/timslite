@@ -13,7 +13,7 @@ use crate::config::{validate_retention_window, DataSetConfigBuilder, StoreConfig
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
 use crate::journal::{JournalQueue, JournalQueueConsumer};
-use crate::queue::{DatasetQueue, DatasetQueueConsumer};
+use crate::queue::{DatasetQueue, DatasetQueueConsumer, QueueConsumerConfig};
 use crate::store::{DataSetHandle, Store};
 
 use std::sync::LazyLock;
@@ -95,6 +95,7 @@ macro_rules! ffi_catch_usize {
 
 pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 4;
 pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 3;
+pub const TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION: u32 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -134,6 +135,25 @@ pub struct TmslDatasetConfigFFI {
     pub compress_type: u8,
     pub index_continuous: u8,
     pub enable_journal: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslQueueConsumerConfigFFI {
+    pub version: u32,
+    pub running_expired_seconds: u32,
+    pub max_retry_count: u32,
+}
+
+impl Default for TmslQueueConsumerConfigFFI {
+    fn default() -> Self {
+        let config = QueueConsumerConfig::default();
+        Self {
+            version: TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION,
+            running_expired_seconds: config.running_expired_seconds as u32,
+            max_retry_count: config.max_retry_count as u32,
+        }
+    }
 }
 
 struct FfiStoreState {
@@ -283,6 +303,30 @@ fn dataset_config_from_ffi(
         .index_continuous(raw.index_continuous)
         .enable_journal(raw.enable_journal != 0)
         .retention_window(raw.retention_window))
+}
+
+fn queue_consumer_config_from_ffi(
+    config_ptr: *const TmslQueueConsumerConfigFFI,
+) -> crate::error::Result<QueueConsumerConfig> {
+    if config_ptr.is_null() {
+        return Ok(QueueConsumerConfig::default());
+    }
+    let raw = unsafe { *config_ptr };
+    if raw.version != TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION {
+        return Err(TmslError::InvalidData(format!(
+            "unsupported queue consumer config version {}",
+            raw.version
+        )));
+    }
+    QueueConsumerConfig::builder()
+        .running_expired_seconds(raw.running_expired_seconds as u64)
+        .max_retry_count(u16::try_from(raw.max_retry_count).map_err(|_| {
+            TmslError::InvalidData(format!(
+                "max_retry_count exceeds u16::MAX before queue config validation: {}",
+                raw.max_retry_count
+            ))
+        })?)
+        .build()
 }
 
 fn register_dataset_child(ffi_store: &FfiStore, handle: DataSetHandle) -> Box<FfiDataset> {
@@ -1518,6 +1562,51 @@ pub extern "C" fn tmsl_queue_close(
     }}
 }
 
+fn open_queue_consumer_with_config_impl(
+    queue_handle: usize,
+    group_name: *const c_char,
+    config: QueueConsumerConfig,
+) -> crate::error::Result<usize> {
+    if group_name.is_null() {
+        return Err(TmslError::InvalidData("group_name is null".into()));
+    }
+    let group_name = unsafe { CStr::from_ptr(group_name) }
+        .to_str()
+        .map_err(|_| TmslError::InvalidData("invalid group name encoding".into()))?;
+    let (kind, state) = {
+        let registry = QUEUE_REGISTRY
+            .lock()
+            .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
+        let entry = registry
+            .get(&queue_handle)
+            .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
+        (entry.kind.clone(), Arc::clone(&entry.state))
+    };
+    let consumer = match kind {
+        FfiQueueKind::Dataset { queue, .. } => {
+            FfiConsumerKind::Dataset(queue.open_consumer_with_config(group_name, config)?)
+        }
+        FfiQueueKind::Journal { queue } => {
+            FfiConsumerKind::Journal(queue.open_consumer_with_config(group_name, config)?)
+        }
+    };
+    let id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
+    state.child_handles.fetch_add(1, Ordering::SeqCst);
+    CONSUMER_REGISTRY
+        .lock()
+        .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?
+        .insert(
+            id,
+            FfiConsumerEntry {
+                queue_handle,
+                group_name: group_name.to_string(),
+                consumer,
+                state,
+            },
+        );
+    Ok(id)
+}
+
 /// Open or create a consumer group for a queue.
 ///
 /// Returns an opaque consumer handle (usize).
@@ -1529,44 +1618,26 @@ pub extern "C" fn tmsl_queue_consumer_open(
     err_len: usize,
 ) -> usize {
     ffi_catch_usize! { err_buf, err_len, {
-        if group_name.is_null() {
-            return Err(TmslError::InvalidData("group_name is null".into()));
-        }
-        let group_name = unsafe { CStr::from_ptr(group_name) }
-            .to_str()
-            .map_err(|_| TmslError::InvalidData("invalid group name encoding".into()))?;
-        let (kind, state) = {
-            let registry = QUEUE_REGISTRY
-                .lock()
-                .map_err(|_| TmslError::InvalidData("queue registry mutex poisoned".into()))?;
-            let entry = registry
-                .get(&queue_handle)
-                .ok_or_else(|| TmslError::NotFound("queue handle not found".into()))?;
-            (entry.kind.clone(), Arc::clone(&entry.state))
-        };
-        let consumer = match kind {
-            FfiQueueKind::Dataset { queue, .. } => {
-                FfiConsumerKind::Dataset(queue.open_consumer(group_name)?)
-            }
-            FfiQueueKind::Journal { queue } => {
-                FfiConsumerKind::Journal(queue.open_consumer(group_name)?)
-            }
-        };
-        let id = NEXT_CONSUMER_ID.fetch_add(1, Ordering::Relaxed);
-        state.child_handles.fetch_add(1, Ordering::SeqCst);
-        CONSUMER_REGISTRY
-            .lock()
-            .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?
-            .insert(
-                id,
-                FfiConsumerEntry {
-                    queue_handle,
-                    group_name: group_name.to_string(),
-                    consumer,
-                    state,
-                },
-            );
-        Ok::<usize, TmslError>(id)
+        open_queue_consumer_with_config_impl(
+            queue_handle,
+            group_name,
+            QueueConsumerConfig::default(),
+        )
+    }}
+}
+
+/// Open or create a consumer group with explicit retry configuration.
+#[no_mangle]
+pub extern "C" fn tmsl_queue_consumer_open_with_config(
+    queue_handle: usize,
+    group_name: *const c_char,
+    config: *const TmslQueueConsumerConfigFFI,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> usize {
+    ffi_catch_usize! { err_buf, err_len, {
+        let config = queue_consumer_config_from_ffi(config)?;
+        open_queue_consumer_with_config_impl(queue_handle, group_name, config)
     }}
 }
 
@@ -1963,6 +2034,24 @@ pub extern "C" fn tmsl_journal_queue_consumer_open(
     err_buf: *mut c_char,
     err_buf_len: usize,
 ) -> usize {
+    tmsl_journal_queue_consumer_open_with_config(
+        queue_handle,
+        group_name,
+        std::ptr::null(),
+        err_buf,
+        err_buf_len,
+    )
+}
+
+/// Open a consumer group on the built-in journal queue with explicit retry configuration.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_queue_consumer_open_with_config(
+    queue_handle: usize,
+    group_name: *const c_char,
+    config: *const TmslQueueConsumerConfigFFI,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> usize {
     ffi_catch_usize!(err_buf, err_buf_len, {
         {
             let registry = QUEUE_REGISTRY
@@ -1975,13 +2064,8 @@ pub extern "C" fn tmsl_journal_queue_consumer_open(
                 return Err(TmslError::InvalidData("queue handle is not journal".into()));
             }
         }
-        let consumer = tmsl_queue_consumer_open(queue_handle, group_name, err_buf, err_buf_len);
-        if consumer == 0 {
-            return Err(TmslError::InvalidData(
-                "failed to open journal queue consumer".into(),
-            ));
-        }
-        Ok(consumer)
+        let config = queue_consumer_config_from_ffi(config)?;
+        open_queue_consumer_with_config_impl(queue_handle, group_name, config)
     })
 }
 
@@ -2680,6 +2764,83 @@ mod tests {
     }
 
     #[test]
+    fn test_ffi_queue_consumer_open_with_config_validates_bounds() {
+        let dir = temp_store_dir("ffi_queue_consumer_config");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+        config.enable_journal = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("queuecfgffi").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        let queue = tmsl_queue_open(dataset, err.as_mut_ptr(), err_len);
+        assert_ne!(queue, 0);
+
+        let group = CString::new("configured").unwrap();
+        let queue_config = TmslQueueConsumerConfigFFI {
+            version: 1,
+            running_expired_seconds: 60,
+            max_retry_count: 7,
+        };
+        let consumer = tmsl_queue_consumer_open_with_config(
+            queue,
+            group.as_ptr(),
+            &queue_config,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert_ne!(consumer, 0);
+
+        let bad_group = CString::new("bad_config").unwrap();
+        let invalid = TmslQueueConsumerConfigFFI {
+            version: 1,
+            running_expired_seconds: u16::MAX as u32 + 1,
+            max_retry_count: 1,
+        };
+        assert_eq!(
+            tmsl_queue_consumer_open_with_config(
+                queue,
+                bad_group.as_ptr(),
+                &invalid,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+
+        assert_eq!(
+            tmsl_queue_consumer_drop(queue, consumer, err.as_mut_ptr(), err_len),
+            0
+        );
+        assert_eq!(tmsl_queue_close(queue, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
     fn test_ffi_journal_read_and_query_store_api() {
         let dir = temp_store_dir("ffi_journal_read_query");
         let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
@@ -2809,8 +2970,18 @@ mod tests {
         );
 
         let group = CString::new("journal_group").unwrap();
-        let consumer =
-            tmsl_journal_queue_consumer_open(queue, group.as_ptr(), err.as_mut_ptr(), err_len);
+        let queue_config = TmslQueueConsumerConfigFFI {
+            version: 1,
+            running_expired_seconds: 60,
+            max_retry_count: 3,
+        };
+        let consumer = tmsl_journal_queue_consumer_open_with_config(
+            queue,
+            group.as_ptr(),
+            &queue_config,
+            err.as_mut_ptr(),
+            err_len,
+        );
         assert_ne!(consumer, 0);
 
         let payload = b"journal-write";

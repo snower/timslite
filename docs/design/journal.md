@@ -306,11 +306,18 @@ let queue = store.open_journal_queue()?;
 
 #### JournalQueue
 
-JournalQueue 单独实现, 不复用 `DatasetQueue`, 但复用 queue state file 格式和 at-least-once 语义。
+JournalQueue 单独实现, 不复用 `DatasetQueue`, 但复用 queue state file v2 格式、`QueueConsumerConfig` 和 at-least-once retry/ack 语义。
 
 ```rust
 let queue = store.open_journal_queue()?;
 let consumer = queue.open_consumer("migrate-node-a")?;
+let tuned = queue.open_consumer_with_config(
+    "migrate-node-b",
+    QueueConsumerConfig::builder()
+        .running_expired_seconds(30)?
+        .max_retry_count(5)?
+        .build()?,
+)?;
 while let Some((sequence, payload)) = consumer.poll(timeout)? {
     let record = JournalRecord::decode(&payload)?;
     apply(record)?;
@@ -325,6 +332,9 @@ Queue 语义:
 - 新 consumer 默认从当前 `latest_sequence.unwrap_or(0)` 开始, 只消费后续新增记录。
 - 每条成功写入的 journal record 都 notify waiting consumers。
 - consumer group state 文件路径为 `{data_dir}/.journal/logs/queue/{group_name}`。
+- 未 ack sequence 只有运行超时或 state file reopen 恢复后才会被重试投递; 重试前递增 `retry_count`。
+- `max_retry_count > 0 && retry_count >= max_retry_count` 时, 下一次重试机会不返回 payload, 而是将该 sequence 标记为完成并按连续完成前缀推进 `processed_ts`。
+- 同一 JournalQueue 中同一 `group_name` 的活动 consumer 必须使用相同 `QueueConsumerConfig`。
 
 ### 25.9 并发与锁顺序
 

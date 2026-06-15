@@ -47,6 +47,7 @@ Phase 37: Journal Record TV Format         ✅ 完成
 Phase 38: zstd Frame Checksum              ✅ 完成
 Phase 39: Dataset Journal Toggle           ✅ 完成
 Phase 40: Dataset Inspect State Cache      ✅ 完成
+Phase 41: Queue Consumer Retry             ✅ 完成
 ```
 
 ## 目录结构变更 (核心)
@@ -189,6 +190,9 @@ Phase 39 (Dataset Journal Toggle: per-dataset effective journal switch)
           │
           ▼
 Phase 40 (Dataset Inspect State Cache: archived stats file + total/open segment counts)
+          │
+          ▼
+Phase 41 (Queue Consumer Retry: QSTF v2 + visibility timeout + retry limit)
 ```
 
 ## 风险与应对
@@ -234,6 +238,9 @@ Phase 40 (Dataset Inspect State Cache: archived stats file + total/open segment 
 | Dataset 级 journal 关闭 | 重要和不重要数据混写时 journal 写放大过高 | Phase 39 新增 `DataSetConfig.enable_journal`, 以全局和 dataset 开关取 AND 得到有效记录状态 |
 | inspect 只统计打开分段 | `DataSetState.total_*` 不能反映整个 dataset | Phase 40 新增 `{dataset_dir}/state` 归档统计缓存, inspect 返回归档统计 + active tail 状态 |
 | inspect 分段关闭数语义误导 | idle-close 状态被误解为数据覆盖范围 | Phase 40 改为返回 `data_segments` / `index_segments` 总数和 `open_*` 打开数, 不再返回关闭数 |
+| queue pending 立即重投 | 多 consumer 会重复处理仍在运行中的同一条记录 | Phase 41 引入 `running_expired_seconds`, 未过期 pending 不重投 |
+| queue timeout 删除丢失 retry 信息 | 无法限制重试次数或区分首次投递与重试 | Phase 41 升级 QSTF v2, pending entry 持久化 `retry_count`, 超限后按连续完成规则丢弃 |
+| 不同 consumer 使用不同 retry 配置 | 同一 group 对同一 state file 解释不一致 | Phase 41 将 `QueueConsumerConfig` 定义为组级配置, 活动 group 配置不一致时拒绝打开 |
 | Append 修改历史数据 | 旧 timestamp 可能位于 compressed block 或历史段中间, 无法稳定增长 | Phase 29 只允许 `timestamp > latest` 创建或 `timestamp == latest` 且位于未压缩段尾时追加 |
 | Append 造成普通 block 过大 | 最新 record 追加后可能超过普通 pending block 容量 | 直接返回错误, 不迁移到独占 block |
 | 单条 record 过大 | `data_len:u32` 可表达但资源消耗不可控 | `write` 和 `append` 均限制单条 record 纯数据长度不超过 4MiB |
@@ -287,3 +294,4 @@ Phase 40 (Dataset Inspect State Cache: archived stats file + total/open segment 
 | [phase-38-zstd-frame-checksum.md](phase-38-zstd-frame-checksum.md) | zstd Frame Checksum | ✅ |
 | [phase-39-dataset-journal-toggle.md](phase-39-dataset-journal-toggle.md) | Dataset Journal Toggle | ✅ |
 | [phase-40-dataset-inspect-state.md](phase-40-dataset-inspect-state.md) | Dataset Inspect State Cache | ✅ |
+| [phase-41-queue-consumer-retry.md](phase-41-queue-consumer-retry.md) | Queue Consumer Retry / Visibility Timeout | ✅ |

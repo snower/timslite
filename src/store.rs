@@ -20,7 +20,7 @@ use crate::journal::{
     JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
 use crate::meta::{DataSetMeta, META_VALUES_LEN_V1};
-use crate::queue::{DatasetQueue, DatasetQueueConsumer};
+use crate::queue::{DatasetQueue, DatasetQueueConsumer, QueueConsumerConfig};
 use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
 const MAX_IDENTIFIER_FILE: &str = "max_identifier";
@@ -985,6 +985,16 @@ impl Store {
         group_name: &str,
     ) -> Result<DatasetQueueConsumer> {
         queue.open_consumer(group_name)
+    }
+
+    /// Open or create a consumer group with explicit retry configuration.
+    pub fn open_consumer_with_config(
+        &mut self,
+        queue: &DatasetQueue,
+        group_name: &str,
+        config: QueueConsumerConfig,
+    ) -> Result<DatasetQueueConsumer> {
+        queue.open_consumer_with_config(group_name, config)
     }
 
     /// Drop a consumer group for a dataset queue.

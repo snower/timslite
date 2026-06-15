@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use timslite::{
-    DataSetConfigBuilder, JournalRecord, JournalRecordKind, Store, StoreConfig,
-    JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
+    DataSetConfigBuilder, JournalRecord, JournalRecordKind, QueueConsumerConfig, Store,
+    StoreConfig, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -423,6 +423,79 @@ fn t28_15_journal_queue_consumes_0x13_records() {
         other_count
     );
 
+    store.close().unwrap();
+}
+
+#[test]
+fn t41_4_journal_queue_unexpired_pending_does_not_block_next_record() {
+    let dir = temp_dir("journal_queue_visibility");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+    store
+        .create_dataset("jretry", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("jretry", "data").unwrap();
+    let queue = store.open_journal_queue().unwrap();
+    let config = QueueConsumerConfig::builder()
+        .running_expired_seconds(60)
+        .max_retry_count(3)
+        .build()
+        .unwrap();
+    let c1 = queue.open_consumer_with_config("shared", config).unwrap();
+    let c2 = queue.open_consumer_with_config("shared", config).unwrap();
+
+    store.write_dataset(handle, 1, b"first").unwrap();
+    store.write_dataset(handle, 2, b"second").unwrap();
+
+    let (seq1, payload1) = c1.poll(Duration::from_millis(100)).unwrap().unwrap();
+    let first = JournalRecord::decode(&payload1).unwrap();
+    assert_eq!(first.index_info.unwrap().timestamp, 1);
+
+    let (seq2, payload2) = c2.poll(Duration::from_millis(100)).unwrap().unwrap();
+    let second = JournalRecord::decode(&payload2).unwrap();
+    assert_eq!(seq2, seq1 + 1);
+    assert_eq!(second.index_info.unwrap().timestamp, 2);
+
+    c1.ack(seq1).unwrap();
+    c2.ack(seq2).unwrap();
+    store.close().unwrap();
+}
+
+#[test]
+fn t41_5_journal_queue_retry_limit_drops_before_next_sequence() {
+    let dir = temp_dir("journal_queue_retry_limit");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+    store
+        .create_dataset("jretry", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("jretry", "data").unwrap();
+    let queue = store.open_journal_queue().unwrap();
+    let config = QueueConsumerConfig::builder()
+        .running_expired_seconds(1)
+        .max_retry_count(1)
+        .build()
+        .unwrap();
+    let consumer = queue.open_consumer_with_config("retry", config).unwrap();
+
+    store.write_dataset(handle, 1, b"first").unwrap();
+    store.write_dataset(handle, 2, b"second").unwrap();
+
+    let (seq1, payload1) = consumer.poll(Duration::from_millis(100)).unwrap().unwrap();
+    let first = JournalRecord::decode(&payload1).unwrap();
+    assert_eq!(first.index_info.unwrap().timestamp, 1);
+
+    std::thread::sleep(Duration::from_millis(1100));
+    let (retry_seq, retry_payload) = consumer.poll(Duration::from_millis(100)).unwrap().unwrap();
+    let retry = JournalRecord::decode(&retry_payload).unwrap();
+    assert_eq!(retry_seq, seq1);
+    assert_eq!(retry.index_info.unwrap().timestamp, 1);
+
+    std::thread::sleep(Duration::from_millis(1100));
+    let (seq2, payload2) = consumer.poll(Duration::from_millis(100)).unwrap().unwrap();
+    let second = JournalRecord::decode(&payload2).unwrap();
+    assert_eq!(seq2, seq1 + 1);
+    assert_eq!(second.index_info.unwrap().timestamp, 2);
+
+    consumer.ack(seq2).unwrap();
     store.close().unwrap();
 }
 

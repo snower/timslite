@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::error::{Result, TmslError};
 use crate::journal::log::JournalLog;
 use crate::queue::{
-    ConsumerStateFile, PendingEntry, DEFAULT_PENDING_TIMEOUT_SECS, PENDING_STATUS_UNACKED,
+    now_unix_seconds, ConsumerStateFile, PendingEntry, QueueConsumerConfig, PENDING_STATUS_UNACKED,
 };
 use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
@@ -23,6 +23,7 @@ fn validate_consumer_group_name(group_name: &str) -> Result<()> {
 
 struct JournalQueueInner {
     consumers: HashMap<String, Arc<Mutex<ConsumerStateFile>>>,
+    consumer_configs: HashMap<String, QueueConsumerConfig>,
     closed: Arc<AtomicBool>,
 }
 
@@ -30,6 +31,7 @@ impl JournalQueueInner {
     fn new() -> Self {
         Self {
             consumers: HashMap::new(),
+            consumer_configs: HashMap::new(),
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -54,6 +56,14 @@ impl JournalQueue {
     }
 
     pub fn open_consumer(&self, group_name: &str) -> Result<JournalQueueConsumer> {
+        self.open_consumer_with_config(group_name, QueueConsumerConfig::default())
+    }
+
+    pub fn open_consumer_with_config(
+        &self,
+        group_name: &str,
+        config: QueueConsumerConfig,
+    ) -> Result<JournalQueueConsumer> {
         validate_consumer_group_name(group_name)?;
         let mut inner = self
             .inner
@@ -61,6 +71,13 @@ impl JournalQueue {
             .map_err(|_| TmslError::InvalidData("journal queue mutex poisoned".into()))?;
         if inner.closed.load(Ordering::SeqCst) {
             return Err(TmslError::QueueClosed("journal queue is closed".into()));
+        }
+        if let Some(existing) = inner.consumer_configs.get(group_name) {
+            if *existing != config {
+                return Err(TmslError::InvalidData(format!(
+                    "journal consumer group {group_name} is already open with a different config"
+                )));
+            }
         }
         let state_file = if let Some(existing) = inner.consumers.get(group_name) {
             Arc::clone(existing)
@@ -79,10 +96,14 @@ impl JournalQueue {
             inner
                 .consumers
                 .insert(group_name.to_string(), Arc::clone(&state));
+            inner
+                .consumer_configs
+                .insert(group_name.to_string(), config);
             state
         };
         Ok(JournalQueueConsumer {
             state_file,
+            config,
             log: Arc::clone(&self.log),
             notify: Arc::clone(&self.notify),
             closed: Arc::clone(&inner.closed),
@@ -104,6 +125,7 @@ impl JournalQueue {
             }
         }
         inner.consumers.clear();
+        inner.consumer_configs.clear();
         drop(inner);
         self.notify_record_appended();
         Ok(())
@@ -125,7 +147,6 @@ impl JournalQueue {
             let mut guard = state
                 .lock()
                 .map_err(|_| TmslError::InvalidData("journal state file mutex poisoned".into()))?;
-            guard.cleanup_timeout(DEFAULT_PENDING_TIMEOUT_SECS);
             guard.sync()?;
             guard.flush()?;
         }
@@ -136,6 +157,7 @@ impl JournalQueue {
 #[derive(Clone)]
 pub struct JournalQueueConsumer {
     state_file: Arc<Mutex<ConsumerStateFile>>,
+    config: QueueConsumerConfig,
     log: Arc<Mutex<JournalLog>>,
     notify: Arc<(Mutex<bool>, Condvar)>,
     closed: Arc<AtomicBool>,
@@ -200,30 +222,38 @@ impl JournalQueueConsumer {
     }
 
     fn try_poll_available(&self) -> Result<Option<(i64, Vec<u8>)>> {
-        let pending = {
-            let state = self
+        let retry_scan = {
+            let mut state = self
                 .state_file
                 .lock()
                 .map_err(|_| TmslError::InvalidData("journal state file mutex poisoned".into()))?;
-            state.find_first_unacked().map(|entry| entry.timestamp)
+            let scan = state.take_retryable_pending(self.config, now_unix_seconds());
+            if scan.changed {
+                state.sync()?;
+            }
+            scan
         };
-        if let Some(sequence) = pending {
+        if let Some(sequence) = retry_scan.timestamp {
             return self.read_sequence(sequence);
         }
-
-        let next = {
-            let state = self
-                .state_file
-                .lock()
-                .map_err(|_| TmslError::InvalidData("journal state file mutex poisoned".into()))?;
-            state.next_poll_ts()
-        };
 
         let next_sequence = self
             .log
             .lock()
             .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
             .next_sequence();
+
+        let next = {
+            let state = self
+                .state_file
+                .lock()
+                .map_err(|_| TmslError::InvalidData("journal state file mutex poisoned".into()))?;
+            let mut candidate = state.next_poll_ts();
+            while candidate < next_sequence && state.is_in_pending(candidate) {
+                candidate = candidate.saturating_add(1);
+            }
+            candidate
+        };
         if next >= next_sequence {
             return Ok(None);
         }
@@ -243,6 +273,7 @@ impl JournalQueueConsumer {
                     timestamp: next,
                     start_time: now,
                     status: PENDING_STATUS_UNACKED,
+                    retry_count: 0,
                 })?;
                 state.sync()?;
             }

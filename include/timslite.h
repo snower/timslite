@@ -20,6 +20,7 @@ extern "C" {
 
 #define TMSL_STORE_CONFIG_FFI_VERSION 4u
 #define TMSL_DATASET_CONFIG_FFI_VERSION 3u
+#define TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION 1u
 
 typedef struct TmslStoreConfigFFI {
     uint32_t version;
@@ -50,6 +51,12 @@ typedef struct TmslDatasetConfigFFI {
     uint8_t index_continuous;
     uint8_t enable_journal; /* 0=false, non-zero=true; default true */
 } TmslDatasetConfigFFI;
+
+typedef struct TmslQueueConsumerConfigFFI {
+    uint32_t version;
+    uint32_t running_expired_seconds; /* 0=never expire while running, default 900, max 65535 */
+    uint32_t max_retry_count;         /* 0=unlimited, default 3, max 255 */
+} TmslQueueConsumerConfigFFI;
 
 /**
  * Fill a store config struct with default values.
@@ -539,6 +546,23 @@ size_t tmsl_queue_consumer_open(size_t queue_handle, const char* group_name,
                                 char* err_buf, size_t err_buf_len);
 
 /**
+ * Open or create a queue consumer group with explicit retry configuration.
+ *
+ * Passing config = NULL is equivalent to tmsl_queue_consumer_open.
+ *
+ * @param queue_handle Queue handle returned by tmsl_queue_open.
+ * @param group_name   Consumer group name.
+ * @param config       Versioned config pointer, or NULL for defaults.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque consumer handle (>0), or 0 on error.
+ */
+size_t tmsl_queue_consumer_open_with_config(size_t queue_handle,
+                                            const char* group_name,
+                                            const TmslQueueConsumerConfigFFI* config,
+                                            char* err_buf, size_t err_buf_len);
+
+/**
  * Drop a consumer group and invalidate matching FFI consumer handles.
  *
  * @param queue_handle    Queue handle returned by tmsl_queue_open.
@@ -701,6 +725,25 @@ int tmsl_journal_queue_close(size_t queue_handle, char* err_buf, size_t err_buf_
  */
 size_t tmsl_journal_queue_consumer_open(size_t queue_handle, const char* group_name,
                                         char* err_buf, size_t err_buf_len);
+
+/**
+ * Open or create a journal queue consumer group with explicit retry configuration.
+ *
+ * Passing config = NULL is equivalent to tmsl_journal_queue_consumer_open.
+ *
+ * @param queue_handle Journal queue handle.
+ * @param group_name   Consumer group name.
+ * @param config       Versioned config pointer, or NULL for defaults.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return Opaque consumer handle (>0), or 0 on error.
+ */
+size_t tmsl_journal_queue_consumer_open_with_config(
+    size_t queue_handle,
+    const char* group_name,
+    const TmslQueueConsumerConfigFFI* config,
+    char* err_buf,
+    size_t err_buf_len);
 
 /**
  * Poll data from a journal queue consumer.

@@ -32,16 +32,16 @@ use crate::util::{
 pub const QUEUE_STATE_MAGIC: &[u8; 4] = b"QSTF";
 
 /// Queue state file version.
-pub const QUEUE_STATE_VERSION: u32 = 1;
+pub const QUEUE_STATE_VERSION: u32 = 2;
 
 /// Fixed state file size (4KB).
 pub const STATE_FILE_SIZE: usize = 4096;
 
 /// Size of a single pending entry in the state file.
-pub const PENDING_ENTRY_SIZE: usize = 17;
+pub const PENDING_ENTRY_SIZE: usize = 18;
 
 /// Maximum number of pending entries that fit in 4KB.
-pub const MAX_PENDING_ENTRIES: usize = 239;
+pub const MAX_PENDING_ENTRIES: usize = (STATE_FILE_SIZE - STATE_HEADER_SIZE) / PENDING_ENTRY_SIZE;
 
 /// Status: pending (not yet acked).
 pub const PENDING_STATUS_UNACKED: u8 = 0;
@@ -52,8 +52,11 @@ pub const PENDING_STATUS_ACKED: u8 = 1;
 /// Header size: magic(4) + version(4) + state_length(2) + processed_ts(8) + pending_length(2) + pending_value_size(1) = 21
 pub const STATE_HEADER_SIZE: usize = 21;
 
-/// Default pending timeout in seconds (5 minutes).
-pub const DEFAULT_PENDING_TIMEOUT_SECS: u64 = 300;
+/// Default visibility timeout in seconds for unacked pending entries.
+pub const DEFAULT_RUNNING_EXPIRED_SECONDS: u16 = 900;
+
+/// Default retry limit. Zero means unlimited.
+pub const DEFAULT_MAX_RETRY_COUNT: u8 = 3;
 
 fn validate_consumer_group_name(group_name: &str) -> Result<()> {
     if is_path_safe_component(group_name) {
@@ -65,12 +68,83 @@ fn validate_consumer_group_name(group_name: &str) -> Result<()> {
     }
 }
 
+/// Runtime retry/visibility settings for one consumer group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QueueConsumerConfig {
+    pub running_expired_seconds: u16,
+    pub max_retry_count: u8,
+}
+
+impl Default for QueueConsumerConfig {
+    fn default() -> Self {
+        Self {
+            running_expired_seconds: DEFAULT_RUNNING_EXPIRED_SECONDS,
+            max_retry_count: DEFAULT_MAX_RETRY_COUNT,
+        }
+    }
+}
+
+impl QueueConsumerConfig {
+    pub fn builder() -> QueueConsumerConfigBuilder {
+        QueueConsumerConfigBuilder::default()
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct QueueConsumerConfigBuilder {
+    running_expired_seconds: u64,
+    max_retry_count: u16,
+}
+
+impl Default for QueueConsumerConfigBuilder {
+    fn default() -> Self {
+        let config = QueueConsumerConfig::default();
+        Self {
+            running_expired_seconds: config.running_expired_seconds as u64,
+            max_retry_count: config.max_retry_count as u16,
+        }
+    }
+}
+
+impl QueueConsumerConfigBuilder {
+    pub fn running_expired_seconds(mut self, seconds: u64) -> Self {
+        self.running_expired_seconds = seconds;
+        self
+    }
+
+    pub fn max_retry_count(mut self, count: u16) -> Self {
+        self.max_retry_count = count;
+        self
+    }
+
+    pub fn build(self) -> Result<QueueConsumerConfig> {
+        let running_expired_seconds =
+            u16::try_from(self.running_expired_seconds).map_err(|_| {
+                TmslError::InvalidData(format!(
+                    "running_expired_seconds exceeds u16::MAX: {}",
+                    self.running_expired_seconds
+                ))
+            })?;
+        let max_retry_count = u8::try_from(self.max_retry_count).map_err(|_| {
+            TmslError::InvalidData(format!(
+                "max_retry_count exceeds u8::MAX: {}",
+                self.max_retry_count
+            ))
+        })?;
+        Ok(QueueConsumerConfig {
+            running_expired_seconds,
+            max_retry_count,
+        })
+    }
+}
+
 /// A single pending entry tracked in the consumer state file.
 #[derive(Clone, Debug)]
 pub struct PendingEntry {
     pub timestamp: i64,
     pub start_time: i64,
     pub status: u8,
+    pub retry_count: u8,
 }
 
 impl PendingEntry {
@@ -78,6 +152,7 @@ impl PendingEntry {
         buf[0..8].copy_from_slice(&self.timestamp.to_le_bytes());
         buf[8..16].copy_from_slice(&self.start_time.to_le_bytes());
         buf[16] = self.status;
+        buf[17] = self.retry_count;
     }
 
     fn deserialize_from(buf: &[u8; PENDING_ENTRY_SIZE]) -> Self {
@@ -85,6 +160,7 @@ impl PendingEntry {
             timestamp: i64::from_le_bytes(buf[0..8].try_into().unwrap()),
             start_time: i64::from_le_bytes(buf[8..16].try_into().unwrap()),
             status: buf[16],
+            retry_count: buf[17],
         }
     }
 }
@@ -94,7 +170,7 @@ impl PendingEntry {
 /// Layout:
 /// - magic (4B) + version (4B) + state_length (2B) + processed_ts (8B)
 /// - pending_length (2B) + pending_value_size (1B)
-/// - pending_entries (pending_length * 17 B)
+/// - pending_entries (pending_length * 18 B)
 pub struct ConsumerStateFile {
     path: PathBuf,
     mmap: MmapMut,
@@ -134,7 +210,7 @@ impl ConsumerStateFile {
         write_i64_at(&mut mmap, 10, initial_processed_ts);
         // pending_length = 0
         mmap[18..20].copy_from_slice(&0u16.to_le_bytes());
-        // pending_value_size = 17
+        // pending_value_size = 18
         mmap[20] = PENDING_ENTRY_SIZE as u8;
 
         mmap.flush()?;
@@ -159,8 +235,26 @@ impl ConsumerStateFile {
             return Err(TmslError::InvalidVersion(version as u16));
         }
 
+        let state_length = read_u16_from_mmap(&mmap, 8);
+        if state_length != 8 {
+            return Err(TmslError::InvalidData(format!(
+                "invalid queue state length: {state_length}"
+            )));
+        }
+
         let processed_ts = read_i64_from_mmap(&mmap, 10);
         let pending_length = read_u16_from_mmap(&mmap, 18) as usize;
+        let pending_value_size = mmap[20] as usize;
+        if pending_value_size != PENDING_ENTRY_SIZE {
+            return Err(TmslError::InvalidData(format!(
+                "invalid queue pending entry size: {pending_value_size}"
+            )));
+        }
+        if pending_length > MAX_PENDING_ENTRIES {
+            return Err(TmslError::InvalidData(format!(
+                "queue pending length exceeds capacity: {pending_length}"
+            )));
+        }
 
         let mut pending_entries = Vec::with_capacity(pending_length);
         for i in 0..pending_length {
@@ -175,12 +269,23 @@ impl ConsumerStateFile {
             pending_entries.push(PendingEntry::deserialize_from(&buf));
         }
 
-        Ok(ConsumerStateFile {
+        let mut state = ConsumerStateFile {
             path,
             mmap,
             processed_ts,
             pending_entries,
-        })
+        };
+        let mut changed = state.cleanup_acked() > 0;
+        for entry in &mut state.pending_entries {
+            if entry.status == PENDING_STATUS_UNACKED && entry.start_time != 0 {
+                entry.start_time = 0;
+                changed = true;
+            }
+        }
+        if changed {
+            state.sync_to_mmap()?;
+        }
+        Ok(state)
     }
 
     /// Write in-memory state back to mmap (no fsync 鈥?unified with bg flush).
@@ -243,13 +348,6 @@ impl ConsumerStateFile {
             .any(|e| e.timestamp == timestamp)
     }
 
-    /// Find the first unacked pending entry (for poll allocation).
-    pub fn find_first_unacked(&self) -> Option<&PendingEntry> {
-        self.pending_entries
-            .iter()
-            .find(|e| e.status == PENDING_STATUS_UNACKED)
-    }
-
     /// Mark a pending entry as acked by timestamp.
     pub fn ack_pending(&mut self, timestamp: i64) -> Result<()> {
         let entry = self
@@ -286,16 +384,44 @@ impl ConsumerStateFile {
         count
     }
 
-    /// Remove pending entries that have been waiting longer than timeout_secs.
-    pub fn cleanup_timeout(&mut self, timeout_secs: u64) -> usize {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        let before = self.pending_entries.len();
-        self.pending_entries
-            .retain(|e| e.start_time == 0 || (now - e.start_time) < timeout_secs as i64);
-        before - self.pending_entries.len()
+    /// Find a retryable pending entry, or mark retry-exhausted entries completed.
+    pub(crate) fn take_retryable_pending(
+        &mut self,
+        config: QueueConsumerConfig,
+        now: i64,
+    ) -> PendingScanResult {
+        let mut changed = false;
+        let mut timestamp = None;
+
+        for entry in &mut self.pending_entries {
+            if entry.status != PENDING_STATUS_UNACKED {
+                continue;
+            }
+            let recovery_expired = entry.start_time == 0;
+            let running_expired = config.running_expired_seconds > 0
+                && now.saturating_sub(entry.start_time) >= config.running_expired_seconds as i64;
+            if !recovery_expired && !running_expired {
+                continue;
+            }
+
+            if config.max_retry_count > 0 && entry.retry_count >= config.max_retry_count {
+                entry.status = PENDING_STATUS_ACKED;
+                changed = true;
+                continue;
+            }
+
+            entry.retry_count = entry.retry_count.saturating_add(1);
+            entry.start_time = now;
+            timestamp = Some(entry.timestamp);
+            changed = true;
+            break;
+        }
+
+        if self.cleanup_acked() > 0 {
+            changed = true;
+        }
+
+        PendingScanResult { timestamp, changed }
     }
 
     /// Get the next timestamp to poll (processed_ts + 1, or initial if no records).
@@ -329,8 +455,20 @@ impl ConsumerStateFile {
     }
 }
 
+pub(crate) struct PendingScanResult {
+    pub(crate) timestamp: Option<i64>,
+    pub(crate) changed: bool,
+}
+
 fn read_i64_at(mmap: &[u8], offset: usize) -> i64 {
     i64::from_le_bytes(mmap[offset..offset + 8].try_into().unwrap())
+}
+
+pub(crate) fn now_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
 }
 
 fn write_i64_at(mmap: &mut MmapMut, offset: usize, val: i64) {
@@ -340,6 +478,7 @@ fn write_i64_at(mmap: &mut MmapMut, offset: usize, val: i64) {
 /// Shared internal state for a dataset queue.
 pub struct QueueInner {
     consumers: HashMap<String, Arc<Mutex<ConsumerStateFile>>>,
+    consumer_configs: HashMap<String, QueueConsumerConfig>,
     closed: Arc<AtomicBool>,
 }
 
@@ -347,6 +486,7 @@ impl QueueInner {
     pub(crate) fn new() -> Self {
         QueueInner {
             consumers: HashMap::new(),
+            consumer_configs: HashMap::new(),
             closed: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -365,6 +505,10 @@ impl QueueInner {
 
     pub(crate) fn consumers_mut(&mut self) -> &mut HashMap<String, Arc<Mutex<ConsumerStateFile>>> {
         &mut self.consumers
+    }
+
+    pub(crate) fn consumer_configs(&self) -> &HashMap<String, QueueConsumerConfig> {
+        &self.consumer_configs
     }
 }
 
@@ -426,6 +570,15 @@ impl DatasetQueue {
 
     /// Open or create a consumer group and return a consumer handle.
     pub fn open_consumer(&self, group_name: &str) -> Result<DatasetQueueConsumer> {
+        self.open_consumer_with_config(group_name, QueueConsumerConfig::default())
+    }
+
+    /// Open or create a consumer group with explicit retry configuration.
+    pub fn open_consumer_with_config(
+        &self,
+        group_name: &str,
+        config: QueueConsumerConfig,
+    ) -> Result<DatasetQueueConsumer> {
         validate_consumer_group_name(group_name)?;
 
         let mut inner = self
@@ -435,6 +588,13 @@ impl DatasetQueue {
 
         if inner.is_closed() {
             return Err(TmslError::QueueClosed("queue is closed".into()));
+        }
+        if let Some(existing) = inner.consumer_configs.get(group_name) {
+            if *existing != config {
+                return Err(TmslError::InvalidData(format!(
+                    "consumer group {group_name} is already open with a different config"
+                )));
+            }
         }
 
         let queue_dir = {
@@ -463,12 +623,16 @@ impl DatasetQueue {
             inner
                 .consumers
                 .insert(group_name.to_string(), Arc::clone(&sf));
+            inner
+                .consumer_configs
+                .insert(group_name.to_string(), config);
             sf
         };
 
         Ok(DatasetQueueConsumer {
             group_name: group_name.to_string(),
             state_file,
+            config,
             notify: Arc::clone(&self.notify),
             dataset: Arc::clone(&self.dataset),
             closed: Arc::clone(&inner.closed),
@@ -493,6 +657,7 @@ impl DatasetQueue {
         }
 
         let removed = inner.consumers.remove(group_name);
+        inner.consumer_configs.remove(group_name);
         if removed.is_none() {
             return Err(TmslError::ConsumerGroupNotFound(group_name.to_string()));
         }
@@ -570,6 +735,7 @@ impl DatasetQueue {
 
         inner.close();
         inner.consumers.clear();
+        inner.consumer_configs.clear();
 
         // Notify any waiting polls
         let (lock, cvar) = (&self.notify.0, &self.notify.1);
@@ -590,6 +756,7 @@ impl DatasetQueue {
 pub struct DatasetQueueConsumer {
     group_name: String,
     state_file: Arc<Mutex<ConsumerStateFile>>,
+    config: QueueConsumerConfig,
     notify: Arc<(Mutex<bool>, Condvar)>,
     dataset: Arc<Mutex<DataSet>>,
     closed: Arc<AtomicBool>,
@@ -600,6 +767,7 @@ impl Clone for DatasetQueueConsumer {
         DatasetQueueConsumer {
             group_name: self.group_name.clone(),
             state_file: Arc::clone(&self.state_file),
+            config: self.config,
             notify: Arc::clone(&self.notify),
             dataset: Arc::clone(&self.dataset),
             closed: Arc::clone(&self.closed),
@@ -618,7 +786,7 @@ impl fmt::Debug for DatasetQueueConsumer {
 impl DatasetQueueConsumer {
     /// Poll for the next unacked record.
     ///
-    /// - If there's already an unacked pending entry, return it immediately.
+    /// - If a pending entry is expired, retry or discard it according to config.
     /// - Otherwise, read from the dataset starting at processed_ts + 1.
     /// - If no data is available, wait up to `timeout` for a push notification.
     ///
@@ -629,19 +797,6 @@ impl DatasetQueueConsumer {
             return Err(TmslError::QueueClosed("queue is closed".into()));
         }
 
-        // Check for existing unacked pending entry
-        {
-            let sf = self
-                .state_file
-                .lock()
-                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-            if let Some(entry) = sf.find_first_unacked() {
-                let ts = entry.timestamp;
-                drop(sf);
-                return self.read_record_at(ts);
-            }
-        }
-
         if let Some(row) = self.try_poll_available()? {
             Ok(Some(row))
         } else {
@@ -650,6 +805,21 @@ impl DatasetQueueConsumer {
     }
 
     fn try_poll_available(&self) -> Result<Option<(i64, Vec<u8>)>> {
+        let now = now_unix_seconds();
+        let retry_scan = {
+            let mut sf = self
+                .state_file
+                .lock()
+                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+            sf.take_retryable_pending(self.config, now)
+        };
+        if retry_scan.changed {
+            self.enqueue_state_flush()?;
+        }
+        if let Some(ts) = retry_scan.timestamp {
+            return self.read_record_at(ts);
+        }
+
         let mut sf = self
             .state_file
             .lock()
@@ -660,7 +830,11 @@ impl DatasetQueueConsumer {
             .lock()
             .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
 
-        let direct = ds.read(next_ts)?;
+        let direct = if sf.is_in_pending(next_ts) {
+            None
+        } else {
+            ds.read(next_ts)?
+        };
         let row = if direct.is_some() {
             direct
         } else {
@@ -686,6 +860,7 @@ impl DatasetQueueConsumer {
                     timestamp: ts,
                     start_time: now,
                     status: PENDING_STATUS_UNACKED,
+                    retry_count: 0,
                 })?;
                 ds.enqueue_queue_state_flush(&self.group_name);
             }
@@ -712,19 +887,6 @@ impl DatasetQueueConsumer {
                 *notified = false;
                 drop(notified);
 
-                // Re-check for unacked pending
-                {
-                    let sf = self
-                        .state_file
-                        .lock()
-                        .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-                    if let Some(entry) = sf.find_first_unacked() {
-                        let ts = entry.timestamp;
-                        drop(sf);
-                        return self.read_record_at(ts);
-                    }
-                }
-
                 if let Some(row) = self.try_poll_available()? {
                     return Ok(Some(row));
                 } else {
@@ -745,18 +907,7 @@ impl DatasetQueueConsumer {
             if timeout_result.timed_out() {
                 // One final check after timeout
                 drop(notified);
-                {
-                    let sf = self
-                        .state_file
-                        .lock()
-                        .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-                    if let Some(entry) = sf.find_first_unacked() {
-                        let ts = entry.timestamp;
-                        drop(sf);
-                        return self.read_record_at(ts);
-                    }
-                }
-                return Ok(None);
+                return self.try_poll_available();
             }
         }
     }
@@ -767,6 +918,14 @@ impl DatasetQueueConsumer {
             .lock()
             .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
         ds.read(timestamp)
+    }
+
+    fn enqueue_state_flush(&self) -> Result<()> {
+        self.dataset
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?
+            .enqueue_queue_state_flush(&self.group_name);
+        Ok(())
     }
 
     /// Ack a previously polled record.
@@ -804,8 +963,6 @@ pub(crate) fn flush_queue_state_files(inner: &Arc<Mutex<QueueInner>>) -> Result<
 
     for sf in guard.consumers.values() {
         if let Ok(mut state) = sf.lock() {
-            // Cleanup timeout entries first
-            state.cleanup_timeout(DEFAULT_PENDING_TIMEOUT_SECS);
             state.sync_to_mmap()?;
             state.flush()?;
         }
@@ -828,7 +985,6 @@ pub(crate) fn flush_queue_state_file(
         let mut state = sf
             .lock()
             .map_err(|_| TmslError::InvalidData("consumer state mutex poisoned".into()))?;
-        state.cleanup_timeout(DEFAULT_PENDING_TIMEOUT_SECS);
         state.sync_to_mmap()?;
         state.flush()?;
     }
@@ -857,10 +1013,13 @@ mod tests {
 
     #[test]
     fn pending_entry_round_trip() {
+        assert_eq!(PENDING_ENTRY_SIZE, 18);
+        assert_eq!(MAX_PENDING_ENTRIES, 226);
         let entry = PendingEntry {
             timestamp: 1700000000,
             start_time: 1700000005,
             status: PENDING_STATUS_UNACKED,
+            retry_count: 2,
         };
         let mut buf = [0u8; PENDING_ENTRY_SIZE];
         entry.serialize_to(&mut buf);
@@ -868,6 +1027,31 @@ mod tests {
         assert_eq!(restored.timestamp, entry.timestamp);
         assert_eq!(restored.start_time, entry.start_time);
         assert_eq!(restored.status, entry.status);
+        assert_eq!(restored.retry_count, entry.retry_count);
+    }
+
+    #[test]
+    fn queue_consumer_config_builder_validates_bounds() {
+        let default = QueueConsumerConfig::default();
+        assert_eq!(default.running_expired_seconds, 900);
+        assert_eq!(default.max_retry_count, 3);
+
+        let max = QueueConsumerConfig::builder()
+            .running_expired_seconds(u16::MAX as u64)
+            .max_retry_count(u8::MAX as u16)
+            .build()
+            .unwrap();
+        assert_eq!(max.running_expired_seconds, u16::MAX);
+        assert_eq!(max.max_retry_count, u8::MAX);
+
+        assert!(QueueConsumerConfig::builder()
+            .running_expired_seconds(u16::MAX as u64 + 1)
+            .build()
+            .is_err());
+        assert!(QueueConsumerConfig::builder()
+            .max_retry_count(u8::MAX as u16 + 1)
+            .build()
+            .is_err());
     }
 
     #[test]
@@ -876,12 +1060,40 @@ mod tests {
             timestamp: -42,
             start_time: 0,
             status: PENDING_STATUS_ACKED,
+            retry_count: 0,
         };
         let mut buf = [0u8; PENDING_ENTRY_SIZE];
         entry.serialize_to(&mut buf);
         let restored = PendingEntry::deserialize_from(&buf);
         assert_eq!(restored.timestamp, -42);
         assert_eq!(restored.status, PENDING_STATUS_ACKED);
+    }
+
+    #[test]
+    fn csf_reopen_marks_unacked_pending_recovery_expired_and_keeps_retry_count() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        {
+            let mut sf = ConsumerStateFile::open_or_create(path.clone(), 10).unwrap();
+            sf.add_pending(PendingEntry {
+                timestamp: 11,
+                start_time: 12345,
+                status: PENDING_STATUS_UNACKED,
+                retry_count: 2,
+            })
+            .unwrap();
+            sf.sync_to_mmap().unwrap();
+            sf.flush().unwrap();
+        }
+
+        let sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        assert_eq!(sf.pending_count(), 1);
+        let pending = &sf.pending_entries()[0];
+        assert_eq!(pending.timestamp, 11);
+        assert_eq!(pending.start_time, 0);
+        assert_eq!(pending.retry_count, 2);
+        drop(sf);
+        cleanup(&dir);
     }
 
     #[test]
@@ -932,12 +1144,14 @@ mod tests {
                 timestamp: 101,
                 start_time: 1000,
                 status: PENDING_STATUS_UNACKED,
+                retry_count: 0,
             })
             .unwrap();
             sf.add_pending(PendingEntry {
                 timestamp: 102,
                 start_time: 1001,
                 status: PENDING_STATUS_ACKED,
+                retry_count: 0,
             })
             .unwrap();
             sf.sync_to_mmap().unwrap();
@@ -1009,6 +1223,7 @@ mod tests {
             timestamp: 1,
             start_time: 0,
             status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
         })
         .unwrap();
         assert_eq!(sf.pending_count(), 1);
@@ -1026,6 +1241,7 @@ mod tests {
                 timestamp: i as i64,
                 start_time: 0,
                 status: PENDING_STATUS_UNACKED,
+                retry_count: 0,
             })
             .unwrap();
         }
@@ -1033,6 +1249,7 @@ mod tests {
             timestamp: 9999,
             start_time: 0,
             status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
         });
         assert!(matches!(result, Err(TmslError::PendingFull(_))));
         drop(sf);
@@ -1048,6 +1265,7 @@ mod tests {
             timestamp: 42,
             start_time: 0,
             status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
         })
         .unwrap();
         sf.ack_pending(42).unwrap();
@@ -1068,45 +1286,6 @@ mod tests {
     }
 
     #[test]
-    fn csf_find_first_unacked() {
-        let dir = temp_queue_dir();
-        let path = dir.join("group1");
-        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
-        sf.add_pending(PendingEntry {
-            timestamp: 10,
-            start_time: 0,
-            status: PENDING_STATUS_ACKED,
-        })
-        .unwrap();
-        sf.add_pending(PendingEntry {
-            timestamp: 11,
-            start_time: 0,
-            status: PENDING_STATUS_UNACKED,
-        })
-        .unwrap();
-        let found = sf.find_first_unacked().unwrap();
-        assert_eq!(found.timestamp, 11);
-        drop(sf);
-        cleanup(&dir);
-    }
-
-    #[test]
-    fn csf_find_first_unacked_all_acked() {
-        let dir = temp_queue_dir();
-        let path = dir.join("group1");
-        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
-        sf.add_pending(PendingEntry {
-            timestamp: 10,
-            start_time: 0,
-            status: PENDING_STATUS_ACKED,
-        })
-        .unwrap();
-        assert!(sf.find_first_unacked().is_none());
-        drop(sf);
-        cleanup(&dir);
-    }
-
-    #[test]
     fn csf_cleanup_acked_consecutive() {
         let dir = temp_queue_dir();
         let path = dir.join("group1");
@@ -1115,18 +1294,21 @@ mod tests {
             timestamp: 10,
             start_time: 0,
             status: PENDING_STATUS_ACKED,
+            retry_count: 0,
         })
         .unwrap();
         sf.add_pending(PendingEntry {
             timestamp: 11,
             start_time: 0,
             status: PENDING_STATUS_ACKED,
+            retry_count: 0,
         })
         .unwrap();
         sf.add_pending(PendingEntry {
             timestamp: 12,
             start_time: 0,
             status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
         })
         .unwrap();
         let cleaned = sf.cleanup_acked();
@@ -1158,6 +1340,7 @@ mod tests {
                 timestamp: 11,
                 start_time: 0,
                 status: PENDING_STATUS_UNACKED,
+                retry_count: 0,
             })
             .unwrap();
             sf.ack_pending(11).unwrap();
@@ -1173,41 +1356,86 @@ mod tests {
     }
 
     #[test]
-    fn csf_cleanup_timeout_removes_expired() {
+    fn csf_take_retryable_pending_skips_unexpired() {
         let dir = temp_queue_dir();
         let path = dir.join("group1");
         let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
         sf.add_pending(PendingEntry {
             timestamp: 100,
-            start_time: 1, // very old
+            start_time: 1000,
             status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
         })
         .unwrap();
-        let removed = sf.cleanup_timeout(300);
-        assert_eq!(removed, 1);
-        assert_eq!(sf.pending_count(), 0);
+        let config = QueueConsumerConfig::builder()
+            .running_expired_seconds(60)
+            .build()
+            .unwrap();
+        let scan = sf.take_retryable_pending(config, 1010);
+        assert!(scan.timestamp.is_none());
+        assert!(!scan.changed);
+        assert_eq!(sf.pending_count(), 1);
+        assert_eq!(sf.pending_entries()[0].retry_count, 0);
         drop(sf);
         cleanup(&dir);
     }
 
     #[test]
-    fn csf_cleanup_timeout_keeps_future() {
+    fn csf_take_retryable_pending_increments_retry() {
         let dir = temp_queue_dir();
         let path = dir.join("group1");
         let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
-        let future = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
-            + 3600;
         sf.add_pending(PendingEntry {
             timestamp: 100,
-            start_time: future,
+            start_time: 1000,
             status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
         })
         .unwrap();
-        let removed = sf.cleanup_timeout(300);
-        assert_eq!(removed, 0);
+        let config = QueueConsumerConfig::builder()
+            .running_expired_seconds(10)
+            .max_retry_count(3)
+            .build()
+            .unwrap();
+        let scan = sf.take_retryable_pending(config, 1010);
+        assert_eq!(scan.timestamp, Some(100));
+        assert!(scan.changed);
+        assert_eq!(sf.pending_entries()[0].retry_count, 1);
+        assert_eq!(sf.pending_entries()[0].start_time, 1010);
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_take_retryable_pending_drops_retry_exhausted_prefix() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group1");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 1,
+            start_time: 1000,
+            status: PENDING_STATUS_UNACKED,
+            retry_count: 1,
+        })
+        .unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 2,
+            start_time: 1010,
+            status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
+        })
+        .unwrap();
+        let config = QueueConsumerConfig::builder()
+            .running_expired_seconds(10)
+            .max_retry_count(1)
+            .build()
+            .unwrap();
+        let scan = sf.take_retryable_pending(config, 1010);
+        assert!(scan.timestamp.is_none());
+        assert!(scan.changed);
+        assert_eq!(sf.processed_ts(), 1);
+        assert_eq!(sf.pending_count(), 1);
+        assert_eq!(sf.pending_entries()[0].timestamp, 2);
         drop(sf);
         cleanup(&dir);
     }
@@ -1242,6 +1470,7 @@ mod tests {
                 timestamp: 99,
                 start_time: 88,
                 status: PENDING_STATUS_UNACKED,
+                retry_count: 0,
             })
             .unwrap();
             sf.sync_to_mmap().unwrap();
@@ -1250,7 +1479,8 @@ mod tests {
         let sf2 = ConsumerStateFile::open_or_create(path, 0).unwrap();
         assert_eq!(sf2.pending_count(), 1);
         assert_eq!(sf2.pending_entries()[0].timestamp, 99);
-        assert_eq!(sf2.pending_entries()[0].start_time, 88);
+        assert_eq!(sf2.pending_entries()[0].start_time, 0);
+        assert_eq!(sf2.pending_entries()[0].retry_count, 0);
         drop(sf2);
         cleanup(&dir);
     }
@@ -1264,6 +1494,7 @@ mod tests {
             timestamp: 42,
             start_time: 0,
             status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
         })
         .unwrap();
         assert!(sf.is_in_pending(42));
