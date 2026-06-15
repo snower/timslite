@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::exceptions::wrap;
 use crate::query::{PyQueryIterator, PyQueryLengthIterator};
+use crate::store::PyDataSetInspectResult;
 
 #[pyclass(name = "Dataset")]
 pub struct PyDataset {
@@ -88,6 +89,17 @@ impl PyDataset {
     fn read(&mut self, timestamp: i64) -> PyResult<Option<(i64, Vec<u8>)>> {
         let mut ds = self.inner.lock().unwrap();
         wrap(ds.read(timestamp))
+    }
+
+    /// Inspect dataset configuration and runtime state.
+    ///
+    /// Returns:
+    ///     DataSetInspectResult: Contains `info` (DataSetInfo with config)
+    ///         and `state` (DataSetState with runtime stats).
+    fn inspect(&self) -> PyResult<PyDataSetInspectResult> {
+        let ds = self.inner.lock().unwrap();
+        let result = wrap(ds.inspect())?;
+        Ok(PyDataSetInspectResult::from(result))
     }
 
     /// Delete the record at the given timestamp.
