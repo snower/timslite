@@ -57,7 +57,7 @@
 
 ```
 DataSet::delete(timestamp):
-  1. if timestamp <= 0 || latest_written_timestamp == 0 → Error
+  1. if latest_written_timestamp is None → Error("no data")
   2. time_index.find_and_delete_entry(timestamp):
      - 查找索引条目 (三级搜索)
      - 条目存在且引用真实数据:
@@ -84,7 +84,7 @@ int tmsl_dataset_delete(void* ds, int64_t timestamp, char* err_buf, size_t err_b
 
 **错误场景**:
 - `ds == NULL` → Error(null pointer)
-- `timestamp <= 0` → Error("timestamp must be > 0")
+- empty dataset → Error("no data")
 - 条目不存在 / filler → Error("not found")
 - 其他 → Error(exception message)
 

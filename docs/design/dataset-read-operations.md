@@ -9,6 +9,7 @@
 | 接口 | 返回类型 | 用途 | 数据读取 |
 |------|---------|------|---------|
 | `read(ts)` | `Option<(i64, Vec<u8>)>` | 读取单条完整记录 | 是 |
+| `read_latest()` | `Option<(i64, Vec<u8>)>` | 读取最大已写 timestamp 对应记录 | 是 |
 | `query(start, end)` | `Vec<(i64, Vec<u8>)>` | 范围查询完整记录 | 是 |
 | `query_iter(start, end)` | `QueryIterator` | 惰性范围查询迭代器 | 是 (按需) |
 | `read_exist(ts)` | `bool` | 检查单个时间戳索引是否存在 | **否** |
@@ -36,18 +37,30 @@ pub fn read(&mut self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>
 读取单条完整记录。
 
 **参数**:
-- `timestamp`: 目标时间戳，`-1` 表示读取 `latest_written_timestamp`
+- `timestamp`: 目标业务时间戳, signed `i64`; `-1` 是普通精确 timestamp, 不表示 latest
 
 **返回**:
 - `Ok(Some((timestamp, data)))` — 记录存在且有效
 - `Ok(None)` — 记录不存在、是 filler、或已过期
 
 **流程**:
-1. 若 `timestamp == -1`，使用 `latest_written_timestamp`
-2. 检查 retention 是否过期
-3. `TimeIndex::find_entry()` 查找索引
-4. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER`)
-5. `DataSegmentSet::read_at_index()` 读取完整数据
+1. 检查 retention 是否过期
+2. `TimeIndex::find_entry()` 查找索引
+3. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER`)
+4. `DataSegmentSet::read_at_index()` 读取完整数据
+
+### 2.1.1 read_latest()
+
+```rust
+pub fn read_latest(&mut self) -> Result<Option<(i64, Vec<u8>)>>
+```
+
+读取 `latest_written_timestamp` 对应的完整记录。
+
+**语义**:
+- `latest_written_timestamp: Option<i64>` 为 `None` 时返回 `Ok(None)`
+- 最大已写 timestamp 对应 entry 不存在、已删除、为 filler 或已过期时返回 `Ok(None)`, 不回退到更早有效记录
+- `read_latest()` 是唯一 latest 读取入口; `read(-1)` 读取精确 timestamp `-1`
 
 **相关文档**: [数据集操作·读取流程](dataset-operations.md#十读取流程详解)
 
@@ -105,16 +118,15 @@ pub fn read_exist(&self, timestamp: i64) -> Result<bool>
 检查单个时间戳的索引是否存在。
 
 **参数**:
-- `timestamp`: 目标时间戳，`-1` 表示检查 `latest_written_timestamp`
+- `timestamp`: 目标业务时间戳, signed `i64`; `-1` 是普通精确 timestamp
 
 **返回**:
 - `Ok(true)` — 索引 entry 存在（包括 filler）
-- `Ok(false)` — 索引 entry 不存在，或 `timestamp == -1` 且 `latest_written_timestamp <= 0`
+- `Ok(false)` — 索引 entry 不存在
 
 **流程**:
-1. 若 `timestamp == -1`，使用 `latest_written_timestamp`（若 <= 0 返回 false）
-2. `TimeIndex::find_entry()` 查找索引
-3. 返回 `entry.is_some()`
+1. `TimeIndex::find_entry()` 查找索引
+2. 返回 `entry.is_some()`
 
 **特点**:
 - **不检查 filler** — 只要 `find_entry()` 返回 `Some` 就是 `true`
@@ -172,18 +184,17 @@ pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>>
 读取单条记录的逻辑数据长度。
 
 **参数**:
-- `timestamp`: 目标时间戳，`-1` 表示读取 `latest_written_timestamp`
+- `timestamp`: 目标业务时间戳, signed `i64`; `-1` 是普通精确 timestamp
 
 **返回**:
 - `Ok(Some(data_len))` — 记录存在，返回逻辑数据长度
 - `Ok(None)` — 记录不存在、是 filler、或已过期
 
 **流程**:
-1. 若 `timestamp == -1`，使用 `latest_written_timestamp`
-2. 检查 retention 是否过期
-3. `TimeIndex::find_entry()` 查找索引
-4. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER`)
-5. `DataSegmentSet::read_record_data_len()` 仅读取 record header
+1. 检查 retention 是否过期
+2. `TimeIndex::find_entry()` 查找索引
+3. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER`)
+4. `DataSegmentSet::read_record_data_len()` 仅读取 record header
 
 **数据长度定义**: 用户写入的原始数据长度（不含 record header、block header、压缩开销）
 

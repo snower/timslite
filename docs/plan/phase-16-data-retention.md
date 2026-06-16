@@ -81,8 +81,11 @@ pub fn retention_ms(mut self, ms: u64) -> Self
 ```rust
 pub fn query_iter(...) {
     let mut start_ts = start_ts;
-    if self.retention_ms > 0 && self.latest_written_timestamp > 0 {
-        let threshold = self.latest_written_timestamp.saturating_sub(self.retention_ms);
+    if self.retention_ms > 0 {
+        let Some(latest) = self.latest_written_timestamp else {
+            return Ok(QueryIterator::empty(...));
+        };
+        let threshold = latest.saturating_sub(self.retention_ms);
         if start_ts < threshold {
             start_ts = threshold;
         }
@@ -98,9 +101,9 @@ pub fn query_iter(...) {
 ```rust
 pub fn reclaim_expired_segments(&mut self) -> Result<usize> {
     if self.retention_ms == 0 { return Ok(0); }
-    if self.latest_written_timestamp == 0 { return Ok(0); }
+    let Some(latest) = self.latest_written_timestamp else { return Ok(0); };
 
-    let threshold = self.latest_written_timestamp.saturating_sub(self.retention_ms);
+    let threshold = latest.saturating_sub(self.retention_ms);
 
     // 1. Close dataset (flush + all segments → closed)
     self.close()?;

@@ -64,16 +64,18 @@ fn test_read_exist_latest_timestamp() {
     assert!(!ds.read_exist(-1).unwrap());
     drop(ds);
 
-    // Write data
+    // Write exact -1 first, then a later timestamp.
     let ds_arc = store.get_dataset(&handle).unwrap();
     let mut ds = ds_arc.lock().unwrap();
+    ds.write(-1, b"minus-one").unwrap();
     ds.write(100, b"hello").unwrap();
     drop(ds);
 
-    // Now -1 should exist
+    // -1 is an exact timestamp, not a latest sentinel.
     let ds_arc = store.get_dataset(&handle).unwrap();
     let mut ds = ds_arc.lock().unwrap();
     assert!(ds.read_exist(-1).unwrap());
+    assert!(ds.read_exist(100).unwrap());
 }
 
 #[test]
@@ -230,12 +232,15 @@ fn test_read_length_latest() {
     let data = b"test data 123";
     let ds_arc = store.get_dataset(&handle).unwrap();
     let mut ds = ds_arc.lock().unwrap();
+    ds.write(-1, b"minus one").unwrap();
     ds.write(100, data).unwrap();
     drop(ds);
 
     let ds_arc = store.get_dataset(&handle).unwrap();
     let mut ds = ds_arc.lock().unwrap();
     let len = ds.read_length(-1).unwrap();
+    assert_eq!(len, Some("minus one".len() as u32));
+    let len = ds.read_length(100).unwrap();
     assert_eq!(len, Some(data.len() as u32));
 }
 

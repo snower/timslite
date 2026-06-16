@@ -42,7 +42,7 @@ pub struct DataSetInfo {
 
 pub struct DataSetState {
     // 写入状态
-    pub latest_written_timestamp: i64,
+    pub latest_written_timestamp: Option<i64>,
     // 数据段
     pub open_data_segments: u32,
     pub data_segments: u32,
@@ -106,6 +106,7 @@ typedef struct {
 } TmslDataSetInfo;
 
 typedef struct {
+    uint8_t has_latest_written_timestamp;
     int64_t latest_written_timestamp;
     uint32_t open_data_segments;
     uint32_t data_segments;
@@ -162,7 +163,7 @@ class DataSetInfo:
     create_time: int
 
 class DataSetState:
-    latest_written_timestamp: int
+    latest_written_timestamp: Optional[int]
     open_data_segments: int
     data_segments: int
     total_record_count: int

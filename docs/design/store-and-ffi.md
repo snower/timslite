@@ -64,12 +64,13 @@ impl Store {
 
     // Read/query and executor-inspection operations use &self.
     pub fn read_dataset(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>;
+    pub fn read_dataset_latest(&self, handle: DataSetHandle) -> Result<Option<(i64, Vec<u8>)>>;
     pub fn query_dataset(&self, handle: DataSetHandle, start: i64, end: i64) -> Result<Vec<(i64, Vec<u8>)>>;
     pub fn dataset_read_exist(&self, handle: DataSetHandle, timestamp: i64) -> Result<bool>;
     pub fn dataset_query_exist(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
     pub fn dataset_read_length(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<u32>>;
     pub fn dataset_query_length(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
-    pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<i64>;
+    pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<Option<i64>>;
     pub fn dataset_identifier(&self, handle: DataSetHandle) -> Result<u64>;
     pub fn queue_poll(&self, consumer: &DatasetQueueConsumer, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>;
     pub fn queue_ack(&self, consumer: &DatasetQueueConsumer, timestamp: i64) -> Result<()>;
@@ -96,9 +97,9 @@ impl Store {
 | `Store::write_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 有效 journal 开启时成功后写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
 | `Store::append_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 有效 journal 开启时成功后写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
 | `Store::delete_dataset_record` | 调用 DataSet public API; DataSet 自行 invalidate 旧 cache key; 有效 journal 开启时成功后写 `0x12` | 不删除物理 record, 仅标记 filler/invalid |
-| `Store::read_dataset` / `query_dataset` | 调用 DataSet public API; DataSet 自动使用 runtime context 中的全局 `BlockCache`; retention 统一生效 | 仅适用于普通 dataset |
+| `Store::read_dataset` / `read_dataset_latest` / `query_dataset` | 调用 DataSet public API; DataSet 自动使用 runtime context 中的全局 `BlockCache`; retention 统一生效; `read_dataset(-1)` 是精确读取, latest 必须走 `read_dataset_latest` | 仅适用于普通 dataset |
 | `Store::journal_latest_sequence/read/query` | 调用 JournalManager 专用 API 读取 encoded journal record payload | `enable_journal=false` 时返回 `NotFound`; 不通过 DataSet handle |
-| `Store::latest_written_timestamp` | 返回 dataset 已写入最大 timestamp | 删除 latest 后仍返回最大已写 timestamp |
+| `Store::latest_written_timestamp` | 返回 dataset 已写入最大 timestamp | 空 dataset 返回 `None`; 删除 latest 后仍返回最大已写 timestamp |
 | `Store::open_queue` / `open_journal_queue` | `open_queue` 打开普通 dataset queue; `open_journal_queue` 打开专用 JournalQueue | journal queue producer 只允许 `JournalManager` |
 | `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树; 有效 journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
 
@@ -373,7 +374,7 @@ pub struct TmslDatasetConfigFFI {
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_flush(dataset: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-// 数据集状态 — 写入过的最大时间戳 (0 = 空数据集; delete latest 不回退)
+// 数据集状态 — 写入过的最大时间戳 (0=有值, 1=空数据集, -1=错误; delete latest 不回退)
 #[no_mangle] pub extern "C" fn tmsl_dataset_latest_timestamp(dataset: *mut c_void, out_ts: *mut c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_dataset_identifier(dataset: *mut c_void, out_identifier: *mut u64, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
@@ -386,8 +387,13 @@ pub struct TmslDatasetConfigFFI {
 // 数据删除 (索引标记为哨兵, invalidate 旧缓存 key, 数据段 invalid_record_count++)
 #[no_mangle] pub extern "C" fn tmsl_dataset_delete(dataset: *mut c_void, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-// 单时间戳读取 (timestamp=-1 解析为最大已写 timestamp, 不反向搜索; malloc'd out_data, 0=成功/1=未找到/-1=错误)
+// 单时间戳读取 (timestamp 为精确业务时间戳; -1 不再是 latest sentinel; malloc'd out_data, 0=成功/1=未找到/-1=错误)
 #[no_mangle] pub extern "C" fn tmsl_dataset_read(dataset: *mut c_void, timestamp: c_longlong,
+    out_ts: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
+    err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+
+// latest 读取 (使用 latest_written_timestamp: Option<i64>; 0=成功/1=未找到或空/-1=错误)
+#[no_mangle] pub extern "C" fn tmsl_dataset_read_latest(dataset: *mut c_void,
     out_ts: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
@@ -399,7 +405,7 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_iter_close(iter: *mut c_void);
 
 // 轻量级读操作 (详见 dataset-read-operations.md §5 FFI 接口)
-/// 检查索引是否存在 (包括 filler)。timestamp=-1 检查 latest_written_timestamp。
+/// 检查索引是否存在 (包括 filler)。timestamp 为精确业务时间戳。
 /// 返回 0=false/1=true; 错误时返回 -1。
 #[no_mangle] pub extern "C" fn tmsl_dataset_read_exist(dataset: *mut c_void, timestamp: c_longlong,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
@@ -411,7 +417,7 @@ pub struct TmslDatasetConfigFFI {
     out_bitmap: *mut *mut c_uchar, out_bitmap_len: *mut usize,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-/// 读取单条记录的数据长度。timestamp=-1 读取 latest_written_timestamp。
+/// 读取单条记录的数据长度。timestamp 为精确业务时间戳。
 /// 返回 0=成功(out_len 有效)/1=未找到/-1=错误。
 #[no_mangle] pub extern "C" fn tmsl_dataset_read_length(dataset: *mut c_void, timestamp: c_longlong,
     out_len: *mut u32,
@@ -503,7 +509,7 @@ pub struct TmslQueueConsumerConfigFFI {
 > **Queue FFI 语义**:
 > - `tmsl_queue_open(dataset)` 以 FFI dataset 句柄为入口, 内部使用该 dataset 对应的 Store handle id 调用 `Store::open_queue`。C 侧不直接持有或传入 `DataSetHandle` 数值。
 > - `tmsl_queue_close(queue_handle)` 对普通 dataset queue 调用 `Store::close_queue` 并移除 registry entry。
-> - `tmsl_queue_push` 对普通 queue 自动分配 `latest_written_timestamp + 1`。
+> - `tmsl_queue_push` 对普通 queue 自动分配 `latest_written_timestamp.map_or(1, |ts| ts + 1)`。
 > - `tmsl_queue_consumer_open` 使用默认 consumer 配置; `tmsl_queue_consumer_open_with_config` 接受 `TmslQueueConsumerConfigFFI { version=1, running_expired_seconds<=65535, max_retry_count<=255 }`。
 > - 同一 queue/group 的活动 consumer 必须使用一致配置; 不一致时 open 返回错误。
 > - `tmsl_queue_poll` 返回值: `0=成功并写出数据`, `-2=超时无数据`, `-1=错误`。成功返回的数据必须用 `tmsl_data_free` 释放。

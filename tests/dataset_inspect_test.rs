@@ -45,7 +45,7 @@ fn test_inspect_basic() {
     assert!(result.info.create_time > 0);
 
     // Verify state fields (empty dataset)
-    assert_eq!(result.state.latest_written_timestamp, 0);
+    assert_eq!(result.state.latest_written_timestamp, None);
     assert_eq!(result.state.open_data_segments, 0);
     assert_eq!(result.state.data_segments, 0);
     assert_eq!(result.state.total_record_count, 0);
@@ -123,7 +123,7 @@ fn test_inspect_state_after_write() {
 
     let result = ds.inspect().unwrap();
 
-    assert_eq!(result.state.latest_written_timestamp, 300);
+    assert_eq!(result.state.latest_written_timestamp, Some(300));
     assert_eq!(result.state.total_record_count, 3);
     assert!(result.state.total_data_size > 0);
     assert!(result.state.total_uncompressed_size > 0);
@@ -164,7 +164,7 @@ fn test_inspect_state_multi_segment() {
 
     let result = ds.inspect().unwrap();
 
-    assert_eq!(result.state.latest_written_timestamp, 1000);
+    assert_eq!(result.state.latest_written_timestamp, Some(1000));
     assert_eq!(result.state.total_record_count, 10);
     assert!(result.state.data_segments > 1);
     assert_eq!(result.state.min_timestamp, 100);
@@ -320,7 +320,7 @@ fn test_inspect_state_empty_dataset() {
 
     let result = ds.inspect().unwrap();
 
-    assert_eq!(result.state.latest_written_timestamp, 0);
+    assert_eq!(result.state.latest_written_timestamp, None);
     assert_eq!(result.state.total_record_count, 0);
     assert_eq!(result.state.total_data_size, 0);
     assert_eq!(result.state.min_timestamp, 0);

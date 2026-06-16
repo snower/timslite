@@ -1,42 +1,48 @@
-# Phase 20: 最新时间戳读取 (Latest Timestamp Read)
+# Phase 20: 显式最新记录读取 (Explicit Latest Read)
 
-> 目标: 新增获取数据集最新写入时间戳的能力, 并在 `read(-1)` 时自动返回最新记录。
+> 目标: 新增获取数据集最新写入时间戳和最新记录的显式 API。public timestamp 是 signed `i64`, `0` 和负数都是合法业务时间戳; `read(-1)` 读取精确 timestamp `-1`, 不再作为 latest 快捷路径。
 
 ## 1. 设计概要
 
-### 1.1 `DataSet::latest_written_timestamp(&self) -> i64`
+### 1.1 `DataSet::latest_written_timestamp(&self) -> Option<i64>`
 
-返回内存中维护的最新写入时间戳, 空数据集返回 `0`。
+返回内存中维护的最大已写入时间戳, 空数据集返回 `None`。删除 latest record 不回退该值。
 
-### 1.2 `DataSet::read(-1)` 快捷路径
+### 1.2 `DataSet::read_latest()`
 
-当 `timestamp == -1` 时, 解析为 `latest_written_timestamp`, 空数据集直接返回 `None`。
+读取 `latest_written_timestamp` 对应记录。空 dataset、latest entry 已删除/为 filler/已过期时返回 `None`, 不回退到更早有效记录。
 
 ### 1.3 FFI 接口
 
 ```c
-// 获取最新写入时间戳
+// 获取最新写入时间戳。返回 0=有值, 1=空 dataset, -1=错误。
 int tmsl_dataset_latest_timestamp(void* ds, int64_t* out_ts, char* err_buf, size_t err_buf_len);
+
+// 读取 latest record。返回 0=成功, 1=未找到/空, -1=错误。
+int tmsl_dataset_read_latest(void* ds, int64_t* out_ts,
+    unsigned char** out_data, size_t* out_data_len,
+    char* err_buf, size_t err_buf_len);
 ```
 
 ## 2. 实现清单
 
-- [x] `dataset.rs`: 新增 `DataSet::latest_written_timestamp(&self) -> i64`
-- [x] `dataset.rs`: 修改 `DataSet::read()` — `timestamp == -1` 时解析为 `latest_written_timestamp`
+- [x] `dataset.rs`: 新增 `DataSet::latest_written_timestamp(&self) -> Option<i64>`
+- [x] `dataset.rs`: 新增 `DataSet::read_latest()`; `DataSet::read()` 保持精确 timestamp 读取
 - [x] `ffi.rs`: 新增 `tmsl_dataset_latest_timestamp(...)` FFI 函数
+- [x] `ffi.rs`: 新增 `tmsl_dataset_read_latest(...)` FFI 函数
 - [x] `ffi.rs`: 修复 `tmsl_dataset_read` 中 `out_ts` 写入 (原为硬编码输入值, 改为写入实际返回的时间戳)
-- [x] `include/timslite.h`: 新增 `tmsl_dataset_latest_timestamp` 声明; 更新 `tmsl_dataset_read` 注释
-- [x] `wrapper/python/src/dataset.rs`: 新增 `latest_timestamp` 只读属性 + 更新 `read()` docstring
+- [x] `include/timslite.h`: 新增 `tmsl_dataset_latest_timestamp`/`tmsl_dataset_read_latest` 声明; 更新 `tmsl_dataset_read` 注释
+- [x] `wrapper/python/src/dataset.rs`: 新增 `latest_timestamp: Optional[int]` 只读属性 + `read_latest()` + 更新 `read()` docstring
 
 ## 3. 测试
 
 ### 单元测试
 - `test_latest_written_timestamp_after_writes` — 写入后返回最新时间戳
 - `test_latest_written_timestamp_after_reopen` — reopen 后保持一致
-- `test_read_minus_one_empty_dataset` — 空数据集 `read(-1)` 返回 `None`
-- `test_read_minus_one_returns_latest` — `read(-1)` 返回最新记录
-- `test_read_minus_one_after_delete_latest` — 删除最新记录后 `read(-1)` 行为
-- `test_read_minus_one_after_reopen` — reopen 后 `read(-1)` 仍正确
+- `test_read_latest_empty_dataset_and_minus_one_is_exact` — 空数据集 latest 为 `None`, `read(-1)` 是精确读取
+- `test_signed_timestamps_and_read_latest` — 负数/0 timestamp 可写可读, `read_latest()` 返回最大已写 timestamp 对应记录
+- `test_read_latest_after_delete_latest` — 删除 latest 后 `read_latest()` 返回 `None`, latest timestamp 不回退
+- `test_read_latest_after_reopen_and_minus_one_is_exact` — reopen 后 latest 恢复, `read(-1)` 仍精确读取
 
 ## 4. 验收
 

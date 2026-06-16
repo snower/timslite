@@ -81,21 +81,15 @@ class TestWriteQuery:
             assert it.__next__() is not None
             # Iterator goes out of scope — no error
 
-    def test_write_timestamp_zero_rejected(self, tmpdir):
-        """write(0, ...) raises TmslInvalidDataError."""
-        with timslite.Store.open(tmpdir) as store:
-            store.create_dataset("bad_ts", "data")
-            ds = store.open_dataset("bad_ts", "data")
-            with pytest.raises(timslite.TmslInvalidDataError):
-                ds.write(0, b"bad")
-
-    def test_write_negative_timestamp_rejected(self, tmpdir):
-        """write(-1, ...) raises TmslInvalidDataError."""
+    def test_write_zero_and_negative_timestamps(self, tmpdir):
+        """write() accepts zero and negative signed timestamps."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("neg_ts", "data")
             ds = store.open_dataset("neg_ts", "data")
-            with pytest.raises(timslite.TmslInvalidDataError):
-                ds.write(-1, b"bad")
+            ds.write(-1, b"negative")
+            ds.write(0, b"zero")
+            assert ds.read(-1) == (-1, b"negative")
+            assert ds.read(0) == (0, b"zero")
 
     def test_write_out_of_order_succeeds(self, tmpdir):
         """Non-continuous mode: out-of-order write overwrites existing entry (Phase 18)."""
@@ -152,26 +146,41 @@ class TestExtendedAPI:
                 ds.delete(999)
 
     def test_read_latest_record(self, tmpdir):
-        """ds.read(-1) returns the latest written record."""
+        """ds.read_latest() returns the latest written record."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("latest", "data")
             ds = store.open_dataset("latest", "data")
             ds.write(10, b"first")
             ds.write(20, b"second")
             ds.write(30, b"third")
-            result = ds.read(-1)
+            result = ds.read_latest()
             assert result is not None
             ts, data = result
             assert ts == 30
             assert data == b"third"
+            assert ds.read(-1) is None
 
     def test_read_latest_empty_dataset(self, tmpdir):
-        """ds.read(-1) on empty dataset returns None."""
+        """ds.read_latest() on empty dataset returns None."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("latest_empty", "data")
             ds = store.open_dataset("latest_empty", "data")
-            result = ds.read(-1)
-            assert result is None
+            assert ds.latest_timestamp is None
+            assert ds.read_latest() is None
+            assert ds.read(-1) is None
+
+    def test_signed_timestamp_reads_are_exact(self, tmpdir):
+        """Negative timestamps and zero are normal public timestamps."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("signed_ts", "data")
+            ds = store.open_dataset("signed_ts", "data")
+            ds.write(-1, b"minus-one")
+            ds.write(0, b"zero")
+            ds.write(1, b"one")
+            assert ds.read(-1) == (-1, b"minus-one")
+            assert ds.read(0) == (0, b"zero")
+            assert ds.read_latest() == (1, b"one")
+            assert ds.latest_timestamp == 1
 
     def test_correction_write_non_continuous(self, tmpdir):
         """Non-continuous mode: out-of-order write overwrites existing entry."""

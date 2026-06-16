@@ -71,7 +71,7 @@ fn t34_1_api_basic_operations() {
     // Test latest timestamp
     {
         let lock = arc.lock().unwrap();
-        assert_eq!(lock.latest_written_timestamp(), 100);
+        assert_eq!(lock.latest_written_timestamp(), Some(100));
     }
 
     // Test flush

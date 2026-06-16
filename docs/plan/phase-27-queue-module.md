@@ -69,7 +69,7 @@
 - [x] **实现 `DatasetQueue::push()`**
   - [x] 检查 closed 标志
   - [x] 获取 dataset 锁
-  - [x] 计算 timestamp = `latest_written_timestamp + 1`
+  - [x] 计算 timestamp = `latest_written_timestamp.map_or(1, |latest| latest + 1)`
   - [x] 调用 `dataset.write(timestamp, data)`
   - [x] 返回分配的 timestamp
   - [x] 注意: 不立即 sync, 由后台 flush 任务统一同步
@@ -168,7 +168,7 @@
 - [x] **实现 `DatasetQueue::open_consumer()`**
   - [x] 检查 closed 标志
   - [x] 构建状态文件路径: `dataset.base_dir/queue/{group_name}`
-  - [x] 获取 `initial_processed_ts = dataset.latest_written_timestamp()`
+  - [x] 获取 `initial_processed_ts = dataset.latest_written_timestamp().unwrap_or(i64::MIN)`
   - [x] 调用 `ConsumerStateFile::open_or_create()`
   - [x] 恢复: `cleanup_acked()` 清理已 ack 但未清理的 entries
   - [x] 注册到 `QueueInner.consumers`

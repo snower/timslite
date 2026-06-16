@@ -426,11 +426,7 @@ impl ConsumerStateFile {
 
     /// Get the next timestamp to try; sparse gaps are skipped by index lookup.
     pub fn next_poll_ts(&self) -> i64 {
-        if self.processed_ts > 0 {
-            self.processed_ts + 1
-        } else {
-            1
-        }
+        self.processed_ts.saturating_add(1)
     }
 
     pub fn processed_ts(&self) -> i64 {
@@ -609,13 +605,14 @@ impl DatasetQueue {
             Arc::clone(&inner.consumers[group_name])
         } else {
             let state_path = queue_dir.join(group_name);
-            // Determine initial processed_ts from the dataset
+            // Determine initial processed_ts from the dataset.
+            // Empty datasets start before the signed timestamp domain we poll.
             let initial_ts = {
                 let ds = self
                     .dataset
                     .lock()
                     .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-                ds.latest_written_timestamp()
+                ds.latest_written_timestamp().unwrap_or(i64::MIN)
             };
             let sf = Arc::new(Mutex::new(ConsumerStateFile::open_or_create(
                 state_path, initial_ts,
@@ -701,7 +698,9 @@ impl DatasetQueue {
             .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
 
         // Auto-increment timestamp
-        let timestamp = ds.latest_written_timestamp() + 1;
+        let timestamp = ds
+            .latest_written_timestamp()
+            .map_or(1, |latest| latest.saturating_add(1));
         ds.write(timestamp, data)?;
 
         // Notify waiting consumers (only on normal write, ts > old_latest)

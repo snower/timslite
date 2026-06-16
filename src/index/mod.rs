@@ -286,7 +286,7 @@ impl TimeIndex {
     /// Add a real entry in continuous mode without materializing full middle gaps.
     pub fn add_sparse_continuous_entry(
         &mut self,
-        previous_latest: i64,
+        previous_latest: Option<i64>,
         timestamp: i64,
         block_offset: u64,
         in_block_offset: u16,
@@ -298,7 +298,7 @@ impl TimeIndex {
         self.ensure_base_timestamp(timestamp)?;
         let real_entry = IndexEntry::new(timestamp, block_offset, in_block_offset);
 
-        if previous_latest > 0 {
+        if let Some(previous_latest) = previous_latest {
             let prev_segment_start = self.segment_start_for(previous_latest)?;
             let curr_segment_start = self.segment_start_for(timestamp)?;
             if prev_segment_start == curr_segment_start {

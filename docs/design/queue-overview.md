@@ -284,8 +284,8 @@ pub struct DataSet {
 
 `dataset.write()` 成功后, 如果 `queue_notify` 存在且是正常写入, 触发通知。`dataset.append()` 的普通 queue 语义为:
 
-- `timestamp > latest_written_timestamp`: 创建新 timestamp, 与 normal write 等价, 必须 notify。
-- `timestamp == latest_written_timestamp`: 修改已存在 latest record, 不推进 queue timestamp, 不重新投递, 不 notify。
+- `latest_written_timestamp is None or timestamp > latest_written_timestamp.unwrap()`: 创建新 timestamp, 与 normal write 等价, 必须 notify。
+- `latest_written_timestamp == Some(timestamp)`: 修改已存在 latest record, 不推进 queue timestamp, 不重新投递, 不 notify。
 - journal queue 例外: JournalLog 每条 `0x13` 都是新的 journal sequence, 必须 notify。
 
 通知实现:
@@ -301,7 +301,7 @@ if let Some(ref notify_pair) = self.queue_notify {
 }
 ```
 
-**注意**: correction/out-of-order 写入不触发通知, 避免 consumer 处理更新数据。判断依据: 仅在 `timestamp > old_latest_written_timestamp` (正常写入分支) 成功后通知。
+**注意**: correction/out-of-order 写入不触发通知, 避免 consumer 处理更新数据。判断依据: 仅在 `old_latest_written_timestamp.is_none() || timestamp > old_latest_written_timestamp.unwrap()` (正常写入分支) 成功后通知。
 
 ### 29.3 Idle-Close 检查
 
@@ -394,7 +394,9 @@ pub fn push(&self, data: &[u8]) -> Result<i64> {
     }
 
     // 3. 计算 timestamp
-    let ts = dataset.latest_written_timestamp() + 1;
+    let ts = dataset
+        .latest_written_timestamp()
+        .map_or(1, |latest| latest.saturating_add(1));
 
     // 4. 写入数据 (内部 write hook 会触发 notify_all)
     dataset.write(ts, data)?;

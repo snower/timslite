@@ -181,7 +181,7 @@ retention-reclaim (每日 retention_check_hour):
      b. Lock individual dataset mutex
      c. 调用 DataSet::reclaim_expired_segments()
         - 先 close() (flush + idle_close_all)
-        - 计算 threshold = latest_written_timestamp.saturating_sub(retention_window as i64)
+        - 若 latest_written_timestamp 为 None 则跳过; 否则计算 threshold = latest.saturating_sub(retention_window as i64)
         - 删除 data 分段 (max_timestamp < threshold)
         - 删除 index 分段 (last_entry_timestamp < threshold)
      d. 释放 dataset mutex
@@ -198,7 +198,7 @@ retention-reclaim (每日 retention_check_hour):
 
 **数据集级过期判断**:
 ```
-expiration_threshold = ds.latest_written_timestamp.saturating_sub(ds.retention_window)
+expiration_threshold = ds.latest_written_timestamp.map(|latest| latest.saturating_sub(ds.retention_window))
 ```
 
 **分段级过期判断**:

@@ -152,8 +152,8 @@ pub struct DataSet {
     segments: DataSegmentSet,
     time_index: TimeIndex,
     last_used_at: Instant,
-    latest_written_timestamp: i64, // Highest written timestamp, not latest valid record
-    retention_window: u64,         // 0 = no limit (same unit as timestamp)
+    latest_written_timestamp: Option<i64>, // Highest written timestamp, not latest valid record
+    retention_window: u64,                 // 0 = no limit (same unit as timestamp)
     dataset_state: DatasetStateFile,
     queue_inner: Option<Arc<Mutex<QueueInner>>>,
     queue_notify: Option<Arc<(Mutex<bool>, Condvar)>>,
@@ -271,7 +271,7 @@ impl DataSet {
             segments,
             time_index,
             last_used_at: Instant::now(),
-            latest_written_timestamp: 0,
+            latest_written_timestamp: None,
             retention_window,
             dataset_state,
             queue_inner: None,
@@ -579,18 +579,18 @@ impl DataSet {
     ///
     /// # Timestamp dispatch (both indexing modes)
     ///
-    /// - `timestamp <= 0`: error.
-    /// - `timestamp == latest_written_timestamp` (and latest > 0): **correction write**:
+    /// - `latest_written_timestamp == Some(timestamp)`: **correction write**:
     ///   in-place overwrite of the data bytes in the last pending raw block of the latest
     ///   data segment. The index entry is unchanged. If the target block has already been
     ///   sealed and compressed, falls back to out-of-order write:
     ///   appends data to latest segment, updates index entry, and increments the old
     ///   segment's `invalid_record_count`.
-    /// - `timestamp < latest_written_timestamp`: **out-of-order write**: appends data to
+    /// - `timestamp < latest_written_timestamp.unwrap()`: **out-of-order write**: appends data to
     ///   the latest data segment and updates the existing index position in place. In
     ///   continuous mode, sparse logical holes are materialized on demand.
-    /// - `timestamp > latest_written_timestamp`: **normal write**: in continuous mode only
-    ///   materializes filler entries in the previous and current edge index segments.
+    /// - `latest_written_timestamp.is_none()` or `timestamp > latest_written_timestamp.unwrap()`:
+    ///   **normal write**. In continuous mode only materializes filler entries in the previous
+    ///   and current edge index segments.
     pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
         if self.runtime_context.read_only {
             return Err(TmslError::InvalidData(
@@ -625,23 +625,23 @@ impl DataSet {
         cache: Option<&BlockCache>,
     ) -> Result<WriteOutcome> {
         validate_record_data_len(data.len())?;
-        if timestamp <= 0 {
-            return Err(TmslError::InvalidData("timestamp must be > 0".into()));
-        }
         if self.is_timestamp_expired(timestamp) {
             return Err(self.expired_error(timestamp));
         }
 
         // Correction write: same timestamp as latest; in-place overwrite in
         // the last pending raw block of the latest data segment. Index unchanged.
-        if self.latest_written_timestamp > 0 && timestamp == self.latest_written_timestamp {
+        if self.latest_written_timestamp == Some(timestamp) {
             return self.correct_write(timestamp, data, cache);
         }
 
         // Out-of-order write: timestamp < latest; append to latest segment,
         // update existing index entry in place. May increment invalid_record_count
         // on the old data segment.
-        if timestamp < self.latest_written_timestamp {
+        if self
+            .latest_written_timestamp
+            .is_some_and(|latest| timestamp < latest)
+        {
             return self.out_of_order_write(timestamp, data, cache);
         }
 
@@ -657,7 +657,7 @@ impl DataSet {
             if self.time_index.total_len() != index_segments_before {
                 self.refresh_archived_index_timestamp_range();
             }
-            self.latest_written_timestamp = timestamp;
+            self.latest_written_timestamp = Some(timestamp);
             self.last_used_at = Instant::now();
             self.enqueue_dirty_segments();
             self.notify_queue();
@@ -680,7 +680,7 @@ impl DataSet {
             if self.time_index.total_len() != index_segments_before {
                 self.refresh_archived_index_timestamp_range();
             }
-            self.latest_written_timestamp = timestamp;
+            self.latest_written_timestamp = Some(timestamp);
             self.last_used_at = Instant::now();
             self.enqueue_dirty_segments();
             self.notify_queue();
@@ -727,14 +727,14 @@ impl DataSet {
         data: &[u8],
         cache: Option<&BlockCache>,
     ) -> Result<Option<AppendOutcome>> {
-        if timestamp <= 0 {
-            return Err(TmslError::InvalidData("timestamp must be > 0".into()));
-        }
         validate_record_data_len(data.len())?;
         if self.is_timestamp_expired(timestamp) {
             return Err(self.expired_error(timestamp));
         }
-        if timestamp < self.latest_written_timestamp {
+        if self
+            .latest_written_timestamp
+            .is_some_and(|latest| timestamp < latest)
+        {
             return Err(TmslError::InvalidData(
                 "append timestamp is older than latest_written_timestamp".into(),
             ));
@@ -742,16 +742,10 @@ impl DataSet {
         if data.is_empty() {
             return Ok(None);
         }
-        if timestamp > self.latest_written_timestamp {
-            let outcome = self.write_with_cache_outcome(timestamp, data, cache)?;
-            return Ok(Some(AppendOutcome {
-                index_entry: outcome.index_entry,
-                data_offset: 0,
-                data_len: data_len_u32(data.len())?,
-            }));
-        }
-
-        if self.latest_written_timestamp == 0 {
+        if self
+            .latest_written_timestamp
+            .is_none_or(|latest| timestamp > latest)
+        {
             let outcome = self.write_with_cache_outcome(timestamp, data, cache)?;
             return Ok(Some(AppendOutcome {
                 index_entry: outcome.index_entry,
@@ -925,10 +919,7 @@ impl DataSet {
         timestamp: i64,
         cache: Option<&BlockCache>,
     ) -> Result<DeleteOutcome> {
-        if timestamp <= 0 {
-            return Err(TmslError::InvalidData("timestamp must be > 0".into()));
-        }
-        if self.latest_written_timestamp == 0 {
+        if self.latest_written_timestamp.is_none() {
             return Err(TmslError::NotFound(format!(
                 "no entry to delete at timestamp {} (dataset is empty)",
                 timestamp
@@ -966,10 +957,6 @@ impl DataSet {
 
     /// Read a single record by exact timestamp.
     ///
-    /// Special case: `timestamp == -1` resolves to `latest_written_timestamp`.
-    /// It does not search backward for the latest valid record, so deleted latest
-    /// entries return `None`.
-    ///
     /// Returns `Ok(Some((timestamp, data)))` if found, `Ok(None)` if not found
     /// or entry is a filler (deleted or never-written in continuous mode).
     pub fn read(&mut self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
@@ -982,20 +969,11 @@ impl DataSet {
         timestamp: i64,
         cache: Option<&BlockCache>,
     ) -> Result<Option<(i64, Vec<u8>)>> {
-        let effective_ts = if timestamp == -1 {
-            if self.latest_written_timestamp <= 0 {
-                return Ok(None);
-            }
-            self.latest_written_timestamp
-        } else {
-            timestamp
-        };
-
-        if self.is_timestamp_expired(effective_ts) {
+        if self.is_timestamp_expired(timestamp) {
             return Ok(None);
         }
 
-        let entry = match self.time_index.find_entry(effective_ts)? {
+        let entry = match self.time_index.find_entry(timestamp)? {
             Some(e) => e,
             None => return Ok(None),
         };
@@ -1012,42 +990,33 @@ impl DataSet {
         Ok(Some((ts, data)))
     }
 
+    /// Read the record at latest_written_timestamp without searching backward.
+    pub fn read_latest(&mut self) -> Result<Option<(i64, Vec<u8>)>> {
+        let Some(timestamp) = self.latest_written_timestamp else {
+            return Ok(None);
+        };
+        let cache = self.runtime_context.block_cache.clone();
+        self.read_with_cache(timestamp, cache.as_deref())
+    }
+
     /// Check if index entry exists for the given timestamp.
-    /// timestamp == -1 checks latest_written_timestamp.
+    /// `timestamp` is exact; `-1` is not a latest shortcut.
     /// Returns true if index entry exists (including filler entries).
     /// Does NOT check retention — index existence is enough.
     pub fn read_exist(&mut self, timestamp: i64) -> Result<bool> {
-        let effective_ts = if timestamp == -1 {
-            if self.latest_written_timestamp <= 0 {
-                return Ok(false);
-            }
-            self.latest_written_timestamp
-        } else {
-            timestamp
-        };
-
-        let entry = self.time_index.find_entry(effective_ts)?;
+        let entry = self.time_index.find_entry(timestamp)?;
         Ok(entry.is_some())
     }
 
     /// Read the logical data length for a timestamp.
-    /// timestamp == -1 reads latest_written_timestamp.
+    /// `timestamp` is exact; `-1` is not a latest shortcut.
     /// Returns Some(data_len) if record exists, None if not found, filler, or expired.
     pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>> {
-        let effective_ts = if timestamp == -1 {
-            if self.latest_written_timestamp <= 0 {
-                return Ok(None);
-            }
-            self.latest_written_timestamp
-        } else {
-            timestamp
-        };
-
-        if self.is_timestamp_expired(effective_ts) {
+        if self.is_timestamp_expired(timestamp) {
             return Ok(None);
         }
 
-        let entry = match self.time_index.find_entry(effective_ts)? {
+        let entry = match self.time_index.find_entry(timestamp)? {
             Some(e) => e,
             None => return Ok(None),
         };
@@ -1292,7 +1261,7 @@ impl DataSet {
 
     /// Recover the highest written timestamp from the newest materialized index
     /// position. Deleted/filler entries still define the written timestamp.
-    fn recover_latest_timestamp(time_index: &TimeIndex) -> i64 {
+    fn recover_latest_timestamp(time_index: &TimeIndex) -> Option<i64> {
         let latest_closed = time_index
             .closed_index_segment_metas()
             .filter(|meta| meta.wrote_count > 0)
@@ -1316,7 +1285,6 @@ impl DataSet {
             .chain(latest_open)
             .chain(latest_buffered)
             .max()
-            .unwrap_or(0)
     }
 
     fn last_open_index_entry_timestamp(seg: &IndexSegment) -> Option<i64> {
@@ -1354,11 +1322,11 @@ impl DataSet {
         self.config.enable_journal
     }
 
-    /// Latest successfully written timestamp (0 = dataset is empty).
+    /// Latest successfully written timestamp (None = dataset is empty).
     ///
     /// Recovered from index segments on `open`, then maintained in memory.
-    /// Used by `read(-1)` shortcut and retention threshold calculation.
-    pub fn latest_written_timestamp(&self) -> i64 {
+    /// Used by `read_latest()` and retention threshold calculation.
+    pub fn latest_written_timestamp(&self) -> Option<i64> {
         self.latest_written_timestamp
     }
 
@@ -1366,34 +1334,35 @@ impl DataSet {
     /// Returns (effective_start, effective_end). If retention is disabled
     /// or latest_written_timestamp is unknown, returns the original range.
     fn clamp_query_range(&self, start_ts: i64, end_ts: i64) -> (i64, i64) {
-        if self.retention_window == 0 || self.latest_written_timestamp <= 0 {
+        if self.retention_window == 0 {
             return (start_ts, end_ts);
         }
-        let threshold = self
-            .latest_written_timestamp
-            .saturating_sub(self.retention_window as i64);
+        let Some(latest) = self.latest_written_timestamp else {
+            return (start_ts, end_ts);
+        };
+        let threshold = latest.saturating_sub(self.retention_window as i64);
         (start_ts.max(threshold), end_ts)
     }
 
-    /// Compute retention expiration threshold, or -1 if retention disabled / no data yet.
-    fn retention_threshold(&self) -> i64 {
-        if self.retention_window == 0 || self.latest_written_timestamp <= 0 {
-            return -1;
+    /// Compute retention expiration threshold, if retention enabled and data exists.
+    fn retention_threshold(&self) -> Option<i64> {
+        if self.retention_window == 0 {
+            return None;
         }
         self.latest_written_timestamp
-            .saturating_sub(self.retention_window as i64)
+            .map(|latest| latest.saturating_sub(self.retention_window as i64))
     }
 
     fn is_timestamp_expired(&self, timestamp: i64) -> bool {
-        let threshold = self.retention_threshold();
-        threshold >= 0 && timestamp < threshold
+        self.retention_threshold()
+            .is_some_and(|threshold| timestamp < threshold)
     }
 
     fn expired_error(&self, timestamp: i64) -> TmslError {
         TmslError::Expired(format!(
             "timestamp {} is older than retention threshold {}",
             timestamp,
-            self.retention_threshold()
+            self.retention_threshold().unwrap_or(i64::MIN)
         ))
     }
 
@@ -1401,10 +1370,9 @@ impl DataSet {
     /// retention threshold. Closes the dataset first (all segments go to closed set).
     /// Returns the total number of segment files deleted.
     pub fn reclaim_expired_segments(&mut self) -> Result<usize> {
-        let threshold = self.retention_threshold();
-        if threshold < 0 {
+        let Some(threshold) = self.retention_threshold() else {
             return Ok(0);
-        }
+        };
         let last_used_at = self.last_used_at;
 
         // Close all open segments so they become Closed entries in the registries.
@@ -1563,7 +1531,7 @@ pub struct DataSetInfo {
 #[derive(Debug, Clone)]
 pub struct DataSetState {
     /// Highest written timestamp (not latest valid record, deletion doesn't roll back)
-    pub latest_written_timestamp: i64,
+    pub latest_written_timestamp: Option<i64>,
     /// Number of currently open data segments
     pub open_data_segments: u32,
     /// Total number of data segments
@@ -1804,7 +1772,7 @@ mod tests {
         assert_eq!(outcome.index_entry.timestamp, 100);
         assert_eq!(outcome.data_offset, 0);
         assert_eq!(outcome.data_len, 5);
-        assert_eq!(ds.latest_written_timestamp(), 100);
+        assert_eq!(ds.latest_written_timestamp(), Some(100));
         assert_eq!(ds.read(100).unwrap().unwrap().1, b"hello");
     }
 
@@ -1828,7 +1796,7 @@ mod tests {
 
         assert_eq!(outcome.data_offset, 2);
         assert_eq!(outcome.data_len, 2);
-        assert_eq!(ds.latest_written_timestamp(), 100);
+        assert_eq!(ds.latest_written_timestamp(), Some(100));
         assert_eq!(ds.read(100).unwrap().unwrap().1, b"abcd");
         let seg = ds.segments.open_segments().last().unwrap();
         assert_eq!(seg.data_wrote_position, before.0 + 2);
@@ -1881,7 +1849,7 @@ mod tests {
             ds.append(100, b"").is_err(),
             "empty append must still enforce timestamp ordering"
         );
-        assert_eq!(ds.latest_written_timestamp(), 200);
+        assert_eq!(ds.latest_written_timestamp(), Some(200));
         assert_eq!(ds.read(100).unwrap().unwrap().1, b"a");
     }
 
@@ -2178,7 +2146,7 @@ mod tests {
         );
 
         let mut ds = DataSet::open(id, dir.clone()).unwrap();
-        assert_eq!(ds.latest_written_timestamp(), second_ts);
+        assert_eq!(ds.latest_written_timestamp(), Some(second_ts));
         let entries = ds.query(first_ts, second_ts).unwrap();
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].0, first_ts);
@@ -2209,11 +2177,11 @@ mod tests {
 
         // Write ts=100
         ds.write(100, b"hello").unwrap();
-        assert_eq!(ds.latest_written_timestamp, 100);
+        assert_eq!(ds.latest_written_timestamp, Some(100));
 
         // Write ts=110 -> should fill ts=101..109 with filler
         ds.write(110, b"world").unwrap();
-        assert_eq!(ds.latest_written_timestamp, 110);
+        assert_eq!(ds.latest_written_timestamp, Some(110));
 
         // Flush to disk
         ds.flush().unwrap();
@@ -2252,7 +2220,7 @@ mod tests {
 
         // Back-fill ts=125 (replaces filler)
         ds.write(125, b"middle").unwrap();
-        assert_eq!(ds.latest_written_timestamp, 150); // unchanged
+        assert_eq!(ds.latest_written_timestamp, Some(150)); // unchanged
 
         // Query should return 3 real entries
         let entries = ds.query(100, 150).unwrap();
@@ -2292,7 +2260,7 @@ mod tests {
         assert_eq!(entries[1].0, 150);
         assert_eq!(entries[1].1, b"corrected");
         // latest_written_timestamp should be unchanged
-        assert_eq!(ds.latest_written_timestamp, 150);
+        assert_eq!(ds.latest_written_timestamp, Some(150));
     }
 
     #[test]
@@ -2325,7 +2293,7 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[1].0, 150);
         assert_eq!(entries[1].1, b"corrected");
-        assert_eq!(ds.latest_written_timestamp, 150);
+        assert_eq!(ds.latest_written_timestamp, Some(150));
     }
 
     #[test]
@@ -2548,7 +2516,7 @@ mod tests {
         // Out-of-order write at ts=100 (entry exists from earlier write)
         ds.write(100, b"updated_first").unwrap();
 
-        assert_eq!(ds.latest_written_timestamp, 200); // unchanged
+        assert_eq!(ds.latest_written_timestamp, Some(200)); // unchanged
         let entries = ds.query(100, 200).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, 100);
@@ -2557,7 +2525,7 @@ mod tests {
     }
 
     #[test]
-    fn test_timestamp_zero_rejected() {
+    fn test_zero_and_negative_timestamps_are_valid() {
         let dir = temp_dir("ts_zero");
         let id = DataSetKey {
             name: "test".into(),
@@ -2576,16 +2544,12 @@ mod tests {
         )
         .unwrap();
 
-        let result = ds.write(0, b"invalid");
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("timestamp must be > 0"));
+        ds.write(-1, b"negative").unwrap();
+        ds.write(0, b"zero").unwrap();
 
-        // Also negative
-        let result = ds.write(-1, b"invalid");
-        assert!(result.is_err());
+        assert_eq!(ds.latest_written_timestamp, Some(0));
+        assert_eq!(ds.read(-1).unwrap().unwrap().1, b"negative");
+        assert_eq!(ds.read(0).unwrap().unwrap().1, b"zero");
     }
 
     #[test]
@@ -2616,7 +2580,7 @@ mod tests {
 
         // Out-of-order at ts=100 (real entry); succeeds via out_of_order_write
         ds.write(100, b"updated_first").unwrap();
-        assert_eq!(ds.latest_written_timestamp, 150); // unchanged
+        assert_eq!(ds.latest_written_timestamp, Some(150)); // unchanged
 
         // Query should still return ts=100 and ts=150 with updated data
         let entries = ds.query(100, 150).unwrap();
@@ -2704,7 +2668,7 @@ mod tests {
 
         // Backfill at ts=2 (which IS a filler) should succeed
         ds.write(2, b"filled").unwrap();
-        assert_eq!(ds.latest_written_timestamp, 10); // unchanged
+        assert_eq!(ds.latest_written_timestamp, Some(10)); // unchanged
 
         // Verify 3 real entries
         let entries = ds.query(1, 10).unwrap();
@@ -2740,7 +2704,7 @@ mod tests {
 
         // Open and check latest_written_timestamp recovered
         let ds2 = DataSet::open(id, dir).unwrap();
-        assert_eq!(ds2.latest_written_timestamp, 150);
+        assert_eq!(ds2.latest_written_timestamp, Some(150));
     }
 
     #[test]
@@ -2853,7 +2817,7 @@ mod tests {
         ds.write(180, b"b").unwrap();
         ds.write(200, b"c").unwrap();
 
-        assert_eq!(ds.latest_written_timestamp, 200);
+        assert_eq!(ds.latest_written_timestamp, Some(200));
 
         // Query [150, 200]; clamp to [max(150,150)=150, 200]; 3 records
         let entries = ds.query(150, 200).unwrap();
@@ -3432,7 +3396,7 @@ mod tests {
             assert_eq!(entries[0].1, b"corrected");
 
             // latest_written_timestamp unchanged
-            assert_eq!(ds.latest_written_timestamp, 100);
+            assert_eq!(ds.latest_written_timestamp, Some(100));
 
             let seg = ds.segments.open_segments().last().unwrap();
             assert_eq!(seg.invalid_record_count, 0);
@@ -3475,7 +3439,7 @@ mod tests {
         assert_eq!(entries[0].1, corrected);
 
         // latest_written_timestamp unchanged
-        assert_eq!(ds.latest_written_timestamp, 100);
+        assert_eq!(ds.latest_written_timestamp, Some(100));
 
         // invalid_record_count should be 1 (old data orphaned)
         let seg = ds.segments.open_segments().last().unwrap();
@@ -3800,22 +3764,22 @@ mod tests {
         .unwrap();
 
         // Empty dataset
-        assert_eq!(ds.latest_written_timestamp(), 0);
+        assert_eq!(ds.latest_written_timestamp(), None);
 
         // First write sets latest
         ds.write(100, b"a").unwrap();
-        assert_eq!(ds.latest_written_timestamp(), 100);
+        assert_eq!(ds.latest_written_timestamp(), Some(100));
 
         ds.write(150, b"b").unwrap();
-        assert_eq!(ds.latest_written_timestamp(), 150);
+        assert_eq!(ds.latest_written_timestamp(), Some(150));
 
         // Correction write at 150 (== latest) keeps latest unchanged
         ds.write(150, b"corrected").unwrap();
-        assert_eq!(ds.latest_written_timestamp(), 150);
+        assert_eq!(ds.latest_written_timestamp(), Some(150));
 
         // Out-of-order write at an existing timestamp keeps latest unchanged
         ds.write(100, b"ooo_at_100").unwrap();
-        assert_eq!(ds.latest_written_timestamp(), 150);
+        assert_eq!(ds.latest_written_timestamp(), Some(150));
     }
 
     #[test]
@@ -3848,12 +3812,12 @@ mod tests {
         // Reopen; latest_written_timestamp recovered from index
         {
             let ds = DataSet::open(id, dir).unwrap();
-            assert_eq!(ds.latest_written_timestamp(), 250);
+            assert_eq!(ds.latest_written_timestamp(), Some(250));
         }
     }
 
     #[test]
-    fn test_read_minus_one_empty_dataset() {
+    fn test_read_latest_empty_dataset_and_minus_one_is_exact() {
         let dir = temp_dir("read_minus_one_empty");
         let id = DataSetKey {
             name: "test".into(),
@@ -3872,11 +3836,13 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(ds.latest_written_timestamp(), None);
+        assert!(ds.read_latest().unwrap().is_none());
         assert!(ds.read(-1).unwrap().is_none());
     }
 
     #[test]
-    fn test_read_minus_one_returns_latest() {
+    fn test_signed_timestamps_and_read_latest() {
         let dir = temp_dir("read_minus_one_latest");
         let id = DataSetKey {
             name: "test".into(),
@@ -3895,21 +3861,28 @@ mod tests {
         )
         .unwrap();
 
-        ds.write(100, b"first").unwrap();
-        ds.write(200, b"second").unwrap();
+        ds.write(-1, b"minus-one").unwrap();
+        ds.write(0, b"zero").unwrap();
         ds.write(300, b"latest").unwrap();
 
-        let result = ds.read(-1).unwrap();
-        assert!(result.is_some());
-        let (ts, data) = result.unwrap();
+        let (ts, data) = ds.read(-1).unwrap().unwrap();
+        assert_eq!(ts, -1);
+        assert_eq!(data, b"minus-one");
+
+        let (ts, data) = ds.read(0).unwrap().unwrap();
+        assert_eq!(ts, 0);
+        assert_eq!(data, b"zero");
+
+        let (ts, data) = ds.read_latest().unwrap().unwrap();
         assert_eq!(ts, 300);
         assert_eq!(data, b"latest");
+        assert_eq!(ds.latest_written_timestamp(), Some(300));
     }
 
     #[test]
-    fn test_read_minus_one_after_delete_latest() {
+    fn test_read_latest_after_delete_latest() {
         // After deleting the latest, latest_written_timestamp still points to it
-        // but the index entry is a filler, so read(-1) returns None.
+        // but the index entry is a filler, so read_latest returns None.
         let dir = temp_dir("read_minus_one_deleted_latest");
         let id = DataSetKey {
             name: "test".into(),
@@ -3932,8 +3905,8 @@ mod tests {
         ds.write(200, b"later").unwrap();
         ds.delete(200).unwrap();
 
-        assert_eq!(ds.latest_written_timestamp(), 200);
-        assert!(ds.read(-1).unwrap().is_none());
+        assert_eq!(ds.latest_written_timestamp(), Some(200));
+        assert!(ds.read_latest().unwrap().is_none());
 
         // Earlier record still reachable via explicit timestamp
         let r = ds.read(100).unwrap().unwrap();
@@ -3942,8 +3915,8 @@ mod tests {
         ds.close().unwrap();
 
         let mut reopened = DataSet::open(id, dir).unwrap();
-        assert_eq!(reopened.latest_written_timestamp(), 200);
-        assert!(reopened.read(-1).unwrap().is_none());
+        assert_eq!(reopened.latest_written_timestamp(), Some(200));
+        assert!(reopened.read_latest().unwrap().is_none());
     }
 
     #[test]
@@ -4005,7 +3978,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_minus_one_after_reopen() {
+    fn test_read_latest_after_reopen_and_minus_one_is_exact() {
         let dir = temp_dir("read_minus_one_reopen");
         let id = DataSetKey {
             name: "test".into(),
@@ -4025,6 +3998,7 @@ mod tests {
                 0,
             )
             .unwrap();
+            ds.write(-1, b"minus-one").unwrap();
             ds.write(100, b"a").unwrap();
             ds.write(500, b"latest").unwrap();
             ds.flush().unwrap();
@@ -4033,9 +4007,13 @@ mod tests {
 
         {
             let mut ds = DataSet::open(id, dir).unwrap();
-            assert_eq!(ds.latest_written_timestamp(), 500);
+            assert_eq!(ds.latest_written_timestamp(), Some(500));
 
             let r = ds.read(-1).unwrap().unwrap();
+            assert_eq!(r.0, -1);
+            assert_eq!(r.1, b"minus-one");
+
+            let r = ds.read_latest().unwrap().unwrap();
             assert_eq!(r.0, 500);
             assert_eq!(r.1, b"latest");
         }

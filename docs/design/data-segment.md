@@ -205,7 +205,7 @@ impl DataSegment {
 
 #### overwrite_in_last_block: 纠正写入 (In-Place Overwrite, 支持变 size)
 
-纠正写入场景下 (`timestamp == latest_written_timestamp`), 该最大已写 timestamp 对应的记录只有在仍位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置** 时, 才可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化。该能力是 tail-only resize: 仅改写当前 record header/data 和尾部计数, 不移动任何后续 block/record 字节; 如果校验发现 record 后仍有字节, 直接返回错误并由 `DataSet::correct_write` 回退为乱序追加并更新索引。只要 block 已经 sealed/compressed, 也不能再原地修改:
+纠正写入场景下 (`latest_written_timestamp == Some(timestamp)`), 该最大已写 timestamp 对应的记录只有在仍位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置** 时, 才可通过 mmap 直接修改该 record 的 data 字节, 支持 data 长度变化。该能力是 tail-only resize: 仅改写当前 record header/data 和尾部计数, 不移动任何后续 block/record 字节; 如果校验发现 record 后仍有字节, 直接返回错误并由 `DataSet::correct_write` 回退为乱序追加并更新索引。只要 block 已经 sealed/compressed, 也不能再原地修改:
 
 ```rust
 fn overwrite_in_last_block(
@@ -255,7 +255,7 @@ fn overwrite_in_last_block(
 
 #### append_to_last_record: 追加写入 (Tail Append)
 
-append 追加场景下 (`timestamp == latest_written_timestamp`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前运行时 `data_wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限判断。append 不再因为比例阈值迁移为 exclusive/single-record block, 若增长后普通 pending block 无法承载则直接返回错误。
+append 追加场景下 (`latest_written_timestamp == Some(timestamp)`), 目标 record 必须位于 **本数据段最后一个 pending raw block (`flags=0`)** 的 **最末位置**, 且 record 末尾必须等于数据段当前运行时 `data_wrote_position`。该方法只负责原地增长; `DataSet` 层必须在调用前完成 4MiB 上限判断。append 不再因为比例阈值迁移为 exclusive/single-record block, 若增长后普通 pending block 无法承载则直接返回错误。
 
 ```rust
 fn append_to_last_record(

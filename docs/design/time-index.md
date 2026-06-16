@@ -248,7 +248,7 @@ reclaim_expired_segments(expiration_threshold: i64):
 - 从文件 header 的 `wrote_position` 推算最后条目位置: `128 + (wrote_count - 1) * 18`
 - 立即 drop(mmap) + drop(file), 检查完成后不保持打开状态
 - 返回 `Ok(Some(last_ts))`, `Ok(None)` 或 `Err`; 空段/`wrote_count==0` 返回 `Ok(None)`
-- `DataSet::open` 恢复 `latest_written_timestamp` 时, 只需要读取最新非空 index segment 文件的最后一条 entry; delete/filler entry 的 timestamp 仍计入 latest, 因此 `read(-1)` 不会回退到更早有效记录
+- `DataSet::open` 恢复 `latest_written_timestamp` 时, 只需要读取最新非空 index segment 文件的最后一条 entry; delete/filler entry 的 timestamp 仍计入 latest, 因此 `read_latest()` 不会回退到更早有效记录；没有任何 entry 时 latest 为 `None`
 
 **关键约束**:
 - 回收期间打开的索引段文件必须**检查完成后立即释放** (不用 idle-close)

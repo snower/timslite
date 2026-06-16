@@ -26,8 +26,8 @@ with timslite.Store.open("/data/timslite") as store:
         ts, data = record
         print(f"ts={ts}, data={data}")
 
-    # Read the latest record (shortcut: timestamp=-1)
-    record = ds.read(-1)  # -> (2, b"reading_2") or None for empty dataset
+    # Read the latest record
+    record = ds.read_latest()  # -> (2, b"reading_2") or None for empty dataset
 
     # Query the latest timestamp without a range scan
     print(f"latest: {ds.latest_timestamp}")  # -> 2

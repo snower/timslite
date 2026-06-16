@@ -22,7 +22,7 @@
 
 ## 29.2 Non-Goals
 
-- [-] No append to old timestamps (`timestamp < latest_written_timestamp`).
+- [-] No append to old timestamps (`latest_written_timestamp = Some(latest)` and `timestamp < latest`).
 - [-] No append to compressed, sealed, historical, or non-tail records.
 - [-] No transaction/WAL semantics for append beyond the existing journal change-log behavior.
 - [-] No migration/compaction of the old physical record for append; existing latest-record append is in-place only.
@@ -31,14 +31,14 @@
 
 | Case | Behavior |
 |------|----------|
-| `timestamp < latest_written_timestamp` | Return error. |
-| `timestamp > latest_written_timestamp` | Create a new record through the normal forward write path, update latest, return `AppendOutcome(data_offset=0, data_len=input.len())`, write journal `0x13`. |
-| `timestamp == latest_written_timestamp`, latest entry missing/deleted/filler | Return error. |
-| `timestamp == latest_written_timestamp`, target block compressed/sealed | Return error. |
-| `timestamp == latest_written_timestamp`, target record is not the block and segment tail | Return error. |
-| `timestamp == latest_written_timestamp`, final data length > 4MiB | Return error. |
-| `timestamp == latest_written_timestamp`, tail raw record and final encoded record fits current pending block | Append bytes in place, update record/block/segment size fields, keep index unchanged, journal `0x13`. |
-| `timestamp == latest_written_timestamp`, final encoded record cannot fit current pending block | Return error; append does not migrate to a single-record block. |
+| `latest_written_timestamp = Some(latest)` and `timestamp < latest` | Return error. |
+| `latest_written_timestamp is None` or `timestamp > latest_written_timestamp.unwrap()` | Create a new record through the normal forward write path, update latest, return `AppendOutcome(data_offset=0, data_len=input.len())`, write journal `0x13`. |
+| `latest_written_timestamp == Some(timestamp)`, latest entry missing/deleted/filler | Return error. |
+| `latest_written_timestamp == Some(timestamp)`, target block compressed/sealed | Return error. |
+| `latest_written_timestamp == Some(timestamp)`, target record is not the block and segment tail | Return error. |
+| `latest_written_timestamp == Some(timestamp)`, final data length > 4MiB | Return error. |
+| `latest_written_timestamp == Some(timestamp)`, tail raw record and final encoded record fits current pending block | Append bytes in place, update record/block/segment size fields, keep index unchanged, journal `0x13`. |
+| `latest_written_timestamp == Some(timestamp)`, final encoded record cannot fit current pending block | Return error; append does not migrate to a single-record block. |
 
 ## 29.4 Implementation Tasks
 

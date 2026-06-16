@@ -27,7 +27,7 @@ const META_INDEX_CONTINUOUS: u8 = 0x05; // u8: 0=非连续, 1=连续
 ## 10.3 DataSet 写入逻辑更新
 
 - `DataSet::write()`:
-  - 新增状态跟踪: `latest_written_timestamp: i64` (从 index segment 恢复)
+  - 新增状态跟踪: `latest_written_timestamp: Option<i64>` (从 index segment 恢复; 空 dataset 为 `None`)
   - 检查逆序:
     - **非连续模式**: `timestamp <= latest_written_timestamp` → `Error("out-of-order")`
     - **连续模式**:
@@ -66,7 +66,7 @@ const META_INDEX_CONTINUOUS: u8 = 0x05; // u8: 0=非连续, 1=连续
 
 ## 10.8 Timestamp = 0 保护
 
-- `DataSet::write()`: 检查 `timestamp > 0`, 否则返回 `Error("timestamp must be > 0")`
+- `DataSet::write()`: `timestamp` 为 signed `i64` 业务时间戳, `0` 和负数都是合法值
 
 ## 10.9 重启恢复 latest_written_timestamp
 

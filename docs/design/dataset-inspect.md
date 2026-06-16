@@ -71,8 +71,8 @@ pub struct DataSetInfo {
 /// 可变的当前状态，反映数据集的实时运行状况。
 pub struct DataSetState {
     // ─── 写入状态 ─────────────────────────────────────────────────────────
-    /// 最大已写入 timestamp (不是最新有效 record，删除不会回退)
-    pub latest_written_timestamp: i64,
+    /// 最大已写入 timestamp (不是最新有效 record，删除不会回退；None 表示从未写入)
+    pub latest_written_timestamp: Option<i64>,
 
     // ─── 数据段状态 ───────────────────────────────────────────────────────
     /// 当前打开的数据段数量
@@ -265,6 +265,7 @@ typedef struct {
 
 /// 数据集可变状态
 typedef struct {
+    uint8_t has_latest_written_timestamp;  // 0=false, 1=true
     int64_t latest_written_timestamp;
     uint32_t open_data_segments;
     uint32_t data_segments;
@@ -328,7 +329,7 @@ class DataSetInfo:
 
 class DataSetState:
     """可变的当前状态"""
-    latest_written_timestamp: int
+    latest_written_timestamp: Optional[int]
     open_data_segments: int
     data_segments: int
     total_record_count: int

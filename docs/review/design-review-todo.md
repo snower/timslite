@@ -34,7 +34,7 @@
 |------|----|------|----------|----------|
 | [x] | P1-1 | 统一 Queue `processed_ts` 与 gap/filler 跳过语义 | `docs/design/queue-overview.md`, `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue tests | 明确消费进度代表“最后已按投递顺序完成的真实 timestamp/sequence”；gap/filler 不需要持久 skip 状态；稀疏记录 poll/ack/reopen 行为测试覆盖 |
 | [x] | P1-2 | 将压缩文档从 deflate-only 改为 selected algorithm active contract | `docs/design/compression.md`, `docs/design/dataset-operations.md`, `docs/design/data-model.md`, `docs/design/store-and-ffi.md`, `design.md`, `docs/design/architecture.md` | 通用流程不再写死 deflate；zstd 默认与 deflate 支持的 `compress_type` 规则位于压缩文档前部；读取使用 segment header `compress_type` 的规则清晰；level 语义按算法说明 |
-| [ ] | P1-3 | 明确 public timestamp 契约与 `0`/`-1` sentinel 关系 | `docs/design/data-model.md`, `docs/design/dataset-operations.md`, `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `docs/design/index-continuous.md`, `docs/design/dataset-inspect.md`, FFI/Python docs/tests | 决定 public API 是否只允许 `timestamp > 0`；若是，负 timestamp 仅作为格式层能力保留；若否，提供替代 latest API 并移除冲突 sentinel；inspect 空值表达与 timestamp 契约一致 |
+| [x] | P1-3 | 明确 public timestamp 契约与 `0`/`-1` sentinel 关系 | `docs/design/data-model.md`, `docs/design/dataset-operations.md`, `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `docs/design/index-continuous.md`, `docs/design/dataset-inspect.md`, FFI/Python docs/tests | public timestamp 保持 signed `i64`，`0` 和负数是合法业务 timestamp；新增 Rust/Store/Python `read_latest()` 与 FFI `tmsl_dataset_read_latest`；`read(-1)`/轻量读接口均改为精确 timestamp；empty latest 使用 `Option<i64>` 或 FFI `has_latest_written_timestamp`/返回码表达 |
 | [ ] | P1-4 | 统一 append 已有 latest record 的迁移阈值/返回错误契约 | `AGENTS.md`, `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `docs/review/archives/Round5/test-review-todo.md`, append/cache/journal tests | 明确 active contract 是“不迁移，超出 pending block 返回错误”还是“迁移到 single-record block”；若保留迁移，补齐 journal/cache/queue/fallback 设计；若废弃迁移，清理 70% threshold 残留 |
 | [ ] | P1-5 | 固化 FFI 轻量读接口 ABI，尤其 `query_length` 返回布局 | `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `include/timslite.h`, `src/ffi.rs`, FFI/Python wrapper tests | `tmsl_dataset_query_length` 只有一个 C ABI 签名和内存布局；如返回 `(timestamp, data_len)` 数组，需要 `repr(C)`/C struct、alignment、`array_len` 和释放规则明确；旧 `uint32_t*` 口径清除或改名 |
 | [ ] | P1-6 | 明确 `query_exist` retention 语义和范围上界 | `docs/design/dataset-read-operations.md`, `docs/design/dataset-operations.md`, `src/dataset.rs`, `src/ffi.rs`, read operations tests | `read_exist/query_exist` 表示“索引物理存在”还是“当前可见存在”有统一定义；range 计算使用 checked arithmetic；超大 bitmap 有明确错误上限；retention/deleted/filler 测试覆盖 |
@@ -65,12 +65,13 @@
 | 2026-06-12 | P0-1/P0-2/P0-3 | [x] | 更新相关设计文档；引入 `SegmentFlushTarget::QueueState { group_name }` 并让 poll/ack 入队、后台按 target flush；将 `retention_window` 有效上限固定为 `i64::MAX` 并接入 builder/meta/create/open/FFI；收敛旧 header/meta 常量与字段描述 | `cargo test -- --test-threads=1` 通过 |
 | 2026-06-16 | P1-1 | [x] | 将 queue `processed_ts` 定义为按投递顺序完成的最后一个真实 timestamp/sequence；明确 gap/filler 不投递、不 pending、不持久 ack；同步 queue 设计文档与实现注释；补充稀疏 gap ack 后 reopen 不重复消费测试 | `cargo test --test queue_test t27_1_5_sparse_gap_acked_progress_persists_after_reopen -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | 2026-06-16 | P1-2/P2-3 | [x] | 将 compression active contract 前置为 `compress_type` 选择算法；通用写入/读取流程改为 selected algorithm；明确 zstd 默认、deflate 支持、level 语义和非法值处理；同步入口、架构、FFI/Python 文档注释与计划总览 | `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
+| 2026-06-16 | P1-3 | [x] | 将 public timestamp 契约改为 signed `i64` 全域业务值；移除 `-1` latest sentinel；新增 `DataSet::read_latest`、`Store::read_dataset_latest`、FFI `tmsl_dataset_read_latest`、Python `Dataset.read_latest()`；`latest_written_timestamp` 与 inspect state 改为可空/显式 flag；同步 queue initial progress、read tests、FFI/Python wrapper tests 与相关设计/计划文档 | `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `cargo test --manifest-path wrapper/python/Cargo.toml`; `maturin develop --manifest-path wrapper/python/Cargo.toml`; `python -m pytest wrapper/python/tests -q`; `git diff --check` |
 
 ## 完成统计
 
 | 优先级 | 总数 | 已完成 | 未完成 |
 |--------|------|--------|--------|
 | P0 | 3 | 3 | 0 |
-| P1 | 7 | 2 | 5 |
+| P1 | 7 | 3 | 4 |
 | P2 | 4 | 1 | 3 |
-| 合计 | 14 | 6 | 8 |
+| 合计 | 14 | 7 | 7 |

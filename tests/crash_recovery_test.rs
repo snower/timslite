@@ -157,7 +157,8 @@ fn t_crash_recover_index_segment_integrity() {
 
         // Verify latest_written_timestamp is preserved
         assert_eq!(
-            info.state.latest_written_timestamp, 300,
+            info.state.latest_written_timestamp,
+            Some(300),
             "latest_written_timestamp should be 300"
         );
 

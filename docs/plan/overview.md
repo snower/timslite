@@ -129,7 +129,7 @@ Phase 18 (乱序写入与删除: update_entry/find_and_delete_entry + invalid_re
 Phase 19: 单时间戳读取 (read timestamp + FFI tmsl_dataset_read)
          │
          ▼
-Phase 20: 最新时间戳读取 (latest_written_timestamp + read(-1) 快捷路径)
+Phase 20: 显式最新记录读取 (latest_written_timestamp + read_latest)
          │
          ▼
 Phase 21: 后台任务手动执行 (ExecutorState Mutex + tick/next_delay API + FFI)

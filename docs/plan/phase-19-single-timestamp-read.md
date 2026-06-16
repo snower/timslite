@@ -6,7 +6,7 @@
 
 ### 1.1 `DataSet::read(timestamp) -> Result<Option<(i64, Vec<u8>)>>`
 
-- `timestamp == -1` 时解析为 `latest_written_timestamp`(Phase 20 语义, 此处兼容)
+- `timestamp` 是精确 signed `i64` 业务时间戳; `-1` 是普通 timestamp, latest 读取由 Phase 20 的 `read_latest()` 负责
 - 通过 `time_index.find_entry(timestamp)` 三级搜索定位索引条目
 - 过滤 FILLER 哨兵条目 (连续模式下填充的无效条目)
 - 通过 `segments.read_at_index_with_hot_cache()` 读取实际数据

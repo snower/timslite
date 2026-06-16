@@ -49,12 +49,11 @@ impl PyDataset {
     /// Write a record (timestamp, data).
     ///
     /// Args:
-    ///     timestamp: POSIX timestamp (> 0). Must be strictly increasing
-    ///                in non-continuous mode.
+    ///     timestamp: Signed i64 business timestamp. Negative values and 0 are valid.
     ///     data: Payload bytes.
     ///
     /// Raises:
-    ///     TmslInvalidDataError: timestamp <= 0, out-of-order, or duplicate.
+    ///     TmslInvalidDataError: out-of-order missing timestamp or oversized record.
     fn write(&mut self, timestamp: i64, data: Vec<u8>) -> PyResult<()> {
         if self.read_only {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -79,16 +78,20 @@ impl PyDataset {
     /// Read a single record by exact timestamp.
     ///
     /// Args:
-    ///     timestamp: Timestamp of the record to read. Pass `-1` to fetch
-    ///         the latest written record.
+    ///     timestamp: Exact signed business timestamp of the record to read.
     ///
     /// Returns:
     ///     Optional[tuple[int, bytes]]: (timestamp, data) if found, or None
-    ///         when the timestamp does not exist, the entry is deleted/filler,
-    ///         or `-1` is passed on an empty dataset.
+    ///         when the timestamp does not exist, or the entry is deleted/filler.
     fn read(&mut self, timestamp: i64) -> PyResult<Option<(i64, Vec<u8>)>> {
         let mut ds = self.inner.lock().unwrap();
         wrap(ds.read(timestamp))
+    }
+
+    /// Read the latest written timestamp's record without falling back.
+    fn read_latest(&mut self) -> PyResult<Option<(i64, Vec<u8>)>> {
+        let mut ds = self.inner.lock().unwrap();
+        wrap(ds.read_latest())
     }
 
     /// Inspect dataset configuration and runtime state.
@@ -109,11 +112,11 @@ impl PyDataset {
     /// remains on disk until retention-based reclamation or future compaction.
     ///
     /// Args:
-    ///     timestamp: Timestamp of the record to delete (> 0).
+    ///     timestamp: Exact signed business timestamp of the record to delete.
     ///
     /// Raises:
     ///     TmslNotFoundError: no real data exists at that timestamp.
-    ///     TmslInvalidDataError: timestamp <= 0 or dataset is empty.
+    ///     TmslInvalidDataError: dataset is empty or timestamp is expired.
     fn delete(&mut self, timestamp: i64) -> PyResult<()> {
         if self.read_only {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
@@ -184,9 +187,9 @@ impl PyDataset {
         ds.identifier()
     }
 
-    /// Latest successfully written timestamp (0 if the dataset is empty).
+    /// Latest successfully written timestamp (None if the dataset is empty).
     #[getter]
-    fn latest_timestamp(&self) -> i64 {
+    fn latest_timestamp(&self) -> Option<i64> {
         let ds = self.inner.lock().unwrap();
         ds.latest_written_timestamp()
     }
@@ -194,7 +197,7 @@ impl PyDataset {
     /// Check if index entry exists for a timestamp.
     ///
     /// Args:
-    ///     timestamp: Timestamp to check. Pass `-1` to check latest written timestamp.
+    ///     timestamp: Exact signed business timestamp to check.
     ///
     /// Returns:
     ///     bool: True if index entry exists (including filler entries), False otherwise.
@@ -219,7 +222,7 @@ impl PyDataset {
     /// Read the logical data length for a timestamp.
     ///
     /// Args:
-    ///     timestamp: Timestamp to read. Pass `-1` to read latest written timestamp.
+    ///     timestamp: Exact signed business timestamp to read.
     ///
     /// Returns:
     ///     Optional[int]: Data length if record exists, None if not found, filler, or expired.

@@ -128,6 +128,7 @@ class TestFFICoverage:
         expected_methods = [
             "write",
             "read",
+            "read_latest",
             "append",
             "delete",
             "query",

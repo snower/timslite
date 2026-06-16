@@ -241,12 +241,14 @@ class Dataset:
         """Write a record.
 
         Args:
-            timestamp: POSIX timestamp (> 0). Must be strictly increasing
-                       in non-continuous mode.
+            timestamp: signed i64 business timestamp. Negative values and 0
+                       are valid; forward writes must not move backward unless
+                       they update an existing timestamp.
             data: Payload bytes.
 
         Raises:
-            TmslInvalidDataError: timestamp <= 0, out-of-order, or duplicate.
+            TmslInvalidDataError: out-of-order missing timestamp, invalid
+                                  configuration, or oversized record.
         """
 
     def query(self, start_ts: int, end_ts: int) -> QueryIterator:
@@ -687,7 +689,8 @@ with timslite.Store.open("/data/timslite") as store:
     ds = store.open_dataset("sensor", "data")
 
     try:
-        ds.write(-1, b"bad")
+        ds.write(10, b"first")
+        ds.write(5, b"bad")
     except timslite.TmslInvalidDataError as e:
         print(f"Bad data: {e}")
 ```

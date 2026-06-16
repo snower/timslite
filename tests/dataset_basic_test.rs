@@ -157,9 +157,13 @@ fn t8_1_2b_store_read_query_latest_facade() {
     store.write_dataset(handle, 1, b"one").unwrap();
     store.write_dataset(handle, 2, b"two").unwrap();
 
-    assert_eq!(store.latest_written_timestamp(handle).unwrap(), 2);
+    assert_eq!(store.latest_written_timestamp(handle).unwrap(), Some(2));
     assert_eq!(store.read_dataset(handle, 1).unwrap().unwrap().1, b"one");
-    assert_eq!(store.read_dataset(handle, -1).unwrap().unwrap().1, b"two");
+    assert!(store.read_dataset(handle, -1).unwrap().is_none());
+    assert_eq!(
+        store.read_dataset_latest(handle).unwrap().unwrap().1,
+        b"two"
+    );
     let rows = store.query_dataset(handle, 1, 2).unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].1, b"one");

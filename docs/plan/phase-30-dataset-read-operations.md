@@ -52,26 +52,24 @@ impl DataSegmentSet {
 ```rust
 impl DataSet {
     /// Check if index entry exists for the given timestamp.
-    /// timestamp == -1 checks latest_written_timestamp.
+    /// timestamp is an exact signed i64 business timestamp.
     /// Returns true if index entry exists (including filler entries).
     pub fn read_exist(&self, timestamp: i64) -> Result<bool>;
 }
 ```
 
 ### 实现要点
-1. 若 `timestamp == -1`，使用 `latest_written_timestamp`（若 <= 0 返回 false）
-2. 调用 `self.time_index.find_entry(effective_ts)?`
-3. 返回 `Ok(entry.is_some())`
-4. **不检查 filler** — 只要 `find_entry()` 返回 `Some` 就是 `true`
-5. **不读取数据段** — 性能最优
-6. **不检查 retention** — 索引存在即返回 `true`
+1. 调用 `self.time_index.find_entry(timestamp)?`
+2. 返回 `Ok(entry.is_some())`
+3. **不检查 filler** — 只要 `find_entry()` 返回 `Some` 就是 `true`
+4. **不读取数据段** — 性能最优
+5. **不检查 retention** — 索引存在即返回 `true`
 
 ### 测试用例
 - [x] 存在的时间戳返回 true
 - [x] 不存在的时间戳返回 false
 - [x] filler entry 返回 true（索引存在）
-- [x] timestamp == -1 且有数据返回 true
-- [x] timestamp == -1 且无数据返回 false
+- [x] timestamp == -1 按精确时间戳检查
 - [x] 过期时间戳仍返回 true（仅检查索引）
 
 ---
@@ -132,29 +130,27 @@ start_ts = 100, end_ts = 107
 ```rust
 impl DataSet {
     /// Read the logical data length for a timestamp.
-    /// timestamp == -1 reads latest_written_timestamp.
+    /// timestamp is an exact signed i64 business timestamp.
     /// Returns Some(data_len) if record exists, None if not found or filler.
     pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>>;
 }
 ```
 
 ### 实现要点
-1. 若 `timestamp == -1`，使用 `latest_written_timestamp`
-2. 检查 retention 是否过期（过期返回 None）
-3. `TimeIndex::find_entry()` 查找索引
-4. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER` 返回 None)
-5. 构造 `ReadIndexEntry`
-6. 调用 `self.segments.read_record_data_len(&re)?`
-7. 更新 `self.last_used_at`
-8. 返回 `Ok(Some(data_len))`
+1. 检查 retention 是否过期（过期返回 None）
+2. `TimeIndex::find_entry()` 查找索引
+3. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER` 返回 None)
+4. 构造 `ReadIndexEntry`
+5. 调用 `self.segments.read_record_data_len(&re)?`
+6. 更新 `self.last_used_at`
+7. 返回 `Ok(Some(data_len))`
 
 ### 测试用例
 - [x] 正常记录返回正确的 data_len
 - [x] 不存在的时间戳返回 None
 - [x] filler 返回 None
 - [x] 过期时间戳返回 None
-- [x] timestamp == -1 读取最新记录
-- [x] timestamp == -1 无数据返回 None
+- [x] timestamp == -1 按精确时间戳读取长度
 - [x] 压缩 block 中的 data_len 正确读取
 
 ---
@@ -353,7 +349,7 @@ impl Store {
 ```c
 // 轻量级读操作 (详见 dataset-read-operations.md §5 FFI 接口)
 
-// 检查索引是否存在 (包括 filler)。timestamp=-1 检查 latest_written_timestamp。
+// 检查索引是否存在 (包括 filler)。timestamp 为精确业务时间戳。
 // 返回 0=false/1=true; 错误时返回 -1。
 int tmsl_dataset_read_exist(void* dataset, int64_t timestamp, char* err_buf, size_t err_buf_len);
 
@@ -364,7 +360,7 @@ int tmsl_dataset_query_exist(void* dataset, int64_t start_ts, int64_t end_ts,
                              uint8_t** out_bitmap, size_t* out_bitmap_len,
                              char* err_buf, size_t err_buf_len);
 
-// 读取单条记录的数据长度。timestamp=-1 读取 latest_written_timestamp。
+// 读取单条记录的数据长度。timestamp 为精确业务时间戳。
 // 返回 0=成功(out_len 有效)/1=未找到/-1=错误。
 int tmsl_dataset_read_length(void* dataset, int64_t timestamp,
                              uint32_t* out_len,
@@ -419,7 +415,7 @@ class DataSet:
 | 多条记录 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | filler entry | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 过期记录 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| timestamp=-1 | ✅ | N/A | ✅ | N/A | N/A |
+| timestamp=-1 精确读取 | ✅ | N/A | ✅ | N/A | N/A |
 | 压缩 block | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 跨 segment | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 连续模式 | ✅ | ✅ | ✅ | ✅ | ✅ |

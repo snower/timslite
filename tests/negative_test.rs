@@ -115,20 +115,18 @@ fn negative_correction_write_rejected_for_sealed() {
     }
 }
 
-/// read(-1) when no data has been written.
-/// Per design: should return None (latest_written_timestamp is 0).
+/// read_latest() when no data has been written.
+/// Per design: should return None (latest_written_timestamp is None).
 #[test]
-fn negative_read_minus_one_no_data() {
+fn negative_read_latest_no_data_and_minus_one_exact() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds3", "data");
     let arc = store.get_dataset(&h).unwrap();
 
     let mut ds = arc.lock().unwrap();
-    // read(-1) reads latest_written_timestamp
-    let result = ds.read(-1).unwrap();
-    // Should be None since no data written (latest_written_timestamp == 0)
-    assert!(result.is_none());
+    assert!(ds.read_latest().unwrap().is_none());
+    assert!(ds.read(-1).unwrap().is_none());
 }
 
 /// Query with start > end returns empty.

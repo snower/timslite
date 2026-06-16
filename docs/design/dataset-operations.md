@@ -16,7 +16,7 @@ struct DataSet {
     time_index: TimeIndex,
     runtime_context: DataSetRuntimeContext, // Store 注入的 BlockCache + JournalSink
     last_used_at: Instant,
-    latest_written_timestamp: i64,  // 写入过的最大 timestamp, 不是最新有效 record, 同时作为回收基准
+    latest_written_timestamp: Option<i64>,  // 写入过的最大 timestamp, 不是最新有效 record, 同时作为回收基准
 }
 
 struct DataSetRuntimeContext {
@@ -47,11 +47,12 @@ impl DataSet {
 
     fn write(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
     fn read(&mut self, timestamp: i64) -> io::Result<Option<(i64, Vec<u8>)>>;
+    fn read_latest(&mut self) -> io::Result<Option<(i64, Vec<u8>)>>;
     fn query(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<(i64, Vec<u8>)>>;
     fn query_iter(&mut self, start_ts: i64, end_ts: i64) -> io::Result<QueryIterator<'_>>;
 
     // 轻量级读操作 (仅索引或 record header)
-    /// 检查索引 entry 是否存在 (包括 filler)。timestamp=-1 检查 latest_written_timestamp。
+    /// 检查索引 entry 是否存在 (包括 filler)。timestamp 为精确业务时间戳。
     /// 不读取数据段，不检查 retention，性能最优。
     fn read_exist(&self, timestamp: i64) -> io::Result<bool>;
 
@@ -59,7 +60,7 @@ impl DataSet {
     /// 不读取数据段，不限制范围大小，调用方需自行解析位图。
     fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<u8>>;
 
-    /// 读取单条记录的逻辑数据长度。timestamp=-1 读取 latest_written_timestamp。
+    /// 读取单条记录的逻辑数据长度。timestamp 为精确业务时间戳。
     /// 跳过 filler 和过期记录，仅读取 record header (12 bytes)。
     fn read_length(&mut self, timestamp: i64) -> io::Result<Option<u32>>;
 
@@ -73,9 +74,9 @@ impl DataSet {
     fn flush(&mut self) -> io::Result<()>;
     fn config(&self) -> &DataSetConfig;
 
-    /// 写入过的最大时间戳 (0 = 数据集为空)
+    /// 写入过的最大时间戳 (None = 数据集为空)
     /// open 时从最后一个索引分段文件的最后一条 entry 恢复; 写入时在内存中维护
-    fn latest_written_timestamp(&self) -> i64;
+    fn latest_written_timestamp(&self) -> Option<i64>;
 
     /// 删除指定时间戳的记录 (索引标记为哨兵, 数据段 invalid_record_count++)
     fn delete(&mut self, timestamp: i64) -> io::Result<()>;
@@ -164,13 +165,11 @@ physical_file_offset = segment.header_len + block_segment_offset
 ```
 DataSet::write(timestamp, data):
     │
-    ├─ if timestamp <= 0 → Error("timestamp must be > 0")
-    │
     ├─ if retention_window > 0 && timestamp < retention_threshold:
-    │      ├─ timestamp < latest_written_timestamp → Error("timestamp expired")
+    │      ├─ latest_written_timestamp = Some(latest) 且 timestamp < latest → Error("timestamp expired")
     │      └─ 其它情况不可达 (threshold 基于 latest 计算, 正序写入不会小于 threshold)
     │
-    ├─ if timestamp == latest_written_timestamp 且 latest > 0 (纠正写入, 两种模式通用):
+    ├─ if latest_written_timestamp == Some(timestamp) (纠正写入, 两种模式通用):
     │    │
     │    ├─ 1. time_index.find_entry(timestamp)
     │    │      → 获取 (block_offset, in_block_offset)
@@ -188,7 +187,7 @@ DataSet::write(timestamp, data):
     │    │
     │    └─ 索引条目不变 (仅当原地覆盖成功时), latest_written_timestamp 不变
     │
-    ├─ if timestamp < latest_written_timestamp (乱序写入, 两种模式通用):
+    ├─ if latest_written_timestamp = Some(latest) 且 timestamp < latest (乱序写入, 两种模式通用):
     │    │
     │    ├─ 1. 新数据 append 到最新数据段 → (segment.file_offset, block_segment_offset, in_block_offset)
     │    │
@@ -214,23 +213,25 @@ DataSet::write(timestamp, data):
     │    └─ 成功 → return Ok(())
     │       (latest_written_timestamp 不变)
     │
-    ├─ timestamp > latest (正序写入):
+    ├─ latest_written_timestamp 为 None 或 timestamp > latest (正序写入):
     │    │
     │    ├─ 非连续模式: 正常写入 + 追加索引
     │    └─ 连续模式: 稀疏 filler 写入 + 正常写入
     │
-    └─ latest_written_timestamp = timestamp (仅正序写入时更新)
+    └─ latest_written_timestamp = Some(timestamp) (仅正序写入时更新)
 ```
 
 > **Journal hook**: 成功写入需要返回最终 `IndexEntry(timestamp, block_offset, in_block_offset)`。`DataSet::write` 在主写入和 index 发布成功后通过自身 `DataSetRuntimeContext.journal` 向 `JournalManager` 写入 `0x11` 日志; Store 门面只负责调用 DataSet public API, 不再重复追加 journal。若该 DataSet 是独立创建且未注入 journal sink, hook 为 no-op。
 
 **单条 record 上限**: `DataSet::write` 必须拒绝 `data.len() > 4MiB`。该限制适用于普通聚合 block 和 exclusive/single-record block, 与 `data_len:u32` 的磁盘编码能力无关。
 
-**纠正写入**: 当 `timestamp == latest_written_timestamp` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
+**public timestamp 契约**: `timestamp` 是 signed `i64` 业务时间戳, `0` 和负数都是合法值。`read(-1)` 不再有 latest 快捷语义, 而是读取精确 timestamp `-1`; 获取最新写入 timestamp 对应记录必须使用 `read_latest()`。
 
-**乱序写入**: 当 `timestamp < latest_written_timestamp` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
+**纠正写入**: 当 `latest_written_timestamp == Some(timestamp)` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
 
-**retention 写入约束**: 当 `retention_window > 0` 时, `timestamp < latest_written_timestamp.saturating_sub(retention_window as i64)` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。`retention_window` 在 builder、FFI、create/open/meta decode 阶段必须已校验为 `0..=i64::MAX`, 因此该 cast 不允许发生 wrap。正序写入仍允许推进 `latest_written_timestamp`, 并可能使更多旧数据进入过期窗口。
+**乱序写入**: 当 `latest_written_timestamp = Some(latest)` 且 `timestamp < latest` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
+
+**retention 写入约束**: 当 `retention_window > 0` 且 `latest_written_timestamp = Some(latest)` 时, `timestamp < latest.saturating_sub(retention_window as i64)` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。`retention_window` 在 builder、FFI、create/open/meta decode 阶段必须已校验为 `0..=i64::MAX`, 因此该 cast 不允许发生 wrap。正序写入仍允许推进 `latest_written_timestamp`, 并可能使更多旧数据进入过期窗口。
 
 **连续模式稀疏 filler 规则**:
 
@@ -286,7 +287,7 @@ DataSet::write(timestamp, data):
 
 **乱序写入机制 (Out-of-Order Write)**:
 
-当 `timestamp < latest_written_timestamp` 时, 数据不会写入到其时间戳对应的位置, 而是**追加到最新数据段**的最新位置, 同时原地更新索引中的现有条目:
+当 `latest_written_timestamp = Some(latest)` 且 `timestamp < latest` 时, 数据不会写入到其时间戳对应的位置, 而是**追加到最新数据段**的最新位置, 同时原地更新索引中的现有条目:
 
 ```
 // DataSegmentSet::append_record + TimeIndex::update_entry / upsert_sparse_continuous_entry:
@@ -332,14 +333,12 @@ flush (配置化，默认10分钟):
 
 ### 9.3 追加操作 (DataSet::append)
 
-**目标**: append 是独立于 correction write 的 API。它不覆盖现有 record, 而是在逻辑 record 的 data 尾部追加新 bytes。若该 timestamp 尚不存在且大于 `latest_written_timestamp`, append 创建一条新 record; 若 timestamp 已存在, 只允许追加到当前最大时间戳对应的最新末尾 record。
+**目标**: append 是独立于 correction write 的 API。它不覆盖现有 record, 而是在逻辑 record 的 data 尾部追加新 bytes。若 dataset 为空或该 timestamp 大于 `latest_written_timestamp.unwrap()`, append 创建一条新 record; 若 timestamp 已存在, 只允许追加到当前最大时间戳对应的最新末尾 record。
 
 ```
 DataSet::append(timestamp, data):
     │
-    ├─ if timestamp <= 0 → Error("timestamp must be > 0")
-    │
-    ├─ if timestamp < latest_written_timestamp
+    ├─ if latest_written_timestamp = Some(latest) 且 timestamp < latest
     │      └─ Error("append timestamp is older than latest")
     │
     ├─ if retention_window > 0 && timestamp < retention_threshold
@@ -348,13 +347,13 @@ DataSet::append(timestamp, data):
     ├─ if data.len() == 0 → Ok(())
     │      (合法空 append 不写数据、不写 journal; timestamp 顺序/retention 校验必须先执行)
     │
-    ├─ if timestamp > latest_written_timestamp
+    ├─ if latest_written_timestamp is None or timestamp > latest_written_timestamp.unwrap()
     │      ├─ 校验 data.len() <= 4MiB
     │      ├─ 复用正常正序 write 路径创建新 record
-    │      ├─ latest_written_timestamp = timestamp
+    │      ├─ latest_written_timestamp = Some(timestamp)
     │      └─ 返回 AppendOutcome(index_entry, data_offset=0, data_len=data.len())
     │
-    └─ timestamp == latest_written_timestamp
+    └─ latest_written_timestamp == Some(timestamp)
            │
            ├─ time_index.find_entry(timestamp)
            │      ├─ 不存在 / filler / deleted → Error("latest record not found")
@@ -390,8 +389,8 @@ DataSet::append(timestamp, data):
 
 约束与说明:
 
-1. `timestamp < latest_written_timestamp` 不回退为乱序写入。append 的语义是“尾部追加”, 旧 timestamp 的 record 可能位于 compressed block、历史段或中间位置, 不具备稳定追加边界。
-2. `timestamp == latest_written_timestamp` 时, compressed block 一律返回错误。append 修改已有 latest record 只允许在未压缩且可验证的末尾 record 上原地增长, 不再触发比例阈值迁移; `timestamp > latest_written_timestamp` 创建新 record 的 append 复用 normal write 路径。
+1. `timestamp < latest_written_timestamp.unwrap()` 不回退为乱序写入。append 的语义是“尾部追加”, 旧 timestamp 的 record 可能位于 compressed block、历史段或中间位置, 不具备稳定追加边界。
+2. `latest_written_timestamp == Some(timestamp)` 时, compressed block 一律返回错误。append 修改已有 latest record 只允许在未压缩且可验证的末尾 record 上原地增长, 不再触发比例阈值迁移; dataset 为空或 `timestamp > latest_written_timestamp.unwrap()` 创建新 record 的 append 复用 normal write 路径。
 3. “record 在分段文件最末尾位置”定义为: `(block_offset - segment.file_offset) + BLOCK_HEADER_SIZE + in_block_offset + 12 + old_data_len == segment.data_wrote_position`。这里使用运行时数据区相对坐标; header state 中持久化的 `wrote_position` 必须保存为 `segment.header_len + segment.data_wrote_position`。实现需要同时校验它是 block 内最后一条 record, 防止 block 内部还有后续 record。
 4. 原地追加不修改索引, 因为 `block_offset` 和 `in_block_offset` 仍指向同一 record 起点。
 5. 全局 `BlockCache` 只缓存 compressed block。原地 append 目标是 pending raw block, 正常不会在全局缓存中。
@@ -415,9 +414,7 @@ pub(crate) struct AppendOutcome {
 ```
 DataSet::delete(timestamp):
     │
-    ├─ if timestamp <= 0 → Error("timestamp must be > 0")
-    │
-    ├─ if latest_written_timestamp == 0 → Error("no data")
+    ├─ if latest_written_timestamp is None → Error("no data")
     │
     ├─ if retention_window > 0 && timestamp < retention_threshold
     │      └─ Error("timestamp expired")
@@ -537,16 +534,12 @@ DataSet::delete(timestamp):
 ```
 read(timestamp) → Option<(i64, Vec<u8>)>
     │
-    ├─ 1. 解析 effective_ts
-    │      └─ timestamp == -1
-    │         → effective_ts = latest_written_timestamp (0 为空 → None)
-    │      └─ 其它情况
-    │         → effective_ts = timestamp
+    ├─ 1. timestamp 是精确业务时间戳; `-1` 不再是 latest sentinel
     │
-    ├─ 2. if retention_window > 0 && effective_ts < retention_threshold
+    ├─ 2. if retention_window > 0 && timestamp < retention_threshold
     │      → return Ok(None)
     │
-    ├─ 3. TimeIndex.find_entry(effective_ts)
+    ├─ 3. TimeIndex.find_entry(timestamp)
     │      → 三级搜索: in_memory_buffer → open segments → closed segments
     │      → 返回 None: 时间戳不存在或连续模式逻辑空洞, 直接返回 Ok(None)
     │
@@ -565,24 +558,24 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - FFI 层 `tmsl_dataset_read` 返回码: 0=成功, 1=未找到, -1=错误
 > - `out_data` 由 `libc::malloc` 分配, C 侧通过 `tmsl_data_free` 释放; `tmsl_iter_free_data` 仅作为兼容别名保留
 >
-> **`timestamp = -1` 快捷路径**:
-> - 直接复用内存中的 `latest_written_timestamp` (open 时从索引最后位置恢复), 省去一次“查找最大时间戳”的扫描
-> - 如果最大已写时间戳对应的 index entry 已被 delete 标记为 filler, 仍返回 `None` (不会回退到更早的有效记录)
-> - 适合流式消费场景: 每次 "拉最新一条" 而不需要提前知道具体时间戳
+> **latest 读取**:
+> - `read_latest()` 直接复用内存中的 `latest_written_timestamp: Option<i64>`; `None` 表示 dataset 尚未写入过任何 record
+> - 如果最大已写时间戳对应的 index entry 已被 delete 标记为 filler, `read_latest()` 仍返回 `None` (不会回退到更早的有效记录)
+> - FFI 使用独立的 `tmsl_dataset_read_latest` API; `tmsl_dataset_read(dataset, -1, ...)` 读取精确 timestamp `-1`
 >
-> **retention 语义**: 所有读取路径以 `retention_threshold = latest_written_timestamp.saturating_sub(retention_window as i64)` 为可见性下界。`retention_window` 在进入计算前必须已校验为 `0..=i64::MAX`。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
+> **retention 语义**: 当 `latest_written_timestamp` 为 `Some(latest)` 时, 所有读取路径以 `retention_threshold = latest.saturating_sub(retention_window as i64)` 为可见性下界；为 `None` 时不产生 retention threshold。`retention_window` 在进入计算前必须已校验为 `0..=i64::MAX`。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
 
 ### 10.4 `latest_written_timestamp`
 
 数据集实例维护的最高已写时间戳:
-- `DataSet::create` 后初始化为 `0`
-- 每次正常写入 (`timestamp > latest`) 更新为该 `timestamp`
-- 纠正写 (`timestamp == latest`) / 乱序写 (`timestamp < latest`) / `delete(latest)` 不改变
+- `DataSet::create` 后初始化为 `None`
+- 每次正常写入 (`latest_written_timestamp` 为 `None` 或 `timestamp > latest`) 更新为 `Some(timestamp)`
+- 纠正写 (`latest_written_timestamp == Some(timestamp)`) / 乱序写 (`timestamp < latest`) / `delete(latest)` 不改变
 - `open` 时通过 `recover_latest_timestamp` 从最新索引分段文件的最后一条 entry 恢复; 若该 entry 是 delete/filler 哨兵, 其 timestamp 仍然是 `latest_written_timestamp`
 - 运行期若存在未刷盘的 `in_memory_buffer`, 恢复辅助逻辑会把 buffer 中的最大 timestamp 作为兜底候选; 正常 open 路径下该 buffer 为空
 - 用于:
-  - `read(-1)` 快捷路径解析到最大已写 timestamp; 若该 entry 不存在、已删除或已过期, 返回 `None`, 不反向搜索更早有效记录
-  - 数据保留阈值计算 (`latest_written_timestamp.saturating_sub(retention_window as i64)`)
+  - `read_latest()` 解析到最大已写 timestamp; 若该 entry 不存在、已删除或已过期, 返回 `None`, 不反向搜索更早有效记录
+  - 数据保留阈值计算 (`latest.saturating_sub(retention_window as i64)`)
   - 连续模式稀疏 filler 的上一个真实写入边界判定
 
 > **读操作接口总览**: 完整的读操作接口文档（含新增的 read_exist/query_exist/read_length/query_length/query_length_iter）见 [数据集读操作](dataset-read-operations.md)。
@@ -604,19 +597,20 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 ### 11.2 过期阈值计算
 
 ```
-expiration_threshold = latest_written_timestamp.saturating_sub(retention_window as i64)
+expiration_threshold = latest_written_timestamp.map(|latest| latest.saturating_sub(retention_window as i64))
 ```
 
-- `latest_written_timestamp`: 数据集写入过的最大时间戳 (从索引最后位置恢复; 不存入 meta)
+- `latest_written_timestamp`: 数据集写入过的最大时间戳 (从索引最后位置恢复; 不存入 meta); `None` 表示从未写入
 - `saturating_sub`: 防止 timestamp < retention_window 时下溢; `retention_window as i64` 在进入计算前已由配置/meta 校验保证安全
-- 当 `latest_written_timestamp < retention_window` 时, expiration_threshold = 0 → 无分段满足条件 → 不回收
+- 当 `latest_written_timestamp` 为 `None` 时无过期阈值, 不回收; 当 `latest < retention_window` 时, `saturating_sub` 将 threshold 钳制到 `i64::MIN`
 
 ### 11.3 回收流程
 
 ```
 DataSet::reclaim_expired_segments():
   1. if retention_window == 0 → return Ok(0)
-  2. threshold = latest_written_timestamp.saturating_sub(retention_window as i64)
+  2. if latest_written_timestamp is None → return Ok(0)
+     threshold = latest_written_timestamp.unwrap().saturating_sub(retention_window as i64)
   3. old_last_used_at = self.last_used_at
      self.flush()  -- 确保 in-memory buffer 落盘; flush 内部可能临时 touch
   4. self.time_index.idle_close_all()
@@ -637,13 +631,13 @@ DataSet::reclaim_expired_segments():
 当 `retention_window > 0` 时, 所有读路径共享同一个过期阈值:
 
 ```rust
-retention_threshold = latest_written_timestamp.saturating_sub(retention_window as i64)
+retention_threshold = latest_written_timestamp.map(|latest| latest.saturating_sub(retention_window as i64))
 ```
 
 | 操作 | `timestamp < retention_threshold` 行为 |
 |------|----------------------------------------|
 | `read(ts)` | 直接返回 `Ok(None)` |
-| `read(-1)` | 解析为 latest, 不回退到更早有效记录 |
+| `read_latest()` | 解析为 latest, 不回退到更早有效记录 |
 | `query/query_iter` | `start_ts = max(start_ts, threshold)`; 若范围完全过期则返回空 |
 | `query_index_entries` | 与 query 使用相同钳制, 不暴露过期 entry |
 | `read_entry_at_index(entry)` | 返回 `Expired` 错误, 防止绕过 timestamp 入口 |

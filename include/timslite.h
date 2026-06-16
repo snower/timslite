@@ -267,10 +267,10 @@ int tmsl_dataset_flush(void* dataset, char* err_buf, size_t err_buf_len);
  * current maximum timestamp keeps this value unchanged.
  *
  * @param dataset      Opaque dataset pointer.
- * @param out_ts       Output: maximum written timestamp (0 if the dataset is empty).
+ * @param out_ts       Output: maximum written timestamp (valid when return=0).
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
- * @return 0 on success, -1 on error.
+ * @return 0=success, 1=empty dataset, -1=error.
  */
 int tmsl_dataset_latest_timestamp(void* dataset, int64_t* out_ts,
                                   char* err_buf, size_t err_buf_len);
@@ -352,22 +352,36 @@ int tmsl_dataset_delete(void* dataset, int64_t timestamp,
  * (the actual timestamp of the record) and `out_data_len`. Caller must free
  * `out_data` via `tmsl_data_free`.
  *
- * Shortcut: passing `timestamp = -1` resolves to the maximum written timestamp.
- * It does not search backward for the latest valid record. If the dataset is
- * empty or the maximum timestamp entry has been deleted, returns 1 (not found).
- *
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Timestamp of the record to read, or -1 for the maximum written timestamp.
+ * @param timestamp    Exact signed business timestamp of the record to read.
  * @param out_ts       Output: actual timestamp of the record returned.
  * @param out_data     Output: pointer to data (malloc'd, must be freed via tmsl_data_free).
  * @param out_data_len Output: data length in bytes.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
- * @return 0 = success, 1 = not found (or filler/deleted/empty dataset with -1), -1 = error.
+ * @return 0 = success, 1 = not found (or filler/deleted/expired), -1 = error.
  */
 int tmsl_dataset_read(void* dataset, int64_t timestamp,
                       int64_t* out_ts, unsigned char** out_data, size_t* out_data_len,
                       char* err_buf, size_t err_buf_len);
+
+/**
+ * Read the record at the maximum written timestamp.
+ *
+ * Does not search backward for the latest valid record. If the dataset is empty
+ * or the maximum timestamp entry has been deleted, returns 1 (not found).
+ *
+ * @param dataset      Opaque dataset pointer.
+ * @param out_ts       Output: actual timestamp of the record returned.
+ * @param out_data     Output: pointer to data (malloc'd, must be freed via tmsl_data_free).
+ * @param out_data_len Output: data length in bytes.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 = success, 1 = not found/empty/deleted latest, -1 = error.
+ */
+int tmsl_dataset_read_latest(void* dataset,
+                             int64_t* out_ts, unsigned char** out_data, size_t* out_data_len,
+                             char* err_buf, size_t err_buf_len);
 
 /**
  * Query records in a time range.
@@ -398,7 +412,8 @@ int tmsl_iter_next(void* iter, int64_t* out_ts, unsigned char** out_data,
                    size_t* out_data_len, char* err_buf, size_t err_buf_len);
 
 /**
- * Free data returned by tmsl_dataset_read, tmsl_iter_next, or tmsl_queue_poll.
+ * Free data returned by tmsl_dataset_read, tmsl_dataset_read_latest,
+ * tmsl_iter_next, or tmsl_queue_poll.
  * @param data         Pointer returned by a timslite FFI read/query/queue API.
  */
 void tmsl_data_free(void* data);
@@ -420,9 +435,9 @@ void tmsl_iter_close(void* iter);
 
 /**
  * Check if index entry exists for a timestamp.
- * timestamp=-1 checks latest_written_timestamp.
+ * timestamp is an exact signed business timestamp.
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Timestamp to check (-1 for latest).
+ * @param timestamp    Timestamp to check.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
  * @return 0=false, 1=true, -1=error.
@@ -449,9 +464,9 @@ int tmsl_dataset_query_exist(void* dataset, int64_t start_ts, int64_t end_ts,
 
 /**
  * Read the logical data length for a timestamp.
- * timestamp=-1 reads latest_written_timestamp.
+ * timestamp is an exact signed business timestamp.
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Timestamp to read (-1 for latest).
+ * @param timestamp    Timestamp to read.
  * @param out_len      Output: data length (valid when return=0).
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
@@ -802,6 +817,7 @@ typedef struct TmslDataSetInfo {
  * Dataset mutable state info.
  */
 typedef struct TmslDataSetState {
+    uint8_t has_latest_written_timestamp; /**< Whether latest_written_timestamp is valid */
     int64_t latest_written_timestamp; /**< Highest written timestamp */
     uint32_t open_data_segments;      /**< Number of currently open data segments */
     uint32_t data_segments;           /**< Total number of data segments */

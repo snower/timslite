@@ -67,7 +67,7 @@ pub struct PyDataSetInfo {
 pub struct PyDataSetState {
     /// Highest written timestamp
     #[pyo3(get)]
-    pub latest_written_timestamp: i64,
+    pub latest_written_timestamp: Option<i64>,
     /// Number of currently open data segments
     #[pyo3(get)]
     pub open_data_segments: u32,

@@ -208,7 +208,7 @@ fn t32_3_append_empty_data() {
     // Latest written timestamp should still be 100
     {
         let lock = arc.lock().unwrap();
-        assert_eq!(lock.latest_written_timestamp(), 100);
+        assert_eq!(lock.latest_written_timestamp(), Some(100));
     }
 
     store.close().unwrap();
@@ -329,7 +329,7 @@ fn t32_5_append_forward_new_record() {
     // Latest written timestamp should be 200
     {
         let lock = arc.lock().unwrap();
-        assert_eq!(lock.latest_written_timestamp(), 200);
+        assert_eq!(lock.latest_written_timestamp(), Some(200));
     }
 
     // Continue forward append
@@ -346,7 +346,7 @@ fn t32_5_append_forward_new_record() {
         assert_eq!(lock.read(200).unwrap().unwrap().1, b"data_200");
         assert_eq!(lock.read(300).unwrap().unwrap().1, b"data_300");
         assert_eq!(lock.read(400).unwrap().unwrap().1, b"data_400");
-        assert_eq!(lock.latest_written_timestamp(), 400);
+        assert_eq!(lock.latest_written_timestamp(), Some(400));
     }
 
     store.close().unwrap();

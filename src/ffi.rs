@@ -909,8 +909,8 @@ pub extern "C" fn tmsl_dataset_flush(
 
 /// Get the latest successfully written timestamp of a dataset.
 ///
-/// Writes the timestamp to `out_ts`. Returns 0. When the dataset is empty,
-/// `out_ts` is set to 0. Returns -1 on error.
+/// Writes the timestamp to `out_ts`.
+/// Returns 0 when a timestamp exists, 1 for an empty dataset, -1 on error.
 #[no_mangle]
 pub extern "C" fn tmsl_dataset_latest_timestamp(
     dataset: *mut c_void,
@@ -931,8 +931,13 @@ pub extern "C" fn tmsl_dataset_latest_timestamp(
             store_inner.get_dataset(&ffi_ds.handle)?
         };
         let ds = ds_arc.lock().unwrap();
-        unsafe { *out_ts = ds.latest_written_timestamp() as c_longlong };
-        Ok(0)
+        match ds.latest_written_timestamp() {
+            Some(ts) => {
+                unsafe { *out_ts = ts as c_longlong };
+                Ok(0)
+            }
+            None => Ok(1),
+        }
     })
 }
 
@@ -1092,6 +1097,50 @@ pub extern "C" fn tmsl_dataset_read(
     })
 }
 
+/// Read the latest written timestamp's record.
+///
+/// Returns: 0 = success, 1 = not found/empty/deleted latest, -1 = error.
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_read_latest(
+    dataset: *mut c_void,
+    out_ts: *mut c_longlong,
+    out_data: *mut *mut c_uchar,
+    out_data_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    ffi_catch_int!(err_buf, err_buf_len, {
+        if dataset.is_null() || out_ts.is_null() || out_data.is_null() || out_data_len.is_null() {
+            return Err(TmslError::InvalidData("null pointer".into()));
+        }
+        let ffi_ds = unsafe { &*(dataset as *const FfiDataset) };
+        let ds_arc = {
+            let store_inner = ffi_ds
+                .store
+                .lock()
+                .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
+            store_inner.get_dataset(&ffi_ds.handle)?
+        };
+        let mut ds = ds_arc.lock().unwrap();
+        match ds.read_latest()? {
+            Some((ts, data)) => {
+                unsafe { *out_ts = ts as c_longlong };
+                let ptr = unsafe { libc::malloc(data.len()) as *mut c_uchar };
+                if ptr.is_null() {
+                    return Err(TmslError::InvalidData("malloc failed".into()));
+                }
+                unsafe {
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+                    *out_data = ptr;
+                    *out_data_len = data.len();
+                }
+                Ok(0)
+            }
+            None => Ok(1),
+        }
+    })
+}
+
 /// Close and free the iterator.
 #[no_mangle]
 pub extern "C" fn tmsl_iter_close(iter: *mut c_void) {
@@ -1214,7 +1263,7 @@ pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar) {
 // ─── Lightweight read operations FFI ──────────────────────────────────────────
 
 /// Check if index entry exists for a timestamp.
-/// timestamp=-1 checks latest_written_timestamp.
+/// timestamp is exact; -1 is not a latest shortcut.
 /// Returns 0=false, 1=true, -1=error.
 #[no_mangle]
 pub extern "C" fn tmsl_dataset_read_exist(
@@ -1289,7 +1338,7 @@ pub extern "C" fn tmsl_dataset_query_exist(
 }
 
 /// Read the logical data length for a timestamp.
-/// timestamp=-1 reads latest_written_timestamp.
+/// timestamp is exact; -1 is not a latest shortcut.
 /// Returns 0=success (out_len valid), 1=not found, -1=error.
 #[no_mangle]
 pub extern "C" fn tmsl_dataset_read_length(
@@ -2192,6 +2241,8 @@ pub struct TmslDataSetInfo {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct TmslDataSetState {
+    /// Whether latest_written_timestamp is present
+    pub has_latest_written_timestamp: u8,
     /// Highest written timestamp
     pub latest_written_timestamp: i64,
     /// Number of currently open data segments
@@ -2298,7 +2349,8 @@ pub extern "C" fn tmsl_store_inspect_dataset(
         };
 
         let state = TmslDataSetState {
-            latest_written_timestamp: result.state.latest_written_timestamp,
+            has_latest_written_timestamp: u8::from(result.state.latest_written_timestamp.is_some()),
+            latest_written_timestamp: result.state.latest_written_timestamp.unwrap_or(0),
             open_data_segments: result.state.open_data_segments,
             data_segments: result.state.data_segments,
             total_record_count: result.state.total_record_count,
@@ -2517,6 +2569,71 @@ mod tests {
         assert_eq!(inspect.state.has_journal, 0);
         tmsl_free_inspect_result(&mut inspect);
 
+        let mut latest_ts: c_longlong = 123;
+        assert_eq!(
+            tmsl_dataset_latest_timestamp(dataset, &mut latest_ts, err.as_mut_ptr(), err_len),
+            1
+        );
+
+        let signed_name = CString::new("signed").unwrap();
+        let signed_dataset = tmsl_dataset_create_with_config(
+            store,
+            signed_name.as_ptr(),
+            ty.as_ptr(),
+            &dataset_config,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!signed_dataset.is_null());
+        assert_eq!(
+            tmsl_dataset_latest_timestamp(
+                signed_dataset,
+                &mut latest_ts,
+                err.as_mut_ptr(),
+                err_len
+            ),
+            1
+        );
+
+        let minus_payload = [9u8];
+        assert_eq!(
+            tmsl_dataset_write(
+                signed_dataset,
+                -1,
+                minus_payload.as_ptr(),
+                minus_payload.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        let mut minus_ts: c_longlong = 0;
+        let mut minus_data: *mut c_uchar = std::ptr::null_mut();
+        let mut minus_len: usize = 0;
+        assert_eq!(
+            tmsl_dataset_read(
+                signed_dataset,
+                -1,
+                &mut minus_ts,
+                &mut minus_data,
+                &mut minus_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(minus_ts, -1);
+        assert_eq!(minus_len, minus_payload.len());
+        assert_eq!(
+            unsafe { std::slice::from_raw_parts(minus_data, minus_len) },
+            minus_payload
+        );
+        tmsl_data_free(minus_data as *mut c_void);
+        assert_eq!(
+            tmsl_dataset_close(signed_dataset, err.as_mut_ptr(), err_len),
+            0
+        );
+
         let payload = [1u8, 2, 3, 4];
         assert_eq!(
             tmsl_dataset_write(
@@ -2563,6 +2680,23 @@ mod tests {
         let out_slice = unsafe { std::slice::from_raw_parts(out_data, out_len) };
         assert_eq!(out_slice, &[1, 2, 3, 4, 5, 6]);
         tmsl_data_free(out_data as *mut c_void);
+
+        let mut latest_data: *mut c_uchar = std::ptr::null_mut();
+        let mut latest_len: usize = 0;
+        assert_eq!(
+            tmsl_dataset_read_latest(
+                dataset,
+                &mut latest_ts,
+                &mut latest_data,
+                &mut latest_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(latest_ts, 100);
+        assert_eq!(latest_len, payload.len() + appended.len());
+        tmsl_data_free(latest_data as *mut c_void);
 
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
         assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);

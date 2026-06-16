@@ -732,6 +732,15 @@ impl Store {
         ds.read(timestamp)
     }
 
+    /// Read the latest written timestamp's record through the Store.
+    pub fn read_dataset_latest(&self, handle: DataSetHandle) -> Result<Option<(i64, Vec<u8>)>> {
+        let ds_arc = self.get_dataset(&handle)?;
+        let mut ds = ds_arc
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+        ds.read_latest()
+    }
+
     /// Query through the Store so global cache and read-only internal handles are honored.
     pub fn query_dataset(
         &self,
@@ -797,7 +806,7 @@ impl Store {
     }
 
     /// Return the highest successfully written timestamp for a dataset handle.
-    pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<i64> {
+    pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<Option<i64>> {
         let ds_arc = self.get_dataset(&handle)?;
         let ds = ds_arc
             .lock()

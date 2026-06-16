@@ -56,15 +56,15 @@ entry_index(ts)       = (ts - segment_start(ts)) / time_step
 ```
 DataSet::write(timestamp, data):
   │
-  ├─ if timestamp <= 0: return Error("timestamp must be > 0")
+  ├─ timestamp 是 signed i64 业务时间戳; 0 和负数都是合法值
   │
-  ├─ 情况A: timestamp > latest_written_timestamp (正序写入)
+  ├─ 情况A: latest_written_timestamp is None or timestamp > latest_written_timestamp.unwrap() (正序写入)
   │    │
   │    ├─ index_continuous=false:
   │    │    └─ append real entry
   │    │
   │    └─ index_continuous=true:
-  │         ├─ if latest_written_timestamp == 0:
+  │         ├─ if latest_written_timestamp is None:
   │         │    ├─ base_timestamp = timestamp (内存态)
   │         │    ├─ create segment at segment_start = timestamp
   │         │    └─ append real entry at entry_index=0
@@ -82,7 +82,7 @@ DataSet::write(timestamp, data):
   │                   ├─ fill curr_seg_start .. timestamp-1
   │                   └─ append real entry
   │
-  ├─ 情况B: timestamp < latest_written_timestamp (乱序/回填)
+  ├─ 情况B: latest_written_timestamp = Some(latest) and timestamp < latest (乱序/回填)
   │    │
   │    ├─ index_continuous=false:
   │    │    └─ 要求已有 entry, 否则 Error
@@ -96,7 +96,7 @@ DataSet::write(timestamp, data):
   │              ├─ fill segment_start .. timestamp-1 中尚未物化的部分
   │              └─ append real entry
   │
-  └─ 情况C: timestamp == latest_written_timestamp
+  └─ 情况C: latest_written_timestamp == Some(timestamp)
        └─ 纠正写入; 失败时回退到情况B
 ```
 
@@ -157,8 +157,8 @@ DataSet::open():
        - 找到数值最大的非空 segment 文件, 读取其最后一个已物化 entry 的 timestamp
   2. 连续模式下, base_timestamp = 最小 segment_start
        (无任何 index segment 时为 None, 数据集为空)
-  3. latest_written_timestamp = 最新非空 index segment 文件最后一条 entry 的 timestamp
-     (包括 delete 后保留的 filler timestamp, 与现有 read(-1) 语义一致)
+  3. latest_written_timestamp = 最新非空 index segment 文件最后一条 entry 的 timestamp; 若没有任何 entry 则为 None
+     (包括 delete 后保留的 filler timestamp, 与 read_latest() 不回退到更早有效记录的语义一致)
 ```
 
 恢复约束:

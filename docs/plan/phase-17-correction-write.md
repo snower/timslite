@@ -191,18 +191,14 @@ pub fn find_entry(&mut self, timestamp: i64) -> Result<Option<IndexEntry>> {
 
 ```rust
 pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
-    if timestamp <= 0 {
-        return Err(TmslError::InvalidData("timestamp must be > 0".into()));
-    }
-
     // ── 纠正写入 (两种模式通用, 在 mode 分支之前判断) ──
-    if timestamp == self.latest_written_timestamp && self.latest_written_timestamp > 0 {
+    if self.latest_written_timestamp == Some(timestamp) {
         return self.correct_write(timestamp, data);
     }
 
     // ── 非连续模式 ──
     if self.config.index_continuous == 0 {
-        if timestamp < self.latest_written_timestamp {
+        if self.latest_written_timestamp.is_some_and(|latest| timestamp < latest) {
             return Err(TmslError::InvalidData(format!(
                 "out-of-order: timestamp {} < latest {}",
                 timestamp, self.latest_written_timestamp
@@ -247,7 +243,7 @@ fn correct_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
 
 | 条件 | 行为 |
 |------|------|
-| `timestamp == latest_written_timestamp && latest > 0` | **纠正写入**: 最新 block 原地覆盖 (支持变 size), 索引不变 |
+| `latest_written_timestamp == Some(timestamp)` | **纠正写入**: 最新 block 原地覆盖 (支持变 size), 索引不变 |
 | `timestamp < latest` (非连续) | Error("out-of-order") |
 | `timestamp < latest` (连续) | back-fill: append + replace_filler_with_real |
 | `timestamp > latest` (任意模式) | 正常写入 |
