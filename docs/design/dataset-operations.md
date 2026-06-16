@@ -319,7 +319,7 @@ DataSet::write(timestamp, data):
 ### 9.2 Flush 行为 (mmap sync only)
 
 ```
-flush (配置化，默认10分钟):
+flush (配置化，默认 15 秒):
   for each dataset:
     for each open segment (data + index):
       1. mmap.flush() (msync / MS_SYNC)

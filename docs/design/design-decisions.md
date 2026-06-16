@@ -30,7 +30,7 @@
 | 索引目录 | `data/` + `index/` 独立子目录 | 数据与索引物理隔离 |
 | 并发 | DataSet 级 Mutex | 不同数据集独立 |
 | flush 行为 | 仅 msync (不 seal/不压缩) | 降低 flush CPU 开销 |
-| flush 间隔 | 可配置, 默认 10min | 平衡数据持久化与性能 |
+| flush 间隔 | 可配置, 默认 15s | 平衡数据持久化与性能；10min 是早期草案值，不再作为默认 |
 | crash 模型 | 高性能、允许最近写入丢失, 不做事务恢复 | 目标场景对数据损失不敏感, 避免 WAL/二阶段提交带来的写放大 |
 | append 可见性 | payload → block header/state → index | index 是查询发布点; index 前失败则不可见, index 后读取需校验 timestamp/边界 |
 | segment 生命周期 | 懒打开/超时关闭 (30min) | 控制内存占用 |

@@ -205,7 +205,7 @@ class StoreConfig:
     def __init__(
         self,
         *,
-        flush_interval: int = 600,          # seconds
+        flush_interval: int = 15,           # seconds
         idle_timeout: int = 1800,            # seconds
         data_segment_size: int = 67108864,   # 64 MiB
         index_segment_size: int = 4194304,   # 4 MiB

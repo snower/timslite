@@ -159,9 +159,9 @@ wrapper/python/
   - 默认值与 `StoreConfig::default()` 一致
   - `@classmethod def default(cls)` — 返回全默认配置
   - Duration 字段接受 `int` (秒), 内部转换为 `std::time::Duration::from_secs()`
-- [ ] 验证: `StoreConfig()` 使用全部默认值
-- [ ] 验证: `StoreConfig(flush_interval=300)` 仅覆盖指定字段
-- [ ] 验证: `StoreConfig.default()` 返回正确配置
+- [x] 验证: `StoreConfig()` 使用全部默认值
+- [x] 验证: `StoreConfig(flush_interval=300)` 仅覆盖指定字段
+- [x] 验证: `StoreConfig.default()` 返回正确配置
 
 #### 3.2 Store
 

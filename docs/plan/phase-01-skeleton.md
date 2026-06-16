@@ -80,7 +80,7 @@ pub enum TmslError {
 
 ```rust
 pub struct StoreConfig {
-    pub flush_interval: Duration,    // 默认 10 分钟 (600s)
+    pub flush_interval: Duration,    // 当前默认 15 秒；10 分钟是早期草案值
     pub idle_timeout: Duration,      // 默认 30 分钟 (1800s)
     pub data_segment_size: u64,      // 默认 64MB
     pub index_segment_size: u64,     // 默认 4MB

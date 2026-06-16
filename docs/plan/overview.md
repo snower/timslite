@@ -87,7 +87,7 @@ Phase 4 (索引 + 生命周期)  Phase 3
 Phase 5 (DataSet + DataSegmentSet + lazy open/close + meta file)
        │
        ▼
-Phase 6 (Store + 单线程后台任务: flush 10min / idle 60s 统一循环)
+Phase 6 (Store + 单线程后台任务: flush 当前默认 15s / idle 60s 统一循环；10min 为早期草案值)
        │
        ▼
 Phase 7 (FFI 接口)
@@ -208,7 +208,7 @@ Phase 41 (Queue Consumer Retry: QSTF v1 18B pending + visibility timeout + retry
 | idle-close 后 reopen 性能 | 延迟增加 | mmap open 开销小 (<1ms), 可接受 |
 | idle-check 竞态 | 错误关闭活跃 dataset | double-check last_used_at after write-lock acquired |
 | index segment 查询时需遍历所有段 | 查询延迟 | 时间范围过滤: skip 段时间范围不在查询区间内的段 |
-| 10min flush 间隔过长 | crash 损失数据 | mmap 写入已有 OS page cache 保护 |
+| flush 间隔过长 | crash 损失数据 | 当前默认 15s；可按场景调大，mmap 写入仍有 OS page cache 保护 |
 | meta 文件与 config 不一致 | 数据损坏风险 | 不一致时拒绝打开; compress_level 不一致仅警告 |
 | index 迁移到 index/ | 旧数据不可读 | 打开时自动重命名 `.index/` → `index/` |
 | 数据文件迁移到 data/ | 旧数据不可读 | 打开时自动移动文件到 `data/` 子目录 |

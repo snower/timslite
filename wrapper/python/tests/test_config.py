@@ -21,6 +21,14 @@ class TestConfig:
         assert config.enable_background_thread is True
         assert config.enable_journal is True
 
+    def test_store_config_constructor_defaults_match_rust_defaults(self):
+        """StoreConfig() defaults match StoreConfig.default()."""
+        config = timslite.StoreConfig()
+        assert config.flush_interval == 15
+        assert config.idle_timeout == 1800
+        assert config.enable_background_thread is True
+        assert config.enable_journal is True
+
     def test_store_config_custom(self):
         """Custom config sets all fields including retention_check_hour and enable_background_thread."""
         config = timslite.StoreConfig(

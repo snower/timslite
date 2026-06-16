@@ -59,7 +59,7 @@ pub struct Store {
 
 - [x] 集成测试: `Store::create_dataset` → 创建成功, `create_dataset` 再次调用 → `AlreadyExists`
 - [x] 集成测试: `Store::open_dataset` → 打开成功, `open_dataset` 对不存在数据集 → `NotFound`
-- [x] 整合测试: `Store::create_dataset` × 2 → write data → flush 10min 触发 sync → close → reopen → 数据仍在
+- [x] 整合测试: `Store::create_dataset` × 2 → write data → flush 触发 sync → close → reopen → 数据仍在（当前默认 15s；10min 为早期草案值）
 - [x] 整合测试: `Store::drop_dataset` → 删除后目录不可访问 → 重新 `create_dataset` 成功
 - [x] 集成测试: Store flush 循环只执行 msync, pending block 保持 raw
 - [x] 集成测试: Store idle check 在 30min 后关闭所有 segment, 释放 mmap
