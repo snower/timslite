@@ -152,6 +152,62 @@ fn t27_1_4_poll_skips_continuous_filler_gap() {
 }
 
 #[test]
+fn t27_1_5_sparse_gap_acked_progress_persists_after_reopen() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    {
+        let mut store = Store::open(
+            &dir,
+            StoreConfig::builder()
+                .enable_background_thread(false)
+                .build(),
+        )
+        .unwrap();
+        let h = store
+            .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
+            .unwrap();
+        let q = store.open_queue(h).unwrap();
+        let c = store.open_consumer(&q, "g1").unwrap();
+
+        store.write_dataset(h, 10, b"first").unwrap();
+        store.write_dataset(h, 20, b"second").unwrap();
+        store.write_dataset(h, 30, b"third").unwrap();
+        store.delete_dataset_record(h, 20).unwrap();
+
+        let (ts, data) = store
+            .queue_poll(&c, Duration::from_millis(100))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ts, 10);
+        assert_eq!(data, b"first");
+        store.queue_ack(&c, ts).unwrap();
+
+        let (ts, data) = store
+            .queue_poll(&c, Duration::from_millis(100))
+            .unwrap()
+            .unwrap();
+        assert_eq!(ts, 30);
+        assert_eq!(data, b"third");
+        store.queue_ack(&c, ts).unwrap();
+
+        store.close().unwrap();
+    }
+    {
+        let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+        let h = store.open_dataset("t27q", "events").unwrap();
+        let q = store.open_queue(h).unwrap();
+        let c = store.open_consumer(&q, "g1").unwrap();
+
+        assert!(store
+            .queue_poll(&c, Duration::from_millis(50))
+            .unwrap()
+            .is_none());
+        store.close().unwrap();
+    }
+}
+
+#[test]
 fn t27_2_1_multi_consumer_groups() {
     use timslite::{Store, StoreConfig};
 

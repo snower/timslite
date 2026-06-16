@@ -32,7 +32,7 @@
 
 | 状态 | ID | 任务 | 主要文件 | 验收标准 |
 |------|----|------|----------|----------|
-| [ ] | P1-1 | 统一 Queue `processed_ts` 与 gap/filler 跳过语义 | `docs/design/queue-overview.md`, `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue tests | 明确消费进度代表“连续逻辑水位”还是“最后已 ack 真实记录”；gap/filler 是否需要持久 skip 状态有明确设计；稀疏记录 poll/ack/reopen 行为测试覆盖 |
+| [x] | P1-1 | 统一 Queue `processed_ts` 与 gap/filler 跳过语义 | `docs/design/queue-overview.md`, `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue tests | 明确消费进度代表“最后已按投递顺序完成的真实 timestamp/sequence”；gap/filler 不需要持久 skip 状态；稀疏记录 poll/ack/reopen 行为测试覆盖 |
 | [ ] | P1-2 | 将压缩文档从 deflate-only 改为 selected algorithm active contract | `docs/design/compression.md`, `docs/design/dataset-operations.md`, `docs/design/data-model.md`, `docs/design/store-and-ffi.md`, `design.md`, `docs/design/architecture.md` | 通用流程不再写死 deflate；zstd 默认与 deflate 支持的 `compress_type` 规则位于压缩文档前部；读取使用 segment header `compress_type` 的规则清晰；level 语义按算法说明 |
 | [ ] | P1-3 | 明确 public timestamp 契约与 `0`/`-1` sentinel 关系 | `docs/design/data-model.md`, `docs/design/dataset-operations.md`, `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `docs/design/index-continuous.md`, `docs/design/dataset-inspect.md`, FFI/Python docs/tests | 决定 public API 是否只允许 `timestamp > 0`；若是，负 timestamp 仅作为格式层能力保留；若否，提供替代 latest API 并移除冲突 sentinel；inspect 空值表达与 timestamp 契约一致 |
 | [ ] | P1-4 | 统一 append 已有 latest record 的迁移阈值/返回错误契约 | `AGENTS.md`, `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `docs/review/archives/Round5/test-review-todo.md`, append/cache/journal tests | 明确 active contract 是“不迁移，超出 pending block 返回错误”还是“迁移到 single-record block”；若保留迁移，补齐 journal/cache/queue/fallback 设计；若废弃迁移，清理 70% threshold 残留 |
@@ -63,12 +63,13 @@
 |------|----|------|----------|------|
 | 2026-06-12 | ALL | [ ] | 根据第 6 轮设计审查报告创建 TODO 跟踪文件，尚未开始修复 | `docs/review/design-review.md` 已读回；待后续逐项处理 |
 | 2026-06-12 | P0-1/P0-2/P0-3 | [x] | 更新相关设计文档；引入 `SegmentFlushTarget::QueueState { group_name }` 并让 poll/ack 入队、后台按 target flush；将 `retention_window` 有效上限固定为 `i64::MAX` 并接入 builder/meta/create/open/FFI；收敛旧 header/meta 常量与字段描述 | `cargo test -- --test-threads=1` 通过 |
+| 2026-06-16 | P1-1 | [x] | 将 queue `processed_ts` 定义为按投递顺序完成的最后一个真实 timestamp/sequence；明确 gap/filler 不投递、不 pending、不持久 ack；同步 queue 设计文档与实现注释；补充稀疏 gap ack 后 reopen 不重复消费测试 | `cargo test --test queue_test t27_1_5_sparse_gap_acked_progress_persists_after_reopen -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 
 ## 完成统计
 
 | 优先级 | 总数 | 已完成 | 未完成 |
 |--------|------|--------|--------|
 | P0 | 3 | 3 | 0 |
-| P1 | 7 | 0 | 7 |
+| P1 | 7 | 1 | 6 |
 | P2 | 4 | 0 | 4 |
-| 合计 | 14 | 3 | 11 |
+| 合计 | 14 | 4 | 10 |

@@ -361,7 +361,7 @@ impl ConsumerStateFile {
         Ok(())
     }
 
-    /// Scan consecutive acked entries from the beginning and update processed_ts.
+    /// Drain the completed delivery-order prefix and update processed_ts.
     /// Returns the number of entries cleaned up.
     pub fn cleanup_acked(&mut self) -> usize {
         let mut count = 0;
@@ -373,7 +373,7 @@ impl ConsumerStateFile {
             }
         }
         if count > 0 {
-            // Update processed_ts to the max consecutive acked timestamp
+            // processed_ts is the last completed real timestamp/sequence.
             if let Some(entry) = self.pending_entries.get(count - 1) {
                 if entry.timestamp > self.processed_ts {
                     self.processed_ts = entry.timestamp;
@@ -424,7 +424,7 @@ impl ConsumerStateFile {
         PendingScanResult { timestamp, changed }
     }
 
-    /// Get the next timestamp to poll (processed_ts + 1, or initial if no records).
+    /// Get the next timestamp to try; sparse gaps are skipped by index lookup.
     pub fn next_poll_ts(&self) -> i64 {
         if self.processed_ts > 0 {
             self.processed_ts + 1
@@ -787,7 +787,7 @@ impl DatasetQueueConsumer {
     /// Poll for the next unacked record.
     ///
     /// - If a pending entry is expired, retry or discard it according to config.
-    /// - Otherwise, read from the dataset starting at processed_ts + 1.
+    /// - Otherwise, read from the dataset after the last completed real entry.
     /// - If no data is available, wait up to `timeout` for a push notification.
     ///
     /// Returns `Ok(Some((timestamp, data)))` if a record is found,

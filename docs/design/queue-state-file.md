@@ -22,7 +22,7 @@ Offset  Size    Field                   Description
 0       4       magic                   "QSTF" (Queue State File)
 4       4       version                 u32, 当前 = 1
 8       2       state_length            u16, processed_ts 字节数 (固定 8)
-10      8       processed_ts            i64, 已处理的连续最大时间戳/sequence
+10      8       processed_ts            i64, 已按投递顺序完成的最后一个真实 timestamp/sequence
 18      2       pending_length          u16, pending entries 数量
 20      1       pending_value_size      u8, 单条 pending entry 字节数 (固定 18)
 21      -       pending_entries         变长, pending_length * 18 字节
@@ -50,6 +50,8 @@ Offset  Size    Field                   Description
 `retry_count` 不包含第一次正常投递。第一次 poll 新数据时写入 `retry_count=0`; 后续由于运行超时或 reopen 恢复导致再次投递时, 在真正返回给调用方前递增一次。
 
 `start_time=0` 是内部恢复标记, 表示该 pending 在本次打开时被强制视为已过期。运行中的新投递和重试投递必须写入当前 Unix seconds。
+
+`processed_ts` 不是连续逻辑时间戳水位。它表示该 consumer group 已按投递顺序完成的最后一个真实 record timestamp / journal sequence。普通 DatasetQueue 只为真实 record 创建 pending; gap/filler 不投递、不持久 ack, 也不需要 skip range。poll 从 `processed_ts + 1` 起先 direct read, miss 后通过索引查找后续真实且未 pending 的 record。ack 或 retry 超限只会清理 pending 列表中按投递顺序连续完成的前缀, 并把 `processed_ts` 更新为该前缀最后一个真实 timestamp/sequence。
 
 ### 31.3 容量计算
 
@@ -104,7 +106,7 @@ pub struct QueueConsumerConfig {
 
 - 第一次正常投递不计入 retry。
 - 每次实际重试投递前递增 `retry_count`。
-- 当 `max_retry_count > 0 && retry_count >= max_retry_count` 且该 pending 再次需要重试时, 不再返回给 consumer, 而是标记为已完成并按连续完成规则推进 `processed_ts`。
+- 当 `max_retry_count > 0 && retry_count >= max_retry_count` 且该 pending 再次需要重试时, 不再返回给 consumer, 而是标记为已完成并按投递顺序完成前缀规则推进 `processed_ts`。
 - 因此 `max_retry_count=3` 时, `retry_count=1/2/3` 的三次重试都可以返回; 下一次重试机会才丢弃。
 
 如果同时配置 `running_expired_seconds=0` 与 `max_retry_count=0`, 未 ack pending 在进程持续运行期间不会自动释放。该组合可能导致 pending 永久占满并阻塞后续 poll, 由调用方负责避免。
@@ -131,11 +133,11 @@ pub(crate) struct PendingEntry {
 
 1. 新文件写入 version 1、`pending_value_size=18`、空 pending 列表。
 2. 现有文件校验 magic/version/state_length/pending_value_size/pending_length 边界。
-3. 现有文件加载后先按连续已完成 pending 推进 `processed_ts` 并清理前缀。
+3. 现有文件加载后先按投递顺序已完成 pending 前缀推进 `processed_ts` 并清理前缀。
 4. 所有仍未 ack 的 pending 保留, 但 `start_time` 置为 `0`, 表示恢复后首次 poll 可立即重试。
 5. 恢复动作只更新 state file 缓存, 不把 pending 删除。
 
-`processed_ts` 只能按 pending 列表前缀中连续完成的条目前移。重试超限导致的强制丢弃与业务 ack 一样, 都只是把 entry 标记为完成; 只有此前所有较小 pending 都已完成时才能推进水位。
+`processed_ts` 只能按 pending 列表中投递顺序的完成前缀前移。重试超限导致的强制丢弃与业务 ack 一样, 都只是把 entry 标记为完成; 只有此前所有更早投递的 pending 都已完成时才能推进。
 
 ### 31.6 Poll 与 Retry 流程
 
@@ -162,7 +164,7 @@ poll 的核心顺序:
 |------|------|----------|
 | processed_ts 未更新 | 内存中已 ack, 但未 flush | 重新消费 (at-least-once) |
 | pending entry status=0 | 处理中但未 ack | 保留 entry, reopen 时置 `start_time=0`, 下次 poll 按 retry 规则处理 |
-| pending entry status=1 | 已 ack/已丢弃但未清理 | 只在连续前缀内推进 `processed_ts` 并清理 |
+| pending entry status=1 | 已 ack/已丢弃但未清理 | 只在投递顺序完成前缀内推进 `processed_ts` 并清理 |
 
 “consumer 关闭再次开启”不依赖单个 handle 的 Drop 时机识别。只有 `ConsumerStateFile::open_existing` 从磁盘加载状态文件时触发恢复过期, 覆盖程序重启和 queue 重新打开场景。已经在内存中打开的同组 consumer handle 不因新增 handle 自动过期。
 
@@ -211,7 +213,7 @@ state.add_pending(pending)?;  // 可能返回 TmslError::PendingFull
 
 调用方策略:
 
-- 及时 ack 已处理的数据, 释放连续完成前缀。
+- 及时 ack 已处理的数据, 释放投递顺序完成前缀。
 - 配置合理的 `running_expired_seconds` 与 `max_retry_count`, 避免未 ack pending 长期占满。
 - 增加 consumer 实例数只能提升处理并发, 不能绕过同一 group state file 的 pending 容量上限。
 
@@ -220,9 +222,9 @@ state.add_pending(pending)?;  // 可能返回 TmslError::PendingFull
 Pending 过期不再通过后台 cleanup 删除。poll 发现过期 pending 时:
 
 1. 未达到 retry 上限: 递增 `retry_count`, 更新 `start_time`, 返回同一 timestamp/sequence。
-2. 已达到 retry 上限: 标记完成, 尝试按连续完成前缀推进 `processed_ts`, 然后继续寻找下一个可投递记录。
+2. 已达到 retry 上限: 标记完成, 尝试按投递顺序完成前缀推进 `processed_ts`, 然后继续寻找下一个可投递记录。
 
-如果一个较早 pending 未完成, 较晚 pending 即使因 retry 超限被标记完成, 也不能让 `processed_ts` 越过前者。
+如果一个更早投递的 pending 未完成, 较晚投递的 pending 即使因 retry 超限被标记完成, 也不能让 `processed_ts` 越过前者。
 
 ### 33.3 Filler / Gap 跳过
 

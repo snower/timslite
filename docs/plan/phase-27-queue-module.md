@@ -27,8 +27,7 @@
   - [x] `add_pending(entry)` — 添加 pending entry (容量检查: max 226)
   - [x] `find_pending(timestamp)` / `find_pending_mut(timestamp)` — 查找待 ack entry
   - [x] `is_in_pending(timestamp)` — 检查 timestamp 是否在 pending 中
-  - [x] `update_processed_ts()` — 扫描连续 ack, 更新 processed_ts
-  - [x] `cleanup_acked()` — 清理已 ack entries
+  - [x] `cleanup_acked()` — 清理投递顺序完成前缀并更新 processed_ts
   - [x] `take_retryable_pending(config, now)` — poll 时处理过期 retry 和 retry 超限丢弃
 - [x] **实现状态文件序列化**
   - [x] Header: magic "QSTF" (4B) + version (4B) + state_length (2B) + processed_ts (8B) + pending_length (2B) + pending_value_size (1B)
@@ -44,8 +43,8 @@
   - 添加/查找/清理 pending entries
   - 验证容量限制 (226 entries)
 - [x] **单元测试**: `test_state_file_processed_ts_update`
-  - 连续 ack 后 update_processed_ts()
-  - 非连续 ack 不更新 processed_ts
+  - 投递顺序完成前缀清理后更新 processed_ts
+  - 前缀未完成时不越过后续已 ack entry
 
 ### 验收标准
 
@@ -185,7 +184,7 @@
     3. 再次检查 closed (可能在等锁期间被关闭)
     4. 获取 state_file 锁
     5. 调用 `find_next_available_ts()` 查找可分配的 timestamp
-       - 从 `processed_ts + 1` 开始扫描
+       - 从 `processed_ts + 1` 开始查找下一条真实记录
        - 跳过已在 pending 中的 timestamp
        - 返回第一个可用 timestamp, 或 None
     6. 若找到:
@@ -206,8 +205,7 @@
   - [x] 获取 state_file 锁
   - [x] `find_pending_mut(timestamp)` 查找待 ack entry
   - [x] 设置 `entry.status = 1`
-  - [x] `update_processed_ts()` 扫描连续 ack
-  - [x] `cleanup_acked()` 清理已 ack entries
+  - [x] `cleanup_acked()` 清理投递顺序完成前缀并更新 processed_ts
   - [x] 注意: 不立即 sync, 由后台 flush 任务统一同步
 
 ### 测试策略
@@ -234,11 +232,11 @@
 - [x] **单元测试**: `test_consumer_ack_consecutive`
   - 连续 poll 多条数据
   - 按序 ack
-  - 验证 processed_ts 连续更新
+  - 验证 processed_ts 按投递顺序更新
 - [x] **单元测试**: `test_consumer_ack_non_consecutive`
   - poll ts=1, ts=2, ts=3
   - 先 ack ts=3, 再 ack ts=1
-  - 验证 processed_ts 只在 ack ts=2 后更新到 3
+  - 验证 processed_ts 不越过未完成的更早投递 entry, 只在 ack ts=2 后更新到 3
 - [x] **单元测试**: `test_multi_consumer_same_group`
   - 打开多个 consumer 实例 (相同 group)
   - 并发 poll
@@ -272,7 +270,7 @@
   - [x] 所有 `status=0` 的 pending entries 保留并设置 `start_time=0`, 下次 poll 按 retry 规则处理
 - [x] **实现 poll-time retry/丢弃**
   - [x] `running_expired_seconds` 控制运行中未 ack pending 的可重试时间
-  - [x] `max_retry_count` 控制重试上限; 超限后标记完成并按连续完成前缀推进 `processed_ts`
+  - [x] `max_retry_count` 控制重试上限; 超限后标记完成并按投递顺序完成前缀推进 `processed_ts`
   - [x] 后台任务不删除超时 pending
 
 ### 测试策略
