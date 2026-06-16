@@ -282,12 +282,17 @@ int tmsl_dataset_read_length(void* dataset, int64_t timestamp,
                              uint32_t* out_len,
                              char* err_buf, size_t err_buf_len);
 
+typedef struct TmslLengthEntry {
+    int64_t timestamp;
+    uint32_t data_len;
+} TmslLengthEntry;
+
 // query_length: 范围查询数据长度数组
 // 返回的数组由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放
-// array_len 写入元素数量；出错时返回 -1
-// 每个元素为 (timestamp: i64, data_len: u32)，共 12 字节
+// out_array_len 写入 TmslLengthEntry 元素数量而非字节数；出错时返回 -1
+// 每个元素使用 C struct 普通布局，非 packed；sizeof=16，alignment=8
 int tmsl_dataset_query_length(void* dataset, int64_t start_ts, int64_t end_ts,
-                              void** out_array, size_t* out_array_len,
+                              TmslLengthEntry** out_array, size_t* out_array_len,
                               char* err_buf, size_t err_buf_len);
 
 // query_length_iter: 创建数据长度迭代器
@@ -367,10 +372,10 @@ int tmsl_dataset_read_length(void* dataset, int64_t timestamp,
                              char* err_buf, size_t err_buf_len);
 
 // 范围查询数据长度数组。返回的数组由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放。
-// array_len 写入元素数量；出错时返回 -1。
-// 每个元素为 (timestamp: i64, data_len: u32)，共 12 字节。
+// out_array_len 写入 TmslLengthEntry 元素数量而非字节数；出错时返回 -1。
+// 每个元素使用 C struct 普通布局，非 packed；sizeof=16，alignment=8。
 int tmsl_dataset_query_length(void* dataset, int64_t start_ts, int64_t end_ts,
-                              void** out_array, size_t* out_array_len,
+                              TmslLengthEntry** out_array, size_t* out_array_len,
                               char* err_buf, size_t err_buf_len);
 
 // 创建数据长度迭代器。返回迭代器句柄，出错时返回 NULL。

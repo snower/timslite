@@ -98,6 +98,13 @@ pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 3;
 pub const TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION: u32 = 1;
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TmslLengthEntry {
+    pub timestamp: i64,
+    pub data_len: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct TmslStoreConfigFFI {
     pub version: u32,
@@ -1372,15 +1379,15 @@ pub extern "C" fn tmsl_dataset_read_length(
 }
 
 /// Query data lengths for timestamps in [start_ts, end_ts].
-/// Returns array of (timestamp: i64, data_len: u32) pairs via out_array (allocated with libc::malloc).
-/// Each element is 12 bytes (8 + 4). Caller frees with tmsl_data_free.
-/// out_array_len receives the element count. Returns 0 on success, -1 on error.
+/// Returns an array of TmslLengthEntry via out_array (allocated with libc::malloc).
+/// The C ABI contract is sizeof(TmslLengthEntry)=16, align=8; out_array_len is an element count.
+/// Caller frees with tmsl_data_free.
 #[no_mangle]
 pub extern "C" fn tmsl_dataset_query_length(
     dataset: *mut c_void,
     start_ts: c_longlong,
     end_ts: c_longlong,
-    out_array: *mut *mut c_void,
+    out_array: *mut *mut TmslLengthEntry,
     out_array_len: *mut usize,
     err_buf: *mut c_char,
     err_buf_len: usize,
@@ -1405,26 +1412,22 @@ pub extern "C" fn tmsl_dataset_query_length(
                 *out_array_len = 0;
             }
         } else {
-            // Each element: timestamp (i64) + data_len (u32) = 12 bytes
-            let elem_size = std::mem::size_of::<i64>() + std::mem::size_of::<u32>();
+            let elem_size = std::mem::size_of::<TmslLengthEntry>();
             let total_size = pairs.len() * elem_size;
-            let ptr = unsafe { libc::malloc(total_size) as *mut u8 };
+            let ptr = unsafe { libc::malloc(total_size) as *mut TmslLengthEntry };
             if ptr.is_null() {
                 return Err(TmslError::InvalidData("malloc failed".into()));
             }
             for (i, (ts, len)) in pairs.iter().enumerate() {
-                let offset = i * elem_size;
                 unsafe {
-                    std::ptr::copy_nonoverlapping(ts.to_le_bytes().as_ptr(), ptr.add(offset), 8);
-                    std::ptr::copy_nonoverlapping(
-                        len.to_le_bytes().as_ptr(),
-                        ptr.add(offset + 8),
-                        4,
-                    );
+                    ptr.add(i).write(TmslLengthEntry {
+                        timestamp: *ts,
+                        data_len: *len,
+                    });
                 }
             }
             unsafe {
-                *out_array = ptr as *mut c_void;
+                *out_array = ptr;
                 *out_array_len = pairs.len();
             }
         }
@@ -2421,6 +2424,12 @@ mod tests {
     }
 
     #[test]
+    fn tmsl_length_entry_layout_matches_c_abi() {
+        assert_eq!(std::mem::size_of::<TmslLengthEntry>(), 16);
+        assert_eq!(std::mem::align_of::<TmslLengthEntry>(), 8);
+    }
+
+    #[test]
     fn test_store_open_with_config_and_child_lifecycle() {
         let dir = temp_store_dir("timslite_ffi_store_config_lifecycle");
         let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
@@ -2802,6 +2811,30 @@ mod tests {
         }
         // ts=3 deleted, should get 1,2,4,5
         assert_eq!(collected_ts, vec![1, 2, 4, 5]);
+
+        let mut length_entries: *mut TmslLengthEntry = std::ptr::null_mut();
+        let mut length_count: usize = 0;
+        assert_eq!(
+            tmsl_dataset_query_length(
+                dataset,
+                1,
+                5,
+                &mut length_entries,
+                &mut length_count,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(length_count, 4);
+        assert!(!length_entries.is_null());
+        let lengths = unsafe { std::slice::from_raw_parts(length_entries, length_count) };
+        let collected_lengths: Vec<(i64, u32)> = lengths
+            .iter()
+            .map(|entry| (entry.timestamp, entry.data_len))
+            .collect();
+        assert_eq!(collected_lengths, vec![(1, 5), (2, 5), (4, 5), (5, 5)]);
+        tmsl_data_free(length_entries.cast::<c_void>());
 
         tmsl_iter_close(iter);
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);

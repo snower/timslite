@@ -423,11 +423,17 @@ pub struct TmslDatasetConfigFFI {
     out_len: *mut u32,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
+#[repr(C)]
+pub struct TmslLengthEntry {
+    pub timestamp: i64,
+    pub data_len: u32,
+}
+
 /// 范围查询数据长度数组。返回的数组由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放。
-/// array_len 写入元素数量；出错时返回 NULL。
-/// 每个元素为 (timestamp: i64, data_len: u32)，共 12 字节。
+/// out_array_len 写入 TmslLengthEntry 元素数量，而不是字节数；出错时返回 NULL。
+/// TmslLengthEntry 使用 C struct 普通布局，非 packed；sizeof=16，alignment=8。
 #[no_mangle] pub extern "C" fn tmsl_dataset_query_length(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong,
-    out_array: *mut *mut c_void, out_array_len: *mut usize,
+    out_array: *mut *mut TmslLengthEntry, out_array_len: *mut usize,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 /// 创建数据长度迭代器。返回迭代器句柄，出错时返回 NULL。

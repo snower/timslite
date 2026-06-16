@@ -58,6 +58,11 @@ typedef struct TmslQueueConsumerConfigFFI {
     uint32_t max_retry_count;         /* 0=unlimited, default 3, max 255 */
 } TmslQueueConsumerConfigFFI;
 
+typedef struct TmslLengthEntry {
+    int64_t timestamp;
+    uint32_t data_len;
+} TmslLengthEntry;
+
 /**
  * Fill a store config struct with default values.
  * @param out_config   Output config pointer.
@@ -478,20 +483,23 @@ int tmsl_dataset_read_length(void* dataset, int64_t timestamp,
 
 /**
  * Query data lengths for timestamps in [start_ts, end_ts].
- * Returns array of (timestamp, data_len) pairs via out_array (allocated with malloc).
- * Each element is 12 bytes: int64_t timestamp + uint32_t data_len.
+ * Returns array of TmslLengthEntry values via out_array (allocated with malloc).
+ * TmslLengthEntry uses normal C struct layout, not packed layout:
+ * sizeof(TmslLengthEntry) == 16 and alignment == 8 on supported ABIs.
+ * out_array_len is the number of TmslLengthEntry elements, not a byte count.
+ * The trailing padding bytes after data_len are not data.
  * Caller frees with tmsl_data_free.
  * @param dataset      Opaque dataset pointer.
  * @param start_ts     Start timestamp (inclusive).
  * @param end_ts       End timestamp (inclusive).
- * @param out_array    Output: pointer to array data.
+ * @param out_array    Output: pointer to TmslLengthEntry array.
  * @param out_array_len Output: element count.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
  * @return 0 on success, -1 on error.
  */
 int tmsl_dataset_query_length(void* dataset, int64_t start_ts, int64_t end_ts,
-                              void** out_array, size_t* out_array_len,
+                              TmslLengthEntry** out_array, size_t* out_array_len,
                               char* err_buf, size_t err_buf_len);
 
 /**
