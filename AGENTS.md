@@ -111,7 +111,7 @@ cargo clippy -- -D warnings
 - 压缩延迟到下一次 write overflow seal 当前 block 时执行。
 - 被 seal 的 block 会压缩并标记 `SEALED | COMPRESSED`；正常当前设计不保留 raw sealed 状态。
 - 只有 immutable compressed block 可以进入全局 `BlockCache`。
-- Correction fallback、out-of-order rewrite、delete、append migration、retention 必须对受影响 cache key 做 invalidation。
+- Correction fallback、out-of-order rewrite、delete、retention 必须对受影响 cache key 做 invalidation。
 
 ### Append
 
@@ -119,8 +119,8 @@ cargo clippy -- -D warnings
 - `timestamp < latest_written_timestamp` 返回错误。
 - `timestamp > latest_written_timestamp` 创建新 record，语义为 forward append。
 - `timestamp == latest_written_timestamp` 只有在 latest record 是未压缩 tail record 时才允许原地追加。
-- 追加到已有 latest record 后如果超过 append migration threshold，需要迁移整条逻辑 record 到 single-record block。
-- 70 percent migration threshold 只适用于“追加到已存在 latest record”的场景。
+- 追加到已有 latest record 不再迁移到 single-record block；只能原地追加到未压缩 tail record。
+- 追加后如果超过普通 pending block 可承载范围，直接返回错误。
 - 追加到已有 latest record 不再次通知普通 dataset queue；创建新 timestamp 时需要通知。
 
 ### Retention

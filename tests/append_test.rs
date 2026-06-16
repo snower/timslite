@@ -1,4 +1,4 @@
-//! Append tests: migration threshold, sealed block, empty data, timestamp order.
+//! Append tests: pending block capacity, sealed block, empty data, timestamp order.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,12 +18,12 @@ fn temp_dir() -> PathBuf {
     ))
 }
 
-/// P0-P-1: Append migration threshold (70%)
+/// P0-P-1: Append pending block capacity boundary
 ///
 /// Append data to an existing record until it exceeds the block capacity.
-/// Verify the system handles the overflow correctly.
+/// Verify the system returns an error without migrating to single-record block.
 #[test]
-fn t32_1_append_migration_threshold() {
+fn t32_1_append_existing_latest_exceeding_pending_capacity_errors() {
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();

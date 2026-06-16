@@ -32,7 +32,7 @@
 | [x] | P0-A-2 | delete 后缓存失效 | `tests/cache_test.rs` | t31_2 验证删除后相关缓存 entry 被清除 |
 | [x] | P0-A-3 | retention reclaim 后缓存失效 | `tests/cache_test.rs` | t31_3 验证过期回收后相关缓存 entry 被清除 |
 | [x] | P0-A-4 | out-of-order write 后缓存失效 | `tests/cache_test.rs` | t31_4 验证乱序写后旧缓存 entry 被清除 |
-| [~] | P0-A-5 | append migration 后缓存失效 | `src/dataset.rs` | 迁移到 single-record block 后旧缓存失效 |
+| [!] | P0-A-5 | append 已有 latest record 缓存失效 | `src/dataset.rs` | 不适用：迁移已废弃；已有 latest record append 只允许 pending raw tail 原地增长，普通全局 BlockCache 不缓存该 raw block |
 | [x] | P0-A-6 | cache LRU 淘汰行为 | `tests/cache_test.rs` | t31_5 验证缓存满时最久未访问的 entry 被淘汰 |
 | [~] | P0-A-7 | cache 空闲回收 | `src/cache.rs` | 30 分钟未访问的 entry 被回收 |
 
@@ -40,7 +40,7 @@
 
 | 状态 | ID | 事项 | 测试文件 | 完成判定 |
 |------|----|------|----------|----------|
-| [x] | P0-P-1 | append 迁移阈值 (70%) | `tests/append_test.rs` | t32_1 验证追加到已有 record 超过 block 容量时返回错误 |
+| [x] | P0-P-1 | append pending block 容量边界 | `tests/append_test.rs` | t32_1 验证追加到已有 record 超过普通 pending block 容量时返回错误，不迁移到 single-record block |
 | [x] | P0-P-2 | append 到 sealed block | `tests/append_test.rs` | t32_2 验证对 sealed block 的 append 返回错误 |
 | [x] | P0-P-3 | append 空数据 no-op | `tests/append_test.rs` | t32_3 验证 append 空数据不创建新 record |
 | [x] | P0-P-4 | append timestamp 顺序校验 | `tests/append_test.rs` | t32_4 验证 timestamp < latest_written_timestamp 返回错误 |
