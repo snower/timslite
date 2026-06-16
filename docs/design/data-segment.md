@@ -17,6 +17,7 @@ struct DataSegmentSet {
     segment_size: u64,
     initial_segment_size: u64,    // 初始分配大小
     compress_level: u8,
+    compress_type: u8,
     segments: BTreeMap<u64, DataSegmentEntry>, // key = data segment file_offset
     next_offset: u64,
     last_used_at: Instant,
@@ -38,9 +39,11 @@ impl DataSegmentSet {
 
     /// 加载已有的 data segment 元数据 (Store open 时)
     pub fn load_existing(base_dir: &Path, segment_size: u64,
-                         compress_level: u8) -> Result<Self>;
+                         compress_level: u8, compress_type: u8) -> Result<Self>;
 }
 ```
+
+`compress_type` 是算法选择真源。append/seal/create single-record 路径使用当前 segment header / `DataSegmentSet.compress_type` 选择算法, `compress_level` 只表示该算法的级别。
 
 > `DataSet::sync_all()` 需要同时调用 `segments.sync_all()` + `time_index.sync_all()`。
 > `DataSet::idle_close_all()` 同理。
@@ -162,7 +165,7 @@ impl DataSegment {
         self.create_pending_and_append(timestamp, data)
     }
 
-    /// 密封 pending block: 压缩+写回
+    /// 密封 pending block: 使用 selected algorithm 压缩+写回
     fn seal_pending_block(&mut self, block_segment_offset: u64, compress_level: u8) -> io::Result<()>;
     fn write_raw_record_to_pending(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
     fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> io::Result<(u64, u16)>;

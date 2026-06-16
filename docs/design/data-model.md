@@ -437,8 +437,10 @@ struct IndexEntry {
 - The active format no longer has segment header `file_size:u32`. The project is still in initial development, so no old-layout compatibility shim is required.
 - Dataset meta and data/index segment header immutable meta both store `compress_type:u8`.
 - `compress_type = 0` means zstd and is the default for new stores, datasets, and segments. `compress_type = 1` means deflate.
-- Unknown `compress_type` values must be rejected on open and before compress/decompress.
-- `compress_level` remains `u8` and is interpreted by the selected compression algorithm.
+- Unknown `compress_type` values must be rejected on config decode, open, and before compress/decompress.
+- `compress_level` remains `u8`, defaults to `6`, and is interpreted by the selected compression algorithm.
+- The current public/persisted `compress_level` contract is `0..=9`. Builders clamp larger values to `9`; on-disk meta values greater than `9` are invalid on open.
+- Reads must use the owning segment header `compress_type`, not the current Store/DataSet default.
 
 Active segment header immutable TLV set:
 

@@ -200,7 +200,7 @@ Phase 41 (Queue Consumer Retry: QSTF v1 18B pending + visibility timeout + retry
 | 风险 | 影响 | 应对 |
 |------|------|------|
 | memmap2 在 Windows 上行为差异 | Phase 3 延迟 | 提前在 Windows 上做 mmap 原型验证 |
-| miniz_oxide 压缩率不足 | Phase 3 压缩效果差 | 预留切换 zstd 的能力 |
+| 压缩算法契约漂移 | 新写入 segment 与读取解压算法不一致 | 以 `compress_type` 为唯一算法选择真源: zstd 默认、deflate 受支持, 读取按 segment header 解压 |
 | FFI panic 跨语言 | 崩溃调用方 | 所有 FFI 函数必须 `catch_unwind` |
 | 大量数据集同时打开 | Phase 6 OOM | Store open 时初始所有 segment → closed, 30min idle-close 释放 mmap |
 | 索引 binary search 溢出 | 查询错误 | 边界条件充分测试 (0, 1, n entries) |

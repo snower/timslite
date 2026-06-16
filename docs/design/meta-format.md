@@ -147,7 +147,7 @@ The active dataset meta format is not backward-compatible with earlier draft fil
 - `compress_type = 1` means deflate.
 - Unknown `compress_type` values are invalid.
 - Segment file headers must copy the dataset `compress_type` into their immutable meta TLV so a segment can be decoded according to its own header.
-- `compress_level` remains a per-dataset immutable level and is interpreted by the selected algorithm.
+- `compress_level` remains a per-dataset immutable level and is interpreted by the selected algorithm. The current persisted range is `0..=9`; values greater than `9` are invalid on open.
 
 Active dataset meta TLV set:
 

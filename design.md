@@ -20,7 +20,7 @@
 | 7 | [Store 与 FFI](docs/design/store-and-ffi.md) | Store 门面 API、FFI C ABI 函数列表、C 侧调用示例 | 外部集成/跨语言调用 |
 | 8 | [后台任务与缓存](docs/design/background-and-cache.md) | 统一执行器 (线程/手动双路径)、Flush/Idle-Close/Retention、外部手动 Execute、BlockCache LRU+Idle 回收 | 性能调优/后台行为/外部事件循环集成 |
 | 9 | [内存与并发](docs/design/memory-and-concurrency.md) | mmap 生命周期、并发控制、Crash 安全、Pending 恢复 | 稳定性保障 |
-| 10 | [压缩策略](docs/design/compression.md) | Block 级延迟压缩、miniz_oxide deflate、flags 设计 | 压缩相关优化 |
+| 10 | [压缩策略](docs/design/compression.md) | Block 级延迟压缩、selected compression algorithm (zstd default, deflate supported)、flags 设计 | 压缩相关优化 |
 | 11 | [设计决策](docs/design/design-decisions.md) | 关键决策对比表、与 TimeStore(Java) 的差异 | 架构评审/迁移 |
 | 12 | [索引连续存储](docs/design/index-continuous.md) | 稀疏 filler 分段、逻辑空洞、base timestamp、O(1) 直接计算优化 | 连续模式需求 |
 | 13 | [懒分配与扩容](docs/design/lazy-allocation.md) | 初始分配、2 倍扩容、header 元数据不随扩容变更、磁盘节省分析 | 空间优化需求 |

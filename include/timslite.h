@@ -177,7 +177,7 @@ int tmsl_store_get_dataset_types(void* store,
  * @param dataset_type         Dataset type, must match ^[0-9A-Za-z_-]+$.
  * @param data_segment_size    Data segment size in bytes.
  * @param index_segment_size   Index segment size in bytes.
- * @param compress_level       Compression level (1-9).
+ * @param compress_level       Compression level (0-9), interpreted by the selected algorithm.
  * @param index_continuous     0 = non-continuous (strict order), 1 = continuous (filler entries).
  * @param retention_window         Data validity period (same unit as timestamp, 0 = no limit).
  *                             Store-level `retention_check_hour` controls daily UTC reclaim schedule.

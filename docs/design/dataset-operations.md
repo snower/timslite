@@ -103,7 +103,7 @@ impl DataSet {
     │
     ├─ record_size > 64KB? ──Yes──→ 独占 Block
     │    │                            1. 密封当前 pending (如果有)
-    │    │                            2. 压缩 record payload
+    │    │                            2. 使用 selected algorithm 压缩 record payload
     │    │                            3. 写入 BlockHeader(flags=SEALED|COMPRESSED|SINGLE_RECORD)
     │    │                            4. 返回
     │
@@ -119,7 +119,7 @@ impl DataSet {
     │
     ├─ pending_size + record_size > 64KB? ──Yes──→ 强制压缩并密封 pending Block
     │    │                                             1. 读取 raw payload
-    │    │                                             2. deflate 压缩
+    │    │                                             2. selected algorithm 压缩
     │    │                                             3. 写回 compressed payload
     │    │                                             4. flags = SEALED|COMPRESSED
     │    │                                             5. 清除 pending
@@ -513,7 +513,7 @@ DataSet::delete(timestamp):
            │      └─ Miss → 继续 ↓
            │
            ├─ 6. mmap 读取 payload + 解码
-           │      ├─ compressed → deflate_decompress() → 写入全局 BlockCache
+           │      ├─ compressed → 按 segment header compress_type 解压 → 写入全局 BlockCache
            │      └─ pending raw → payload.to_vec(), 不进入全局 BlockCache
            │
            ├─ 7. 更新 HotBlockCache

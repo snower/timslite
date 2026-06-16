@@ -569,8 +569,10 @@ tmsl_store_close(store, err_buf, sizeof(err_buf));
 - `compress_type = 0` selects zstd and is the default returned by `tmsl_store_config_default`.
 - `compress_type = 1` selects deflate.
 - Unknown values are rejected during FFI config decode.
+- `compress_level` remains `u8`, defaults to `6`, and is interpreted by the selected algorithm. Current builders clamp values greater than `9` to `9`; on-disk meta values greater than `9` are invalid.
 - `tmsl_dataset_create(...)` without an explicit config uses the store default compression type.
 - `tmsl_dataset_create_with_config(...)` stores the supplied dataset compression type in dataset meta, and new segment headers copy it into their immutable TLV meta.
+- Read paths must use the owning segment header `compress_type` for decompression, not the caller's current config.
 
 ## Flush Runtime Context
 

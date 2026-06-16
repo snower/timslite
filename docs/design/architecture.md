@@ -138,7 +138,7 @@ src/
 ├── header.rs           # 可变长度 FileMetadata, meta/state 分离, 运行时 header_len
 ├── ffi.rs              # extern "C" (catch_unwind, opaque handles, memory mgmt)
 ├── error.rs            # TmslError enum + From impls
-├── compress.rs         # deflate_compress/decompress + size comparison
+├── compress.rs         # selected compression algorithm helpers (zstd default, deflate supported)
 ├── config.rs           # StoreConfig + StoreConfigBuilder + DataSetConfig (internal)
 ├── util.rs             # endian helpers, mmap read/write macros
 └── bg/

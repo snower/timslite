@@ -33,7 +33,7 @@
 | 状态 | ID | 任务 | 主要文件 | 验收标准 |
 |------|----|------|----------|----------|
 | [x] | P1-1 | 统一 Queue `processed_ts` 与 gap/filler 跳过语义 | `docs/design/queue-overview.md`, `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue tests | 明确消费进度代表“最后已按投递顺序完成的真实 timestamp/sequence”；gap/filler 不需要持久 skip 状态；稀疏记录 poll/ack/reopen 行为测试覆盖 |
-| [ ] | P1-2 | 将压缩文档从 deflate-only 改为 selected algorithm active contract | `docs/design/compression.md`, `docs/design/dataset-operations.md`, `docs/design/data-model.md`, `docs/design/store-and-ffi.md`, `design.md`, `docs/design/architecture.md` | 通用流程不再写死 deflate；zstd 默认与 deflate 支持的 `compress_type` 规则位于压缩文档前部；读取使用 segment header `compress_type` 的规则清晰；level 语义按算法说明 |
+| [x] | P1-2 | 将压缩文档从 deflate-only 改为 selected algorithm active contract | `docs/design/compression.md`, `docs/design/dataset-operations.md`, `docs/design/data-model.md`, `docs/design/store-and-ffi.md`, `design.md`, `docs/design/architecture.md` | 通用流程不再写死 deflate；zstd 默认与 deflate 支持的 `compress_type` 规则位于压缩文档前部；读取使用 segment header `compress_type` 的规则清晰；level 语义按算法说明 |
 | [ ] | P1-3 | 明确 public timestamp 契约与 `0`/`-1` sentinel 关系 | `docs/design/data-model.md`, `docs/design/dataset-operations.md`, `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `docs/design/index-continuous.md`, `docs/design/dataset-inspect.md`, FFI/Python docs/tests | 决定 public API 是否只允许 `timestamp > 0`；若是，负 timestamp 仅作为格式层能力保留；若否，提供替代 latest API 并移除冲突 sentinel；inspect 空值表达与 timestamp 契约一致 |
 | [ ] | P1-4 | 统一 append 已有 latest record 的迁移阈值/返回错误契约 | `AGENTS.md`, `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `docs/review/archives/Round5/test-review-todo.md`, append/cache/journal tests | 明确 active contract 是“不迁移，超出 pending block 返回错误”还是“迁移到 single-record block”；若保留迁移，补齐 journal/cache/queue/fallback 设计；若废弃迁移，清理 70% threshold 残留 |
 | [ ] | P1-5 | 固化 FFI 轻量读接口 ABI，尤其 `query_length` 返回布局 | `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `include/timslite.h`, `src/ffi.rs`, FFI/Python wrapper tests | `tmsl_dataset_query_length` 只有一个 C ABI 签名和内存布局；如返回 `(timestamp, data_len)` 数组，需要 `repr(C)`/C struct、alignment、`array_len` 和释放规则明确；旧 `uint32_t*` 口径清除或改名 |
@@ -46,7 +46,7 @@
 |------|----|------|----------|----------|
 | [ ] | P2-1 | 统一 `read_length`/`query_length` 读取 record header 的 8B/12B 描述 | `docs/design/dataset-read-operations.md`, `docs/design/data-model.md`, `src/segment/*` 如需 | record header 统一为 12 bytes；若实现只读 `data_len`，文档说明 timestamp 校验场景仍需读取完整 header |
 | [ ] | P2-2 | 补齐 `DataSetInspect` sentinel/nullability 设计 | `docs/design/dataset-inspect.md`, `docs/design/store-and-ffi.md`, `include/timslite.h`, `src/ffi.rs`, inspect tests | FFI inspect 不再依赖含糊的 0 sentinel，或明确 0 不可能为业务 timestamp；必要时增加 `has_*` flag |
-| [ ] | P2-3 | 清理 `design.md` 与架构模块说明中的 deflate-only 残留 | `design.md`, `docs/design/architecture.md`, `docs/design/compression.md` | 入口索引和模块说明统一为 zstd default / deflate supported / selected algorithm 口径 |
+| [x] | P2-3 | 清理 `design.md` 与架构模块说明中的 deflate-only 残留 | `design.md`, `docs/design/architecture.md`, `docs/design/compression.md` | 入口索引和模块说明统一为 zstd default / deflate supported / selected algorithm 口径 |
 | [ ] | P2-4 | 补齐 Queue state file `open_existing` 格式校验清单 | `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue negative tests | 文档和实现校验文件长度、`state_length`、`pending_value_size`、`pending_length` 上限、entry 越界、status 合法值、timestamp 排序/去重要求 |
 
 ## 建议处理顺序
@@ -64,12 +64,13 @@
 | 2026-06-12 | ALL | [ ] | 根据第 6 轮设计审查报告创建 TODO 跟踪文件，尚未开始修复 | `docs/review/design-review.md` 已读回；待后续逐项处理 |
 | 2026-06-12 | P0-1/P0-2/P0-3 | [x] | 更新相关设计文档；引入 `SegmentFlushTarget::QueueState { group_name }` 并让 poll/ack 入队、后台按 target flush；将 `retention_window` 有效上限固定为 `i64::MAX` 并接入 builder/meta/create/open/FFI；收敛旧 header/meta 常量与字段描述 | `cargo test -- --test-threads=1` 通过 |
 | 2026-06-16 | P1-1 | [x] | 将 queue `processed_ts` 定义为按投递顺序完成的最后一个真实 timestamp/sequence；明确 gap/filler 不投递、不 pending、不持久 ack；同步 queue 设计文档与实现注释；补充稀疏 gap ack 后 reopen 不重复消费测试 | `cargo test --test queue_test t27_1_5_sparse_gap_acked_progress_persists_after_reopen -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
+| 2026-06-16 | P1-2/P2-3 | [x] | 将 compression active contract 前置为 `compress_type` 选择算法；通用写入/读取流程改为 selected algorithm；明确 zstd 默认、deflate 支持、level 语义和非法值处理；同步入口、架构、FFI/Python 文档注释与计划总览 | `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 
 ## 完成统计
 
 | 优先级 | 总数 | 已完成 | 未完成 |
 |--------|------|--------|--------|
 | P0 | 3 | 3 | 0 |
-| P1 | 7 | 1 | 6 |
-| P2 | 4 | 0 | 4 |
-| 合计 | 14 | 4 | 10 |
+| P1 | 7 | 2 | 5 |
+| P2 | 4 | 1 | 3 |
+| 合计 | 14 | 6 | 8 |

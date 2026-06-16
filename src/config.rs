@@ -49,7 +49,7 @@ pub struct StoreConfig {
     pub initial_data_segment_size: u64,
     /// Default initial index segment file size for newly created datasets.
     pub initial_index_segment_size: u64,
-    /// Default deflate compression level for newly created datasets (0-9).
+    /// Default compression level for newly created datasets (0-9).
     pub compress_level: u8,
     /// Default compression algorithm for newly created datasets (0=zstd, 1=deflate).
     pub compress_type: u8,
@@ -148,7 +148,7 @@ impl StoreConfigBuilder {
         self
     }
 
-    /// Set the deflate compression level (0-9).
+    /// Set the compression level (0-9, interpreted by the selected algorithm).
     pub fn compress_level(mut self, level: u8) -> Self {
         self.compress_level = Some(level.min(9));
         self
@@ -329,7 +329,7 @@ impl DataSetConfigBuilder {
         self
     }
 
-    /// Set the deflate compression level (0-9).
+    /// Set the compression level (0-9, interpreted by the selected algorithm).
     pub fn compress_level(mut self, level: u8) -> Self {
         self.compress_level = Some(level.min(9));
         self

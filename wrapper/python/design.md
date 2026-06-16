@@ -151,7 +151,7 @@ class Store:
             dataset_type: Dataset type (e.g. "waveform", "events").
             data_segment_size: Max data segment file size (bytes).
             index_segment_size: Max index segment file size (bytes).
-            compress_level: Deflate level 0-9 (default: 6).
+            compress_level: Compression level 0-9, interpreted by the selected algorithm (default: 6).
             index_continuous: Allow out-of-order / backfill writes.
             initial_data_segment_size: Initial file size (lazy alloc).
             initial_index_segment_size: Initial index file size.
