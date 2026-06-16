@@ -90,3 +90,16 @@
 - 普通 inspect 不打开全部历史 data/index segment。
 - dataset state file 变更通过 `SegmentFlushTarget::DatasetState` 进入统一 flush 机制。
 - state file 异常不改变普通数据文件读写的正确性边界。
+
+---
+
+## 任务清单
+
+> 以下为 `plan.md` 中 Phase 40 的完成任务详情, 已合并到此文档。
+
+- [x] 设计文档 — dataset state 文件、active tail 统计、`SegmentFlushTarget::DatasetState`、`DataSetState` 字段语义
+- [x] 计划文档 — `docs/plan/phase-40-dataset-inspect-state.md`, `docs/plan/overview.md`, `plan.md`
+- [x] 实现 — dataset state file、rollover/retention/delete 更新、flush target 接入
+- [x] API 同步 — Rust/FFI/C header/Python 字段改为 `data_segments` / `index_segments`
+- [x] 测试 — state file 初始化、归档统计、retention/delete 更新、flush queue、inspect 不全量打开分段
+- [x] 验证 — fmt, cargo test, cargo check, clippy, wrapper pytest, diff hygiene

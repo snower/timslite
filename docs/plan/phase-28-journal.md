@@ -338,3 +338,16 @@ git diff --check
 2026-06-03: implemented Journal phase. Added `src/journal/mod.rs`, `StoreConfig.enable_journal`, built-in read-only `.journal/logs`, create/drop/write/delete hooks, real-time journal queue polling, Rust FFI header/config synchronization, and Python wrapper support.
 
 2026-06-04: completed Python pytest verification by building a wheel with maturin, installing it into a temporary workspace target directory, setting `PYTHONPATH`, and running `python -m pytest wrapper/python/tests -q -p no:cacheprovider`. Result: 56 passed.
+
+---
+
+## 任务清单
+
+> 以下为 `plan.md` 中 Phase 28 的完成任务详情, 已合并到此文档。
+
+- [x] `src/journal/mod.rs` — JournalManager + record encoder/decoder
+- [x] `StoreConfig.enable_journal` — Rust/FFI/header/wrapper 配置同步
+- [x] `.journal/logs` — Phase 28 历史实现已完成; Phase 36 已重构为专用无索引 append log
+- [x] 操作 hook — create/drop/write/delete 成功后追加 `0x01/0x02/0x11/0x12`
+- [x] 查询与实时消费 — read/query/query_iter/latest/open_queue + queue poll/ack
+- [x] 验证 — journal/queue/ffi 集成测试、fmt、clippy、全量 cargo test

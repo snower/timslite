@@ -56,81 +56,14 @@
 
 ## 待完成事项
 
+> 已完成 Phase 的任务详情已合并到对应 `docs/plan/phase-XX-*.md` 文件, 如需查看请参考各 Phase 文档。
+
 ### Phase 7: FFI 接口
 - [ ] C 链接测试 — 独立 C 程序链接 `libtimslite` 并调用 FFI 完整流程验证
 
 ### Phase 8: 集成测试 + 性能调优
 - [ ] 性能基准测试 (`benches/`) — criterion 已配置, 目录已创建但无文件
 - [ ] 内存安全验证 — Windows 未 valgrind, 需 Linux/Valgrind 环境
-
-### Phase 28: Journal 变更日志
-- [x] `src/journal/mod.rs` — JournalManager + record encoder/decoder
-- [x] `StoreConfig.enable_journal` — Rust/FFI/header/wrapper 配置同步
-- [x] `.journal/logs` — Phase 28 历史实现已完成; Phase 36 已重构为专用无索引 append log
-- [x] 操作 hook — create/drop/write/delete 成功后追加 `0x01/0x02/0x11/0x12`
-- [x] 查询与实时消费 — read/query/query_iter/latest/open_queue + queue poll/ack
-- [x] 验证 — journal/queue/ffi 集成测试、fmt、clippy、全量 cargo test
-
-### Phase 29: Dataset Append API + Journal `0x13`
-- [x] 设计文档 — append 行为、4MiB 上限、无比例迁移阈值、journal `0x13`
-- [x] 测试 — append 行为矩阵、原地增长、错误路径、journal 编解码与 Store/FFI hook
-- [x] 实现 — DataSegment tail append、DataSet append、Store/FFI API、journal `0x13`
-- [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`
-
-### Phase 30: Dataset 读操作优化
-- [x] 设计文档 — read_exist/query_exist/read_length/query_length/query_length_iter 接口规范
-- [x] DataSegmentSet::read_record_data_len() — 仅读取 record header 获取 data_len
-- [x] DataSet::read_exist() — 单时间戳索引存在检查
-- [x] DataSet::query_exist() — 范围索引存在性检查，返回位图
-- [x] DataSet::read_length() — 单时间戳数据长度读取
-- [x] DataSet::query_length() — 范围查询数据长度列表
-- [x] QueryLengthIterator + query_length_iter() — 惰性数据长度迭代器
-- [x] FFI 接口 — tmsl_dataset_read_exist/query_exist/read_length/query_length/query_length_iter
-- [x] Store 门面 API — dataset_read_exist/query_exist/read_length/query_length/query_length_iter
-- [x] C 头文件 — include/timslite.h 新增函数声明
-- [x] Python Wrapper — DataSet 类新增方法
-- [x] 集成测试 — 完整测试矩阵覆盖
-- [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy -- -D warnings`
-
-### Phase 36: Journal 专用无索引存储
-- [x] 设计文档 — `docs/design/journal.md` + `docs/design/journal-storage.md`
-- [x] 实现 — `JournalSegment` / `JournalLog` / `JournalQueue`
-- [x] API — Rust / FFI / Python 专用 journal read/query/queue
-- [x] 验证 — journal storage、queue、FFI、Python wrapper 测试与全量检查
-
-### Phase 37: Journal Record TV Format
-- [x] 设计文档 — `docs/design/journal.md`、`docs/design/journal-storage.md`、`docs/design/dataset-identifier.md`、`docs/design/store-and-ffi.md`、`docs/design/meta-format.md`
-- [x] 实现 — canonical identifier TV 编码、log_type-scoped TV parser、JournalManager/DataSet hook 签名更新
-- [x] 测试 — codec 边界/反例、Store hook 集成、数据变更记录不再包含 name/type
-- [x] 验证 — `cargo fmt -- --check`, `cargo test journal::record -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`
-
-### Phase 38: zstd Frame Checksum
-- [x] 设计文档 — `docs/design/compression.md`
-- [x] 实现 — zstd encoder 开启 content checksum, shared compression helper 统一生效
-- [x] 测试 — zstd frame header checksum flag、zstd roundtrip、deflate 不受影响
-- [x] 验证 — `cargo fmt -- --check`, `cargo test compress -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`
-
-### Phase 39: Dataset Journal Toggle
-- [x] 设计文档 — `docs/design/journal.md`, `docs/design/meta-format.md`, `docs/design/store-and-ffi.md`, `docs/design/data-model.md`
-- [x] 计划文档 — `docs/plan/phase-39-dataset-journal-toggle.md`, `docs/plan/overview.md`, `plan.md`
-- [x] 实现 — Rust config/meta/dataset/store, FFI/header, Python wrapper
-- [x] 测试 — config/meta roundtrip, Store hook integration, FFI/Python create kwargs
-- [x] 验证 — fmt, targeted tests, full cargo test, cargo check, wrapper pytest, diff hygiene
-
-### Phase 40: Dataset Inspect State Cache
-- [x] 设计文档 — dataset state 文件、active tail 统计、`SegmentFlushTarget::DatasetState`、`DataSetState` 字段语义
-- [x] 计划文档 — `docs/plan/phase-40-dataset-inspect-state.md`, `docs/plan/overview.md`, `plan.md`
-- [x] 实现 — dataset state file、rollover/retention/delete 更新、flush target 接入
-- [x] API 同步 — Rust/FFI/C header/Python 字段改为 `data_segments` / `index_segments`
-- [x] 测试 — state file 初始化、归档统计、retention/delete 更新、flush queue、inspect 不全量打开分段
-- [x] 验证 — fmt, cargo test, cargo check, clippy, wrapper pytest, diff hygiene
-
-### Phase 41: Queue Consumer Retry / Visibility Timeout
-- [x] 设计文档 — QSTF v1、18B pending entry、`QueueConsumerConfig`、retry/丢弃语义、JournalQueue 同步
-- [x] 计划文档 — `docs/plan/phase-41-queue-consumer-retry.md`, `docs/plan/overview.md`, `plan.md`
-- [x] 测试 RED — state file、普通 queue、JournalQueue、FFI/Python 配置入口
-- [x] 实现 — Rust queue/journal retry 逻辑、FFI/C header、Python wrapper
-- [x] 验证 — fmt, targeted/full cargo tests, check, clippy, wrapper pytest, diff hygiene
 
 ---
 

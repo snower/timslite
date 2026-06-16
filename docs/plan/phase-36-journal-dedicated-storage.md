@@ -602,3 +602,14 @@ After implementation and verification, update:
 - `docs/plan/phase-36-journal-dedicated-storage.md`
 - `docs/plan/overview.md`
 - `plan.md`
+
+---
+
+## 任务清单
+
+> 以下为 `plan.md` 中 Phase 36 的完成任务详情, 已合并到此文档。
+
+- [x] 设计文档 — `docs/design/journal.md` + `docs/design/journal-storage.md`
+- [x] 实现 — `JournalSegment` / `JournalLog` / `JournalQueue`
+- [x] API — Rust / FFI / Python 专用 journal read/query/queue
+- [x] 验证 — journal storage、queue、FFI、Python wrapper 测试与全量检查

@@ -39,3 +39,14 @@ cargo test -- --test-threads=1
 cargo check
 git diff --check
 ```
+
+---
+
+## 任务清单
+
+> 以下为 `plan.md` 中 Phase 38 的完成任务详情, 已合并到此文档。
+
+- [x] 设计文档 — `docs/design/compression.md`
+- [x] 实现 — zstd encoder 开启 content checksum, shared compression helper 统一生效
+- [x] 测试 — zstd frame header checksum flag、zstd roundtrip、deflate 不受影响
+- [x] 验证 — `cargo fmt -- --check`, `cargo test compress -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`

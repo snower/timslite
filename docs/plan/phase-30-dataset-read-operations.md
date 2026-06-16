@@ -450,3 +450,23 @@ cargo clippy -- -D warnings
 # Python wrapper (if applicable)
 cd wrapper/python && cargo test && cargo clippy
 ```
+
+---
+
+## 任务清单
+
+> 以下为 `plan.md` 中 Phase 30 的完成任务详情, 已合并到此文档。
+
+- [x] 设计文档 — read_exist/query_exist/read_length/query_length/query_length_iter 接口规范
+- [x] DataSegmentSet::read_record_data_len() — 仅读取 record header 获取 data_len
+- [x] DataSet::read_exist() — 单时间戳索引存在检查
+- [x] DataSet::query_exist() — 范围索引存在性检查，返回位图
+- [x] DataSet::read_length() — 单时间戳数据长度读取
+- [x] DataSet::query_length() — 范围查询数据长度列表
+- [x] QueryLengthIterator + query_length_iter() — 惰性数据长度迭代器
+- [x] FFI 接口 — tmsl_dataset_read_exist/query_exist/read_length/query_length/query_length_iter
+- [x] Store 门面 API — dataset_read_exist/query_exist/read_length/query_length/query_length_iter
+- [x] C 头文件 — include/timslite.h 新增函数声明
+- [x] Python Wrapper — DataSet 类新增方法
+- [x] 集成测试 — 完整测试矩阵覆盖
+- [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy -- -D warnings`

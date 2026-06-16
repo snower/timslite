@@ -135,3 +135,14 @@
 - Empty append is defined as a no-op that does not write data and does not write journal.
 - Append no longer has ratio-based migration. Existing latest-record append is either in-place tail growth or an error.
 - Compressed latest block always returns error.
+
+---
+
+## 任务清单
+
+> 以下为 `plan.md` 中 Phase 29 的完成任务详情, 已合并到此文档。
+
+- [x] 设计文档 — append 行为、4MiB 上限、无比例迁移阈值、journal `0x13`
+- [x] 测试 — append 行为矩阵、原地增长、错误路径、journal 编解码与 Store/FFI hook
+- [x] 实现 — DataSegment tail append、DataSet append、Store/FFI API、journal `0x13`
+- [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`

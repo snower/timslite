@@ -60,3 +60,14 @@ cargo test -- --test-threads=1
 cargo check
 git diff --check
 ```
+
+---
+
+## 任务清单
+
+> 以下为 `plan.md` 中 Phase 37 的完成任务详情, 已合并到此文档。
+
+- [x] 设计文档 — `docs/design/journal.md`、`docs/design/journal-storage.md`、`docs/design/dataset-identifier.md`、`docs/design/store-and-ffi.md`、`docs/design/meta-format.md`
+- [x] 实现 — canonical identifier TV 编码、log_type-scoped TV parser、JournalManager/DataSet hook 签名更新
+- [x] 测试 — codec 边界/反例、Store hook 集成、数据变更记录不再包含 name/type
+- [x] 验证 — `cargo fmt -- --check`, `cargo test journal::record -- --test-threads=1`, `cargo test -- --test-threads=1`, `cargo check`, `git diff --check`

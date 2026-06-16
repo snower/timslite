@@ -22,3 +22,15 @@
 - [x] 更新 FFI struct/header/config decode。
 - [x] 更新 Python wrapper create_dataset kwargs 与测试。
 - [x] 运行格式、测试和 diff hygiene 验证。
+
+---
+
+## 任务清单
+
+> 以下为 `plan.md` 中 Phase 39 的完成任务详情, 已合并到此文档。
+
+- [x] 设计文档 — `docs/design/journal.md`, `docs/design/meta-format.md`, `docs/design/store-and-ffi.md`, `docs/design/data-model.md`
+- [x] 计划文档 — `docs/plan/phase-39-dataset-journal-toggle.md`, `docs/plan/overview.md`, `plan.md`
+- [x] 实现 — Rust config/meta/dataset/store, FFI/header, Python wrapper
+- [x] 测试 — config/meta roundtrip, Store hook integration, FFI/Python create kwargs
+- [x] 验证 — fmt, targeted tests, full cargo test, cargo check, wrapper pytest, diff hygiene
