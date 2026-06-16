@@ -405,13 +405,14 @@ pub struct TmslDatasetConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_iter_close(iter: *mut c_void);
 
 // 轻量级读操作 (详见 dataset-read-operations.md §5 FFI 接口)
-/// 检查索引是否存在 (包括 filler)。timestamp 为精确业务时间戳。
+/// 检查 timestamp 当前是否存在可见数据。过期 timestamp 与 filler/deleted entry 返回 false。
 /// 返回 0=false/1=true; 错误时返回 -1。
 #[no_mangle] pub extern "C" fn tmsl_dataset_read_exist(dataset: *mut c_void, timestamp: c_longlong,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
-/// 范围索引存在性检查，返回位图。位 i 代表 (start_ts + i) 是否存在。
+/// 范围数据存在性快速检查，返回位图。位 i 代表 (start_ts + i) 当前是否存在可见数据。
 /// 返回的 bitmap 由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放。
+/// 过期 timestamp 和 filler/deleted entry 均返回 0；bitmap 最多 4MiB。
 /// bitmap_len 写入字节数；出错时返回 NULL。
 #[no_mangle] pub extern "C" fn tmsl_dataset_query_exist(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong,
     out_bitmap: *mut *mut c_uchar, out_bitmap_len: *mut usize,

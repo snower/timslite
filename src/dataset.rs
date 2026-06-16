@@ -26,6 +26,8 @@ use crate::segment::ReadIndexEntry;
 
 type QueueCondvarPair = Arc<(Mutex<bool>, Condvar)>;
 
+const QUERY_EXIST_MAX_BITMAP_BYTES: usize = 4 * 1024 * 1024;
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum SegmentFlushTarget {
     Data { file_offset: u64 },
@@ -1001,11 +1003,13 @@ impl DataSet {
 
     /// Check if index entry exists for the given timestamp.
     /// `timestamp` is exact; `-1` is not a latest shortcut.
-    /// Returns true if index entry exists (including filler entries).
-    /// Does NOT check retention — index existence is enough.
+    /// Returns true only when the timestamp has visible data.
     pub fn read_exist(&mut self, timestamp: i64) -> Result<bool> {
+        if self.is_timestamp_expired(timestamp) {
+            return Ok(false);
+        }
         let entry = self.time_index.find_entry(timestamp)?;
-        Ok(entry.is_some())
+        Ok(entry.is_some_and(|entry| entry.block_offset != BLOCK_OFFSET_FILLER))
     }
 
     /// Read the logical data length for a timestamp.
@@ -1084,20 +1088,39 @@ impl DataSet {
         self.time_index.prepare_query_sources(start_ts, end_ts)
     }
 
-    /// Check existence of index entries in [start_ts, end_ts].
+    /// Check visible data existence in [start_ts, end_ts].
     /// Returns bitmap as byte array. Bit i represents (start_ts + i).
-    /// Bit is 1 if index entry exists (including filler), 0 otherwise.
-    /// Caller controls bitmap size — no range limit.
+    /// Bit is 1 if visible data exists, 0 otherwise.
+    /// Bitmap allocation is capped at 4 MiB.
     pub fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>> {
         if start_ts > end_ts {
             return Ok(Vec::new());
         }
-        let count = (end_ts - start_ts + 1) as usize;
+        let count = end_ts
+            .checked_sub(start_ts)
+            .and_then(|delta| delta.checked_add(1))
+            .ok_or_else(|| TmslError::InvalidData("query_exist range overflow".into()))?
+            as usize;
         let byte_count = count.div_ceil(8);
+        if byte_count > QUERY_EXIST_MAX_BITMAP_BYTES {
+            return Err(TmslError::InvalidData(format!(
+                "query_exist bitmap exceeds 4 MiB limit: {byte_count} bytes"
+            )));
+        }
         let mut bitmap = vec![0u8; byte_count];
 
-        let entries = self.time_index.query(start_ts, end_ts)?;
+        let effective_start = self
+            .retention_threshold()
+            .map_or(start_ts, |threshold| start_ts.max(threshold));
+        if effective_start > end_ts {
+            return Ok(bitmap);
+        }
+
+        let entries = self.time_index.query(effective_start, end_ts)?;
         for entry in entries {
+            if entry.block_offset == BLOCK_OFFSET_FILLER {
+                continue;
+            }
             let offset = (entry.timestamp - start_ts) as usize;
             let byte_index = offset / 8;
             let bit_index = offset % 8;

@@ -176,6 +176,51 @@ fn test_query_exist_cross_byte_boundary() {
     assert_eq!(bitmap[1], 0x01);
 }
 
+#[test]
+fn test_query_exist_excludes_expired_timestamps() {
+    use timslite::{DataSetConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let config = DataSetConfig::builder().retention_window(50);
+    store
+        .create_dataset_with_config("ds", "type", Some(config))
+        .unwrap();
+    let handle = store.open_dataset("ds", "type").unwrap();
+
+    let ds_arc = store.get_dataset(&handle).unwrap();
+    let mut ds = ds_arc.lock().unwrap();
+    ds.write(100, b"expired").unwrap();
+    ds.write(160, b"visible").unwrap();
+
+    let bitmap = ds.query_exist(100, 160).unwrap();
+    assert_eq!(bitmap.len(), 8);
+    assert_eq!(bitmap[0] & 0x01, 0, "timestamp 100 is expired");
+    assert_ne!(bitmap[7] & 0x10, 0, "timestamp 160 is visible");
+}
+
+#[test]
+fn test_query_exist_rejects_bitmap_larger_than_4mib() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("ds", "type").unwrap();
+
+    let ds_arc = store.get_dataset(&handle).unwrap();
+    let mut ds = ds_arc.lock().unwrap();
+    let max_bitmap_bytes = 4usize * 1024 * 1024;
+    let too_many_timestamps = (max_bitmap_bytes as i64) * 8 + 1;
+    let err = ds.query_exist(0, too_many_timestamps - 1).unwrap_err();
+    assert!(
+        err.to_string().contains("query_exist bitmap"),
+        "unexpected error: {err}"
+    );
+}
+
 // ─── read_length tests ────────────────────────────────────────────────────────
 
 #[test]
@@ -492,9 +537,8 @@ fn test_store_dataset_query_length() {
 // ─── Read Operations deleted record tests (P1-R-1~4) ────────────────────────
 
 #[test]
-fn test_read_exist_deleted_timestamp_returns_true_for_filler() {
-    // P1-R-1: read_exist(deleted_ts) should return true because filler entry exists
-    // Design: read_exist only checks if index entry exists, not if data is valid
+fn test_read_exist_deleted_timestamp_returns_false_for_filler() {
+    // P1-6: read_exist reports current visible data existence, not raw index entry presence.
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
@@ -515,11 +559,10 @@ fn test_read_exist_deleted_timestamp_returns_true_for_filler() {
     // Delete the record (creates filler entry)
     ds.delete(100).unwrap();
 
-    // After delete, read_exist should return true because filler entry exists
-    // Design: "read_exist 仅表示'索引位置有 entry'，不表示数据有效"
+    // After delete, read_exist should return false because filler is not visible data.
     assert!(
-        ds.read_exist(100).unwrap(),
-        "deleted timestamp should return true for read_exist (filler exists)"
+        !ds.read_exist(100).unwrap(),
+        "deleted timestamp should return false for read_exist"
     );
     drop(ds);
 
@@ -562,9 +605,8 @@ fn test_read_length_deleted_timestamp_returns_none() {
 }
 
 #[test]
-fn test_query_exist_includes_deleted_timestamps_as_fillers() {
-    // P1-R-3: query_exist should include fillers in bitmap
-    // Design: query_exist returns bitmap where bit=1 means index entry exists (including fillers)
+fn test_query_exist_excludes_deleted_timestamps_as_fillers() {
+    // P1-6: query_exist reports current visible data existence, not raw index entry presence.
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
@@ -584,17 +626,16 @@ fn test_query_exist_includes_deleted_timestamps_as_fillers() {
     // Delete timestamp 2 (creates filler entry)
     ds.delete(2).unwrap();
 
-    // query_exist returns bitmap where bit=1 means index entry exists (including fillers)
+    // query_exist returns bit=1 only for visible data.
     let bitmap = ds.query_exist(1, 3).unwrap();
     assert_eq!(bitmap.len(), 1, "should have 1 byte for 3 timestamps");
 
-    // All three bits should be set because filler entries exist in the index
     let ts1_exists = (bitmap[0] & 0x01) != 0;
     let ts2_exists = (bitmap[0] & 0x02) != 0;
     let ts3_exists = (bitmap[0] & 0x04) != 0;
 
     assert!(ts1_exists, "timestamp 1 should exist");
-    assert!(ts2_exists, "timestamp 2 should exist (filler entry)");
+    assert!(!ts2_exists, "timestamp 2 should not exist after delete");
     assert!(ts3_exists, "timestamp 3 should exist");
     drop(ds);
 

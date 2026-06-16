@@ -439,8 +439,9 @@ void tmsl_iter_close(void* iter);
 /* Lightweight Read Operations */
 
 /**
- * Check if index entry exists for a timestamp.
+ * Check if visible data exists for a timestamp.
  * timestamp is an exact signed business timestamp.
+ * Expired timestamps and filler/deleted entries return false.
  * @param dataset      Opaque dataset pointer.
  * @param timestamp    Timestamp to check.
  * @param err_buf      Buffer for error message.
@@ -451,9 +452,10 @@ int tmsl_dataset_read_exist(void* dataset, int64_t timestamp,
                             char* err_buf, size_t err_buf_len);
 
 /**
- * Check existence of index entries in [start_ts, end_ts].
+ * Check visible data existence in [start_ts, end_ts].
  * Returns bitmap via out_bitmap (allocated with malloc, caller frees with tmsl_data_free).
- * Bit i represents (start_ts + i): 1=exists, 0=not found.
+ * Bit i represents (start_ts + i): 1=visible data exists, 0=not found/expired/filler.
+ * The returned bitmap is capped at 4 MiB; larger ranges return an error.
  * @param dataset      Opaque dataset pointer.
  * @param start_ts     Start timestamp (inclusive).
  * @param end_ts       End timestamp (inclusive).

@@ -1269,8 +1269,9 @@ pub extern "C" fn tmsl_iter_free_data(data: *mut c_uchar) {
 
 // ─── Lightweight read operations FFI ──────────────────────────────────────────
 
-/// Check if index entry exists for a timestamp.
+/// Check if visible data exists for a timestamp.
 /// timestamp is exact; -1 is not a latest shortcut.
+/// Expired timestamps and filler/deleted entries return false.
 /// Returns 0=false, 1=true, -1=error.
 #[no_mangle]
 pub extern "C" fn tmsl_dataset_read_exist(
@@ -1297,8 +1298,9 @@ pub extern "C" fn tmsl_dataset_read_exist(
     })
 }
 
-/// Check existence of index entries in [start_ts, end_ts].
+/// Query visible data existence bitmap for timestamps in [start_ts, end_ts].
 /// Returns bitmap via out_bitmap (allocated with libc::malloc, caller frees with tmsl_data_free).
+/// Expired timestamps and filler/deleted entries return 0 bits. Bitmap allocation is capped at 4 MiB.
 /// out_bitmap_len receives the byte count. Returns 0 on success, -1 on error.
 #[no_mangle]
 pub extern "C" fn tmsl_dataset_query_exist(
@@ -2835,6 +2837,30 @@ mod tests {
             .collect();
         assert_eq!(collected_lengths, vec![(1, 5), (2, 5), (4, 5), (5, 5)]);
         tmsl_data_free(length_entries.cast::<c_void>());
+
+        assert_eq!(
+            tmsl_dataset_read_exist(dataset, 3, err.as_mut_ptr(), err_len),
+            0,
+            "deleted timestamp should not be visible via FFI read_exist"
+        );
+
+        let mut bitmap: *mut c_uchar = std::ptr::null_mut();
+        let mut bitmap_len: usize = 0;
+        let max_bitmap_bytes = 4usize * 1024 * 1024;
+        let too_many_timestamps = (max_bitmap_bytes as i64) * 8 + 1;
+        assert_eq!(
+            tmsl_dataset_query_exist(
+                dataset,
+                0,
+                too_many_timestamps - 1,
+                &mut bitmap,
+                &mut bitmap_len,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            -1,
+            "oversized FFI query_exist bitmap should fail"
+        );
 
         tmsl_iter_close(iter);
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);

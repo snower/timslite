@@ -41,9 +41,9 @@ impl DataSegmentSet {
 
 ---
 
-## 30.2 read_exist() — 单时间戳索引存在检查
+## 30.2 read_exist() — 单时间戳数据存在检查
 
-检查单个时间戳的索引是否存在（包括 filler）。
+检查单个时间戳当前是否存在可见数据。过期 timestamp、filler/deleted entry 均返回 false。
 
 ### 实现位置
 `src/dataset.rs`
@@ -51,32 +51,31 @@ impl DataSegmentSet {
 ### 接口签名
 ```rust
 impl DataSet {
-    /// Check if index entry exists for the given timestamp.
+    /// Check if visible data exists for the given timestamp.
     /// timestamp is an exact signed i64 business timestamp.
-    /// Returns true if index entry exists (including filler entries).
-    pub fn read_exist(&self, timestamp: i64) -> Result<bool>;
+    pub fn read_exist(&mut self, timestamp: i64) -> Result<bool>;
 }
 ```
 
 ### 实现要点
-1. 调用 `self.time_index.find_entry(timestamp)?`
-2. 返回 `Ok(entry.is_some())`
-3. **不检查 filler** — 只要 `find_entry()` 返回 `Some` 就是 `true`
+1. 检查 retention 是否过期，过期返回 `false`
+2. 调用 `self.time_index.find_entry(timestamp)?`
+3. 不存在或 `block_offset == BLOCK_OFFSET_FILLER` 返回 `false`
 4. **不读取数据段** — 性能最优
-5. **不检查 retention** — 索引存在即返回 `true`
+5. 返回 `true` 表示当前可见数据存在，而不是底层索引 entry 物理存在
 
 ### 测试用例
 - [x] 存在的时间戳返回 true
 - [x] 不存在的时间戳返回 false
-- [x] filler entry 返回 true（索引存在）
+- [x] filler/deleted entry 返回 false
 - [x] timestamp == -1 按精确时间戳检查
-- [x] 过期时间戳仍返回 true（仅检查索引）
+- [x] 过期时间戳返回 false
 
 ---
 
-## 30.3 query_exist() — 范围索引存在性检查
+## 30.3 query_exist() — 范围数据存在性检查
 
-范围查询索引存在性，返回位图。
+范围查询当前可见数据存在性，返回位图。
 
 ### 实现位置
 `src/dataset.rs`
@@ -84,21 +83,22 @@ impl DataSet {
 ### 接口签名
 ```rust
 impl DataSet {
-    /// Check existence of index entries in [start_ts, end_ts].
+    /// Check visible data existence in [start_ts, end_ts].
     /// Returns bitmap as byte array. Bit i represents (start_ts + i).
-    /// Bit is 1 if index entry exists, 0 otherwise.
+    /// Bit is 1 if visible data exists, 0 otherwise.
     pub fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
 }
 ```
 
 ### 实现要点
-1. `clamp_query_range()` 裁剪到 retention 窗口
-2. 若 `start_ts > end_ts` 返回空 Vec
-3. 计算 `count = (end_ts - start_ts + 1)` 和 `byte_count = (count + 7) / 8`
+1. 若 `start_ts > end_ts` 返回空 Vec
+2. 使用 checked arithmetic 按原请求范围计算 `count = (end_ts - start_ts + 1)` 和 `byte_count = (count + 7) / 8`
+3. 保持返回 bitmap 与原请求范围对齐；过期范围 bit 保持 0
 4. 初始化位图 `vec![0u8; byte_count]`
-5. 调用 `self.time_index.query(start_ts, end_ts)?` 获取所有 entry
-6. 遍历 entry，计算 `bit_offset = (entry.timestamp - start_ts) as usize`
-7. 设置对应位: `bitmap[byte_index] |= 1 << bit_index`
+5. 若 bitmap 超过 4MiB，返回错误
+6. 按 retention 可见起点裁剪实际 index 查询范围，调用 `self.time_index.query(effective_start, end_ts)?`
+7. 遍历 entry，跳过 filler/deleted entry，计算 `bit_offset = (entry.timestamp - start_ts) as usize`
+8. 设置对应位: `bitmap[byte_index] |= 1 << bit_index`
 
 ### 位图格式
 ```
@@ -113,9 +113,10 @@ start_ts = 100, end_ts = 107
 - [x] 空范围返回空 Vec
 - [x] 单字节位图正确性
 - [x] 跨字节位图正确性
-- [x] 包含 filler 的位图（filler 位为 1）
+- [x] 包含 filler 的位图（filler 位为 0）
 - [x] retention 裁剪后的范围
 - [x] 大范围位图（1000+ 时间点）
+- [x] 超过 4MiB bitmap 上限返回错误
 
 ---
 
@@ -265,11 +266,12 @@ impl DataSet {
 
 ### 新增函数
 ```c
-// read_exist: 检查索引是否存在 (包括 filler)
+// read_exist: 检查当前是否存在可见数据
 // 返回 0=false/1=true; 错误时返回 -1
 int tmsl_dataset_read_exist(void* dataset, int64_t timestamp, char* err_buf, size_t err_buf_len);
 
-// query_exist: 范围索引存在性检查，返回位图
+// query_exist: 范围数据存在性快速检查，返回位图
+// 过期 timestamp 与 filler/deleted entry 位为 0；bitmap 最大 4MiB
 // 返回的 bitmap 由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放
 // bitmap_len 写入字节数；出错时返回 -1
 int tmsl_dataset_query_exist(void* dataset, int64_t start_ts, int64_t end_ts,
@@ -354,12 +356,13 @@ impl Store {
 ```c
 // 轻量级读操作 (详见 dataset-read-operations.md §5 FFI 接口)
 
-// 检查索引是否存在 (包括 filler)。timestamp 为精确业务时间戳。
+// 检查当前是否存在可见数据。timestamp 为精确业务时间戳。
 // 返回 0=false/1=true; 错误时返回 -1。
 int tmsl_dataset_read_exist(void* dataset, int64_t timestamp, char* err_buf, size_t err_buf_len);
 
-// 范围索引存在性检查，返回位图。位 i 代表 (start_ts + i) 是否存在。
+// 范围数据存在性快速检查，返回位图。位 i 代表 (start_ts + i) 当前是否有可见数据。
 // 返回的 bitmap 由 libc::malloc 分配，调用方需通过 tmsl_data_free 释放。
+// 过期 timestamp 与 filler/deleted entry 位为 0；bitmap 最大 4MiB。
 // bitmap_len 写入字节数；出错时返回 -1。
 int tmsl_dataset_query_exist(void* dataset, int64_t start_ts, int64_t end_ts,
                              uint8_t** out_bitmap, size_t* out_bitmap_len,
@@ -431,9 +434,9 @@ class DataSet:
 ## 实现顺序
 
 1. **30.1** DataSegmentSet::read_record_data_len() — 基础依赖
-2. **30.2** read_exist() — 最简单，验证索引访问
+2. **30.2** read_exist() — 最简单，验证可见数据存在性
 3. **30.4** read_length() — 依赖 30.1
-4. **30.3** query_exist() — 批量索引检查
+4. **30.3** query_exist() — 批量可见数据存在性检查
 5. **30.5** query_length() — 批量数据长度
 6. **30.6** QueryLengthIterator + query_length_iter() — 迭代器
 7. **30.7** FFI 接口
@@ -464,8 +467,8 @@ cd wrapper/python && cargo test && cargo clippy
 
 - [x] 设计文档 — read_exist/query_exist/read_length/query_length/query_length_iter 接口规范
 - [x] DataSegmentSet::read_record_data_len() — 仅读取 record header 获取 data_len
-- [x] DataSet::read_exist() — 单时间戳索引存在检查
-- [x] DataSet::query_exist() — 范围索引存在性检查，返回位图
+- [x] DataSet::read_exist() — 单时间戳当前可见数据存在检查
+- [x] DataSet::query_exist() — 范围当前可见数据存在检查，返回位图
 - [x] DataSet::read_length() — 单时间戳数据长度读取
 - [x] DataSet::query_length() — 范围查询数据长度列表
 - [x] QueryLengthIterator + query_length_iter() — 惰性数据长度迭代器

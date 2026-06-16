@@ -37,7 +37,7 @@
 | [x] | P1-3 | 明确 public timestamp 契约与 `0`/`-1` sentinel 关系 | `docs/design/data-model.md`, `docs/design/dataset-operations.md`, `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `docs/design/index-continuous.md`, `docs/design/dataset-inspect.md`, FFI/Python docs/tests | public timestamp 保持 signed `i64`，`0` 和负数是合法业务 timestamp；新增 Rust/Store/Python `read_latest()` 与 FFI `tmsl_dataset_read_latest`；`read(-1)`/轻量读接口均改为精确 timestamp；empty latest 使用 `Option<i64>` 或 FFI `has_latest_written_timestamp`/返回码表达 |
 | [x] | P1-4 | 统一 append 已有 latest record 的容量错误契约 | `AGENTS.md`, `docs/design/data-model.md`, `docs/design/data-segment.md`, `docs/design/dataset-operations.md`, `docs/review/archives/Round5/test-review-todo.md`, append/cache/journal tests | active contract 明确为迁移已废弃：已有 latest record append 只允许 pending raw tail 原地增长，超出普通 pending block 可承载范围直接返回错误；70% threshold 与旧缓存失效残留已清理 |
 | [x] | P1-5 | 固化 FFI 轻量读接口 ABI，尤其 `query_length` 返回布局 | `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `include/timslite.h`, `src/ffi.rs`, FFI/Python wrapper tests | `tmsl_dataset_query_length` 只有一个 C ABI 签名和内存布局；如返回 `(timestamp, data_len)` 数组，需要 `repr(C)`/C struct、alignment、`array_len` 和释放规则明确；旧 `uint32_t*` 口径清除或改名 |
-| [ ] | P1-6 | 明确 `query_exist` retention 语义和范围上界 | `docs/design/dataset-read-operations.md`, `docs/design/dataset-operations.md`, `src/dataset.rs`, `src/ffi.rs`, read operations tests | `read_exist/query_exist` 表示“索引物理存在”还是“当前可见存在”有统一定义；range 计算使用 checked arithmetic；超大 bitmap 有明确错误上限；retention/deleted/filler 测试覆盖 |
+| [x] | P1-6 | 明确 `query_exist` retention 语义和范围上界 | `docs/design/dataset-read-operations.md`, `docs/design/dataset-operations.md`, `src/dataset.rs`, `src/ffi.rs`, read operations tests | `read_exist/query_exist` 表示“索引物理存在”还是“当前可见存在”有统一定义；range 计算使用 checked arithmetic；超大 bitmap 有明确错误上限；retention/deleted/filler 测试覆盖 |
 | [ ] | P1-7 | 统一 flush 默认值与 durability 口径 | `docs/design/background-and-cache.md`, `docs/design/dataset-operations.md`, `docs/design/queue-state-file.md`, `docs/design/memory-and-concurrency.md`, `docs/design/design-decisions.md`, `src/config.rs` | 所有设计文档统一当前默认 flush interval；若 10min 是历史值或建议配置，明确标注；queue state 持久化窗口描述与 P0-1 决策一致 |
 
 ## P2: 可以随后优化
@@ -68,12 +68,13 @@
 | 2026-06-16 | P1-3 | [x] | 将 public timestamp 契约改为 signed `i64` 全域业务值；移除 `-1` latest sentinel；新增 `DataSet::read_latest`、`Store::read_dataset_latest`、FFI `tmsl_dataset_read_latest`、Python `Dataset.read_latest()`；`latest_written_timestamp` 与 inspect state 改为可空/显式 flag；同步 queue initial progress、read tests、FFI/Python wrapper tests 与相关设计/计划文档 | `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `cargo test --manifest-path wrapper/python/Cargo.toml`; `maturin develop --manifest-path wrapper/python/Cargo.toml`; `python -m pytest wrapper/python/tests -q`; `git diff --check` |
 | 2026-06-16 | P1-4 | [x] | 确认实现已按“append 迁移废弃”执行：已有 latest record append 只走 pending raw tail 原地增长，超出普通 pending block 容量返回错误；同步 AGENTS 当前契约、Round5 TODO 残留命名和 append 测试命名；保留现有容量边界回归测试 | `cargo test t32_1_append_existing_latest_exceeding_pending_capacity_errors -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | 2026-06-16 | P1-5 | [x] | 新增 Rust/C ABI `TmslLengthEntry { timestamp, data_len }`；将 `tmsl_dataset_query_length` 返回值改为 `TmslLengthEntry**`；明确 `sizeof=16`、`alignment=8`、`out_array_len` 为元素数量并清除旧 `uint32_t*`/12B 数组描述；补充 FFI typed array 回归测试 | `cargo test test_ffi_query_iterator_and_delete -- --test-threads=1`; `cargo test tmsl_length_entry_layout_matches_c_abi -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
+| 2026-06-16 | P1-6 | [x] | 将 `read_exist/query_exist` 统一定义为当前可见数据存在性：过期 timestamp、filler/deleted entry 返回 false/0；`query_exist` 使用 checked range 计算并限制 bitmap 最大 4MiB；保留 bitmap 与原请求范围对齐；同步 Rust/FFI 注释、C header、设计和计划文档；补充 retention、deleted/filler、超限和 FFI 边界测试 | `cargo test --test read_operations query_exist -- --test-threads=1`; `cargo test test_ffi_query_iterator_and_delete -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 
 ## 完成统计
 
 | 优先级 | 总数 | 已完成 | 未完成 |
 |--------|------|--------|--------|
 | P0 | 3 | 3 | 0 |
-| P1 | 7 | 5 | 2 |
+| P1 | 7 | 6 | 1 |
 | P2 | 4 | 1 | 3 |
-| 合计 | 14 | 9 | 5 |
+| 合计 | 14 | 10 | 4 |

@@ -12,8 +12,8 @@
 | `read_latest()` | `Option<(i64, Vec<u8>)>` | 读取最大已写 timestamp 对应记录 | 是 |
 | `query(start, end)` | `Vec<(i64, Vec<u8>)>` | 范围查询完整记录 | 是 |
 | `query_iter(start, end)` | `QueryIterator` | 惰性范围查询迭代器 | 是 (按需) |
-| `read_exist(ts)` | `bool` | 检查单个时间戳索引是否存在 | **否** |
-| `query_exist(start, end)` | `Vec<u8>` (bitmap) | 范围索引存在性检查 | **否** |
+| `read_exist(ts)` | `bool` | 检查单个时间戳当前是否有可见数据 | **否** |
+| `query_exist(start, end)` | `Vec<u8>` (bitmap) | 范围数据存在性快速检查 | **否** |
 | `read_length(ts)` | `Option<u32>` | 读取单条记录数据长度 | 仅 header |
 | `query_length(start, end)` | `Vec<(i64, u32)>` | 范围查询数据长度列表 | 仅 header |
 | `query_length_iter(start, end)` | `QueryLengthIterator` | 惰性范围数据长度迭代器 | 仅 header (按需) |
@@ -112,28 +112,29 @@ pub fn query_iter<'a>(&'a mut self, start_ts: i64, end_ts: i64) -> Result<QueryI
 ### 3.1 read_exist(timestamp)
 
 ```rust
-pub fn read_exist(&self, timestamp: i64) -> Result<bool>
+pub fn read_exist(&mut self, timestamp: i64) -> Result<bool>
 ```
 
-检查单个时间戳的索引是否存在。
+检查单个时间戳当前是否有可见数据。
 
 **参数**:
 - `timestamp`: 目标业务时间戳, signed `i64`; `-1` 是普通精确 timestamp
 
 **返回**:
-- `Ok(true)` — 索引 entry 存在（包括 filler）
-- `Ok(false)` — 索引 entry 不存在
+- `Ok(true)` — timestamp 在 retention 可见范围内，且索引 entry 指向真实数据
+- `Ok(false)` — 索引 entry 不存在、是 filler/deleted entry，或 timestamp 已过期
 
 **流程**:
-1. `TimeIndex::find_entry()` 查找索引
-2. 返回 `entry.is_some()`
+1. 检查 retention 是否过期，过期返回 `false`
+2. `TimeIndex::find_entry()` 查找索引
+3. entry 不存在或 `block_offset == BLOCK_OFFSET_FILLER` 返回 `false`
+4. 否则返回 `true`
 
 **特点**:
-- **不检查 filler** — 只要 `find_entry()` 返回 `Some` 就是 `true`
 - **不读取数据段** — 性能最优
-- **不检查 retention** — 索引存在即返回 `true`
+- **检查 retention 和 filler** — 表示当前可见数据存在性，不表示底层索引物理 entry 是否仍存在
 
-**设计决策**: `read_exist` 仅表示"索引位置有 entry"，不表示数据有效。调用方如需确认数据有效性，应使用 `read()` 或 `read_length()`。
+**设计决策**: `read_exist` / `query_exist` 用于通过索引快速判断“数据是否当前可读”。过期索引、filler/deleted entry 与物理索引残留都返回不存在；调用方不应使用它们判断底层索引文件是否仍有 entry。
 
 ---
 
@@ -143,16 +144,17 @@ pub fn read_exist(&self, timestamp: i64) -> Result<bool>
 pub fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>
 ```
 
-范围索引存在性检查，返回位图。
+范围数据存在性快速检查，返回位图。
 
 **参数**:
 - `start_ts`: 起始时间戳（含）
 - `end_ts`: 结束时间戳（含）
 
 **返回**: `Vec<u8>` — 位图字节数组
-- 位 `i` 代表时间戳 `(start_ts + i)` 是否存在
-- `1` = 存在，`0` = 不存在
+- 位 `i` 代表时间戳 `(start_ts + i)` 当前是否有可见数据
+- `1` = retention 可见范围内存在真实数据，`0` = 不存在、过期、或为 filler/deleted entry
 - 字节数组长度 = `(count + 7) / 8`，其中 `count = end_ts - start_ts + 1`
+- 最大可分配 bitmap 为 4MiB；超过该上限返回错误
 
 **示例**:
 ```
@@ -164,13 +166,15 @@ start_ts = 100, end_ts = 107
 ```
 
 **流程**:
-1. `clamp_query_range()` 裁剪到 retention 窗口
-2. `TimeIndex::query()` 获取范围内所有 entry
-3. 遍历 entry，设置对应位
+1. 若 `start_ts > end_ts` 返回空 bitmap
+2. 使用 checked arithmetic 按原请求范围计算 timestamp 数量和 bitmap 字节数，保持 bit `i` 始终对应 `start_ts + i`
+3. 若 bitmap 字节数超过 4MiB，返回错误
+4. 计算 retention 可见起点，仅查询当前可见范围内的 index entry；过期区间在原 bitmap 中保持 0
+5. 跳过 filler/deleted entry，仅对真实数据 entry 设置对应位
 
 **特点**:
 - **不读取数据段** — 仅索引查询
-- **不限制范围大小** — 调用方自行控制
+- **限制 bitmap 内存** — 单次调用最多分配 4MiB bitmap
 - **返回原始位图** — 调用方需自行解析
 
 ---
@@ -316,8 +320,8 @@ impl<'a> Iterator for QueryLengthIterator<'a> {
 
 ### 4.3 索引查询优化
 
-`query_exist` 使用 `TimeIndex::query()` 获取范围内所有 entry。对于大范围查询，可考虑:
-- 当前实现: 一次性加载所有 entry 到内存
+`query_exist` 使用 `TimeIndex::query()` 获取 retention 可见范围内的 entry，并跳过 filler/deleted entry。对于大范围查询，可考虑:
+- 当前实现: bitmap 最大 4MiB，一次性加载可见范围内的 entry 到内存
 - 未来优化: 使用 `prepare_query_sources()` + cursor 模式（需权衡复杂度）
 
 ---
@@ -327,10 +331,11 @@ impl<'a> Iterator for QueryLengthIterator<'a> {
 新增 FFI 函数:
 
 ```c
-// read_exist: 检查索引是否存在
+// read_exist: 检查当前是否存在可见数据
 bool tmsl_dataset_read_exist(TmslStore* store, const char* name, const char* type, int64_t timestamp);
 
-// query_exist: 范围索引存在性检查，返回位图
+// query_exist: 范围数据存在性快速检查，返回位图
+// 过期 timestamp 与 filler/deleted entry 位为 0；bitmap 最大 4MiB。
 // 返回的 bitmap 需要调用方 free
 uint8_t* tmsl_dataset_query_exist(TmslStore* store, const char* name, const char* type, 
                                    int64_t start_ts, int64_t end_ts, size_t* bitmap_len);
@@ -442,6 +447,5 @@ for i in 0..bitmap.len() * 8 {
 
 ### 7.3 并发安全
 
-- `read_exist()` 使用 `&self`（不可变借用），支持并发调用
-- 其他读操作使用 `&mut self`（可变借用），与写操作互斥
+- 读操作使用 `&mut self`（可变借用），与写操作互斥
 - 通过 Store 门面调用时，内部 `Mutex<DataSet>` 保证线程安全

@@ -52,12 +52,12 @@ impl DataSet {
     fn query_iter(&mut self, start_ts: i64, end_ts: i64) -> io::Result<QueryIterator<'_>>;
 
     // 轻量级读操作 (仅索引或 record header)
-    /// 检查索引 entry 是否存在 (包括 filler)。timestamp 为精确业务时间戳。
-    /// 不读取数据段，不检查 retention，性能最优。
-    fn read_exist(&self, timestamp: i64) -> io::Result<bool>;
+    /// 检查 timestamp 当前是否存在可见数据。timestamp 为精确业务时间戳。
+    /// 不读取数据段；过期 timestamp 与 filler/deleted entry 返回 false。
+    fn read_exist(&mut self, timestamp: i64) -> io::Result<bool>;
 
-    /// 范围索引存在性检查，返回位图。位 i 代表 (start_ts + i) 是否存在。
-    /// 不读取数据段，不限制范围大小，调用方需自行解析位图。
+    /// 范围数据存在性快速检查，返回位图。位 i 代表 (start_ts + i) 当前是否存在可见数据。
+    /// 不读取数据段；过期 timestamp 与 filler/deleted entry 位为 0；bitmap 最大 4MiB。
     fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<u8>>;
 
     /// 读取单条记录的逻辑数据长度。timestamp 为精确业务时间戳。
@@ -639,6 +639,8 @@ retention_threshold = latest_written_timestamp.map(|latest| latest.saturating_su
 | `read(ts)` | 直接返回 `Ok(None)` |
 | `read_latest()` | 解析为 latest, 不回退到更早有效记录 |
 | `query/query_iter` | `start_ts = max(start_ts, threshold)`; 若范围完全过期则返回空 |
+| `read_exist(ts)` | 返回 `Ok(false)` |
+| `query_exist(start, end)` | 返回与原请求范围对齐的 bitmap, 过期 bit 为 0; 超过 4MiB bitmap 返回错误 |
 | `query_index_entries` | 与 query 使用相同钳制, 不暴露过期 entry |
 | `read_entry_at_index(entry)` | 返回 `Expired` 错误, 防止绕过 timestamp 入口 |
 | `delete(ts)` | 返回 `Expired` 错误, 不打开旧索引/旧数据段 |
