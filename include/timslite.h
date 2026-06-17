@@ -835,12 +835,15 @@ typedef struct TmslDataSetState {
     uint64_t total_data_size;         /**< Total used space across all data segments (bytes) */
     uint64_t total_uncompressed_size; /**< Total uncompressed size across all data segments (bytes) */
     uint64_t total_invalid_record_count; /**< Total invalid record count across all data segments */
+    uint8_t has_min_timestamp;        /**< Whether min_timestamp is valid */
     int64_t min_timestamp;            /**< Global minimum timestamp from the index-visible range */
+    uint8_t has_max_timestamp;        /**< Whether max_timestamp is valid */
     int64_t max_timestamp;            /**< Global maximum timestamp from the index-visible range */
     uint32_t open_index_segments;     /**< Number of currently open index segments */
     uint32_t index_segments;          /**< Total number of index segments */
     uint32_t pending_index_entries;   /**< Number of in-memory buffered index entries */
-    int64_t base_timestamp;           /**< Index base timestamp (0 if no data) */
+    uint8_t has_base_timestamp;       /**< Whether base_timestamp is valid */
+    int64_t base_timestamp;           /**< Index base timestamp */
     uint8_t read_only;                /**< Whether the dataset is in read-only mode */
     uint8_t has_block_cache;          /**< Whether BlockCache is enabled */
     uint8_t has_journal;              /**< Whether Journal is enabled */

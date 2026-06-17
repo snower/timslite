@@ -10,7 +10,7 @@
 
 ## 30.1 DataSegmentSet::read_record_data_len() — 读取 record header
 
-新增轻量级方法，仅读取 record header 获取 data_len，不读取实际数据。
+新增轻量级方法，仅读取 record header 获取 data_len，不读取实际数据。公共契约中的 record header 固定为 12B (`data_len: u32` + `timestamp: i64`); 实现可以在 index 已定位且无需重复 timestamp 校验的 fast path 中只解码前 4B `data_len`, 但文档口径统一按 12B header 表达。
 
 ### 实现位置
 `src/segment/data.rs` 或 `src/segment/mod.rs`

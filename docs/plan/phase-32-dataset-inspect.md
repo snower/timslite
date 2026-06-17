@@ -50,8 +50,8 @@ pub struct DataSetState {
     pub total_data_size: u64,
     pub total_uncompressed_size: u64,
     pub total_invalid_record_count: u64,
-    pub min_timestamp: i64,
-    pub max_timestamp: i64,
+    pub min_timestamp: Option<i64>,
+    pub max_timestamp: Option<i64>,
     // 索引段
     pub open_index_segments: u32,
     pub index_segments: u32,
@@ -114,11 +114,14 @@ typedef struct {
     uint64_t total_data_size;
     uint64_t total_uncompressed_size;
     uint64_t total_invalid_record_count;
+    uint8_t has_min_timestamp;
     int64_t min_timestamp;
+    uint8_t has_max_timestamp;
     int64_t max_timestamp;
     uint32_t open_index_segments;
     uint32_t index_segments;
     uint32_t pending_index_entries;
+    uint8_t has_base_timestamp;
     int64_t base_timestamp;
     uint8_t read_only;
     uint8_t has_block_cache;
@@ -170,8 +173,8 @@ class DataSetState:
     total_data_size: int
     total_uncompressed_size: int
     total_invalid_record_count: int
-    min_timestamp: int
-    max_timestamp: int
+    min_timestamp: Optional[int]
+    max_timestamp: Optional[int]
     open_index_segments: int
     index_segments: int
     pending_index_entries: int

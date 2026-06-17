@@ -2262,8 +2262,12 @@ pub struct TmslDataSetState {
     pub total_uncompressed_size: u64,
     /// Total invalid record count across all data segments
     pub total_invalid_record_count: u64,
+    /// Whether min_timestamp is present
+    pub has_min_timestamp: u8,
     /// Global minimum timestamp from the index-visible range
     pub min_timestamp: i64,
+    /// Whether max_timestamp is present
+    pub has_max_timestamp: u8,
     /// Global maximum timestamp from the index-visible range
     pub max_timestamp: i64,
     /// Number of currently open index segments
@@ -2272,7 +2276,9 @@ pub struct TmslDataSetState {
     pub index_segments: u32,
     /// Number of in-memory buffered index entries
     pub pending_index_entries: u32,
-    /// Index base timestamp (0 if no data)
+    /// Whether base_timestamp is present
+    pub has_base_timestamp: u8,
+    /// Index base timestamp
     pub base_timestamp: i64,
     /// Whether the dataset is in read-only mode
     pub read_only: u8,
@@ -2362,11 +2368,14 @@ pub extern "C" fn tmsl_store_inspect_dataset(
             total_data_size: result.state.total_data_size,
             total_uncompressed_size: result.state.total_uncompressed_size,
             total_invalid_record_count: result.state.total_invalid_record_count,
-            min_timestamp: result.state.min_timestamp,
-            max_timestamp: result.state.max_timestamp,
+            has_min_timestamp: u8::from(result.state.min_timestamp.is_some()),
+            min_timestamp: result.state.min_timestamp.unwrap_or(0),
+            has_max_timestamp: u8::from(result.state.max_timestamp.is_some()),
+            max_timestamp: result.state.max_timestamp.unwrap_or(0),
             open_index_segments: result.state.open_index_segments,
             index_segments: result.state.index_segments,
             pending_index_entries: result.state.pending_index_entries,
+            has_base_timestamp: u8::from(result.state.base_timestamp.is_some()),
             base_timestamp: result.state.base_timestamp.unwrap_or(0),
             read_only: u8::from(result.state.read_only),
             has_block_cache: u8::from(result.state.has_block_cache),
@@ -2578,12 +2587,67 @@ mod tests {
         let mut inspect = unsafe { inspect.assume_init() };
         assert_eq!(inspect.info.enable_journal, 0);
         assert_eq!(inspect.state.has_journal, 0);
+        assert_eq!(inspect.state.has_min_timestamp, 0);
+        assert_eq!(inspect.state.has_max_timestamp, 0);
+        assert_eq!(inspect.state.has_base_timestamp, 0);
         tmsl_free_inspect_result(&mut inspect);
 
         let mut latest_ts: c_longlong = 123;
         assert_eq!(
             tmsl_dataset_latest_timestamp(dataset, &mut latest_ts, err.as_mut_ptr(), err_len),
             1
+        );
+
+        let zero_name = CString::new("zero").unwrap();
+        let zero_dataset_config = TmslDatasetConfigFFI {
+            index_continuous: 1,
+            ..dataset_config
+        };
+        let zero_dataset = tmsl_dataset_create_with_config(
+            store,
+            zero_name.as_ptr(),
+            ty.as_ptr(),
+            &zero_dataset_config,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!zero_dataset.is_null());
+
+        let zero_payload = [0u8];
+        assert_eq!(
+            tmsl_dataset_write(
+                zero_dataset,
+                0,
+                zero_payload.as_ptr(),
+                zero_payload.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        let mut inspect = std::mem::MaybeUninit::<TmslInspectResult>::uninit();
+        assert_eq!(
+            tmsl_store_inspect_dataset(
+                store,
+                zero_name.as_ptr(),
+                ty.as_ptr(),
+                inspect.as_mut_ptr(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        let mut inspect = unsafe { inspect.assume_init() };
+        assert_eq!(inspect.state.has_min_timestamp, 1);
+        assert_eq!(inspect.state.min_timestamp, 0);
+        assert_eq!(inspect.state.has_max_timestamp, 1);
+        assert_eq!(inspect.state.max_timestamp, 0);
+        assert_eq!(inspect.state.has_base_timestamp, 1);
+        assert_eq!(inspect.state.base_timestamp, 0);
+        tmsl_free_inspect_result(&mut inspect);
+        assert_eq!(
+            tmsl_dataset_close(zero_dataset, err.as_mut_ptr(), err_len),
+            0
         );
 
         let signed_name = CString::new("signed").unwrap();

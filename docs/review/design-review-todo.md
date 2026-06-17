@@ -44,10 +44,10 @@
 
 | 状态 | ID | 任务 | 主要文件 | 验收标准 |
 |------|----|------|----------|----------|
-| [ ] | P2-1 | 统一 `read_length`/`query_length` 读取 record header 的 8B/12B 描述 | `docs/design/dataset-read-operations.md`, `docs/design/data-model.md`, `src/segment/*` 如需 | record header 统一为 12 bytes；若实现只读 `data_len`，文档说明 timestamp 校验场景仍需读取完整 header |
-| [ ] | P2-2 | 补齐 `DataSetInspect` sentinel/nullability 设计 | `docs/design/dataset-inspect.md`, `docs/design/store-and-ffi.md`, `include/timslite.h`, `src/ffi.rs`, inspect tests | FFI inspect 不再依赖含糊的 0 sentinel，或明确 0 不可能为业务 timestamp；必要时增加 `has_*` flag |
+| [x] | P2-1 | 统一 `read_length`/`query_length` 读取 record header 的 8B/12B 描述 | `docs/design/dataset-read-operations.md`, `docs/design/data-model.md`, `src/segment/*` 如需 | record header 统一为 12 bytes；若实现只读 `data_len`，文档说明 timestamp 校验场景仍需读取完整 header |
+| [x] | P2-2 | 补齐 `DataSetInspect` sentinel/nullability 设计 | `docs/design/dataset-inspect.md`, `docs/design/store-and-ffi.md`, `include/timslite.h`, `src/ffi.rs`, inspect tests | FFI inspect 不再依赖含糊的 0 sentinel，或明确 0 不可能为业务 timestamp；必要时增加 `has_*` flag |
 | [x] | P2-3 | 清理 `design.md` 与架构模块说明中的 deflate-only 残留 | `design.md`, `docs/design/architecture.md`, `docs/design/compression.md` | 入口索引和模块说明统一为 zstd default / deflate supported / selected algorithm 口径 |
-| [ ] | P2-4 | 补齐 Queue state file `open_existing` 格式校验清单 | `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue negative tests | 文档和实现校验文件长度、`state_length`、`pending_value_size`、`pending_length` 上限、entry 越界、status 合法值、timestamp 排序/去重要求 |
+| [x] | P2-4 | 补齐 Queue state file `open_existing` 格式校验清单 | `docs/design/queue-state-file.md`, `src/queue/mod.rs`, queue negative tests | 文档和实现校验文件长度、`state_length`、`pending_value_size`、`pending_length` 上限、entry 越界、status 合法值、timestamp 排序/去重要求 |
 
 ## 建议处理顺序
 
@@ -70,6 +70,7 @@
 | 2026-06-16 | P1-5 | [x] | 新增 Rust/C ABI `TmslLengthEntry { timestamp, data_len }`；将 `tmsl_dataset_query_length` 返回值改为 `TmslLengthEntry**`；明确 `sizeof=16`、`alignment=8`、`out_array_len` 为元素数量并清除旧 `uint32_t*`/12B 数组描述；补充 FFI typed array 回归测试 | `cargo test test_ffi_query_iterator_and_delete -- --test-threads=1`; `cargo test tmsl_length_entry_layout_matches_c_abi -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | 2026-06-16 | P1-6 | [x] | 将 `read_exist/query_exist` 统一定义为当前可见数据存在性：过期 timestamp、filler/deleted entry 返回 false/0；`query_exist` 使用 checked range 计算并限制 bitmap 最大 4MiB；保留 bitmap 与原请求范围对齐；同步 Rust/FFI 注释、C header、设计和计划文档；补充 retention、deleted/filler、超限和 FFI 边界测试 | `cargo test --test read_operations query_exist -- --test-threads=1`; `cargo test test_ffi_query_iterator_and_delete -- --test-threads=1`; `cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `git diff --check` |
 | 2026-06-16 | P1-7 | [x] | 将 flush active default 统一为 15s；把 10min 标为早期草案值或历史迁移说明；同步 memory/concurrency、design decisions、dataset operations、phase overview、早期 phase 文档和 Python wrapper design/plan；修正 Python `StoreConfig()` 构造器默认值从 600s 到 15s 并补回归测试 | `python -m pytest wrapper/python/tests/test_config.py::TestConfig::test_store_config_constructor_defaults_match_rust_defaults -q` 先失败后通过；`cargo test -- --test-threads=1`; `cargo fmt -- --check`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `cargo test --manifest-path wrapper/python/Cargo.toml`; `maturin develop --manifest-path wrapper/python/Cargo.toml`; `python -m pytest wrapper/python/tests -q`; `git diff --check` |
+| 2026-06-17 | P2-1/P2-2/P2-3/P2-4 | [x] | 将轻量 length 读取口径统一为 12B record header；`DataSetInspect` 对外 min/max/base timestamp 改为 `Option` / FFI `has_*` flag / Python `Optional[int]`，并补 timestamp 0 回归测试；复查入口与架构文档未再残留 deflate-only 口径；补齐 QSTF `open_existing` 校验清单并实现文件长度、pending status、timestamp 严格递增校验 | `cargo fmt -- --check`; `cargo test inspect -- --test-threads=1`; `cargo test csf_open_rejects -- --test-threads=1`; `cargo check`; `cargo clippy --all-targets -- -D warnings`; `cargo test -- --test-threads=1`; `cargo test --manifest-path wrapper/python/Cargo.toml`; `maturin develop --manifest-path wrapper/python/Cargo.toml`; `python -m pytest wrapper/python/tests -q`; `git diff --check` |
 
 ## 完成统计
 
@@ -77,5 +78,5 @@
 |--------|------|--------|--------|
 | P0 | 3 | 3 | 0 |
 | P1 | 7 | 7 | 0 |
-| P2 | 4 | 1 | 3 |
-| 合计 | 14 | 11 | 3 |
+| P2 | 4 | 4 | 0 |
+| 合计 | 14 | 14 | 0 |

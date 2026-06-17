@@ -88,10 +88,10 @@ pub struct PyDataSetState {
     pub total_invalid_record_count: u64,
     /// Global minimum timestamp from the index-visible range
     #[pyo3(get)]
-    pub min_timestamp: i64,
+    pub min_timestamp: Option<i64>,
     /// Global maximum timestamp from the index-visible range
     #[pyo3(get)]
-    pub max_timestamp: i64,
+    pub max_timestamp: Option<i64>,
     /// Number of currently open index segments
     #[pyo3(get)]
     pub open_index_segments: u32,

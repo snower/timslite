@@ -406,7 +406,7 @@ impl DataSet {
         Ok(())
     }
 
-    fn inspect_timestamp_range(&self) -> (i64, i64) {
+    fn inspect_timestamp_range(&self) -> (Option<i64>, Option<i64>) {
         let archived = self.dataset_state.snapshot();
         let mut min_ts =
             (archived.min_timestamp != TIMESTAMP_MIN_SENTINEL).then_some(archived.min_timestamp);
@@ -418,10 +418,7 @@ impl DataSet {
             max_ts = Some(max_ts.map_or(active_max, |max| max.max(active_max)));
         }
 
-        match (min_ts, max_ts) {
-            (Some(min), Some(max)) => (min, max),
-            _ => (0, 0),
-        }
+        (min_ts, max_ts)
     }
 
     fn enqueue_dirty_segments(&mut self) {
@@ -1568,9 +1565,9 @@ pub struct DataSetState {
     /// Total invalid record count across all data segments (deleted/expired/overwritten)
     pub total_invalid_record_count: u64,
     /// Global minimum timestamp from the index-visible range
-    pub min_timestamp: i64,
+    pub min_timestamp: Option<i64>,
     /// Global maximum timestamp from the index-visible range
-    pub max_timestamp: i64,
+    pub max_timestamp: Option<i64>,
     /// Number of currently open index segments
     pub open_index_segments: u32,
     /// Total number of index segments

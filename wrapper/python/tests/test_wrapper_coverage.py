@@ -178,7 +178,7 @@ class TestFFICoverage:
     def test_inspect_result_structure(self, tmpdir):
         """InspectResult has expected fields."""
         with timslite.Store.open(tmpdir) as store:
-            store.create_dataset("inspect", "data")
+            store.create_dataset("inspect", "data", index_continuous=True)
             result = store.inspect_dataset("inspect", "data")
 
             # Check info fields
@@ -191,12 +191,23 @@ class TestFFICoverage:
             # Check state fields
             assert hasattr(result, "state")
             assert hasattr(result.state, "latest_written_timestamp")
+            assert result.state.min_timestamp is None
+            assert result.state.max_timestamp is None
+            assert result.state.base_timestamp is None
             assert hasattr(result.state, "open_data_segments")
             assert hasattr(result.state, "data_segments")
             assert hasattr(result.state, "total_record_count")
             assert hasattr(result.state, "total_data_size")
             assert hasattr(result.state, "open_index_segments")
             assert hasattr(result.state, "index_segments")
+
+            ds = store.open_dataset("inspect", "data")
+            ds.write(0, b"zero")
+            result = ds.inspect()
+            assert result.state.latest_written_timestamp == 0
+            assert result.state.min_timestamp == 0
+            assert result.state.max_timestamp == 0
+            assert result.state.base_timestamp == 0
 
 
 class TestEdgeCases:

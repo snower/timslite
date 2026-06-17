@@ -87,10 +87,10 @@ pub struct DataSetState {
     pub total_uncompressed_size: u64,
     /// 全部数据段的无效 record 数量 (已删除/过期/覆盖)
     pub total_invalid_record_count: u64,
-    /// 全局最小 timestamp；空 dataset 使用 timestamp sentinel
-    pub min_timestamp: i64,
-    /// 全局最大 timestamp；空 dataset 使用 timestamp sentinel
-    pub max_timestamp: i64,
+    /// 全局最小 timestamp；空 dataset / 空可见范围为 None
+    pub min_timestamp: Option<i64>,
+    /// 全局最大 timestamp；空 dataset / 空可见范围为 None
+    pub max_timestamp: Option<i64>,
 
     // ─── 索引段状态 ───────────────────────────────────────────────────────
     /// 当前打开的索引段数量
@@ -273,12 +273,15 @@ typedef struct {
     uint64_t total_data_size;
     uint64_t total_uncompressed_size;
     uint64_t total_invalid_record_count;
+    uint8_t has_min_timestamp;        // 0=false, 1=true
     int64_t min_timestamp;
+    uint8_t has_max_timestamp;        // 0=false, 1=true
     int64_t max_timestamp;
     uint32_t open_index_segments;
     uint32_t index_segments;
     uint32_t pending_index_entries;
-    int64_t base_timestamp;          // 0 表示无 (用 0 作为 sentinel)
+    uint8_t has_base_timestamp;       // 0=false, 1=true
+    int64_t base_timestamp;
     uint8_t read_only;
     uint8_t has_block_cache;
     uint8_t has_journal;
@@ -336,8 +339,8 @@ class DataSetState:
     total_data_size: int
     total_uncompressed_size: int
     total_invalid_record_count: int
-    min_timestamp: int
-    max_timestamp: int
+    min_timestamp: Optional[int]
+    max_timestamp: Optional[int]
     open_index_segments: int
     index_segments: int
     pending_index_entries: int
@@ -409,16 +412,18 @@ fn build_state(&self) -> Result<DataSetState> {
 
 `DataSegmentMeta` 不需要扩展为保存所有 inspect 汇总字段。归档汇总由 dataset state 文件承载；单段统计在分段从 active tail 转入归档、或 retention 删除归档段时读取当前已知的 segment/header 状态并更新 state 文件。
 
-### 6.3 时间戳哨兵值处理
+### 6.3 时间戳空值处理
 
-- `min_timestamp` 和 `max_timestamp` 使用 `TIMESTAMP_MIN_SENTINEL` / `TIMESTAMP_MAX_SENTINEL` 表示空范围。
-- FFI 可使用 0 作为无范围 sentinel；Python wrapper 可转换为 `None` 或保持与当前 API 一致的 sentinel 语义。
+- Dataset state 文件中的归档范围仍使用 `TIMESTAMP_MIN_SENTINEL` / `TIMESTAMP_MAX_SENTINEL` 表示空范围, 该 sentinel 只属于 on-disk cache 内部格式。
+- Rust `DataSetState.min_timestamp` / `max_timestamp` 对外使用 `Option<i64>`。空 dataset 或空可见范围返回 `None`; timestamp `0`、负数和正数都可以作为有效 `Some(value)` 返回。
+- FFI `TmslDataSetState` 使用 `has_min_timestamp` / `has_max_timestamp` 标志表达 nullability。`min_timestamp = 0` 或 `max_timestamp = 0` 只有在对应 `has_* = 1` 时才表示有效 timestamp。
+- Python wrapper 使用 `Optional[int]`, 与 Rust `Option<i64>` 语义一致。
 - min/max 不从 data segment 统计中做加减推导，只随 index segment 新增/删除维护，inspect 时叠加 active index segment 范围。
 
 ### 6.4 base_timestamp 处理
 
 - `TimeIndex.base_timestamp` 是 `Option<i64>`。
-- FFI 中使用 0 作为 sentinel 表示 None。
+- FFI 使用 `has_base_timestamp` 标志表达 `None` / `Some`; `base_timestamp=0` 是有效值。
 - Python 中使用 `Optional[int]`。
 
 ## 七、性能考虑
@@ -436,7 +441,7 @@ fn build_state(&self) -> Result<DataSetState> {
 4. **多数据段**: rollover 后旧 active tail 进入 dataset state 文件，inspect 返回归档统计 + 新 active tail 统计。
 5. **Retention 删除**: 删除归档 data/index segment 后，state 文件统计和 min/max 边界正确更新。
 6. **delete 更新 invalid**: 删除命中已归档 data segment 时，state 文件中的 `total_invalid_record_count` 更新。
-7. **空数据集**: 空数据集的 min/max timestamp sentinel 处理正确。
+7. **空数据集与 timestamp 0**: 空数据集的 min/max 返回 `None` / `has_* = 0`; timestamp `0` 写入后作为有效 `Some(0)` / `has_* = 1` 返回。
 8. **只读模式**: 只读打开的数据集 `read_only=true`。
 9. **队列状态**: 有关联队列时 `has_queue=true`。
 10. **FFI 内存管理**: `tmsl_free_inspect_result` 正确释放所有内存。

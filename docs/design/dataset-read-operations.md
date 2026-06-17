@@ -21,7 +21,7 @@
 **性能层次**:
 - **最快**: `read_exist` — 仅索引查找，无数据段 I/O
 - **快**: `query_exist` — 索引范围查询，无数据段 I/O
-- **中**: `read_length`, `query_length`, `query_length_iter` — 需读取 record header (8 bytes)
+- **中**: `read_length`, `query_length`, `query_length_iter` — 需定位并读取 record header (12 bytes)
 - **慢**: `read`, `query`, `query_iter` — 需读取完整数据
 
 ---
@@ -292,6 +292,8 @@ impl DataSegmentSet {
 data_len: u32 (4 bytes, little-endian)
 timestamp: i64 (8 bytes, little-endian)
 ```
+
+`read_length` / `query_length` 的公共契约按完整 12B record header 定义, 因为 record 边界和 timestamp 校验都属于 header 语义。实现可以在已经由 index 定位、且无需再次校验 timestamp 的 fast path 中只解码前 4B `data_len`, 但文档、测试和 ABI 不再使用 8B header 口径。
 
 ### 4.2 QueryLengthIterator
 

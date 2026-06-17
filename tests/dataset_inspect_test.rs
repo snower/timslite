@@ -52,8 +52,8 @@ fn test_inspect_basic() {
     assert_eq!(result.state.total_data_size, 0);
     assert_eq!(result.state.total_uncompressed_size, 0);
     assert_eq!(result.state.total_invalid_record_count, 0);
-    assert_eq!(result.state.min_timestamp, 0);
-    assert_eq!(result.state.max_timestamp, 0);
+    assert_eq!(result.state.min_timestamp, None);
+    assert_eq!(result.state.max_timestamp, None);
     assert_eq!(result.state.open_index_segments, 0);
     assert_eq!(result.state.index_segments, 0);
     assert_eq!(result.state.pending_index_entries, 0);
@@ -61,6 +61,35 @@ fn test_inspect_basic() {
     assert!(!result.state.read_only);
     assert!(!result.state.has_queue);
     assert_eq!(result.state.queue_consumer_groups, 0);
+}
+
+#[test]
+fn test_inspect_timestamp_zero_is_present_value() {
+    let dir = temp_dir("inspect_timestamp_zero");
+    let id = DataSetKey {
+        name: "zero".into(),
+        dataset_type: "metrics".into(),
+    };
+    let mut ds = DataSet::create(
+        id,
+        dir.clone(),
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        1,
+        256 * 1024,
+        4 * 1024,
+        0,
+    )
+    .unwrap();
+
+    ds.write(0, b"zero").unwrap();
+    let result = ds.inspect().unwrap();
+
+    assert_eq!(result.state.latest_written_timestamp, Some(0));
+    assert_eq!(result.state.min_timestamp, Some(0));
+    assert_eq!(result.state.max_timestamp, Some(0));
+    assert_eq!(result.state.base_timestamp, Some(0));
 }
 
 #[test]
@@ -128,8 +157,8 @@ fn test_inspect_state_after_write() {
     assert!(result.state.total_data_size > 0);
     assert!(result.state.total_uncompressed_size > 0);
     assert_eq!(result.state.total_invalid_record_count, 0);
-    assert_eq!(result.state.min_timestamp, 100);
-    assert_eq!(result.state.max_timestamp, 300);
+    assert_eq!(result.state.min_timestamp, Some(100));
+    assert_eq!(result.state.max_timestamp, Some(300));
     assert!(result.state.open_data_segments > 0);
 }
 
@@ -167,8 +196,8 @@ fn test_inspect_state_multi_segment() {
     assert_eq!(result.state.latest_written_timestamp, Some(1000));
     assert_eq!(result.state.total_record_count, 10);
     assert!(result.state.data_segments > 1);
-    assert_eq!(result.state.min_timestamp, 100);
-    assert_eq!(result.state.max_timestamp, 1000);
+    assert_eq!(result.state.min_timestamp, Some(100));
+    assert_eq!(result.state.max_timestamp, Some(1000));
 }
 
 #[test]
@@ -220,8 +249,8 @@ fn test_inspect_counts_archived_segments_after_reopen_without_opening_all_segmen
     assert!(result.state.total_data_size > 0);
     assert!(result.state.total_uncompressed_size > 0);
     assert_eq!(result.state.total_invalid_record_count, 0);
-    assert_eq!(result.state.min_timestamp, 100);
-    assert_eq!(result.state.max_timestamp, 1000);
+    assert_eq!(result.state.min_timestamp, Some(100));
+    assert_eq!(result.state.max_timestamp, Some(1000));
 }
 
 #[test]
@@ -323,8 +352,8 @@ fn test_inspect_state_empty_dataset() {
     assert_eq!(result.state.latest_written_timestamp, None);
     assert_eq!(result.state.total_record_count, 0);
     assert_eq!(result.state.total_data_size, 0);
-    assert_eq!(result.state.min_timestamp, 0);
-    assert_eq!(result.state.max_timestamp, 0);
+    assert_eq!(result.state.min_timestamp, None);
+    assert_eq!(result.state.max_timestamp, None);
     assert_eq!(result.state.base_timestamp, None);
 }
 

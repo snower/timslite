@@ -168,6 +168,22 @@ poll 的核心顺序:
 
 “consumer 关闭再次开启”不依赖单个 handle 的 Drop 时机识别。只有 `ConsumerStateFile::open_existing` 从磁盘加载状态文件时触发恢复过期, 覆盖程序重启和 queue 重新打开场景。已经在内存中打开的同组 consumer handle 不因新增 handle 自动过期。
 
+### 31.8 open_existing 格式校验清单
+
+`ConsumerStateFile::open_existing` 只接受当前 QSTF v1 固定格式, 不做静默修复或版本迁移。打开已有文件时必须按以下顺序完成校验, 任一失败返回错误, 不应继续使用该 state file:
+
+1. 文件物理长度必须等于 `STATE_FILE_SIZE = 4096` bytes。
+2. `magic == "QSTF"`。
+3. `version == 1`。
+4. `state_length == 8`, 即当前唯一 state 值为 `processed_ts: i64`。
+5. `pending_value_size == 18`。
+6. `pending_length <= MAX_PENDING_ENTRIES`, 且 `STATE_HEADER_SIZE + pending_length * pending_value_size <= STATE_FILE_SIZE`。
+7. 每个 pending entry 的 `status` 只能是 `0`(unacked) 或 `1`(acked/完成)。
+8. pending entry 的 `timestamp` 必须严格递增, 且第一条必须大于 `processed_ts`; 这同时禁止重复 timestamp 和倒序 entry。
+9. `retry_count` 是持久化 `u8` 计数, 任意 `u8` 值均可被格式层接受, 是否超过 `max_retry_count` 由 poll-time retry/丢弃流程处理。
+
+校验通过后, 所有 `status=0` 的 pending entry 在内存中视为恢复过期: `start_time=0`。随后可按连续完成前缀推进 `processed_ts` 并清理已完成 pending。该加载流程只维护消费进度缓存, 不影响 dataset/data/index 文件正常读写。
+
 ---
 
 ## 三十二、同步策略

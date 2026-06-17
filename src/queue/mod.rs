@@ -225,6 +225,12 @@ impl ConsumerStateFile {
 
     fn open_existing(path: PathBuf) -> Result<Self> {
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let file_len = file.metadata()?.len();
+        if file_len != STATE_FILE_SIZE as u64 {
+            return Err(TmslError::InvalidData(format!(
+                "invalid queue state file length: {file_len}"
+            )));
+        }
         let mmap = unsafe { MmapMut::map_mut(&file)? };
 
         if &mmap[0..4] != QUEUE_STATE_MAGIC {
@@ -257,6 +263,7 @@ impl ConsumerStateFile {
         }
 
         let mut pending_entries = Vec::with_capacity(pending_length);
+        let mut last_timestamp = processed_ts;
         for i in 0..pending_length {
             let offset = STATE_HEADER_SIZE + i * PENDING_ENTRY_SIZE;
             if offset + PENDING_ENTRY_SIZE > STATE_FILE_SIZE {
@@ -266,7 +273,21 @@ impl ConsumerStateFile {
             }
             let mut buf = [0u8; PENDING_ENTRY_SIZE];
             buf.copy_from_slice(&mmap[offset..offset + PENDING_ENTRY_SIZE]);
-            pending_entries.push(PendingEntry::deserialize_from(&buf));
+            let entry = PendingEntry::deserialize_from(&buf);
+            if entry.status != PENDING_STATUS_UNACKED && entry.status != PENDING_STATUS_ACKED {
+                return Err(TmslError::InvalidData(format!(
+                    "invalid queue pending status at entry {i}: {}",
+                    entry.status
+                )));
+            }
+            if entry.timestamp <= last_timestamp {
+                return Err(TmslError::InvalidData(format!(
+                    "invalid queue pending timestamp order at entry {i}: {} <= {}",
+                    entry.timestamp, last_timestamp
+                )));
+            }
+            last_timestamp = entry.timestamp;
+            pending_entries.push(entry);
         }
 
         let mut state = ConsumerStateFile {
@@ -1010,6 +1031,32 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
+    fn write_raw_state_file(path: &Path, processed_ts: i64, entries: &[PendingEntry]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(path)
+            .unwrap();
+        file.set_len(STATE_FILE_SIZE as u64).unwrap();
+        let mut mmap = unsafe { MmapMut::map_mut(&file).unwrap() };
+        mmap[0..4].copy_from_slice(QUEUE_STATE_MAGIC);
+        mmap[4..8].copy_from_slice(&QUEUE_STATE_VERSION.to_le_bytes());
+        mmap[8..10].copy_from_slice(&8u16.to_le_bytes());
+        write_i64_at(&mut mmap, 10, processed_ts);
+        mmap[18..20].copy_from_slice(&(entries.len() as u16).to_le_bytes());
+        mmap[20] = PENDING_ENTRY_SIZE as u8;
+        for (i, entry) in entries.iter().enumerate() {
+            let offset = STATE_HEADER_SIZE + i * PENDING_ENTRY_SIZE;
+            let mut buf = [0u8; PENDING_ENTRY_SIZE];
+            entry.serialize_to(&mut buf);
+            mmap[offset..offset + PENDING_ENTRY_SIZE].copy_from_slice(&buf);
+        }
+        mmap.flush().unwrap();
+    }
+
     #[test]
     fn pending_entry_round_trip() {
         assert_eq!(QUEUE_STATE_VERSION, 1);
@@ -1210,6 +1257,80 @@ mod tests {
         }
         let result = ConsumerStateFile::open_or_create(path, 0);
         assert!(matches!(result, Err(TmslError::InvalidVersion(v)) if v == 99));
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_open_rejects_invalid_pending_status() {
+        let dir = temp_queue_dir();
+        let path = dir.join("bad_status");
+        write_raw_state_file(
+            &path,
+            10,
+            &[PendingEntry {
+                timestamp: 11,
+                start_time: 1000,
+                status: 9,
+                retry_count: 0,
+            }],
+        );
+        let result = ConsumerStateFile::open_or_create(path, 0);
+        assert!(
+            matches!(result, Err(TmslError::InvalidData(msg)) if msg.contains("pending status"))
+        );
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_open_rejects_duplicate_or_unsorted_pending_timestamps() {
+        let dir = temp_queue_dir();
+        let duplicate = dir.join("duplicate");
+        write_raw_state_file(
+            &duplicate,
+            10,
+            &[
+                PendingEntry {
+                    timestamp: 11,
+                    start_time: 1000,
+                    status: PENDING_STATUS_UNACKED,
+                    retry_count: 0,
+                },
+                PendingEntry {
+                    timestamp: 11,
+                    start_time: 1001,
+                    status: PENDING_STATUS_ACKED,
+                    retry_count: 0,
+                },
+            ],
+        );
+        let duplicate_result = ConsumerStateFile::open_or_create(duplicate, 0);
+        assert!(
+            matches!(duplicate_result, Err(TmslError::InvalidData(msg)) if msg.contains("pending timestamp order"))
+        );
+
+        let unsorted = dir.join("unsorted");
+        write_raw_state_file(
+            &unsorted,
+            10,
+            &[
+                PendingEntry {
+                    timestamp: 12,
+                    start_time: 1000,
+                    status: PENDING_STATUS_UNACKED,
+                    retry_count: 0,
+                },
+                PendingEntry {
+                    timestamp: 11,
+                    start_time: 1001,
+                    status: PENDING_STATUS_UNACKED,
+                    retry_count: 0,
+                },
+            ],
+        );
+        let unsorted_result = ConsumerStateFile::open_or_create(unsorted, 0);
+        assert!(
+            matches!(unsorted_result, Err(TmslError::InvalidData(msg)) if msg.contains("pending timestamp order"))
+        );
         cleanup(&dir);
     }
 
