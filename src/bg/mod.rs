@@ -18,7 +18,7 @@ use crate::dataset::DataSetKey;
 use crate::dataset::{DataSet, DataSetFlushTarget, SegmentFlushQueue, SegmentFlushTarget};
 use crate::journal::JournalManager;
 
-type DatasetMap = HashMap<DataSetKey, Arc<std::sync::Mutex<DataSet>>>;
+type DatasetMap = HashMap<DataSetKey, Arc<DataSet>>;
 
 /// Shared scheduling state kept across tick invocations.
 pub struct ExecutorState {
@@ -81,7 +81,7 @@ fn retention_delay_secs_utc(check_hour: u8, secs_since_epoch: u64) -> u64 {
     let wait_secs = if target_secs_into_day > secs_into_day {
         target_secs_into_day - secs_into_day
     } else {
-        // Already past today's target 閳?schedule for tomorrow
+        // Already past today's target; schedule for tomorrow.
         86400 - (secs_into_day - target_secs_into_day)
     };
     wait_secs.max(1)
@@ -351,11 +351,7 @@ impl BackgroundTasks {
             let Some(ds_arc) = ds_arc else {
                 continue;
             };
-            let mut ds = match ds_arc.lock() {
-                Ok(ds) => ds,
-                Err(_) => continue,
-            };
-            if let Err(e) = ds.sync_queued_flush_targets(targets) {
+            if let Err(e) = ds_arc.sync_queued_flush_targets(targets) {
                 log::error!("[bg flush] failed for {:?}: {}", key, e);
             }
         }
@@ -387,13 +383,7 @@ impl BackgroundTasks {
             };
             guard
                 .iter()
-                .filter(|(_k, ds_arc)| {
-                    let ds = match ds_arc.lock() {
-                        Ok(ds) => ds,
-                        Err(_) => return false,
-                    };
-                    ds.last_used_at().elapsed() >= self.idle_timeout
-                })
+                .filter(|(_k, ds_arc)| ds_arc.last_used_at().elapsed() >= self.idle_timeout)
                 .map(|(k, _)| k.clone())
                 .collect::<Vec<_>>()
         };
@@ -409,12 +399,8 @@ impl BackgroundTasks {
                     None => continue,
                 }
             };
-            let mut ds = match ds_arc.lock() {
-                Ok(ds) => ds,
-                Err(_) => continue,
-            };
-            if ds.last_used_at().elapsed() >= self.idle_timeout {
-                if let Err(e) = ds.close() {
+            if ds_arc.last_used_at().elapsed() >= self.idle_timeout {
+                if let Err(e) = ds_arc.close() {
                     log::error!("[bg idle] close failed for {:?}: {}", key, e);
                 } else {
                     log::info!("[bg idle] closed dataset {:?}", key);
@@ -441,9 +427,9 @@ impl BackgroundTasks {
             guard
                 .iter()
                 .filter_map(|(k, ds_arc)| {
-                    let ds = ds_arc.lock().ok()?;
-                    if ds.retention_window() > 0 {
-                        Some((k.clone(), ds.retention_window()))
+                    let retention_window = ds_arc.retention_window();
+                    if retention_window > 0 {
+                        Some((k.clone(), retention_window))
                     } else {
                         None
                     }
@@ -463,11 +449,7 @@ impl BackgroundTasks {
                     None => continue,
                 }
             };
-            let mut ds = match ds_arc.lock() {
-                Ok(ds) => ds,
-                Err(_) => continue,
-            };
-            match ds.reclaim_expired_segments() {
+            match ds_arc.reclaim_expired_segments() {
                 Ok(n) if n > 0 => {
                     log::info!("[bg retention] {:?}: reclaimed {} segments", key, n);
                     total_reclaimed += n;
@@ -511,7 +493,7 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    fn make_test_dataset(base: &str) -> (DataSetKey, Arc<std::sync::Mutex<DataSet>>) {
+    fn make_test_dataset(base: &str) -> (DataSetKey, Arc<DataSet>) {
         let dir = std::env::temp_dir().join(base);
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -531,7 +513,7 @@ mod tests {
             0,
         )
         .unwrap();
-        (key, Arc::new(std::sync::Mutex::new(ds)))
+        (key, Arc::new(ds))
     }
 
     fn make_empty_test_bg(thread_enabled: bool) -> BackgroundTasks {
@@ -621,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_tick_bg_disabled_mode() {
-        // Create with no thread 閳?should not panic on tick/next_delay
+        // Create with no thread; should not panic on tick/next_delay.
         let bg = make_empty_test_bg(false);
         // tick should succeed
         let result = bg.tick();
@@ -702,10 +684,10 @@ mod tests {
     #[test]
     fn test_tick_bg_respects_interval() {
         let bg = make_empty_test_bg(false);
-        // First tick 閳?0 tasks (nothing due)
+        // First tick -> 0 tasks (nothing due)
         let r1 = bg.tick();
         assert_eq!(r1.executed_tasks, 0);
-        // Second tick immediately after 閳?still 0 tasks (interval not passed)
+        // Second tick immediately after -> still 0 tasks (interval not passed)
         let r2 = bg.tick();
         assert_eq!(r2.executed_tasks, 0);
     }
@@ -799,7 +781,6 @@ mod tests {
             state.last_flush = Instant::now() - Duration::from_secs(10);
         }
 
-        let ds_guard = ds_arc.lock().unwrap();
         let bg_tick = Arc::clone(&bg);
         let tick_started = Arc::new(AtomicBool::new(false));
         let tick_started_thread = Arc::clone(&tick_started);
@@ -826,7 +807,6 @@ mod tests {
             "next_delay waited for dataset lock instead of only the state lock"
         );
 
-        drop(ds_guard);
         let result = tick_handle.join().unwrap();
         assert_eq!(result.executed_tasks, 1);
     }
@@ -838,15 +818,14 @@ mod tests {
         let (queued_key, queued_ds) = make_test_dataset("timslite_bg_flush_queued");
         let (unqueued_key, unqueued_ds) = make_test_dataset("timslite_bg_flush_unqueued");
 
-        {
-            let mut ds = queued_ds.lock().unwrap();
-            ds.set_runtime_context(crate::dataset::DataSetRuntimeContext::new(
+        queued_ds
+            .set_runtime_context(crate::dataset::DataSetRuntimeContext::new(
                 None,
                 None,
                 Some(Arc::clone(&flush_queue)),
-            ));
-            ds.write(1, b"queued").unwrap();
-        }
+            ))
+            .unwrap();
+        queued_ds.write(1, b"queued").unwrap();
 
         {
             let mut guard = datasets.write().unwrap();
@@ -872,7 +851,6 @@ mod tests {
             state.next_retention = Instant::now() + Duration::from_secs(86400);
         }
 
-        let unqueued_guard = unqueued_ds.lock().unwrap();
         let bg_tick = Arc::clone(&bg);
         let tick_handle = std::thread::spawn(move || bg_tick.tick());
 
@@ -882,7 +860,6 @@ mod tests {
             "flush should not lock datasets without queued dirty segments"
         );
 
-        drop(unqueued_guard);
         let result = tick_handle.join().unwrap();
         assert_eq!(result.executed_tasks, 1);
     }

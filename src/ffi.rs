@@ -908,8 +908,7 @@ pub extern "C" fn tmsl_dataset_flush(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        ds.flush()?;
+        ds_arc.flush()?;
         Ok(0)
     })
 }
@@ -937,8 +936,7 @@ pub extern "C" fn tmsl_dataset_latest_timestamp(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let ds = ds_arc.lock().unwrap();
-        match ds.latest_written_timestamp() {
+        match ds_arc.latest_written_timestamp() {
             Some(ts) => {
                 unsafe { *out_ts = ts as c_longlong };
                 Ok(0)
@@ -1084,8 +1082,7 @@ pub extern "C" fn tmsl_dataset_read(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        match ds.read(timestamp)? {
+        match ds_arc.read(timestamp)? {
             Some((ts, data)) => {
                 unsafe { *out_ts = ts as c_longlong };
                 let ptr = unsafe { libc::malloc(data.len()) as *mut c_uchar };
@@ -1128,8 +1125,7 @@ pub extern "C" fn tmsl_dataset_read_latest(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        match ds.read_latest()? {
+        match ds_arc.read_latest()? {
             Some((ts, data)) => {
                 unsafe { *out_ts = ts as c_longlong };
                 let ptr = unsafe { libc::malloc(data.len()) as *mut c_uchar };
@@ -1181,8 +1177,7 @@ pub extern "C" fn tmsl_dataset_query(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        let entries = ds.query_index_entries(start_ts, end_ts)?;
+        let entries = ds_arc.query_index_entries(start_ts, end_ts)?;
 
         ffi_ds.iterator_count.fetch_add(1, Ordering::SeqCst);
         ffi_ds.state.child_handles.fetch_add(1, Ordering::SeqCst);
@@ -1234,8 +1229,7 @@ pub extern "C" fn tmsl_iter_next(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_iter.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        let (ts, data) = ds.read_entry_at_index(&entry)?;
+        let (ts, data) = ds_arc.read_entry_at_index(&entry)?;
 
         unsafe { *out_ts = ts as c_longlong };
 
@@ -1292,8 +1286,7 @@ pub extern "C" fn tmsl_dataset_read_exist(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        let exists = ds.read_exist(timestamp)?;
+        let exists = ds_arc.read_exist(timestamp)?;
         Ok(if exists { 1 } else { 0 })
     })
 }
@@ -1324,8 +1317,7 @@ pub extern "C" fn tmsl_dataset_query_exist(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        let bitmap = ds.query_exist(start_ts, end_ts)?;
+        let bitmap = ds_arc.query_exist(start_ts, end_ts)?;
         if bitmap.is_empty() {
             unsafe {
                 *out_bitmap = std::ptr::null_mut();
@@ -1369,8 +1361,7 @@ pub extern "C" fn tmsl_dataset_read_length(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        match ds.read_length(timestamp)? {
+        match ds_arc.read_length(timestamp)? {
             Some(len) => {
                 unsafe { *out_len = len };
                 Ok(0)
@@ -1406,8 +1397,7 @@ pub extern "C" fn tmsl_dataset_query_length(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        let pairs = ds.query_length(start_ts, end_ts)?;
+        let pairs = ds_arc.query_length(start_ts, end_ts)?;
         if pairs.is_empty() {
             unsafe {
                 *out_array = std::ptr::null_mut();
@@ -1459,8 +1449,7 @@ pub extern "C" fn tmsl_dataset_query_length_iter(
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             store_inner.get_dataset(&ffi_ds.handle)?
         };
-        let mut ds = ds_arc.lock().unwrap();
-        let entries = ds.query_index_entries(start_ts, end_ts)?;
+        let entries = ds_arc.query_index_entries(start_ts, end_ts)?;
         let ffi_iter = Box::new(FfiIterator {
             store: Arc::clone(&ffi_ds.store),
             handle: ffi_ds.handle,
@@ -1504,16 +1493,7 @@ pub extern "C" fn tmsl_length_iter_next(
                 .lock()
                 .map_err(|_| TmslError::InvalidData("store mutex poisoned".into()))?;
             let ds_arc = store.get_dataset(&ffi_iter.handle)?;
-            let mut ds = ds_arc.lock().unwrap();
-            let re = crate::segment::ReadIndexEntry {
-                timestamp: entry.timestamp,
-                block_offset: entry.block_offset,
-                in_block_offset: entry.in_block_offset,
-            };
-            let cache = ds.cache_ref().cloned();
-            let data_len = ds
-                .segments_mut()
-                .read_record_data_len(&re, cache.as_deref())?;
+            let data_len = ds_arc.read_record_data_len_at_index(entry)?;
             unsafe {
                 *out_ts = entry.timestamp as c_longlong;
                 *out_len = data_len;

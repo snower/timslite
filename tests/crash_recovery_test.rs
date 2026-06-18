@@ -33,7 +33,7 @@ fn t_crash_recover_pending_block_after_drop_without_close() {
 
     // Phase 1: write records, drop without close (simulate crash)
     {
-        let mut ds = DataSet::create(
+        let ds = DataSet::create(
             id.clone(),
             dir.clone(),
             64 * 1024 * 1024, // data_segment_size
@@ -54,7 +54,7 @@ fn t_crash_recover_pending_block_after_drop_without_close() {
 
     // Phase 2: reopen and verify data is recoverable
     {
-        let mut ds = DataSet::open(id.clone(), dir.clone()).unwrap();
+        let ds = DataSet::open(id.clone(), dir.clone()).unwrap();
 
         // Pending records should be readable from mmap
         let (ts, data) = ds.read(10).unwrap().unwrap();
@@ -99,7 +99,7 @@ fn t_crash_recover_index_segment_integrity() {
 
     // Phase 1: write enough records to span multiple index entries, drop without close
     {
-        let mut ds = DataSet::create(
+        let ds = DataSet::create(
             id.clone(),
             dir.clone(),
             64 * 1024 * 1024,
@@ -122,7 +122,7 @@ fn t_crash_recover_index_segment_integrity() {
 
     // Phase 2: reopen and verify index integrity
     {
-        let mut ds = DataSet::open(id.clone(), dir.clone()).unwrap();
+        let ds = DataSet::open(id.clone(), dir.clone()).unwrap();
 
         // Verify inspect shows index segments exist
         let info = ds.inspect().unwrap();
@@ -178,7 +178,7 @@ fn t_crash_recover_multiple_pending_records_after_drop() {
 
     // Phase 1: write many records in same pending block, drop without close
     {
-        let mut ds = DataSet::create(
+        let ds = DataSet::create(
             id.clone(),
             dir.clone(),
             64 * 1024 * 1024,
@@ -200,7 +200,7 @@ fn t_crash_recover_multiple_pending_records_after_drop() {
 
     // Phase 2: reopen and verify
     {
-        let mut ds = DataSet::open(id.clone(), dir.clone()).unwrap();
+        let ds = DataSet::open(id.clone(), dir.clone()).unwrap();
 
         // All 20 records should be readable
         for i in 1..=20i64 {

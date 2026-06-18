@@ -309,7 +309,7 @@ impl ConsumerStateFile {
         Ok(state)
     }
 
-    /// Write in-memory state back to mmap (no fsync 鈥?unified with bg flush).
+    /// Write in-memory state back to mmap (no fsync; unified with bg flush).
     pub fn sync_to_mmap(&mut self) -> Result<()> {
         // Update header processed_ts
         write_i64_at(&mut self.mmap, 10, self.processed_ts);
@@ -336,7 +336,7 @@ impl ConsumerStateFile {
         Ok(())
     }
 
-    /// Flush mmap to disk (MS_SYNC) 鈥?called by background flush task.
+    /// Flush mmap to disk (MS_SYNC); called by background flush task.
     pub fn flush(&self) -> Result<()> {
         self.mmap.flush()?;
         Ok(())
@@ -531,7 +531,7 @@ impl QueueInner {
 
 /// Queue handle for a dataset (Clone-safe, singleton per dataset).
 pub struct DatasetQueue {
-    pub(crate) dataset: Arc<Mutex<DataSet>>,
+    pub(crate) dataset: Arc<DataSet>,
     pub(crate) inner: Arc<Mutex<QueueInner>>,
     pub(crate) notify: Arc<(Mutex<bool>, Condvar)>,
     pub(crate) allow_push: bool,
@@ -560,7 +560,7 @@ impl DatasetQueue {
     /// Used by FFI and Python wrappers that manage dataset lifecycle
     /// separately from Store's internal handle registry.
     pub fn new(
-        dataset: Arc<Mutex<DataSet>>,
+        dataset: Arc<DataSet>,
         inner: Arc<Mutex<QueueInner>>,
         notify: Arc<(Mutex<bool>, Condvar)>,
     ) -> Self {
@@ -573,7 +573,7 @@ impl DatasetQueue {
     }
 
     pub(crate) fn new_readonly_producer(
-        dataset: Arc<Mutex<DataSet>>,
+        dataset: Arc<DataSet>,
         inner: Arc<Mutex<QueueInner>>,
         notify: Arc<(Mutex<bool>, Condvar)>,
     ) -> Self {
@@ -614,13 +614,7 @@ impl DatasetQueue {
             }
         }
 
-        let queue_dir = {
-            let ds = self
-                .dataset
-                .lock()
-                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.queue_dir()
-        };
+        let queue_dir = self.dataset.queue_dir()?;
 
         let state_file = if inner.consumers.contains_key(group_name) {
             Arc::clone(&inner.consumers[group_name])
@@ -628,13 +622,7 @@ impl DatasetQueue {
             let state_path = queue_dir.join(group_name);
             // Determine initial processed_ts from the dataset.
             // Empty datasets start before the signed timestamp domain we poll.
-            let initial_ts = {
-                let ds = self
-                    .dataset
-                    .lock()
-                    .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-                ds.latest_written_timestamp().unwrap_or(i64::MIN)
-            };
+            let initial_ts = self.dataset.latest_written_timestamp().unwrap_or(i64::MIN);
             let sf = Arc::new(Mutex::new(ConsumerStateFile::open_or_create(
                 state_path, initial_ts,
             )?));
@@ -681,13 +669,7 @@ impl DatasetQueue {
         }
 
         // Try to delete the state file
-        let queue_dir = {
-            let ds = self
-                .dataset
-                .lock()
-                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.queue_dir()
-        };
+        let queue_dir = self.dataset.queue_dir()?;
         let state_path = queue_dir.join(group_name);
         let _ = fs::remove_file(&state_path);
 
@@ -713,16 +695,7 @@ impl DatasetQueue {
             return Err(TmslError::QueueClosed("queue is closed".into()));
         }
 
-        let mut ds = self
-            .dataset
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-
-        // Auto-increment timestamp
-        let timestamp = ds
-            .latest_written_timestamp()
-            .map_or(1, |latest| latest.saturating_add(1));
-        ds.write(timestamp, data)?;
+        let timestamp = self.dataset.write_next_queue_record(data)?;
 
         // Notify waiting consumers (only on normal write, ts > old_latest)
         let (lock, cvar) = (&self.notify.0, &self.notify.1);
@@ -778,7 +751,7 @@ pub struct DatasetQueueConsumer {
     state_file: Arc<Mutex<ConsumerStateFile>>,
     config: QueueConsumerConfig,
     notify: Arc<(Mutex<bool>, Condvar)>,
-    dataset: Arc<Mutex<DataSet>>,
+    dataset: Arc<DataSet>,
     closed: Arc<AtomicBool>,
 }
 
@@ -845,26 +818,21 @@ impl DatasetQueueConsumer {
             .lock()
             .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
         let next_ts = sf.next_poll_ts();
-        let mut ds = self
-            .dataset
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-
         let direct = if sf.is_in_pending(next_ts) {
             None
         } else {
-            ds.read(next_ts)?
+            self.dataset.read(next_ts)?
         };
         let row = if direct.is_some() {
             direct
         } else {
-            let entries = ds.query_index_entries(next_ts, i64::MAX)?;
+            let entries = self.dataset.query_index_entries(next_ts, i64::MAX)?;
             let mut found = None;
             for entry in entries {
                 if entry.is_filler() || sf.is_in_pending(entry.timestamp) {
                     continue;
                 }
-                found = Some(ds.read_entry_at_index(&entry)?);
+                found = Some(self.dataset.read_entry_at_index(&entry)?);
                 break;
             }
             found
@@ -882,7 +850,7 @@ impl DatasetQueueConsumer {
                     status: PENDING_STATUS_UNACKED,
                     retry_count: 0,
                 })?;
-                ds.enqueue_queue_state_flush(&self.group_name);
+                self.dataset.enqueue_queue_state_flush(&self.group_name)?;
             }
             Ok(Some((ts, data)))
         } else {
@@ -933,19 +901,11 @@ impl DatasetQueueConsumer {
     }
 
     fn read_record_at(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
-        let mut ds = self
-            .dataset
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.read(timestamp)
+        self.dataset.read(timestamp)
     }
 
     fn enqueue_state_flush(&self) -> Result<()> {
-        self.dataset
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?
-            .enqueue_queue_state_flush(&self.group_name);
-        Ok(())
+        self.dataset.enqueue_queue_state_flush(&self.group_name)
     }
 
     /// Ack a previously polled record.
@@ -962,11 +922,7 @@ impl DatasetQueueConsumer {
         sf.ack_pending(timestamp)?;
         sf.cleanup_acked();
         drop(sf);
-        self.dataset
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?
-            .enqueue_queue_state_flush(&self.group_name);
-        Ok(())
+        self.dataset.enqueue_queue_state_flush(&self.group_name)
     }
 }
 

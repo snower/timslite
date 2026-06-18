@@ -18,7 +18,7 @@ pub fn get_dataset_types(&self, name: &str) -> Result<Vec<String>>;
 
 ### 实现方式
 
-- 从 `Store.datasets: Arc<RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>>` 中提取
+- 从 `Store.datasets: Arc<RwLock<HashMap<DataSetKey, Arc<DataSet>>>>` 中提取
 - `get_dataset_names`: 遍历所有 key，收集 unique names，去重后排序返回
 - `get_dataset_types`: 遍历所有 key，筛选匹配 name 的 types，排序后返回
 - 线程安全：使用 `RwLock::read()` 获取读锁

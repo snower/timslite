@@ -126,7 +126,7 @@ fn t13_5_cross_segment_query() {
 
     // Use small segment size to force data across multiple segments
     let data_segment_size: u64 = 180;
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id.clone(),
         ds_dir.clone(),
         data_segment_size,

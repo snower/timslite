@@ -1,4 +1,4 @@
-﻿//! Lazy allocation integration tests.
+//! Lazy allocation integration tests.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -287,7 +287,7 @@ fn t12_6_retention_reclaim_after_expansion() {
 
     // Use small segment to force expansion + multiple segments
     let data_segment_size: u64 = 188;
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id.clone(),
         ds_dir.clone(),
         data_segment_size,
@@ -342,7 +342,7 @@ fn t12_5_index_segment_expansion_from_initial_to_max() {
     let max_index_size = 64 * 1024; // 64KB
     let data_segment_size = 64 * 1024 * 1024; // 64MB
 
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id.clone(),
         ds_dir.clone(),
         data_segment_size,

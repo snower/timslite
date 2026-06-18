@@ -21,7 +21,7 @@
 - Exposes `query()` as a Python iterator (`__iter__` / `__next__`)
 - Uses context managers (`__enter__` / `__exit__`) for lifecycle management
 - Simplifies builders — Python kwargs replace `StoreConfigBuilder` / `DataSetConfigBuilder`
-- Lock management (`Arc<Mutex<DataSet>>`) is fully hidden from Python users
+- Lock management (`Arc<DataSet>` plus DataSet's internal mutex) is fully hidden from Python users
 
 ### 1.3 What NOT to Expose
 
@@ -227,7 +227,7 @@ class StoreConfig:
 
 ### 3.3 `Dataset` — `#[pyclass]`
 
-**Lock hidden**: Holds `Arc<Mutex<DataSet>>` internally. Every method acquires the lock automatically.
+**Lock hidden**: Holds `Arc<DataSet>` internally. Every method calls the public DataSet API, which acquires the internal lock automatically.
 
 ```python
 class Dataset:
@@ -282,8 +282,8 @@ class Dataset:
         """Base directory of this dataset."""
 ```
 
-**Rust backing**: `PyDataset` holds `Arc<Mutex<DataSet>>` (via `Py<PyAny>` or `PyStore` reference).
-Each method does: `let mut ds = self.dataset.lock().unwrap(); ds.write(...)`.
+**Rust backing**: `PyDataset` holds `Arc<DataSet>` from `Store::get_dataset()`.
+Each method calls `self.dataset.write(...)`, `self.dataset.read(...)`, etc.; the Rust DataSet owns the mutex.
 
 ### 3.4 `QueryIterator` — `#[pyclass]`
 
@@ -322,12 +322,8 @@ class QueryIterator:
         """
 ```
 
-**Rust backing**: `PyQueryIterator` wraps `QueryIterator<'static, 'static>`.
-Since PyO3 classes have `'static` lifetime, we need to carefully manage the borrow. Two approaches:
-1. **Pre-fetch**: In `query()`, call `query_iter().collect_all()` → return `QueryIterator` over collected `Vec`. Simple, but eager.
-2. **Arc<Mutex> sharing**: Store `Arc<Mutex<QueryIterator>>` in `PyQueryIterator`. Slight overhead but truly lazy.
-
-**Recommendation**: Approach 2 for true lazy iteration. The `QueryIterator` internally segments are accessed via `Arc<Mutex>` on `PyDataset`.
+**Rust backing**: `PyQueryIterator` stores a snapshot of `IndexEntry` values plus `Arc<DataSet>`.
+Since PyO3 classes have `'static` lifetime, the iterator does not borrow Rust segment internals directly. Each `__next__` skips filler entries and calls `DataSet::read_entry_at_index`, so data blocks are still loaded lazily while locking stays inside DataSet.
 
 ### 3.5 Exception Hierarchy
 
@@ -492,7 +488,7 @@ class DatasetQueueConsumer:
 
 **Rust backing**: `PyDatasetQueue` wraps `timslite::DatasetQueue` (Clone-safe, all fields Arc). `PyDatasetQueueConsumer` wraps `timslite::DatasetQueueConsumer`. 
 
-**Store integration**: `PyStore.open_queue(dataset_id)` looks up the `Arc<Mutex<DataSet>>` from its internal dataset registry by ID, then calls `DataSet::open_queue()` and constructs `DatasetQueue` from the resulting components.
+**Store integration**: `PyStore.open_queue(dataset_id)` looks up the `Arc<DataSet>` from its internal dataset registry by ID, then calls `DataSet::open_queue()` and constructs `DatasetQueue` from the resulting components.
 
 **Lock hierarchy**: Store → Dataset → QueueInner → ConsumerStateFile → Condvar.
 
@@ -513,7 +509,7 @@ class DatasetQueueConsumer:
 | `Duration` | `int` (seconds) | Accept int, convert to Duration internally |
 | `PathBuf` | `str` | Accept str, convert to PathBuf |
 | `Result<T, TmslError>` | `T` / raises exception | Error converted via `map_error` |
-| `Arc<Mutex<DataSet>>` | `Dataset` (opaque) | Lock acquired per-operation |
+| `Arc<DataSet>` | `Dataset` (opaque) | DataSet internal lock acquired per operation |
 
 ---
 
@@ -558,27 +554,25 @@ features = ["pyo3/extension-module"]
 
 **Problem**: `QueryIterator` borrows `&'a mut DataSegmentSet`. PyO3 objects must be `'static`.
 
-**Solution**: Use `Arc<Mutex>` sharing pattern.
+**Solution**: Use `Arc<DataSet>` sharing pattern; lazy iterators pre-collect index entries and call DataSet methods for each fetched row.
 
 ```rust
 struct PyDataset {
-    // Not the actual Dataset, but a reference back to the Store's Arc<Mutex<DataSet>>
-    inner: Py<PyAny>, // or however Store tracks open datasets
+    inner: Arc<DataSet>,
 }
 
 struct PyQueryIterator {
     // Pre-collect index entries (cheap: timestamps + offsets, not full data)
     entries: Vec<IndexEntry>,
     // Shared reference to dataset for data fetching
-    dataset_arc: Arc<Mutex<DataSet>>,
+    dataset_arc: Arc<DataSet>,
     // Current position
     index: usize,
 }
 
 impl PyQueryIterator {
     fn __next__(&mut self) -> PyResult<(i64, Vec<u8>)> {
-        // Skip filler entries, fetch real data through Arc<Mutex>
-        let mut ds = self.dataset_arc.lock().unwrap();
+        // Skip filler entries, fetch real data through DataSet's public API.
         while self.index < self.entries.len() {
             let entry = &self.entries[self.index];
             self.index += 1;
@@ -586,7 +580,7 @@ impl PyQueryIterator {
                 continue;
             }
             // Fetch data from segment
-            return Ok(ds.read_entry_at_index(entry, None)?);
+            return Ok(self.dataset_arc.read_entry_at_index(entry)?);
         }
         Err(/* StopIteration */)
     }
@@ -595,14 +589,14 @@ impl PyQueryIterator {
 
 This approach:
 - Pre-fetches index entries during `query()` call (cheap, no data loaded yet)
-- Stores `Arc<Mutex<DataSet>>` for lazy data fetching
+- Stores `Arc<DataSet>` for lazy data fetching
 - Truly lazy: data blocks are only loaded when `__next__` is called
-- Thread-safe: `Mutex` protects concurrent access
+- Thread-safe: DataSet's internal mutex protects concurrent access
 
 ### 5.4 GIL Considerations
 
 - PyO3 automatically holds the GIL during `#[pymethods]` calls
-- `Mutex<DataSet>`.lock() happens inside GIL — no deadlock risk (single Python thread)
+- DataSet locking happens inside the Rust public API; the Python layer does not take a dataset mutex directly
 - Background flush thread runs separate from GIL — safe
 
 ### 5.5 Memory Ownership

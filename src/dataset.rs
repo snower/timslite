@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::cache::BlockCache;
@@ -146,7 +146,368 @@ pub struct AppendOutcome {
     pub data_len: u32,
 }
 
+#[derive(Clone)]
 pub struct DataSet {
+    inner: Arc<Mutex<DataSetInner>>,
+}
+
+impl DataSet {
+    fn new(inner: DataSetInner) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+        }
+    }
+
+    fn lock_inner(&self) -> Result<MutexGuard<'_, DataSetInner>> {
+        self.inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))
+    }
+
+    fn with_inner<T>(&self, f: impl FnOnce(&mut DataSetInner) -> Result<T>) -> Result<T> {
+        let mut inner = self.lock_inner()?;
+        f(&mut inner)
+    }
+
+    fn with_inner_ref<T>(&self, f: impl FnOnce(&DataSetInner) -> Result<T>) -> Result<T> {
+        let inner = self.lock_inner()?;
+        f(&inner)
+    }
+
+    #[doc(hidden)]
+    pub fn lock(&self) -> Result<DataSetGuard<'_>> {
+        self.lock_inner().map(|inner| DataSetGuard { inner })
+    }
+
+    /// Create a new dataset (explicit creation, errors if already exists).
+    pub fn create(
+        id: DataSetKey,
+        base_dir: PathBuf,
+        data_segment_size: u64,
+        index_segment_size: u64,
+        compress_level: u8,
+        index_continuous: u8,
+        initial_data_segment_size: u64,
+        initial_index_segment_size: u64,
+        retention_window: u64,
+    ) -> Result<Self> {
+        DataSetInner::create(
+            id,
+            base_dir,
+            data_segment_size,
+            index_segment_size,
+            compress_level,
+            index_continuous,
+            initial_data_segment_size,
+            initial_index_segment_size,
+            retention_window,
+        )
+        .map(Self::new)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_with_compression(
+        id: DataSetKey,
+        base_dir: PathBuf,
+        data_segment_size: u64,
+        index_segment_size: u64,
+        compress_level: u8,
+        compress_type: u8,
+        index_continuous: u8,
+        initial_data_segment_size: u64,
+        initial_index_segment_size: u64,
+        retention_window: u64,
+        enable_journal: bool,
+    ) -> Result<Self> {
+        DataSetInner::create_with_compression(
+            id,
+            base_dir,
+            data_segment_size,
+            index_segment_size,
+            compress_level,
+            compress_type,
+            index_continuous,
+            initial_data_segment_size,
+            initial_index_segment_size,
+            retention_window,
+            enable_journal,
+        )
+        .map(Self::new)
+    }
+
+    pub fn open(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
+        DataSetInner::open(id, base_dir).map(Self::new)
+    }
+
+    pub(crate) fn set_runtime_context(&self, context: DataSetRuntimeContext) -> Result<()> {
+        self.with_inner(|inner| {
+            inner.set_runtime_context(context);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn set_identifier(&self, identifier: u64) -> Result<()> {
+        self.with_inner(|inner| {
+            inner.set_identifier(identifier);
+            Ok(())
+        })
+    }
+
+    pub fn identifier(&self) -> u64 {
+        self.with_inner_ref(|inner| Ok(inner.identifier()))
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn enqueue_queue_state_flush(&self, group_name: &str) -> Result<()> {
+        self.with_inner_ref(|inner| {
+            inner.enqueue_queue_state_flush(group_name);
+            Ok(())
+        })
+    }
+
+    pub(crate) fn sync_flush_target(&self, target: SegmentFlushTarget) -> Result<()> {
+        self.with_inner(|inner| inner.sync_flush_target(target))
+    }
+
+    pub(crate) fn flush_dirty_segments(&self) -> Result<()> {
+        self.with_inner(|inner| inner.flush_dirty_segments())
+    }
+
+    pub(crate) fn sync_queued_flush_targets(&self, targets: Vec<SegmentFlushTarget>) -> Result<()> {
+        self.with_inner(|inner| inner.sync_queued_flush_targets(targets))
+    }
+
+    pub fn drop_dataset(base_dir: &std::path::Path) -> Result<()> {
+        DataSetInner::drop_dataset(base_dir)
+    }
+
+    pub fn write(&self, timestamp: i64, data: &[u8]) -> Result<()> {
+        self.with_inner(|inner| inner.write(timestamp, data))
+    }
+
+    pub fn append(&self, timestamp: i64, data: &[u8]) -> Result<()> {
+        self.with_inner(|inner| inner.append(timestamp, data))
+    }
+
+    pub fn delete(&self, timestamp: i64) -> Result<()> {
+        self.with_inner(|inner| inner.delete(timestamp))
+    }
+
+    pub fn read(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
+        self.with_inner(|inner| inner.read(timestamp))
+    }
+
+    pub fn read_latest(&self) -> Result<Option<(i64, Vec<u8>)>> {
+        self.with_inner(|inner| inner.read_latest())
+    }
+
+    pub fn read_exist(&self, timestamp: i64) -> Result<bool> {
+        self.with_inner(|inner| inner.read_exist(timestamp))
+    }
+
+    pub fn read_length(&self, timestamp: i64) -> Result<Option<u32>> {
+        self.with_inner(|inner| inner.read_length(timestamp))
+    }
+
+    pub fn query(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
+        self.with_inner(|inner| inner.query(start_ts, end_ts))
+    }
+
+    pub fn query_index_entries(&self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
+        self.with_inner(|inner| inner.query_index_entries(start_ts, end_ts))
+    }
+
+    pub fn query_sources(&self, start_ts: i64, end_ts: i64) -> Result<Vec<QuerySource>> {
+        self.with_inner(|inner| inner.query_sources(start_ts, end_ts))
+    }
+
+    pub fn query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>> {
+        self.with_inner(|inner| inner.query_exist(start_ts, end_ts))
+    }
+
+    pub fn query_length(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>> {
+        self.with_inner(|inner| inner.query_length(start_ts, end_ts))
+    }
+
+    pub fn query_length_iter(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<std::vec::IntoIter<Result<(i64, u32)>>> {
+        let rows = self.query_length(start_ts, end_ts)?;
+        Ok(rows.into_iter().map(Ok).collect::<Vec<_>>().into_iter())
+    }
+
+    pub fn read_entry_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
+        self.with_inner(|inner| inner.read_entry_at_index(entry))
+    }
+
+    pub fn flush(&self) -> Result<()> {
+        self.with_inner(|inner| inner.flush())
+    }
+
+    pub fn close(&self) -> Result<()> {
+        self.with_inner(|inner| inner.close())
+    }
+
+    pub fn touch(&self) -> Result<()> {
+        self.with_inner(|inner| {
+            inner.touch();
+            Ok(())
+        })
+    }
+
+    pub(crate) fn queue_dir(&self) -> Result<PathBuf> {
+        self.with_inner_ref(|inner| Ok(inner.queue_dir()))
+    }
+
+    pub fn open_queue(&self) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
+        self.with_inner(|inner| inner.open_queue())
+    }
+
+    pub fn close_queue(&self) -> Result<()> {
+        self.with_inner(|inner| inner.close_queue())
+    }
+
+    pub fn base_dir(&self) -> PathBuf {
+        self.with_inner_ref(|inner| Ok(inner.base_dir().clone()))
+            .unwrap_or_default()
+    }
+
+    pub fn last_used_at(&self) -> Instant {
+        self.with_inner_ref(|inner| Ok(inner.last_used_at()))
+            .unwrap_or_else(|_| Instant::now())
+    }
+
+    pub fn retention_window(&self) -> u64 {
+        self.with_inner_ref(|inner| Ok(inner.retention_window()))
+            .unwrap_or(0)
+    }
+
+    pub fn enable_journal(&self) -> bool {
+        self.with_inner_ref(|inner| Ok(inner.enable_journal()))
+            .unwrap_or(false)
+    }
+
+    pub fn latest_written_timestamp(&self) -> Option<i64> {
+        self.with_inner_ref(|inner| Ok(inner.latest_written_timestamp()))
+            .unwrap_or(None)
+    }
+
+    pub fn reclaim_expired_segments(&self) -> Result<usize> {
+        self.with_inner(|inner| inner.reclaim_expired_segments())
+    }
+
+    pub(crate) fn read_record_data_len_at_index(&self, entry: &IndexEntry) -> Result<u32> {
+        self.with_inner(|inner| {
+            let cache = inner.runtime_context.block_cache.clone();
+            let re = ReadIndexEntry {
+                timestamp: entry.timestamp,
+                block_offset: entry.block_offset,
+                in_block_offset: entry.in_block_offset,
+            };
+            inner.segments.read_record_data_len(&re, cache.as_deref())
+        })
+    }
+
+    pub fn read_length_at_index(&self, entry: &IndexEntry) -> Result<u32> {
+        self.read_record_data_len_at_index(entry)
+    }
+
+    pub(crate) fn write_next_queue_record(&self, data: &[u8]) -> Result<i64> {
+        self.with_inner(|inner| {
+            let timestamp = inner
+                .latest_written_timestamp()
+                .map_or(1, |latest| latest.saturating_add(1));
+            inner.write(timestamp, data)?;
+            Ok(timestamp)
+        })
+    }
+
+    pub fn inspect(&self) -> Result<DataSetInspectResult> {
+        self.with_inner_ref(|inner| inner.inspect())
+    }
+}
+
+pub struct DataSetGuard<'a> {
+    inner: MutexGuard<'a, DataSetInner>,
+}
+
+impl DataSetGuard<'_> {
+    pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+        self.inner.write(timestamp, data)
+    }
+
+    pub fn append(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
+        self.inner.append(timestamp, data)
+    }
+
+    pub fn delete(&mut self, timestamp: i64) -> Result<()> {
+        self.inner.delete(timestamp)
+    }
+
+    pub fn read(&mut self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
+        self.inner.read(timestamp)
+    }
+
+    pub fn read_latest(&mut self) -> Result<Option<(i64, Vec<u8>)>> {
+        self.inner.read_latest()
+    }
+
+    pub fn read_exist(&mut self, timestamp: i64) -> Result<bool> {
+        self.inner.read_exist(timestamp)
+    }
+
+    pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>> {
+        self.inner.read_length(timestamp)
+    }
+
+    pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
+        self.inner.query(start_ts, end_ts)
+    }
+
+    pub fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>> {
+        self.inner.query_exist(start_ts, end_ts)
+    }
+
+    pub fn query_length(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>> {
+        self.inner.query_length(start_ts, end_ts)
+    }
+
+    pub fn query_length_iter(
+        &mut self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<QueryLengthIterator<'_>> {
+        self.inner.query_length_iter(start_ts, end_ts)
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.inner.flush()
+    }
+
+    pub fn close(&mut self) -> Result<()> {
+        self.inner.close()
+    }
+
+    pub fn latest_written_timestamp(&self) -> Option<i64> {
+        self.inner.latest_written_timestamp()
+    }
+
+    pub fn retention_window(&self) -> u64 {
+        self.inner.retention_window()
+    }
+
+    pub fn reclaim_expired_segments(&mut self) -> Result<usize> {
+        self.inner.reclaim_expired_segments()
+    }
+
+    pub fn inspect(&self) -> Result<DataSetInspectResult> {
+        self.inner.inspect()
+    }
+}
+
+pub(crate) struct DataSetInner {
     pub id: DataSetKey,
     pub base_dir: PathBuf,
     identifier: u64,
@@ -162,7 +523,7 @@ pub struct DataSet {
     runtime_context: DataSetRuntimeContext,
 }
 
-impl DataSet {
+impl DataSetInner {
     /// Create a new dataset (explicit creation, errors if already exists).
     ///
     /// Parameters are written to the meta file and are **immutable**; they cannot be changed
@@ -1623,13 +1984,13 @@ mod tests {
         starts
     }
 
-    fn make_cache_dataset(name: &str) -> DataSet {
+    fn make_cache_dataset(name: &str) -> DataSetInner {
         let dir = temp_dir(name);
         let id = DataSetKey {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        DataSet::create(
+        DataSetInner::create(
             id,
             dir,
             64 * 1024 * 1024,
@@ -1643,13 +2004,13 @@ mod tests {
         .unwrap()
     }
 
-    fn make_dirty_queue_dataset(name: &str, data_segment_size: u64) -> DataSet {
+    fn make_dirty_queue_dataset(name: &str, data_segment_size: u64) -> DataSetInner {
         let dir = temp_dir(name);
         let id = DataSetKey {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir,
             data_segment_size,
@@ -1739,10 +2100,15 @@ mod tests {
 
     #[test]
     fn test_queue_state_flush_target_persists_ack_without_segment_dirty() {
-        let ds = make_dirty_queue_dataset("dirty_queue_state_ack", 4096);
-        let flush_queue = ds.runtime_context.flush_queue.as_ref().unwrap().clone();
-        let ds_arc = Arc::new(Mutex::new(ds));
-        let (inner, notify) = ds_arc.lock().unwrap().open_queue().unwrap();
+        let ds_inner = make_dirty_queue_dataset("dirty_queue_state_ack", 4096);
+        let flush_queue = ds_inner
+            .runtime_context
+            .flush_queue
+            .as_ref()
+            .unwrap()
+            .clone();
+        let ds_arc = Arc::new(DataSet::new(ds_inner));
+        let (inner, notify) = ds_arc.open_queue().unwrap();
         let queue = crate::queue::DatasetQueue::new(Arc::clone(&ds_arc), inner, notify);
         let consumer = queue.open_consumer("group1").unwrap();
 
@@ -1753,7 +2119,7 @@ mod tests {
             .unwrap();
         assert_eq!(polled.0, ts);
 
-        ds_arc.lock().unwrap().flush().unwrap();
+        ds_arc.flush().unwrap();
         assert_eq!(flush_queue.lock().unwrap().len(), 0);
 
         consumer.ack(ts).unwrap();
@@ -1767,14 +2133,12 @@ mod tests {
         }
 
         ds_arc
-            .lock()
-            .unwrap()
             .sync_flush_target(SegmentFlushTarget::QueueState {
                 group_name: "group1".to_string(),
             })
             .unwrap();
 
-        let state_path = ds_arc.lock().unwrap().queue_dir().join("group1");
+        let state_path = ds_arc.queue_dir().unwrap().join("group1");
         let persisted = crate::queue::ConsumerStateFile::open_or_create(state_path, 0).unwrap();
         assert_eq!(persisted.processed_ts(), ts);
         assert_eq!(persisted.pending_count(), 0);
@@ -1969,9 +2333,9 @@ mod tests {
         //                     = 16 + 12 + 32 = 60 bytes
         // With data_segment_size = 200:
         //   Available = 200 - 116 = 84 >= 60  (1st record fits, 24 bytes left)
-        //   2nd record needs 60 > 24  → rollover to next segment.
+        //   2nd record needs 60 > 24  鈫?rollover to next segment.
         let data_segment_size = 200;
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir,
             data_segment_size,
@@ -2006,7 +2370,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2039,7 +2403,7 @@ mod tests {
             / crate::INDEX_ENTRY_SIZE as u64) as usize;
         let first_ts = 10;
         let second_ts = first_ts + segment_capacity as i64 * 4 + 5;
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2090,7 +2454,7 @@ mod tests {
             / crate::INDEX_ENTRY_SIZE as u64) as i64;
         let first_ts = 10;
         let second_ts = first_ts + segment_capacity * 4 + 5;
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2135,7 +2499,7 @@ mod tests {
         let second_ts = first_ts + segment_capacity * 4 + 5;
 
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -2165,7 +2529,7 @@ mod tests {
             ]
         );
 
-        let mut ds = DataSet::open(id, dir.clone()).unwrap();
+        let mut ds = DataSetInner::open(id, dir.clone()).unwrap();
         assert_eq!(ds.latest_written_timestamp(), Some(second_ts));
         let entries = ds.query(first_ts, second_ts).unwrap();
         assert_eq!(entries.len(), 3);
@@ -2182,7 +2546,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2220,7 +2584,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2256,7 +2620,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2290,7 +2654,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2323,7 +2687,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2355,7 +2719,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2386,7 +2750,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2415,7 +2779,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2448,7 +2812,7 @@ mod tests {
             dataset_type: "data".into(),
         };
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -2467,7 +2831,7 @@ mod tests {
             ds.close().unwrap();
         }
         // Reopen and verify
-        let mut ds = DataSet::open(id, dir.clone()).unwrap();
+        let mut ds = DataSetInner::open(id, dir.clone()).unwrap();
         let entries = ds.query(100, 100).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1, b"corrected");
@@ -2482,7 +2846,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2518,7 +2882,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2551,7 +2915,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2582,7 +2946,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2620,7 +2984,7 @@ mod tests {
             dataset_type: "data".into(),
         };
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -2653,7 +3017,7 @@ mod tests {
             ds.close().unwrap();
         }
         // Reopen and verify the count persists. Trigger segment open via query.
-        let mut ds2 = DataSet::open(id, dir).unwrap();
+        let mut ds2 = DataSetInner::open(id, dir).unwrap();
         // Query forces segment open; after open, invalid_record_count is read from file header.
         let entries = ds2.query(100, 200).unwrap();
         assert_eq!(entries.len(), 2); // ts=100 ("v3") and ts=200 ("latest")
@@ -2668,7 +3032,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2705,7 +3069,7 @@ mod tests {
 
         // Create and write
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -2723,7 +3087,7 @@ mod tests {
         }
 
         // Open and check latest_written_timestamp recovered
-        let ds2 = DataSet::open(id, dir).unwrap();
+        let ds2 = DataSetInner::open(id, dir).unwrap();
         assert_eq!(ds2.latest_written_timestamp, Some(150));
     }
 
@@ -2734,7 +3098,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -2770,10 +3134,10 @@ mod tests {
             dataset_type: "data".into(),
         };
         // data_segment_size=188 forces one record per segment (same as reclaim test).
-        // retention_window=15 → threshold = latest_ts(30) - 15 = 15.
+        // retention_window=15 鈫?threshold = latest_ts(30) - 15 = 15.
         let data_segment_size = 188u64;
         let ret = 15u64;
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id.clone(),
             dir.clone(),
             data_segment_size,
@@ -2792,9 +3156,9 @@ mod tests {
         ds.write(20, &[0xBB; 32]).unwrap();
         ds.write(30, &[0xCC; 32]).unwrap();
 
-        // Segment 0 (max_ts=10): 10 < 15 → expired
-        // Segment 1 (max_ts=20): 20 >= 15 → kept
-        // Segment 2 (max_ts=30): 30 >= 15 → kept
+        // Segment 0 (max_ts=10): 10 < 15 鈫?expired
+        // Segment 1 (max_ts=20): 20 >= 15 鈫?kept
+        // Segment 2 (max_ts=30): 30 >= 15 鈫?kept
         let data_dir = dir.join("data");
         let count_before = std::fs::read_dir(&data_dir).unwrap().count();
         assert_eq!(count_before, 3);
@@ -2806,7 +3170,7 @@ mod tests {
         assert_eq!(count_after, 2, "one segment file should be deleted");
 
         // Reopen and verify retention_window persists
-        let ds2 = DataSet::open(id, dir).unwrap();
+        let ds2 = DataSetInner::open(id, dir).unwrap();
         assert_eq!(ds2.retention_window(), ret);
     }
 
@@ -2818,7 +3182,7 @@ mod tests {
             dataset_type: "data".into(),
         };
         // retention = 50 (same unit as timestamps)
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id.clone(),
             dir.clone(),
             64 * 1024 * 1024,
@@ -2865,7 +3229,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id.clone(),
             dir.clone(),
             64 * 1024 * 1024,
@@ -2900,7 +3264,7 @@ mod tests {
         // total_needed = BLOCK_HEADER_SIZE(16) + RECORD_OVERHEAD(12) + 32 = 60.
         // Available = 188 - 124 = 64 >= 60 (fits), but 2nd record triggers rollover.
         let data_segment_size = 188u64;
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             data_segment_size,
@@ -2923,9 +3287,9 @@ mod tests {
         assert_eq!(count_before, 3, "should have 3 data segment files");
 
         // retention_threshold = 30 - 15 = 15
-        // Segment 0 (max_ts=10): 10 < 15 → expired, deleted
-        // Segment 1 (max_ts=20): 20 >= 15 → kept
-        // Segment 2 (max_ts=30): 30 >= 15 → kept
+        // Segment 0 (max_ts=10): 10 < 15 鈫?expired, deleted
+        // Segment 1 (max_ts=20): 20 >= 15 鈫?kept
+        // Segment 2 (max_ts=30): 30 >= 15 鈫?kept
         let reclaimed = ds.reclaim_expired_segments().unwrap();
         assert_eq!(reclaimed, 1, "exactly 1 segment should be reclaimed");
 
@@ -2965,7 +3329,7 @@ mod tests {
             dataset_type: "data".into(),
         };
         let data_segment_size = 188u64;
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir,
             data_segment_size,
@@ -2995,7 +3359,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3034,7 +3398,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir,
             64 * 1024 * 1024,
@@ -3061,7 +3425,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir,
             64 * 1024 * 1024,
@@ -3089,7 +3453,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir,
             64 * 1024 * 1024,
@@ -3117,7 +3481,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir,
             64 * 1024 * 1024,
@@ -3145,7 +3509,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3179,7 +3543,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3210,7 +3574,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3238,7 +3602,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3266,7 +3630,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3305,7 +3669,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3350,7 +3714,7 @@ mod tests {
             dataset_type: "data".into(),
         };
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -3369,7 +3733,7 @@ mod tests {
             ds.close().unwrap();
         }
         // Reopen
-        let mut ds2 = DataSet::open(id, dir).unwrap();
+        let mut ds2 = DataSetInner::open(id, dir).unwrap();
         let entries = ds2.query(100, 200).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, 200);
@@ -3389,7 +3753,7 @@ mod tests {
             dataset_type: "data".into(),
         };
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -3406,7 +3770,7 @@ mod tests {
             ds.close().unwrap();
         }
         {
-            let mut ds = DataSet::open(id, dir.clone()).unwrap();
+            let mut ds = DataSetInner::open(id, dir.clone()).unwrap();
             ds.write(100, b"corrected").unwrap();
 
             // Query should return the corrected data
@@ -3432,7 +3796,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3536,7 +3900,7 @@ mod tests {
         };
         // Phase 1: write multiple records, then close
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -3555,14 +3919,14 @@ mod tests {
         }
         // Phase 2: reopen and rewrite ts=100. This is out-of-order because latest is 200.
         {
-            let mut ds = DataSet::open(id.clone(), dir.clone()).unwrap();
+            let mut ds = DataSetInner::open(id.clone(), dir.clone()).unwrap();
             ds.write(100, b"corrected_100").unwrap();
             ds.flush().unwrap();
             ds.close().unwrap();
         }
         // Phase 3: reopen and verify
         {
-            let mut ds = DataSet::open(id, dir).unwrap();
+            let mut ds = DataSetInner::open(id, dir).unwrap();
             let entries = ds.query(100, 200).unwrap();
             assert_eq!(entries.len(), 2);
             assert_eq!(entries[0].0, 100);
@@ -3586,7 +3950,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3624,7 +3988,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3651,7 +4015,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3687,7 +4051,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3728,7 +4092,7 @@ mod tests {
 
         // Phase 1: write + close
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -3748,7 +4112,7 @@ mod tests {
 
         // Phase 2: reopen and read
         {
-            let mut ds = DataSet::open(id, dir).unwrap();
+            let mut ds = DataSetInner::open(id, dir).unwrap();
 
             let result = ds.read(100).unwrap();
             assert!(result.is_some());
@@ -3770,7 +4134,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3811,7 +4175,7 @@ mod tests {
         };
 
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -3831,7 +4195,7 @@ mod tests {
 
         // Reopen; latest_written_timestamp recovered from index
         {
-            let ds = DataSet::open(id, dir).unwrap();
+            let ds = DataSetInner::open(id, dir).unwrap();
             assert_eq!(ds.latest_written_timestamp(), Some(250));
         }
     }
@@ -3843,7 +4207,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3868,7 +4232,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id,
             dir.clone(),
             64 * 1024 * 1024,
@@ -3908,7 +4272,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id.clone(),
             dir.clone(),
             64 * 1024 * 1024,
@@ -3934,7 +4298,7 @@ mod tests {
 
         ds.close().unwrap();
 
-        let mut reopened = DataSet::open(id, dir).unwrap();
+        let mut reopened = DataSetInner::open(id, dir).unwrap();
         assert_eq!(reopened.latest_written_timestamp(), Some(200));
         assert!(reopened.read_latest().unwrap().is_none());
     }
@@ -3951,7 +4315,7 @@ mod tests {
         };
         let data_segment_size = 188u64;
         let retention_window = 86_400u64; // 1 day in seconds
-        let mut ds = DataSet::create(
+        let mut ds = DataSetInner::create(
             id.clone(),
             dir.clone(),
             data_segment_size,
@@ -3977,12 +4341,12 @@ mod tests {
         ds.write(day3, &[0xCC; 32]).unwrap();
 
         // threshold = latest(=day3) - 86400 = day2
-        // day1 segment has max_ts = day1 < day2 → expired
+        // day1 segment has max_ts = day1 < day2 鈫?expired
         let reclaimed = ds.reclaim_expired_segments().unwrap();
         assert!(reclaimed >= 1, "day-1 segment should be expired");
 
         // Reopen and verify day-1 data is gone but day-2 and day-3 survive
-        let mut ds2 = DataSet::open(id, dir).unwrap();
+        let mut ds2 = DataSetInner::open(id, dir).unwrap();
         assert!(
             ds2.read(day1).unwrap().is_none(),
             "day-1 data should be reclaimed"
@@ -4006,7 +4370,7 @@ mod tests {
         };
 
         {
-            let mut ds = DataSet::create(
+            let mut ds = DataSetInner::create(
                 id.clone(),
                 dir.clone(),
                 64 * 1024 * 1024,
@@ -4026,7 +4390,7 @@ mod tests {
         }
 
         {
-            let mut ds = DataSet::open(id, dir).unwrap();
+            let mut ds = DataSetInner::open(id, dir).unwrap();
             assert_eq!(ds.latest_written_timestamp(), Some(500));
 
             let r = ds.read(-1).unwrap().unwrap();

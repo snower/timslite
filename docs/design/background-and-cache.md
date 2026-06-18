@@ -306,7 +306,7 @@ tick_background_tasks():
 | 任务 | 到期判断 | 执行体 | 状态更新 |
 |------|---------|--------|---------|
 | Flush | `now >= last_flush + flush_interval && !flush_running` | drain 全局 dirty queue, 按 dataset key 精确定位后执行 `flush_dirty_segments()` | 预约时 `last_flush = now`, `flush_running = true`; 完成后 `flush_running = false` |
-| Idle Check | `now >= last_idle_check + 60s && !idle_running` | 收集 idle keys → `ds.lock()` + double-check close | 预约时 `last_idle_check = now`, `idle_running = true`; 完成后 `idle_running = false` |
+| Idle Check | `now >= last_idle_check + 60s && !idle_running` | 收集 idle keys → 调用 `Arc<DataSet>` 方法并由 DataSet 内部锁 double-check close | 预约时 `last_idle_check = now`, `idle_running = true`; 完成后 `idle_running = false` |
 | Cache Eviction | `cache enabled && now >= last_cache_eviction + 60s && !cache_running` | `block_cache.evict_idle(idle_timeout)` | 预约时 `last_cache_eviction = now`, `cache_running = true`; 完成后 `cache_running = false` |
 | Retention Reclaim | `now >= next_retention && !retention_running` | `ds.reclaim_expired_segments()` | 预约时 `next_retention = next_retention_time(hour)`, `retention_running = true`; 完成后 `retention_running = false` |
 
@@ -363,7 +363,7 @@ next_background_delay():
 ```
 
 **顺序约束**:
-- `tick`/后台线程: 获取 `state` 锁预约任务 → 释放 `state` → 获取 `datasets.read()` → 逐个获取 `ds.lock()`
+- `tick`/后台线程: 获取 `state` 锁预约任务 → 释放 `state` → 获取 `datasets.read()` → 逐个调用 `Arc<DataSet>` 方法并进入 DataSet 内部 mutex
 - `Store::create/open/close/drop_dataset`: 获取 `datasets.write()` → **不触及** `state` 锁 (不会触发 tick)
 - `next_background_delay()`: 仅获取 `state` 锁 → 快速读快照 → 释放
 

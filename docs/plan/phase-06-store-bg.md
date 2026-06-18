@@ -10,7 +10,7 @@
 pub struct Store {
     config: StoreConfig,
     data_dir: PathBuf,
-    datasets: HashMap<DataSetKey, Arc<Mutex<DataSet>>>,
+    datasets: HashMap<DataSetKey, Arc<DataSet>>,
     bg_tasks: Option<BackgroundTasks>,
     cache: BlockCache,  // Phase 9 加入
 }

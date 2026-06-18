@@ -449,5 +449,5 @@ for i in 0..bitmap.len() * 8 {
 
 ### 7.3 并发安全
 
-- 读操作使用 `&mut self`（可变借用），与写操作互斥
-- 通过 Store 门面调用时，内部 `Mutex<DataSet>` 保证线程安全
+- 低层 `DataSetInner` 读操作使用可变借用, 与写操作互斥
+- 公开 `DataSet` 读操作使用 `&self`, 并由 DataSet 内部 mutex 保证线程安全

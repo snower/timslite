@@ -13,8 +13,8 @@
 | PY-1 | 项目骨架 + 构建系统 | ✅ 完成 | `Cargo.toml`, `pyproject.toml`, `src/lib.rs` |
 | PY-2 | 异常层次 + 错误映射 | ✅ 完成 | `src/exceptions.rs` — 9 个异常类 + `map_error()` + `wrap()` |
 | PY-3 | StoreConfig + Store (核心) | ✅ 完成 | `src/config.rs`, `src/store.rs` |
-| PY-4 | Dataset 封装 | ✅ 完成 | `src/dataset.rs` — `Arc<Mutex<DataSet>>` 共享模式 |
-| PY-5 | 查询迭代器 (Arc\<Mutex\> 模式) | ✅ 完成 | `src/query.rs` — 预收集 IndexEntry + 懒加载数据 |
+| PY-4 | Dataset 封装 | ✅ 完成 | `src/dataset.rs` — `Arc<DataSet>` 共享模式 |
+| PY-5 | 查询迭代器 (`Arc<DataSet>` 模式) | ✅ 完成 | `src/query.rs` — 预收集 IndexEntry + 懒加载数据 |
 | PY-6 | Python 模块导出 + `__init__.py` | ✅ 完成 | `src/lib.rs`, `python/timslite/__init__.py` |
 | PY-7 | 集成测试 (8 个测试文件, 39 用例) | ✅ 完成 | `tests/` — 全部通过 |
 | PY-8 | CI/CD + 多平台 Wheel 构建 | 🔲 待开始 | GitHub Actions workflow |
@@ -191,7 +191,7 @@ wrapper/python/
 ### Phase PY-4: Dataset 封装 🔲 待开始
 
 - [ ] 在 `PyStore` 中添加 dataset 追踪机制
-  - `PyStore` 内部维护 `HashMap<u64, Arc<Mutex<DataSet>>>` (与 Rust `Store` 并行)
+  - `PyStore` 内部维护 `HashMap<u64, Arc<DataSet>>` (与 Rust `Store` 并行)
   - `create_dataset/open_dataset` 返回的 dataset 通过 `Arc` 共享
   - 分配 dataset_id (自增 u64) 作为 Python 端标识
 - [ ] `wrapper/python/src/store.rs` — 添加 dataset 管理方法
@@ -203,19 +203,19 @@ wrapper/python/
     - 不返回 Dataset — 用户需调用 `open_dataset()` 获取
   - `fn open_dataset(&mut self, name: &str, dataset_type: &str) -> PyResult<PyDataset>`
     - 委托给底层 `Store::open_dataset()` 获取 handle
-    - 通过 `Store::get_dataset()` 获取 `Arc<Mutex<DataSet>>`
-    - 返回封装后的 `PyDataset` (持有 `Arc<Mutex<DataSet>>`)
+    - 通过 `Store::get_dataset()` 获取 `Arc<DataSet>`
+    - 返回封装后的 `PyDataset` (持有 `Arc<DataSet>`)
   - `fn drop_dataset(&mut self, name: &str, dataset_type: &str) -> PyResult<()>`
     - 委托给底层 `Store::drop_dataset_by_name()`
     - 清理 Python 端的 dataset 追踪
 - [ ] `wrapper/python/src/dataset.rs` — `PyDataset`
-  - `#[pyclass]` 持有 `Arc<Mutex<DataSet>>` + `dataset_id: u64`
+  - `#[pyclass]` 持有 `Arc<DataSet>` + `dataset_id: u64`
   - `fn write(&mut self, timestamp: i64, data: &[u8]) -> PyResult<()>`
-    - 获取 lock, 调用 `DataSet::write()`, 释放 lock
+    - 调用 `DataSet::write()`, 由 DataSet 内部 mutex 保护
     - `data` 接受 Python `bytes`, 通过 `PyBytes::as_bytes()` 零拷贝获取
   - `fn query(&mut self, start_ts: i64, end_ts: i64) -> PyResult<PyQueryIterator>`
-    - 获取 lock, 调用 `DataSet::query_iter()`, 预收集索引条目
-    - 返回懒加载的 `PyQueryIterator` (持有 `Arc<Mutex<DataSet>>` + 条目列表)
+    - 调用 `DataSet::query_index_entries()`, 预收集索引条目
+    - 返回懒加载的 `PyQueryIterator` (持有 `Arc<DataSet>` + 条目列表)
   - `fn query_all(&mut self, start_ts: i64, end_ts: i64) -> PyResult<Vec<(i64, Vec<u8>)>>`
     - 便捷方法: 调用 `query()` + 收集全部结果
     - 返回 `list[tuple[int, bytes]]`
@@ -239,28 +239,28 @@ wrapper/python/
 
 ---
 
-### Phase PY-5: 查询迭代器 (Arc\<Mutex\> 模式) 🔲 待开始
+### Phase PY-5: 查询迭代器 (`Arc<DataSet>` 模式) 🔲 待开始
 
 - [ ] `wrapper/python/src/query.rs` — `PyQueryIterator`
   - `#[pyclass]` 结构体:
     ```rust
     struct PyQueryIterator {
         entries: Vec<IndexEntry>,      // 预收集的索引条目
-        dataset_arc: Arc<Mutex<DataSet>>, // 共享数据集引用
+        dataset_arc: Arc<DataSet>,        // 共享数据集引用
         index: usize,                  // 当前遍历位置
     }
     ```
   - `fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self>` — 返回 self
   - `fn __next__(&mut self) -> PyResult<Option<(i64, Vec<u8>)>>`
     - 跳过 filler entries (`block_offset == BLOCK_OFFSET_FILLER`)
-    - 获取 lock → 调用 `DataSet::read_entry_at_index(entry, None)` → 释放 lock
+    - 调用 `DataSet::read_entry_at_index(entry)`; DataSet 内部加锁
     - 返回 `Some((timestamp, data))` 或 `None` (触发 `StopIteration`)
   - `fn __len__(&self) -> usize` — 返回剩余条目数 (不含 filler)
   - `fn close(&mut self)` — 释放资源 (通常不需要, 提供显式关闭)
 - [ ] 在 `PyDataset::query()` 中创建 `PyQueryIterator`:
-  - 获取 lock, 调用 `DataSet::query_index_entries(start_ts, end_ts)` 收集条目
-  - 克隆 `Arc<Mutex<DataSet>>`
-  - 释放 lock, 返回 `PyQueryIterator { entries, dataset_arc, index: 0 }`
+  - 调用 `DataSet::query_index_entries(start_ts, end_ts)` 收集条目
+  - 克隆 `Arc<DataSet>`
+  - 返回 `PyQueryIterator { entries, dataset_arc, index: 0 }`
 - [ ] 验证: `for ts, data in ds.query(1, 100)` 正确迭代
 - [ ] 验证: `list(ds.query(1, 100))` 收集为完整列表
 - [ ] 验证: 空查询范围 → 立即 `StopIteration`
@@ -432,7 +432,7 @@ PY-1 (骨架)
 | 风险 | 影响 | 概率 | 应对 |
 |------|------|------|------|
 | PyO3 0.28 API 变更 | 中 | 低 | 参照 PyO3 migration guide, 使用稳定 API |
-| `Arc<Mutex>` 迭代器死锁 | 高 | 低 | 确保 `__next__` 中 lock 立即释放, 不嵌套 lock |
+| DataSet 内部锁迭代器阻塞 | 中 | 低 | `__next__` 每次只调用一次 DataSet public API, 不在 Python 层嵌套锁 |
 | Windows 编译问题 | 中 | 中 | 使用 maturin 的 MSVC toolchain, 测试 `x86_64-pc-windows-msvc` |
 | manylinux 兼容性 | 中 | 中 | 使用 `pypa/manylinux` Docker 镜像 + maturin 自动处理 |
 | GIL 与后台线程冲突 | 高 | 低 | 后台线程不持 GIL, Python 操作在 GIL 下, 无交叉 |
@@ -443,7 +443,7 @@ PY-1 (骨架)
 
 - **无 `as any` / `unwrap()`**: 所有 `Option` / `Result` 必须显式处理
 - **错误映射**: 所有 Rust `Result<T>` 在 Python 边界转为 `PyResult<T>`, 错误通过 `map_error` 转换
-- **内存安全**: `Arc<Mutex>` 共享不跨越 FFI 传递裸指针
+- **内存安全**: `Arc<DataSet>` 共享不跨越 FFI 传递裸指针
 - **测试隔离**: 每个 Python 测试使用 `tempfile.TemporaryDirectory()` 独立临时目录
 - **代码风格**: Rust 端遵循项目根目录 `AGENTS.md` (clippy clean, fmt check), Python 端遵循 PEP 8
 - **文档**: 所有 PyO3 `#[pyclass]` 和 `#[pymethods]` 必须有 Python 可见的 docstring

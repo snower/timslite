@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use crate::bg::BackgroundTasks;
@@ -97,7 +97,7 @@ pub struct DataSetHandle(pub u64);
 /// The Store: top-level facade for managing datasets.
 pub struct Store {
     data_dir: PathBuf,
-    datasets: Arc<RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>>,
+    datasets: Arc<RwLock<HashMap<DataSetKey, Arc<DataSet>>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,
     journal: Arc<JournalManager>,
@@ -213,16 +213,16 @@ impl Store {
                 }
                 max_identifier = max_identifier.max(identifier);
                 match DataSet::open(key.clone(), type_path.clone()) {
-                    Ok(mut ds) => {
-                        ds.set_identifier(identifier);
+                    Ok(ds) => {
+                        ds.set_identifier(identifier)?;
                         ds.set_runtime_context(Self::dataset_runtime_context(
                             &block_cache,
                             &journal,
                             &flush_queue,
                             ds.enable_journal(),
-                        ));
+                        ))?;
                         log::info!("[store] loaded existing dataset: {}/{}", name, dataset_type);
-                        datasets.insert(key, Arc::new(Mutex::new(ds)));
+                        datasets.insert(key, Arc::new(ds));
                     }
                     Err(err) => {
                         log::warn!(
@@ -329,7 +329,7 @@ impl Store {
 
         // Create new dataset
         let dir = self.data_dir.join(name).join(dataset_type);
-        let mut ds = DataSet::create_with_compression(
+        let ds = DataSet::create_with_compression(
             key.clone(),
             dir.clone(),
             config.data_segment_size,
@@ -344,7 +344,7 @@ impl Store {
         )?;
         write_identifier_file(&dataset_identifier_path(&dir), identifier)?;
         write_identifier_file(&self.data_dir.join(MAX_IDENTIFIER_FILE), identifier)?;
-        ds.set_identifier(identifier);
+        ds.set_identifier(identifier)?;
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
@@ -353,9 +353,9 @@ impl Store {
                 .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
                 .flush_queue(),
             config.enable_journal,
-        ));
+        ))?;
 
-        let ds = Arc::new(Mutex::new(ds));
+        let ds = Arc::new(ds);
         {
             let mut guard = self.datasets.write().unwrap();
             guard.insert(key.clone(), ds);
@@ -438,8 +438,8 @@ impl Store {
                 )));
             }
         }
-        let mut ds = DataSet::open(key.clone(), dir)?;
-        ds.set_identifier(identifier);
+        let ds = DataSet::open(key.clone(), dir)?;
+        ds.set_identifier(identifier)?;
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
@@ -448,9 +448,9 @@ impl Store {
                 .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
                 .flush_queue(),
             ds.enable_journal(),
-        ));
+        ))?;
 
-        let ds = Arc::new(Mutex::new(ds));
+        let ds = Arc::new(ds);
         {
             let mut guard = self.datasets.write().unwrap();
             guard.insert(key.clone(), ds);
@@ -490,10 +490,7 @@ impl Store {
             ));
         }
         let ds_arc = self.get_dataset(&handle)?;
-        let ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        let identifier = ds.identifier();
+        let identifier = ds_arc.identifier();
         if identifier == 0 {
             return Err(TmslError::InvalidData(
                 "dataset has no public identifier".into(),
@@ -514,8 +511,7 @@ impl Store {
             }
             let mut guard = self.datasets.write().unwrap();
             if let Some(ds_arc) = guard.remove(&key) {
-                let mut ds = ds_arc.lock().unwrap();
-                ds.close()?;
+                ds_arc.close()?;
             }
         }
         Ok(())
@@ -538,15 +534,14 @@ impl Store {
             let ds_arc = guard
                 .remove(&key)
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?;
-            let mut ds = ds_arc.lock().unwrap();
-            let identifier = ds.identifier();
-            let metadata = meta_values_from_file(&ds.base_dir.join("meta"))?;
-            let effective_journal = self.journal.is_enabled() && ds.enable_journal();
+            let identifier = ds_arc.identifier();
+            let base_dir = ds_arc.base_dir();
+            let metadata = meta_values_from_file(&base_dir.join("meta"))?;
+            let effective_journal = self.journal.is_enabled() && ds_arc.enable_journal();
             if effective_journal {
                 validate_create_drop_record_inputs(identifier, &key, metadata.len())?;
             }
-            let base_dir = ds.base_dir.clone();
-            ds.close()?;
+            ds_arc.close()?;
             (base_dir, identifier, metadata, effective_journal)
         };
 
@@ -589,8 +584,7 @@ impl Store {
         {
             let mut guard = self.datasets.write().unwrap();
             if let Some(ds_arc) = guard.remove(&key) {
-                let mut ds = ds_arc.lock().unwrap();
-                let _ = ds.close(); // best-effort close
+                let _ = ds_arc.close(); // best-effort close
             }
         }
 
@@ -605,7 +599,7 @@ impl Store {
     }
 
     /// Get a dataset handle for internal use.
-    pub fn get_dataset(&self, handle: &DataSetHandle) -> Result<Arc<Mutex<DataSet>>> {
+    pub fn get_dataset(&self, handle: &DataSetHandle) -> Result<Arc<DataSet>> {
         let key = self
             .handles
             .get(&handle.0)
@@ -649,12 +643,7 @@ impl Store {
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
                 .clone()
         };
-        {
-            let mut ds = ds_arc
-                .lock()
-                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.write(timestamp, data)?;
-        }
+        ds_arc.write(timestamp, data)?;
         Ok(())
     }
 
@@ -682,12 +671,7 @@ impl Store {
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
                 .clone()
         };
-        {
-            let mut ds = ds_arc
-                .lock()
-                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.append(timestamp, data)?;
-        }
+        ds_arc.append(timestamp, data)?;
         Ok(())
     }
 
@@ -710,12 +694,7 @@ impl Store {
                 .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
                 .clone()
         };
-        {
-            let mut ds = ds_arc
-                .lock()
-                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.delete(timestamp)?;
-        }
+        ds_arc.delete(timestamp)?;
         Ok(())
     }
 
@@ -726,19 +705,13 @@ impl Store {
         timestamp: i64,
     ) -> Result<Option<(i64, Vec<u8>)>> {
         let ds_arc = self.get_dataset(&handle)?;
-        let mut ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.read(timestamp)
+        ds_arc.read(timestamp)
     }
 
     /// Read the latest written timestamp's record through the Store.
     pub fn read_dataset_latest(&self, handle: DataSetHandle) -> Result<Option<(i64, Vec<u8>)>> {
         let ds_arc = self.get_dataset(&handle)?;
-        let mut ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.read_latest()
+        ds_arc.read_latest()
     }
 
     /// Query through the Store so global cache and read-only internal handles are honored.
@@ -749,19 +722,13 @@ impl Store {
         end_ts: i64,
     ) -> Result<Vec<(i64, Vec<u8>)>> {
         let ds_arc = self.get_dataset(&handle)?;
-        let mut ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.query(start_ts, end_ts)
+        ds_arc.query(start_ts, end_ts)
     }
 
     /// Check if index entry exists for a timestamp.
     pub fn dataset_read_exist(&self, handle: DataSetHandle, timestamp: i64) -> Result<bool> {
         let ds_arc = self.get_dataset(&handle)?;
-        let mut ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.read_exist(timestamp)
+        ds_arc.read_exist(timestamp)
     }
 
     /// Check existence of index entries in [start_ts, end_ts].
@@ -772,10 +739,7 @@ impl Store {
         end_ts: i64,
     ) -> Result<Vec<u8>> {
         let ds_arc = self.get_dataset(&handle)?;
-        let mut ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.query_exist(start_ts, end_ts)
+        ds_arc.query_exist(start_ts, end_ts)
     }
 
     /// Read the logical data length for a timestamp.
@@ -785,10 +749,7 @@ impl Store {
         timestamp: i64,
     ) -> Result<Option<u32>> {
         let ds_arc = self.get_dataset(&handle)?;
-        let mut ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.read_length(timestamp)
+        ds_arc.read_length(timestamp)
     }
 
     /// Query data lengths for timestamps in [start_ts, end_ts].
@@ -799,19 +760,13 @@ impl Store {
         end_ts: i64,
     ) -> Result<Vec<(i64, u32)>> {
         let ds_arc = self.get_dataset(&handle)?;
-        let mut ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.query_length(start_ts, end_ts)
+        ds_arc.query_length(start_ts, end_ts)
     }
 
     /// Return the highest successfully written timestamp for a dataset handle.
     pub fn latest_written_timestamp(&self, handle: DataSetHandle) -> Result<Option<i64>> {
         let ds_arc = self.get_dataset(&handle)?;
-        let ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        Ok(ds.latest_written_timestamp())
+        Ok(ds_arc.latest_written_timestamp())
     }
 
     /// Get a reference to the global block cache.
@@ -830,7 +785,7 @@ impl Store {
     /// due and runs them immediately.  Returns the number of executed tasks
     /// and the delay until the next one is due.
     ///
-    /// Safe to call even when the background thread is enabled 鈥?it will
+    /// Safe to call even when the background thread is enabled; it will
     /// be serialised with the thread via the internal `Mutex`.
     pub fn tick_background_tasks(&self) -> Result<TickResult> {
         let bg = self
@@ -852,7 +807,7 @@ impl Store {
         Ok(bg.next_delay())
     }
 
-    // ─── Dataset enumeration ────────────────────────────────────────────
+    // 鈹€鈹€鈹€ Dataset enumeration 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     /// Get all unique dataset names in the store.
     pub fn get_dataset_names(&self) -> Result<Vec<String>> {
@@ -892,10 +847,7 @@ impl Store {
         let ds_arc = guard
             .get(&key)
             .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?;
-        let ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.inspect()
+        ds_arc.inspect()
     }
 
     /// Close the store completely.
@@ -908,9 +860,8 @@ impl Store {
         // 2. Flush and close all datasets (close queues first)
         let mut guard = self.datasets.write().unwrap();
         for (_key, ds_arc) in guard.drain() {
-            let mut ds = ds_arc.lock().unwrap();
-            let _ = ds.close_queue(); // best-effort close queue
-            if let Err(e) = ds.close() {
+            let _ = ds_arc.close_queue(); // best-effort close queue
+            if let Err(e) = ds_arc.close() {
                 log::error!("[store] close failed: {}", e);
             }
         }
@@ -943,12 +894,7 @@ impl Store {
             .clone();
 
         // Initialize queue on the dataset
-        let (inner, notify) = {
-            let mut ds = ds_arc
-                .lock()
-                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            ds.open_queue()?
-        };
+        let (inner, notify) = ds_arc.open_queue()?;
 
         Ok(DatasetQueue {
             dataset: ds_arc,
@@ -978,10 +924,7 @@ impl Store {
             .ok_or_else(|| TmslError::NotFound(format!("dataset {:?} not found", key)))?
             .clone();
 
-        let mut ds = ds_arc
-            .lock()
-            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-        ds.close_queue()
+        ds_arc.close_queue()
     }
 
     /// Open or create a consumer group for a dataset queue.

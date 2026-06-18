@@ -1,4 +1,4 @@
-﻿# Store 与 FFI API
+# Store 与 FFI API
 
 ## 十一、Store: 存储门面
 
@@ -24,7 +24,7 @@ pub struct TickResult {
 
 pub struct Store {
     data_dir: PathBuf,
-    datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
+    datasets: RwLock<HashMap<DataSetKey, Arc<DataSet>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,
     journal: Arc<JournalManager>,   // 内置 .journal/logs 专用 append log, 可配置启用/禁用
@@ -46,6 +46,7 @@ impl Store {
     ) -> Result<DataSetHandle>;
     pub fn open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetHandle>;
     pub fn open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSetHandle>;
+    pub fn get_dataset(&self, handle: &DataSetHandle) -> Result<Arc<DataSet>>;
     pub fn write_dataset(&mut self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
     pub fn append_dataset(&mut self, handle: DataSetHandle, timestamp: i64, data: &[u8]) -> Result<()>;
     pub fn delete_dataset_record(&mut self, handle: DataSetHandle, timestamp: i64) -> Result<()>;
@@ -85,6 +86,8 @@ impl Store {
     pub fn close(self) -> Result<()>;
 }
 ```
+
+`Store.datasets` 的 `RwLock` 只保护 registry 的增删查和 lifecycle 边界。打开后的 `DataSet` 以 `Arc<DataSet>` 暴露, `DataSet` 内部持有 mutex 并在 `write/append/delete/read/query/queue` 等 public API 中自行加锁; 因此通过 `Store::get_dataset` 取得 dataset 后直接调用其读写 API, 不会绕过同步边界。
 
 ### 11.2 Store 内部行为
 

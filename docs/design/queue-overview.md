@@ -57,7 +57,7 @@ pub struct QueueConsumerConfig {
 // ─── DatasetQueue (per dataset, singleton handle, Clone-safe) ────────────
 
 pub struct DatasetQueue {
-    dataset: Arc<Mutex<DataSet>>,
+    dataset: Arc<DataSet>,
     inner: Arc<Mutex<QueueInner>>,
     notify: Arc<(Mutex<bool>, Condvar)>,   // (guard_mutex, condvar) pair
 }
@@ -81,7 +81,7 @@ pub struct DatasetQueueConsumer {
     state_file: Arc<Mutex<ConsumerStateFile>>,  // 同组共享
     config: QueueConsumerConfig,
     notify: Arc<(Mutex<bool>, Condvar)>,        // 共享 DatasetQueue 的 Condvar
-    dataset: Arc<Mutex<DataSet>>,
+    dataset: Arc<DataSet>,
     closed: Arc<AtomicBool>,                    // 共享 QueueInner.closed
 }
 
@@ -310,7 +310,7 @@ if let Some(ref notify_pair) = self.queue_notify {
 ```rust
 // bg/mod.rs idle-check 逻辑
 for (key, dataset_arc) in datasets.iter() {
-    let dataset = dataset_arc.lock().unwrap();
+    let dataset = Arc::clone(dataset_arc);
 
     // Queue 打开时阻止 idle-close
     if dataset.queue_inner.is_some() {
@@ -352,9 +352,7 @@ pub fn close(&self) -> Result<()> {
     *flag = false;
 
     // 3. 标记 Dataset queue 关闭
-    let mut dataset = self.dataset.lock().unwrap();
-    dataset.queue_inner = None;
-    dataset.queue_notify = None;
+    self.dataset.close_queue()?;
 
     // 4. 状态文件保持打开, 不删除 (下次 open_consumer 可恢复)
     Ok(())
@@ -370,7 +368,7 @@ pub fn close(&self) -> Result<()> {
 ```
 Store (RwLock<HashMap>)
     ↓
-Dataset (Arc<Mutex<DataSet>>)
+Dataset (Arc<DataSet>, internal mutex)
     ↓
 QueueInner (Arc<Mutex<QueueInner>>)
     ↓
@@ -385,28 +383,14 @@ ConsumerStateFile (Arc<Mutex<ConsumerStateFile>>)
 
 ```rust
 pub fn push(&self, data: &[u8]) -> Result<i64> {
-    // 1. 获取 dataset 锁 (保证 latest_written_timestamp 串行)
-    let mut dataset = self.dataset.lock().unwrap();
-
-    // 2. 检查 queue 是否打开
-    if dataset.queue_inner.is_none() {
-        return Err(TmslError::QueueClosed);
-    }
-
-    // 3. 计算 timestamp
-    let ts = dataset
-        .latest_written_timestamp()
-        .map_or(1, |latest| latest.saturating_add(1));
-
-    // 4. 写入数据 (内部 write hook 会触发 notify_all)
-    dataset.write(ts, data)?;
-
-    // 5. 返回分配的 timestamp
+    // DataSet internally locks while checking queue state,
+    // allocating timestamp = latest + 1, and writing the record.
+    let ts = self.dataset.write_next_queue_record(data)?;
     Ok(ts)
 }
 ```
 
-**串行化保证**: Dataset 的 `Mutex<DataSet>` 已保证所有 write 操作串行, 不需要额外 queue_mutex。
+**串行化保证**: DataSet 内部 mutex 已保证所有 write 操作串行, 不需要额外 queue_mutex。
 
 **Journal queue 特例**: JournalQueue 不提供外部 `push(data)`。journal record 只能由 `JournalManager.append_*` 写入; append 成功后通过 JournalQueue notify 机制唤醒等待 consumer。这里的 append 指 journal record 写入 JournalLog, 其 sequence 独立递增, 不等同于业务 dataset 的 `append(ts == latest)` 修改已有 record。
 

@@ -273,7 +273,7 @@ pub const INDEX_HEADER_SIZE: u64 = 128;   // index entry area fixed start
 /// 存储实例句柄 (线程安全)
 pub struct Store {
     data_dir: PathBuf,
-    datasets: RwLock<HashMap<DataSetKey, Arc<Mutex<DataSet>>>>,
+    datasets: RwLock<HashMap<DataSetKey, Arc<DataSet>>>,
     config: StoreConfig,
     block_cache: Arc<BlockCache>,      // 全局读缓存池 (0=禁用)
     bg_handle: Option<JoinHandle<()>>,

@@ -171,9 +171,9 @@ struct FfiIterator {
     iter: *mut c_void,  // 指向 Box<QueryIteratorWrapper>
 }
 
-// 包装 FFI 安全的迭代器 (Arc<Mutex> 而非裸借用)
+// 包装 FFI 安全的迭代器 (Arc<DataSet> 而非裸借用)
 struct QueryIteratorWrapper {
-    ds: Arc<Mutex<DataSet>>,
+    ds: Arc<DataSet>,
     cache: Option<*const BlockCache>,
     internal: QueryIteratorState,  // 非生命周期绑定版本
     current_record: Option<(i64, Vec<u8>)>,  // FFI 返回数据的临时持有

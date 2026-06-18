@@ -1,12 +1,12 @@
 //! PyStore — main entry point, context manager.
 //!
 //! PyStore wraps Option<Store>. close() uses Option::take() to prevent use-after-close.
-//! Dataset management tracks Arc<Mutex<DataSet>> for sharing with PyDataset.
+//! Dataset management tracks Arc<DataSet> for sharing with PyDataset.
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::config::PyStoreConfig;
 use crate::dataset::PyDataset;
@@ -191,9 +191,9 @@ impl From<timslite::DataSetInspectResult> for PyDataSetInspectResult {
 #[pyclass(name = "Store")]
 pub struct PyStore {
     inner: Option<timslite::Store>,
-    /// Track open datasets: dataset_id -> Arc<Mutex<DataSet>>
+    /// Track open datasets: dataset_id -> Arc<DataSet>
     /// This runs parallel to Store's internal registry.
-    datasets: std::collections::HashMap<u64, Arc<Mutex<timslite::DataSet>>>,
+    datasets: std::collections::HashMap<u64, Arc<timslite::DataSet>>,
     next_id: u64,
 }
 
@@ -253,10 +253,8 @@ impl PyStore {
     fn close(&mut self) -> PyResult<()> {
         // First close all tracked datasets to release mmap handles
         for ds_arc in self.datasets.values() {
-            if let Ok(mut ds) = ds_arc.lock() {
-                let _ = ds.flush();
-                let _ = ds.close();
-            }
+            let _ = ds_arc.flush();
+            let _ = ds_arc.close();
         }
         self.datasets.clear();
 
@@ -320,10 +318,7 @@ impl PyStore {
 
         let id = self.next_id;
         self.next_id += 1;
-        let base_dir = {
-            let ds = ds_arc.lock().unwrap();
-            ds.base_dir().to_string_lossy().to_string()
-        };
+        let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
 
         let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
         self.datasets.insert(id, py_ds.inner_arc());
@@ -344,10 +339,7 @@ impl PyStore {
 
         let id = self.next_id;
         self.next_id += 1;
-        let base_dir = {
-            let ds = ds_arc.lock().unwrap();
-            ds.base_dir().to_string_lossy().to_string()
-        };
+        let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
 
         let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
         self.datasets.insert(id, py_ds.inner_arc());
@@ -366,10 +358,7 @@ impl PyStore {
 
         let id = self.next_id;
         self.next_id += 1;
-        let base_dir = {
-            let ds = ds_arc.lock().unwrap();
-            ds.base_dir().to_string_lossy().to_string()
-        };
+        let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
 
         let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
         self.datasets.insert(id, py_ds.inner_arc());
@@ -396,10 +385,7 @@ impl PyStore {
             })?
             .clone();
 
-        let (inner, notify) = {
-            let mut ds = ds_arc.lock().unwrap();
-            wrap(ds.open_queue())?
-        };
+        let (inner, notify) = wrap(ds_arc.open_queue())?;
 
         Ok(PyDatasetQueue::new(timslite::DatasetQueue::new(
             ds_arc, inner, notify,
@@ -524,9 +510,7 @@ impl Drop for PyStore {
         // for delayed cleanup (use ignore_errors=True for tempfile).
         if let Ok(store) = self.inner.take().ok_or(()) {
             for ds_arc in self.datasets.values() {
-                if let Ok(mut ds) = ds_arc.lock() {
-                    let _ = ds.flush();
-                }
+                let _ = ds_arc.flush();
             }
             let _ = self.datasets.drain();
             drop(store);

@@ -237,7 +237,6 @@ impl Store {
     pub fn inspect_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetInspectResult> {
         let handle = DataSetHandle::new(name, dataset_type);
         let ds = self.get_dataset(&handle)?;
-        let ds = ds.lock().map_err(|_| TmslError::LockPoisoned("dataset".into()))?;
         ds.inspect()
     }
 }

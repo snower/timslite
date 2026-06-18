@@ -70,7 +70,7 @@ fn test_inspect_timestamp_zero_is_present_value() {
         name: "zero".into(),
         dataset_type: "metrics".into(),
     };
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id,
         dir.clone(),
         64 * 1024 * 1024,
@@ -132,7 +132,7 @@ fn test_inspect_state_after_write() {
         name: "sensor".into(),
         dataset_type: "temperature".into(),
     };
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id,
         dir.clone(),
         64 * 1024 * 1024,
@@ -171,7 +171,7 @@ fn test_inspect_state_multi_segment() {
     };
     // Use small segment size to force multiple segments
     let data_segment_size = 256;
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id,
         dir.clone(),
         data_segment_size,
@@ -222,7 +222,7 @@ fn test_inspect_counts_archived_segments_after_reopen_without_opening_all_segmen
         dataset_type: "temperature".into(),
     };
     let data_segment_size = 256;
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id.clone(),
         dir.clone(),
         data_segment_size,
@@ -261,7 +261,7 @@ fn test_inspect_archived_delete_updates_invalid_count() {
         dataset_type: "temperature".into(),
     };
     let data_segment_size = 256;
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id,
         dir,
         data_segment_size,
@@ -299,7 +299,7 @@ fn test_inspect_retention_reclaim_subtracts_archived_stats() {
         dataset_type: "temperature".into(),
     };
     let data_segment_size = 256;
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id,
         dir,
         data_segment_size,
@@ -364,7 +364,7 @@ fn test_inspect_with_queue() {
         name: "sensor".into(),
         dataset_type: "temperature".into(),
     };
-    let mut ds = DataSet::create(
+    let ds = DataSet::create(
         id,
         dir.clone(),
         64 * 1024 * 1024,

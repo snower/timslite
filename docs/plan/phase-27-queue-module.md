@@ -64,7 +64,7 @@
 - [x] **实现 `QueueInner` 结构**
   - [x] 字段: `consumers: HashMap<String, Vec<Arc<ConsumerStateFile>>>`, `closed: AtomicBool`
 - [x] **实现 `DatasetQueue` 结构**
-  - [x] 字段: `dataset: Arc<Mutex<DataSet>>`, `inner: Arc<Mutex<QueueInner>>`, `notify: Arc<(Mutex<bool>, Condvar)>`
+  - [x] 字段: `dataset: Arc<DataSet>`, `inner: Arc<Mutex<QueueInner>>`, `notify: Arc<(Mutex<bool>, Condvar)>`
   - [x] 实现 Clone trait (共享 Arc 内部状态)
 - [x] **实现 `DatasetQueue::push()`**
   - [x] 检查 closed 标志
@@ -163,7 +163,7 @@
 ### 实现任务
 
 - [x] **实现 `DatasetQueueConsumer` 结构**
-  - [x] 字段: `group_name: String`, `state_file: Arc<Mutex<ConsumerStateFile>>`, `notify: Arc<(Mutex<bool>, Condvar)>`, `dataset: Arc<Mutex<DataSet>>`, `closed: Arc<AtomicBool>`
+  - [x] 字段: `group_name: String`, `state_file: Arc<Mutex<ConsumerStateFile>>`, `notify: Arc<(Mutex<bool>, Condvar)>`, `dataset: Arc<DataSet>`, `closed: Arc<AtomicBool>`
   - [x] 实现 Clone trait (共享 Arc 内部状态)
 - [x] **实现 `DatasetQueue::open_consumer()`**
   - [x] 检查 closed 标志
