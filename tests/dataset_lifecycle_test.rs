@@ -73,6 +73,36 @@ fn t8_2_2_open_returns_error_if_not_exists() {
 }
 
 #[test]
+fn direct_dataset_close_removes_store_entry_and_invalidates_handle() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let handle = store
+        .create_dataset("direct_close", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    store.write_dataset(handle, 1, b"before close").unwrap();
+
+    let dataset = store.get_dataset(&handle).unwrap();
+    dataset.close().unwrap();
+
+    assert!(
+        store.read_dataset(handle, 1).is_err(),
+        "old Store handle should be invalid after direct DataSet::close"
+    );
+    assert!(
+        dataset.write(2, b"after close").is_err(),
+        "closed DataSet object should reject further writes"
+    );
+
+    let reopened = store.open_dataset("direct_close", "data").unwrap();
+    let row = store.read_dataset(reopened, 1).unwrap().unwrap();
+    assert_eq!(row.1, b"before close");
+
+    store.close().unwrap();
+}
+
+#[test]
 fn t8_2_3_drop_deletes_dataset() {
     use timslite::{Store, StoreConfig};
 

@@ -851,6 +851,25 @@ fn t27_6_2_store_close_queue() {
 }
 
 #[test]
+fn t27_6_3_direct_queue_close_releases_dataset_queue_state() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
+    let q = store.open_queue(h).unwrap();
+    q.close().unwrap();
+
+    assert!(store.queue_push(&q, b"old").is_err());
+    let q2 = store.open_queue(h).unwrap();
+    assert!(store.queue_push(&q2, b"new").is_ok());
+    store.close().unwrap();
+}
+
+#[test]
 fn t27_6_1_store_open_queue_valid() {
     use timslite::{Store, StoreConfig};
 

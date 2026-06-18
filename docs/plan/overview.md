@@ -202,7 +202,7 @@ Phase 41 (Queue Consumer Retry: QSTF v1 18B pending + visibility timeout + retry
 | memmap2 在 Windows 上行为差异 | Phase 3 延迟 | 提前在 Windows 上做 mmap 原型验证 |
 | 压缩算法契约漂移 | 新写入 segment 与读取解压算法不一致 | 以 `compress_type` 为唯一算法选择真源: zstd 默认、deflate 受支持, 读取按 segment header 解压 |
 | FFI panic 跨语言 | 崩溃调用方 | 所有 FFI 函数必须 `catch_unwind` |
-| 大量数据集同时打开 | Phase 6 OOM | Store open 时初始所有 segment → closed, 30min idle-close 释放 mmap |
+| 大量数据集同时打开 | Store open 启动慢 / OOM | Store open 不扫描普通 dataset; dataset 按 open/inspect/open-by-id 懒加载, 后台 idle-close 仅释放已加载 dataset 的分段文件 |
 | 索引 binary search 溢出 | 查询错误 | 边界条件充分测试 (0, 1, n entries) |
 | pending block crash 恢复失败 | 数据丢失 | reopen 时完整校验 header 一致性, 密封 pending 但不压缩 |
 | idle-close 后 reopen 性能 | 延迟增加 | mmap open 开销小 (<1ms), 可接受 |

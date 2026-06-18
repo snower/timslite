@@ -179,7 +179,7 @@ Offset  Size  Type       Field
 ```
 
 `index_info` 使用写入完成后可读取业务 record 的最终 index entry。correction 原地覆盖时 index entry 不变, 仍写 `0x11`。
-`0x11` 不携带 `name`/`type`; consumer 通过 Store 的 `identifier -> DataSetKey` 索引或 create/drop journal catalog 解析目标 dataset。
+`0x11` 不携带 `name`/`type`; consumer 通过 Store 的按需 `identifier -> DataSetKey` cache 或 create/drop journal catalog 解析目标 dataset。
 
 #### 25.5.4 `0x12` dataset 删除数据
 
@@ -226,9 +226,9 @@ Store::open(data_dir):
        - 不写递归 0x01 journal
      else:
        journal = Disabled
-  3. 扫描普通 dataset registry
-     - 跳过 .journal
-     - 跳过非法公共目录名
+  3. 不扫描普通 dataset registry
+     - 普通 dataset 在 open_dataset/inspect/open-by-id 时按需加载
+     - .journal 始终由 JournalManager 单独管理
 ```
 
 #### Store::create_dataset / drop_dataset

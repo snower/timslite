@@ -56,11 +56,16 @@ pub(crate) trait DataSetJournalSink: Send + Sync {
     ) -> Result<()>;
 }
 
+pub(crate) trait DataSetLifecycleSink: Send + Sync {
+    fn dataset_closed(&self, key: &DataSetKey);
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct DataSetRuntimeContext {
     block_cache: Option<Arc<BlockCache>>,
     journal: Option<Arc<dyn DataSetJournalSink>>,
     flush_queue: Option<SegmentFlushQueue>,
+    lifecycle: Option<Arc<dyn DataSetLifecycleSink>>,
     read_only: bool,
 }
 
@@ -78,8 +83,14 @@ impl DataSetRuntimeContext {
             block_cache,
             journal,
             flush_queue,
+            lifecycle: None,
             read_only: false,
         }
+    }
+
+    pub(crate) fn with_lifecycle(mut self, lifecycle: Arc<dyn DataSetLifecycleSink>) -> Self {
+        self.lifecycle = Some(lifecycle);
+        self
     }
 
     pub(crate) fn read_only() -> Self {
@@ -87,6 +98,7 @@ impl DataSetRuntimeContext {
             block_cache: None,
             journal: None,
             flush_queue: None,
+            lifecycle: None,
             read_only: true,
         }
     }
@@ -96,6 +108,7 @@ impl DataSetRuntimeContext {
             block_cache: None,
             journal: None,
             flush_queue,
+            lifecycle: None,
             read_only: true,
         }
     }
@@ -169,8 +182,20 @@ impl DataSet {
         f(&mut inner)
     }
 
+    fn with_open_inner<T>(&self, f: impl FnOnce(&mut DataSetInner) -> Result<T>) -> Result<T> {
+        let mut inner = self.lock_inner()?;
+        inner.ensure_open()?;
+        f(&mut inner)
+    }
+
     fn with_inner_ref<T>(&self, f: impl FnOnce(&DataSetInner) -> Result<T>) -> Result<T> {
         let inner = self.lock_inner()?;
+        f(&inner)
+    }
+
+    fn with_open_inner_ref<T>(&self, f: impl FnOnce(&DataSetInner) -> Result<T>) -> Result<T> {
+        let inner = self.lock_inner()?;
+        inner.ensure_open()?;
         f(&inner)
     }
 
@@ -282,51 +307,51 @@ impl DataSet {
     }
 
     pub fn write(&self, timestamp: i64, data: &[u8]) -> Result<()> {
-        self.with_inner(|inner| inner.write(timestamp, data))
+        self.with_open_inner(|inner| inner.write(timestamp, data))
     }
 
     pub fn append(&self, timestamp: i64, data: &[u8]) -> Result<()> {
-        self.with_inner(|inner| inner.append(timestamp, data))
+        self.with_open_inner(|inner| inner.append(timestamp, data))
     }
 
     pub fn delete(&self, timestamp: i64) -> Result<()> {
-        self.with_inner(|inner| inner.delete(timestamp))
+        self.with_open_inner(|inner| inner.delete(timestamp))
     }
 
     pub fn read(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
-        self.with_inner(|inner| inner.read(timestamp))
+        self.with_open_inner(|inner| inner.read(timestamp))
     }
 
     pub fn read_latest(&self) -> Result<Option<(i64, Vec<u8>)>> {
-        self.with_inner(|inner| inner.read_latest())
+        self.with_open_inner(|inner| inner.read_latest())
     }
 
     pub fn read_exist(&self, timestamp: i64) -> Result<bool> {
-        self.with_inner(|inner| inner.read_exist(timestamp))
+        self.with_open_inner(|inner| inner.read_exist(timestamp))
     }
 
     pub fn read_length(&self, timestamp: i64) -> Result<Option<u32>> {
-        self.with_inner(|inner| inner.read_length(timestamp))
+        self.with_open_inner(|inner| inner.read_length(timestamp))
     }
 
     pub fn query(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
-        self.with_inner(|inner| inner.query(start_ts, end_ts))
+        self.with_open_inner(|inner| inner.query(start_ts, end_ts))
     }
 
     pub fn query_index_entries(&self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
-        self.with_inner(|inner| inner.query_index_entries(start_ts, end_ts))
+        self.with_open_inner(|inner| inner.query_index_entries(start_ts, end_ts))
     }
 
     pub fn query_sources(&self, start_ts: i64, end_ts: i64) -> Result<Vec<QuerySource>> {
-        self.with_inner(|inner| inner.query_sources(start_ts, end_ts))
+        self.with_open_inner(|inner| inner.query_sources(start_ts, end_ts))
     }
 
     pub fn query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>> {
-        self.with_inner(|inner| inner.query_exist(start_ts, end_ts))
+        self.with_open_inner(|inner| inner.query_exist(start_ts, end_ts))
     }
 
     pub fn query_length(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>> {
-        self.with_inner(|inner| inner.query_length(start_ts, end_ts))
+        self.with_open_inner(|inner| inner.query_length(start_ts, end_ts))
     }
 
     pub fn query_length_iter(
@@ -339,15 +364,22 @@ impl DataSet {
     }
 
     pub fn read_entry_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
-        self.with_inner(|inner| inner.read_entry_at_index(entry))
+        self.with_open_inner(|inner| inner.read_entry_at_index(entry))
     }
 
     pub fn flush(&self) -> Result<()> {
-        self.with_inner(|inner| inner.flush())
+        self.with_open_inner(|inner| inner.flush())
     }
 
     pub fn close(&self) -> Result<()> {
-        self.with_inner(|inner| inner.close())
+        let (key, lifecycle) = self.with_inner(|inner| {
+            inner.close()?;
+            Ok((inner.id.clone(), inner.runtime_context.lifecycle.clone()))
+        })?;
+        if let Some(lifecycle) = lifecycle {
+            lifecycle.dataset_closed(&key);
+        }
+        Ok(())
     }
 
     pub fn touch(&self) -> Result<()> {
@@ -362,7 +394,7 @@ impl DataSet {
     }
 
     pub fn open_queue(&self) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
-        self.with_inner(|inner| inner.open_queue())
+        self.with_open_inner(|inner| inner.open_queue())
     }
 
     pub fn close_queue(&self) -> Result<()> {
@@ -395,7 +427,7 @@ impl DataSet {
     }
 
     pub fn reclaim_expired_segments(&self) -> Result<usize> {
-        self.with_inner(|inner| inner.reclaim_expired_segments())
+        self.with_open_inner(|inner| inner.reclaim_expired_segments())
     }
 
     pub(crate) fn read_record_data_len_at_index(&self, entry: &IndexEntry) -> Result<u32> {
@@ -415,7 +447,7 @@ impl DataSet {
     }
 
     pub(crate) fn write_next_queue_record(&self, data: &[u8]) -> Result<i64> {
-        self.with_inner(|inner| {
+        self.with_open_inner(|inner| {
             let timestamp = inner
                 .latest_written_timestamp()
                 .map_or(1, |latest| latest.saturating_add(1));
@@ -425,7 +457,11 @@ impl DataSet {
     }
 
     pub fn inspect(&self) -> Result<DataSetInspectResult> {
-        self.with_inner_ref(|inner| inner.inspect())
+        self.with_open_inner_ref(|inner| inner.inspect())
+    }
+
+    pub(crate) fn idle_close_segments(&self) -> Result<()> {
+        self.with_inner(|inner| inner.idle_close_segments())
     }
 }
 
@@ -521,6 +557,7 @@ pub(crate) struct DataSetInner {
     queue_inner: Option<Arc<Mutex<QueueInner>>>,
     queue_notify: Option<Arc<(Mutex<bool>, Condvar)>>,
     runtime_context: DataSetRuntimeContext,
+    closed: bool,
 }
 
 impl DataSetInner {
@@ -640,6 +677,7 @@ impl DataSetInner {
             queue_inner: None,
             queue_notify: None,
             runtime_context: DataSetRuntimeContext::default(),
+            closed: false,
         })
     }
 
@@ -708,6 +746,7 @@ impl DataSetInner {
             queue_inner: None,
             queue_notify: None,
             runtime_context: DataSetRuntimeContext::default(),
+            closed: false,
         })
     }
 
@@ -717,6 +756,16 @@ impl DataSetInner {
 
     pub(crate) fn set_identifier(&mut self, identifier: u64) {
         self.identifier = identifier;
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.closed {
+            return Err(TmslError::InvalidData(format!(
+                "dataset {}/{} is closed",
+                self.id.name, self.id.dataset_type
+            )));
+        }
+        Ok(())
     }
 
     pub fn identifier(&self) -> u64 {
@@ -1583,6 +1632,16 @@ impl DataSetInner {
 
     /// Close all segments.
     pub fn close(&mut self) -> Result<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.close_queue()?;
+        self.idle_close_segments()?;
+        self.closed = true;
+        Ok(())
+    }
+
+    pub(crate) fn idle_close_segments(&mut self) -> Result<()> {
         self.flush()?;
         self.segments.idle_close_all()?;
         self.time_index.idle_close_all()?;
@@ -1748,7 +1807,7 @@ impl DataSetInner {
     }
 
     /// Reclaim expired data & index segments whose entries fall entirely before the
-    /// retention threshold. Closes the dataset first (all segments go to closed set).
+    /// retention threshold. Idle-closes segments first so they enter closed registries.
     /// Returns the total number of segment files deleted.
     pub fn reclaim_expired_segments(&mut self) -> Result<usize> {
         let Some(threshold) = self.retention_threshold() else {
@@ -1757,7 +1816,7 @@ impl DataSetInner {
         let last_used_at = self.last_used_at;
 
         // Close all open segments so they become Closed entries in the registries.
-        self.close()?;
+        self.idle_close_segments()?;
 
         // Reclaim index segments (read-only mmap per segment, released immediately)
         let idx_reclaimed = self

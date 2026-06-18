@@ -81,6 +81,36 @@ fn test_get_dataset_names_after_create() {
 }
 
 #[test]
+fn test_get_dataset_names_after_reopen_without_opening_datasets() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    {
+        let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+        store
+            .create_dataset("lazy_a", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+            .unwrap();
+        store
+            .create_dataset(
+                "lazy_b",
+                "events",
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
+            .unwrap();
+        store.close().unwrap();
+    }
+
+    let store = Store::open(&dir, StoreConfig::default()).unwrap();
+    assert_eq!(store.get_dataset_names().unwrap(), vec!["lazy_a", "lazy_b"]);
+    assert_eq!(store.get_dataset_types("lazy_a").unwrap(), vec!["data"]);
+    store.close().unwrap();
+}
+
+#[test]
 fn test_get_dataset_names_dedup() {
     use timslite::{Store, StoreConfig};
 

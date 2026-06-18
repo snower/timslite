@@ -710,21 +710,12 @@ impl DatasetQueue {
 
     /// Close the queue (marks as closed, drops all consumers).
     pub fn close(&self) -> Result<()> {
+        self.dataset.close_queue()?;
+
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
-
-        if inner.is_closed() {
-            return Ok(());
-        }
-
-        // Sync all consumer state files
-        for sf in inner.consumers.values() {
-            if let Ok(mut guard) = sf.lock() {
-                let _ = guard.sync();
-            }
-        }
 
         inner.close();
         inner.consumers.clear();

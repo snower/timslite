@@ -400,6 +400,32 @@ fn test_inspect_not_found() {
 }
 
 #[test]
+fn test_store_inspect_unopened_dataset_opens_and_keeps_it_loaded() {
+    let dir = temp_dir("inspect_lazy_open");
+    let config = StoreConfig {
+        enable_background_thread: false,
+        enable_journal: false,
+        ..Default::default()
+    };
+
+    {
+        let mut store = Store::open(&dir, config.clone()).unwrap();
+        let handle = store
+            .create_dataset_with_config("inspect_lazy", "data", None)
+            .unwrap();
+        store.write_dataset(handle, 1, b"row").unwrap();
+        store.close().unwrap();
+    }
+
+    let mut store = Store::open(&dir, config).unwrap();
+    let result = store.inspect_dataset("inspect_lazy", "data").unwrap();
+    assert_eq!(result.info.name, "inspect_lazy");
+
+    let handle = store.open_dataset("inspect_lazy", "data").unwrap();
+    assert_eq!(store.read_dataset(handle, 1).unwrap().unwrap().1, b"row");
+}
+
+#[test]
 fn test_inspect_after_drop() {
     let dir = temp_dir("inspect_after_drop");
     let config = StoreConfig {

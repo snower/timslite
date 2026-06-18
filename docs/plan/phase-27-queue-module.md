@@ -121,6 +121,9 @@
   - [x] 检查 `queue_inner.is_some()`, 若未打开返回 QueueNotOpen 错误
   - [x] 调用 `DatasetQueue::close()` 逻辑
   - [x] 清理 `self.queue_inner = None`, `self.queue_notify = None`
+- [x] **实现 `DatasetQueue::close()` 与 dataset queue 状态同步**
+  - [x] 直接调用 `DatasetQueue::close()` 时同样调用 `DataSet::close_queue()`
+  - [x] 旧 queue handle 进入 closed 状态, 后续可通过 Store/DataSet 重新 open queue
 - [x] **实现 Write Hook**
   - [x] 在 `DataSet::write_with_cache()` 中, 正常写入成功后 (timestamp > old_latest)
   - [x] 检查 `self.queue_notify.is_some()`

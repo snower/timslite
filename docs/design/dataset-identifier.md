@@ -48,16 +48,13 @@ Store 根目录新增:
 2. 读取 `{data_dir}/max_identifier`:
    - 不存在: 视为 `0`, 后续首次创建 dataset 时生成。
    - 存在: 解析为 `u64`, 失败则返回错误。
-3. 扫描普通 dataset 目录 `{data_dir}/{name}/{type}`:
-   - 跳过 `.journal` 和非法 public name/type。
-   - 只加载同时存在 `meta` 和 `identifier` 的 dataset。
-   - 读取并校验每个 dataset 的 identifier。
-   - 建立 `identifier -> DataSetKey` 内存索引。
-4. 若扫描到的最大 dataset identifier 大于 `max_identifier`, Store open 后应把 `max_identifier` 修正为扫描最大值。
+3. 初始化空的普通 dataset registry 和空的 `identifier -> DataSetKey` 按需 cache。
+4. 不扫描普通 dataset 目录, 不打开普通 dataset, 不修正 `max_identifier`。
 
-重复 identifier 是数据目录损坏:
+`max_identifier` 是 Store 分配 identifier 的权威 high-water mark。普通 dataset 的 `identifier`、`meta` 和 segment 校验延迟到对应访问入口:
 
-- 两个不同普通 dataset 读取到同一个 identifier 时, `Store::open` 返回 `InvalidData`。
+- `open_dataset(name,type)` 读取该 dataset 的 `identifier` 和 `meta`。若 dataset identifier 大于权威 `max_identifier`, 返回 `InvalidData`。
+- `open_dataset_by_identifier(id)` 在 cache miss 时临时扫描合法 public dataset 目录读取 `identifier`; 若两个不同普通 dataset 匹配同一个 id, 返回 `InvalidData`。
 - 同一个 `(name,type)` 只允许一个 identifier 文件。
 
 ## Dataset 创建流程
@@ -67,17 +64,19 @@ Store 根目录新增:
 1. 校验 name/type 合法且不是 `.journal/logs`。
 2. 读取 Store 内存中的 `max_identifier`。
 3. `next_identifier = max_identifier.checked_add(1)`, 溢出返回 `InvalidData`。
-4. 创建 dataset 目录、`meta`、初始 data/index segment。
-5. 写入 `{dataset_dir}/identifier`, 内容为 `next_identifier.to_string()`。
-6. 更新 `{data_dir}/max_identifier`, 内容为 `next_identifier.to_string()`。
-7. 更新 Store 内存中的 `max_identifier` 和 `identifier -> DataSetKey` 索引。
-8. 注入 runtime context, 注册 dataset handle, 执行 journal create hook。
+4. 确认目标 dataset `meta` 不存在。
+5. 更新 `{data_dir}/max_identifier`, 内容为 `next_identifier.to_string()`。
+6. 创建 dataset 目录、`meta`、初始 data/index segment。
+7. 写入 `{dataset_dir}/identifier`, 内容为 `next_identifier.to_string()`。
+8. 更新 Store 内存中的 `max_identifier` 和 `identifier -> DataSetKey` cache。
+9. 注入 runtime context, 注册 dataset handle, 执行 journal create hook。
 
 Crash 边界:
 
-- 如果 crash 发生在写入 dataset `identifier` 前, 该 dataset 创建不完整; reopen 时因缺少 `identifier` 不加载, 可由后续清理工具处理。
-- 如果 crash 发生在写入 dataset `identifier` 后、更新 `max_identifier` 前, reopen 扫描 dataset 时会发现更大的 identifier 并修正 `max_identifier`。
-- 因此 `identifier` 文件必须先于 `max_identifier` 推进写入; 不需要引入事务或二阶段状态文件。
+- 如果 crash 发生在推进 `max_identifier` 后、写入 dataset `identifier` 前, 该 identifier 号段保留为空洞; 后续 create 从更大的 `max_identifier` 继续分配。
+- 如果 crash 留下存在 `meta` 但缺少 `identifier` 的 dataset, `open_dataset` 返回 `NotFound`, 可由后续清理工具处理。
+- 如果人工或外部故障使 dataset `identifier` 大于权威 `max_identifier`, 访问该 dataset 时返回 `InvalidData`; Store open 不自动扫描修复。
+- 因此 `max_identifier` 必须先于 dataset `identifier` 推进写入; 不需要引入事务或二阶段状态文件。
 
 ## 打开与查询 API
 
@@ -94,6 +93,8 @@ impl Store {
 
 - `open_dataset_by_identifier(0)` 返回 `InvalidData`。
 - 未找到 identifier 返回 `NotFound`。
+- cache miss 时临时扫描合法 public dataset 目录, 读取 `identifier` 并缓存匹配映射。
+- 扫描发现重复 identifier 返回 `InvalidData`。
 - 找到后等价于按对应 `(name,type)` 调用 `open_dataset`。
 - 如果目标 dataset 已经在 registry 中打开, 返回新的 handle 或复用现有 registry entry, 行为应与 `open_dataset(name,type)` 一致。
 - `.journal/logs` 不支持通过 id 打开。
@@ -123,7 +124,7 @@ dataset.identifier() -> int
 
 `DataSetInfo` 应新增 `identifier: u64`, 便于外部管理界面和调用方展示 id 与 `(name,type)` 的映射。
 
-`Store::get_dataset_names()` / `get_dataset_types(name)` 保持不变。identifier 是额外打开路径, 不改变按名称列举的语义。
+`Store::get_dataset_names()` / `get_dataset_types(name)` 直接扫描合法 public 目录返回名称和类型, 不打开 dataset, 不读取 meta/segments。`inspect_dataset(name,type)` 若目标未打开, 会按 `open_dataset` 语义加载并保留在 Store registry 中。
 
 ## 与 Journal 的关系
 
@@ -131,7 +132,7 @@ Journal record 使用 `identifier` 作为高频数据变更记录的紧凑 datas
 
 - `0x11`、`0x12`、`0x13` 只存 canonical identifier TV 和固定 payload 字段, 不再重复 `(name,type)` 字符串。
 - `0x01` create 和 `0x02` drop 记录保留 identifier、`name`、`dataset_type` 和 metadata, 使审计、迁移和 dataset 删除后的历史解释仍然自描述。
-- 处理数据变更记录的 consumer 通过当前 Store 的 `identifier -> DataSetKey` 索引解析目标 dataset; 离线 replay 工具可通过 create/drop catalog 记录建立同样映射。
+- 处理数据变更记录的 consumer 可通过当前 Store 的按需 `identifier -> DataSetKey` cache 或 create/drop journal catalog 解析目标 dataset; 离线 replay 工具可通过 create/drop catalog 记录建立同样映射。
 - `identifier` 仍是 Store-local。跨 Store 迁移若需要保留源 identifier, 必须显式定义源 id 到目标 dataset 的映射; journal record 格式本身不保证全局唯一。
 
 ## 测试要求
@@ -139,7 +140,7 @@ Journal record 使用 `identifier` 作为高频数据变更记录的紧凑 datas
 - 创建多个 dataset 后 identifier 从 1 开始递增。
 - reopen 后可通过 identifier 打开 dataset。
 - `max_identifier` 缺失时, 创建首个 dataset 生成 `1`。
-- `max_identifier` 落后于 dataset identifier 时, reopen 扫描并修正。
-- 重复 identifier 检测为 `InvalidData`。
+- `max_identifier` 落后于 dataset identifier 时, Store open 不修正; 访问该 dataset 返回 `InvalidData`。
+- `open_dataset_by_identifier` 扫描发现重复 identifier 时返回 `InvalidData`。
 - identifier 文件缺失的 dataset 不加载或按设计返回明确错误。
 - FFI/Python wrapper 在实现阶段补充对应 API 测试。

@@ -325,14 +325,16 @@ for (key, dataset_arc) in datasets.iter() {
 
 ### 29.4 Close 行为
 
-`Dataset.close()` 时, 如果 Queue 仍打开, 自动关闭:
+`DataSet::close()` 是公开 lifecycle close: 如果 queue 仍打开会先关闭 queue, 随后 flush 并释放 data/index segment 等资源, 标记 dataset 已关闭, 并通过 Store runtime context 从 `Store.datasets` registry 移除。后台 idle-close 不调用 `DataSet::close()`, 只调用内部 `idle_close_segments()` 释放分段文件, dataset 仍保持打开且 handle 有效。
 
 ```rust
 pub fn close(&mut self) -> Result<()> {
     if self.queue_inner.is_some() {
         self.close_queue()?;
     }
-    // ... 现有 close 逻辑 ...
+    self.idle_close_segments()?;
+    self.closed = true;
+    // Store-managed dataset also notifies lifecycle hook.
 }
 ```
 
@@ -340,9 +342,8 @@ pub fn close(&mut self) -> Result<()> {
 
 ```rust
 pub fn close(&self) -> Result<()> {
-    // 1. 设置 closed 标志
-    let inner = self.inner.lock().unwrap();
-    inner.closed.store(true, Ordering::SeqCst);
+    // 1. 标记 Dataset queue 关闭, 清空 dataset.queue_inner/queue_notify
+    self.dataset.close_queue()?;
 
     // 2. 唤醒所有等待 consumer (poll 检测到 closed 后退出)
     let (ref guard, ref condvar) = *self.notify;
@@ -351,10 +352,7 @@ pub fn close(&self) -> Result<()> {
     condvar.notify_all();
     *flag = false;
 
-    // 3. 标记 Dataset queue 关闭
-    self.dataset.close_queue()?;
-
-    // 4. 状态文件保持打开, 不删除 (下次 open_consumer 可恢复)
+    // 3. 状态文件保持打开, 不删除 (下次 open_consumer 可恢复)
     Ok(())
 }
 ```

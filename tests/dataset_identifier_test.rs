@@ -58,6 +58,7 @@ fn dataset_identifier_create_reopen_and_open_by_id() {
         );
         store.write_dataset(first, 1, b"alpha").unwrap();
         store.write_dataset(second, 1, b"beta").unwrap();
+        store.close().unwrap();
     }
 
     {
@@ -73,8 +74,8 @@ fn dataset_identifier_create_reopen_and_open_by_id() {
 }
 
 #[test]
-fn dataset_identifier_repairs_lagging_max_identifier() {
-    let dir = temp_dir("repair_max");
+fn dataset_identifier_treats_lagging_max_identifier_as_authoritative() {
+    let dir = temp_dir("lagging_max_authoritative");
     {
         let mut store = Store::open(&dir, store_config()).unwrap();
         store
@@ -85,18 +86,20 @@ fn dataset_identifier_repairs_lagging_max_identifier() {
     fs::write(dir.join("max_identifier"), "0").unwrap();
 
     let mut store = Store::open(&dir, store_config()).unwrap();
-    let handle = store.open_dataset_by_identifier(1).unwrap();
-    assert_eq!(store.dataset_identifier(handle).unwrap(), 1);
+    assert!(
+        store.open_dataset("alpha", "data").is_err(),
+        "dataset identifier greater than authoritative max_identifier should be rejected"
+    );
     assert_eq!(
         fs::read_to_string(dir.join("max_identifier"))
             .unwrap()
             .trim(),
-        "1"
+        "0"
     );
 }
 
 #[test]
-fn dataset_identifier_rejects_duplicate_identifier() {
+fn dataset_identifier_rejects_duplicate_identifier_when_opening_by_id() {
     let dir = temp_dir("duplicate");
     {
         let mut store = Store::open(&dir, store_config()).unwrap();
@@ -110,7 +113,8 @@ fn dataset_identifier_rejects_duplicate_identifier() {
 
     fs::write(dataset_identifier_path(&dir, "beta", "data"), "1").unwrap();
 
-    let result = Store::open(&dir, store_config());
+    let mut store = Store::open(&dir, store_config()).unwrap();
+    let result = store.open_dataset_by_identifier(1);
     assert!(matches!(result, Err(TmslError::InvalidData(_))));
 }
 
@@ -151,6 +155,7 @@ fn dataset_identifier_rejects_invalid_file_content() {
     }
 
     fs::write(dataset_identifier_path(&dir, "alpha", "data"), "-1").unwrap();
-    let result = Store::open(&dir, store_config());
+    let mut store = Store::open(&dir, store_config()).unwrap();
+    let result = store.open_dataset("alpha", "data");
     assert!(matches!(result, Err(TmslError::InvalidData(_))));
 }

@@ -400,7 +400,7 @@ impl BackgroundTasks {
                 }
             };
             if ds_arc.last_used_at().elapsed() >= self.idle_timeout {
-                if let Err(e) = ds_arc.close() {
+                if let Err(e) = ds_arc.idle_close_segments() {
                     log::error!("[bg idle] close failed for {:?}: {}", key, e);
                 } else {
                     log::info!("[bg idle] closed dataset {:?}", key);

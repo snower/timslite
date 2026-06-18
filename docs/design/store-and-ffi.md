@@ -89,22 +89,24 @@ impl Store {
 
 `Store.datasets` 的 `RwLock` 只保护 registry 的增删查和 lifecycle 边界。打开后的 `DataSet` 以 `Arc<DataSet>` 暴露, `DataSet` 内部持有 mutex 并在 `write/append/delete/read/query/queue` 等 public API 中自行加锁; 因此通过 `Store::get_dataset` 取得 dataset 后直接调用其读写 API, 不会绕过同步边界。
 
+`DataSet::close()` 是公开 lifecycle close: Store 管理的 dataset 会关闭 queue、flush 并释放分段资源、标记 dataset closed, 然后通过 runtime context 从 `Store.datasets` registry 移除并使旧 Store handle generation 失效。后台 idle-close 不调用 `DataSet::close()`, 只调用内部 `idle_close_segments()` 释放已打开的 data/index segment; dataset 仍处于打开状态, Store handle 仍有效。
+
 ### 11.2 Store 内部行为
 
 | 操作 | 文件操作 | 目录操作 |
 |------|---------|---------|
-| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 读取/校验 Store 根目录 `max_identifier`; 若 `StoreConfig.enable_journal=true`, 先单独 open/create 内置 `.journal/logs` 专用 append log; 再扫描 `{data_dir}/*/*` 加载已有普通数据集、读取每个 dataset 的 `identifier` 和 `DataSetMeta.enable_journal` 并注入有效 runtime context | `.journal/logs` 是内部保留 journal; 普通扫描跳过它; 若扫描最大 identifier 大于 `max_identifier`, 修正根目录文件 |
-| `Store::create_dataset` | 分配 `next_identifier = max_identifier + 1`; 写入 `meta` 文件; 写入第一个空 data segment + index segment header; 写入 dataset 目录 `identifier`; 更新 Store 根目录 `max_identifier`; 按有效 journal 开关注入 runtime context; 有效 journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/identifier` + `{name}/{type}/meta` + `{name}/{type}/data/` + `{name}/{type}/index/` |
-| `Store::open_dataset` | 读取 `meta` 文件校验; 加载已有 segments; 按有效 journal 开关注入 runtime context | 不创建新目录, 仅读取 |
-| `Store::open_dataset_by_identifier` | 通过 Store 内存中的 `identifier -> DataSetKey` 索引定位 `(name,type)`, 再复用 `open_dataset` 语义 | `identifier=0` 返回 `InvalidData`; 未找到返回 `NotFound`; `.journal/logs` 不支持 |
+| `Store::open` | 初始化 `BlockCache`/JournalManager/runtime context; 读取/校验 Store 根目录 `max_identifier`; 若 `StoreConfig.enable_journal=true`, 单独 open/create 内置 `.journal/logs` 专用 append log; 不扫描或加载普通 dataset | `max_identifier` 是分配权威值; 普通 dataset 存在性、meta/identifier 校验延迟到 `open_dataset` / `inspect_dataset` / `open_dataset_by_identifier` |
+| `Store::create_dataset` | 分配 `next_identifier = max_identifier + 1`; 先更新 Store 根目录 `max_identifier`; 写入 `meta` 文件、第一个空 data/index segment header、dataset 目录 `identifier`; 按有效 journal 开关注入 runtime context; 有效 journal 开启时成功后写 `0x01` | 创建 `{name}/{type}/identifier` + `{name}/{type}/meta` + `{name}/{type}/data/` + `{name}/{type}/index/`; crash 可留下 identifier gap |
+| `Store::open_dataset` | 读取 dataset `identifier` 并确认不大于权威 `max_identifier`; 读取 `meta` 文件校验; 加载已有 segments; 按有效 journal 开关注入 runtime context | 不创建新目录, 仅读取; 成功后进入 `Store.datasets` registry |
+| `Store::open_dataset_by_identifier` | 若内存 cache 未命中, 临时扫描合法 `{data_dir}/{name}/{type}` 目录读取 `identifier`, 找到匹配后缓存 `identifier -> DataSetKey`, 再复用 `open_dataset` 语义 | `identifier=0` 返回 `InvalidData`; 未找到返回 `NotFound`; 重复 identifier 返回 `InvalidData`; `.journal/logs` 不支持 |
 | `Store::write_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 有效 journal 开启时成功后写 `0x11` | 普通正序写会通知 queue; correction/out-of-order 不通知 |
 | `Store::append_dataset` | 调用 DataSet public API; DataSet 自行应用 retention/cache/queue/journal hook; 有效 journal 开启时成功后写 `0x13` | 创建新 timestamp 时通知普通 queue; 修改已有 latest 不重新投递 |
 | `Store::delete_dataset_record` | 调用 DataSet public API; DataSet 自行 invalidate 旧 cache key; 有效 journal 开启时成功后写 `0x12` | 不删除物理 record, 仅标记 filler/invalid |
 | `Store::read_dataset` / `read_dataset_latest` / `query_dataset` | 调用 DataSet public API; DataSet 自动使用 runtime context 中的全局 `BlockCache`; retention 统一生效; `read_dataset(-1)` 是精确读取, latest 必须走 `read_dataset_latest` | 仅适用于普通 dataset |
 | `Store::journal_latest_sequence/read/query` | 调用 JournalManager 专用 API 读取 encoded journal record payload | `enable_journal=false` 时返回 `NotFound`; 不通过 DataSet handle |
 | `Store::latest_written_timestamp` | 返回 dataset 已写入最大 timestamp | 空 dataset 返回 `None`; 删除 latest 后仍返回最大已写 timestamp |
-| `Store::open_queue` / `open_journal_queue` | `open_queue` 打开普通 dataset queue; `open_journal_queue` 打开专用 JournalQueue | journal queue producer 只允许 `JournalManager` |
-| `Store::drop_dataset` | 删除 `{name}/{type}/` 整个目录树; 有效 journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
+| `Store::open_queue` / `open_journal_queue` | `open_queue` 打开普通 dataset queue; `open_journal_queue` 打开专用 JournalQueue | `DatasetQueue::close()` 与 `Store::close_queue()` 都会关闭 dataset 上的 queue 状态; journal queue producer 只允许 `JournalManager` |
+| `Store::drop_dataset` | 未打开时先按 `open_dataset` 语义加载并获取 dataset 锁; 关闭 queue/dataset, 删除 `{name}/{type}/` 整个目录树; 有效 journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
 
 ### 11.3 Dataset name/type 校验
 
@@ -129,7 +131,7 @@ identifier 规则:
 
 - `0` 为无效值, 第一个普通 dataset 从 `1` 开始。
 - `identifier` 与 `max_identifier` 均使用十进制数字字符串保存。
-- Store open 时读取所有普通 dataset 的 `identifier` 并构建 `identifier -> DataSetKey` 索引。
+- Store open 不扫描普通 dataset。`identifier -> DataSetKey` 是按需 cache, 由 create/open/open-by-id/drop 维护。
 - 重复 identifier、非法数字、溢出均视为目录损坏并返回 `InvalidData`。
 - `.journal/logs` 不参与 public identifier 分配, 也不能通过 identifier 打开。
 
