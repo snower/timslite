@@ -585,7 +585,15 @@ fn negative_open_consumer_invalid_group_name() {
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q5", "data");
     let queue = store.open_queue(h).unwrap();
-    for name in &["bad/name", "bad name", "bad@group"] {
+    for name in &[
+        "bad/name",
+        "bad name",
+        "bad@group",
+        "",
+        &"x".repeat(256),
+        "bad.group",
+        "bad\tgroup",
+    ] {
         let result = store.open_consumer(&queue, name);
         assert_err_contains(result, "must match");
     }

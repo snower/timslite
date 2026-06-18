@@ -132,8 +132,9 @@ fn t_crash_recover_index_segment_integrity() {
             info.state
         );
 
-        // Verify base_timestamp is correct (first record at ts=10)
-        // base_timestamp may be None if index is pending flush, so check query instead
+        // base_timestamp may be None after crash recovery if the index segment
+        // is reloaded with pending entries that haven't been flushed yet.
+        // The query below validates that the index is functionally correct.
         if let Some(base_ts) = info.state.base_timestamp {
             assert_eq!(base_ts, 10, "base_timestamp should be 10");
         }
