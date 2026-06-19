@@ -439,15 +439,15 @@ fn t33_7_closed_segment_transparent_reopen() {
         );
 
         // Verify first batch (from closed segment)
-        for i in 0..20usize {
-            assert_eq!(entries[i].0, i as i64 * 10 + 1);
-            assert!(entries[i].1.iter().all(|&b| b == 0xAA));
+        for (i, (ts, data)) in entries.iter().enumerate().take(20) {
+            assert_eq!(*ts, i as i64 * 10 + 1);
+            assert!(data.iter().all(|&b| b == 0xAA));
         }
 
         // Verify second batch (from new data)
-        for i in 20..40usize {
-            assert_eq!(entries[i].0, i as i64 * 10 + 1);
-            assert!(entries[i].1.iter().all(|&b| b == 0xBB));
+        for (i, (ts, data)) in entries.iter().enumerate().take(40).skip(20) {
+            assert_eq!(*ts, i as i64 * 10 + 1);
+            assert!(data.iter().all(|&b| b == 0xBB));
         }
     }
 
@@ -509,15 +509,15 @@ fn t33_8_in_memory_pending_block_query() {
         );
 
         // Verify flushed records
-        for i in 0..10usize {
-            assert_eq!(entries[i].0, i as i64 * 10 + 1);
-            assert!(entries[i].1.iter().all(|&b| b == 0xCC));
+        for (i, (ts, data)) in entries.iter().enumerate().take(10) {
+            assert_eq!(*ts, i as i64 * 10 + 1);
+            assert!(data.iter().all(|&b| b == 0xCC));
         }
 
         // Verify pending (unflushed) records
-        for i in 10..20usize {
-            assert_eq!(entries[i].0, i as i64 * 10 + 1);
-            assert!(entries[i].1.iter().all(|&b| b == 0xDD));
+        for (i, (ts, data)) in entries.iter().enumerate().take(20).skip(10) {
+            assert_eq!(*ts, i as i64 * 10 + 1);
+            assert!(data.iter().all(|&b| b == 0xDD));
         }
     }
 
@@ -604,15 +604,15 @@ fn t33_9_query_after_data_modification() {
         );
 
         // Verify first batch
-        for i in 0..10usize {
-            assert_eq!(entries[i].0, i as i64 * 10 + 1);
-            assert!(entries[i].1.iter().all(|&b| b == 0x11));
+        for (i, (ts, data)) in entries.iter().enumerate().take(10) {
+            assert_eq!(*ts, i as i64 * 10 + 1);
+            assert!(data.iter().all(|&b| b == 0x11));
         }
 
         // Verify second batch
-        for i in 10..20usize {
-            assert_eq!(entries[i].0, i as i64 * 10 + 1);
-            assert!(entries[i].1.iter().all(|&b| b == 0x22));
+        for (i, (ts, data)) in entries.iter().enumerate().take(20).skip(10) {
+            assert_eq!(*ts, i as i64 * 10 + 1);
+            assert!(data.iter().all(|&b| b == 0x22));
         }
     }
 
