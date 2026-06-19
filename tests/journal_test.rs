@@ -834,7 +834,7 @@ fn t28_22_corrupted_journal_returns_error() {
     // Reopen with journal enabled - either opens and re-creates or returns error
     let store3_result = Store::open(&dir, test_config());
     match store3_result {
-        Ok(mut store3) => {
+        Ok(store3) => {
             // If store opens, journal query must not panic
             let _ = store3.journal_query(1, i64::MAX);
             store3.close().unwrap();

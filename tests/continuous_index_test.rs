@@ -57,7 +57,7 @@ fn setup_continuous(name: &str) -> (Store, std::sync::Arc<timslite::DataSet>) {
 
 #[test]
 fn t32_1_large_gap_no_intermediate_segments() {
-    let (mut store, ds) = setup_continuous("large_gap");
+    let (store, ds) = setup_continuous("large_gap");
 
     // First write sets base_timestamp = 100
     ds.write(100, b"first").unwrap();
@@ -100,7 +100,7 @@ fn t32_1_large_gap_no_intermediate_segments() {
 
 #[test]
 fn t32_2_backfill_logical_hole() {
-    let (mut store, ds) = setup_continuous("backfill_hole");
+    let (store, ds) = setup_continuous("backfill_hole");
 
     ds.write(100, b"first").unwrap();
     ds.write(1000000, b"second").unwrap();
@@ -138,7 +138,7 @@ fn t32_2_backfill_logical_hole() {
 
 #[test]
 fn t32_3_correction_on_filler_position() {
-    let (mut store, ds) = setup_continuous("corr_filler");
+    let (store, ds) = setup_continuous("corr_filler");
 
     // Write ts=100, then ts=120 – the gap 101..119 are fillers within the same segment
     ds.write(100, b"orig_100").unwrap();
@@ -176,7 +176,7 @@ fn t32_4_segment_capacity_calculation() {
     // Verify by filling exactly segment_capacity entries in one segment.
     // base_timestamp = 0, so segment covers ts 0..219 (220 entries).
     // Writing ts=0..219 should fit in 1 segment; writing ts=220 should create a 2nd.
-    let (mut store, ds) = setup_continuous("capacity_test");
+    let (store, ds) = setup_continuous("capacity_test");
 
     for ts in 0..segment_capacity {
         ds.write(ts, b"x").unwrap();
@@ -254,7 +254,7 @@ fn t32_5_reopen_base_timestamp_preserved() {
 
 #[test]
 fn t32_6_negative_base_timestamp() {
-    let (mut store, ds) = setup_continuous("neg_ts");
+    let (store, ds) = setup_continuous("neg_ts");
 
     ds.write(-100, b"neg").unwrap();
     ds.write(-50, b"less_neg").unwrap();
@@ -302,7 +302,7 @@ fn t32_7_multiple_segments_with_gaps() {
     //   seg_ord(500) = floor(500/220) = 2  → segment start = 440
     //   seg_ord(1500) = floor(1500/220) = 6 → segment start = 1320
     // So writes at ts=0, 500, 1500 span segments 0, 2, 6 → 3 segments on disk.
-    let (mut store, ds) = setup_continuous("multi_seg_gap");
+    let (store, ds) = setup_continuous("multi_seg_gap");
 
     ds.write(0, b"seg0").unwrap();
     ds.flush().unwrap();
