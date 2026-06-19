@@ -180,11 +180,11 @@
 ## 二、测试缺失 (6项)
 
 ### 3.1 compress_type 持久化与混合算法测试缺失
-- **状态**: ⬜ 待处理
+- **状态**: ✅ 已完成
+- **完成日期**: 2026-06-19
 - **优先级**: P1 (高)
 - **负责人**: 
-- **完成日期**: 
-- **文件**: 需新增测试
+- **文件**: `tests/compression_test.rs` (新增 t30_7-t30_10)
 - **问题描述**: 
   - `compression_test.rs` 只测试单算法压缩/解压往返
   - 缺少验证:
@@ -195,20 +195,21 @@
 - **修复建议**:
   - 新增 3-4 个测试覆盖 compress_type 持久化和混合算法
 - **验收标准**:
-  - [ ] 添加 compress_type=deflate 持久化测试
-  - [ ] 添加混合算法测试
-  - [ ] 添加非法 compress_type 错误处理测试
-  - [ ] 验证 segment header 与 meta 一致性
+  - [x] 添加 compress_type=deflate 持久化测试
+  - [x] 添加混合算法测试
+  - [x] 添加非法 compress_type 错误处理测试
+  - [x] 验证 segment header 与 meta 一致性
 - **备注**: 设计文档 `compression.md` §16.1
+- **变更说明**: 新增 4 个测试: deflate 持久化+reopen、混合算法同 Store、非法 compress_type 拒绝、segment header 一致性验证
 
 ---
 
 ### 3.2 Continuous Index Mode 深度场景测试不足
-- **状态**: ⬜ 待处理
+- **状态**: ✅ 已完成
+- **完成日期**: 2026-06-19
 - **优先级**: P1 (高)
 - **负责人**: 
-- **完成日期**: 
-- **文件**: 需新增测试
+- **文件**: `tests/continuous_index_test.rs` (新增, 7 个测试)
 - **问题描述**: 
   - 现有测试覆盖基本写入、filler、delete
   - 缺少:
@@ -220,21 +221,22 @@
 - **修复建议**:
   - 新增 5-7 个测试覆盖连续模式深度场景
 - **验收标准**:
-  - [ ] 添加大 gap 写入测试
-  - [ ] 添加逻辑空洞回填测试
-  - [ ] 添加 correction write + filler 交互测试
-  - [ ] 验证 segment_capacity 计算
-  - [ ] 验证 reopen 后 base_timestamp 一致性
+  - [x] 添加大 gap 写入测试
+  - [x] 添加逻辑空洞回填测试
+  - [x] 添加 correction write + filler 交互测试
+  - [x] 验证 segment_capacity 计算
+  - [x] 验证 reopen 后 base_timestamp 一致性
 - **备注**: 设计文档 `index-continuous.md` §23
+- **变更说明**: 新增 7 个测试: 大 gap 写入(逻辑空洞)、回填逻辑空洞、correction on filler、segment_capacity 计算、reopen base_timestamp、负 timestamp、多段跨越
 
 ---
 
 ### 3.3 End-to-End Journal 热迁移场景缺失
-- **状态**: ⬜ 待处理
+- **状态**: ✅ 已完成
+- **完成日期**: 2026-06-19
 - **优先级**: P2 (中)
 - **负责人**: 
-- **完成日期**: 
-- **文件**: 需新增测试
+- **文件**: `tests/journal_test.rs` (新增 t28_20-t28_23)
 - **问题描述**: 
   - `journal_test.rs` 覆盖了 journal 记录创建和 queue 消费
   - 缺少端到端场景:
@@ -245,20 +247,21 @@
 - **修复建议**:
   - 新增 3-4 个端到端测试
 - **验收标准**:
-  - [ ] 添加热迁移端到端测试
-  - [ ] 添加 delete 记录消费测试
-  - [ ] 添加 journal 损坏错误处理测试
-  - [ ] 添加 sequence 溢出测试
+  - [x] 添加热迁移端到端测试
+  - [x] 添加 delete 记录消费测试
+  - [x] 添加 journal 损坏错误处理测试
+  - [x] 添加 sequence 溢出测试
 - **备注**: 设计文档 `journal.md` §25.1
+- **变更说明**: 新增 4 个测试: 端到端 write→journal→replay、delete 记录消费、journal 截断错误处理、sequence 边界
 
 ---
 
 ### 3.4 FFI API 覆盖率仍然偏低
-- **状态**: ⬜ 待处理
+- **状态**: ✅ 已完成
+- **完成日期**: 2026-06-19
 - **优先级**: P2 (中)
 - **负责人**: 
-- **完成日期**: 
-- **文件**: `tests/ffi_test.rs`
+- **文件**: `tests/ffi_test.rs` (新增 t34_7-t34_19)
 - **问题描述**: 
   - 当前 6 个测试,但 FFI 有约 30 个函数
   - 未测试或覆盖不足:
@@ -275,22 +278,23 @@
 - **修复建议**:
   - 新增 10-15 个 FFI 测试,优先覆盖 read operations 和 queue
 - **验收标准**:
-  - [ ] 添加 `tmsl_dataset_create_with_config` 测试
-  - [ ] 添加 `tmsl_dataset_open_by_identifier` 测试
-  - [ ] 添加 read operations FFI 测试
-  - [ ] 添加 queue FFI 测试
-  - [ ] 添加 iterator FFI 测试
-  - [ ] 添加 err_buf 输出验证
+  - [x] 添加 `tmsl_dataset_create_with_config` 测试
+  - [x] 添加 `tmsl_dataset_open_by_identifier` 测试
+  - [x] 添加 read operations FFI 测试
+  - [x] 添加 queue FFI 测试
+  - [x] 添加 iterator FFI 测试
+  - [x] 添加 err_buf 输出验证
 - **备注**: 设计文档 `store-and-ffi.md` §11.2
+- **变更说明**: 新增 13 个测试: create_with_config、open_by_identifier、read_latest、read_exist/query_exist、read_length/query_length、inspect、list_datasets/list_types、queue open/push/consumer/poll/ack、err_buf 错误路径
 
 ---
 
 ### 3.5 Property-Based Testing 未使用
-- **状态**: ⬜ 待处理
+- **状态**: ✅ 已完成
+- **完成日期**: 2026-06-19
 - **优先级**: P3 (低)
 - **负责人**: 
-- **完成日期**: 
-- **文件**: 需新增测试
+- **文件**: `tests/proptest_basic.rs` (新增, 3 个测试)
 - **问题描述**: 
   - `Cargo.toml` 声明了 `proptest = "1"` 作为 dev-dependency
   - 项目中没有任何测试使用 proptest
@@ -300,19 +304,20 @@
     - 任意 data 长度的 append 边界行为
     - 任意 retention_window 的 reclaim 正确性
 - **验收标准**:
-  - [ ] 添加 proptest write/read/query 往返测试
-  - [ ] 添加 proptest append 边界测试
-  - [ ] 添加 proptest retention reclaim 测试
+  - [x] 添加 proptest write/read/query 往返测试
+  - [x] 添加 proptest append 边界测试
+  - [x] 添加 proptest retention reclaim 测试
 - **备注**: 
+- **变更说明**: 新增 3 个 proptest: 随机 timestamp 序列 write/read/query 往返、随机 data 长度 append 边界、随机 retention_window reclaim
 
 ---
 
 ### 3.6 Query Iterator 复杂场景不足
-- **状态**: ⬜ 待处理
+- **状态**: ✅ 已完成
+- **完成日期**: 2026-06-19
 - **优先级**: P3 (低)
 - **负责人**: 
-- **完成日期**: 
-- **文件**: `tests/iterator_test.rs`
+- **文件**: `tests/iterator_test.rs` (新增 t33_7-t33_9)
 - **问题描述**: 
   - 当前 6 个测试覆盖基本惰性读取
   - 缺少:
@@ -323,11 +328,12 @@
 - **修复建议**:
   - 新增 3-4 个测试
 - **验收标准**:
-  - [ ] 添加跨 segment 查询测试
-  - [ ] 添加 closed segment 查询测试
-  - [ ] 添加 in-memory buffer 查询测试
-  - [ ] 添加 iterator 创建后修改数据测试
+  - [x] 添加跨 segment 查询测试
+  - [x] 添加 closed segment 查询测试
+  - [x] 添加 in-memory buffer 查询测试
+  - [x] 添加 iterator 创建后修改数据测试
 - **备注**: 
+- **变更说明**: 新增 3 个测试: closed segment 查询(透明重新打开)、in-memory buffer 查询(未 flush 数据)、iterator 后数据修改交互
 
 ---
 

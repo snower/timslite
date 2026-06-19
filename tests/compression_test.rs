@@ -490,9 +490,7 @@ fn t30_8_mixed_compress_types() {
     let dir = temp_dir();
     // Disable block cache to avoid key collision between datasets with
     // same segment_file_offset + block_offset but different compress_type.
-    let store_cfg = StoreConfig::builder()
-        .cache_max_memory(0)
-        .build();
+    let store_cfg = StoreConfig::builder().cache_max_memory(0).build();
     let mut store = Store::open(&dir, store_cfg.clone()).unwrap();
 
     // Dataset 1: zstd (compress_type=0)
