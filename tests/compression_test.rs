@@ -422,3 +422,271 @@ fn t30_6_compression_data_patterns() {
 
     store.close().unwrap();
 }
+
+/// P0-C-7: deflate compress_type persistence across reopen
+///
+/// Create a dataset with deflate (compress_type=1), write data,
+/// close and reopen. Verify data reads back correctly and
+/// inspect confirms compress_type=1.
+#[test]
+fn t30_7_deflate_persistence() {
+    use timslite::{DataSetConfigBuilder, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let store_cfg = StoreConfig::default();
+    let mut store = Store::open(&dir, store_cfg.clone()).unwrap();
+
+    let ds_cfg = DataSetConfigBuilder::from_store(&store_cfg).compress_type(1); // deflate
+    store
+        .create_dataset_with_config("deflate_persist", "data", Some(ds_cfg))
+        .unwrap();
+
+    let ds = store.open_dataset("deflate_persist", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+
+    // Write data
+    for i in 0..30i64 {
+        let data = vec![0xBBu8; 4096];
+        arc.write(i * 10 + 1, &data).unwrap();
+    }
+
+    // Flush to seal blocks
+    arc.flush().unwrap();
+
+    // Close and reopen
+    store.close().unwrap();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    // Verify data reads back correctly
+    let ds = store.open_dataset("deflate_persist", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+    for i in 0..30i64 {
+        let result = arc.read(i * 10 + 1).unwrap();
+        assert!(result.is_some(), "record {} should exist after reopen", i);
+        let (ts, data) = result.unwrap();
+        assert_eq!(ts, i * 10 + 1);
+        assert_eq!(data.len(), 4096);
+        assert!(data.iter().all(|&b| b == 0xBB));
+    }
+
+    // Verify inspect shows compress_type = 1 (deflate)
+    let info = store.inspect_dataset("deflate_persist", "data").unwrap();
+    assert_eq!(
+        info.info.compress_type, 1,
+        "meta should persist compress_type=1 (deflate)"
+    );
+
+    store.close().unwrap();
+}
+
+/// P0-C-8: mixed compress_types in same store
+///
+/// Same store has two datasets: one zstd (0), one deflate (1).
+/// Each works independently after writes.
+#[test]
+fn t30_8_mixed_compress_types() {
+    use timslite::{DataSetConfigBuilder, Store, StoreConfig};
+
+    let dir = temp_dir();
+    // Disable block cache to avoid key collision between datasets with
+    // same segment_file_offset + block_offset but different compress_type.
+    let store_cfg = StoreConfig::builder()
+        .cache_max_memory(0)
+        .build();
+    let mut store = Store::open(&dir, store_cfg.clone()).unwrap();
+
+    // Dataset 1: zstd (compress_type=0)
+    let zstd_cfg = DataSetConfigBuilder::from_store(&store_cfg).compress_type(0);
+    store
+        .create_dataset_with_config("zstd_ds", "data", Some(zstd_cfg))
+        .unwrap();
+
+    // Dataset 2: deflate (compress_type=1)
+    let deflate_cfg = DataSetConfigBuilder::from_store(&store_cfg).compress_type(1);
+    store
+        .create_dataset_with_config("deflate_ds", "data", Some(deflate_cfg))
+        .unwrap();
+
+    // Write to zstd dataset
+    let ds_z = store.open_dataset("zstd_ds", "data").unwrap();
+    let arc_z = store.get_dataset(&ds_z).unwrap();
+    for i in 0..20i64 {
+        let data = vec![0xAAu8; 4096];
+        arc_z.write(i * 10 + 1, &data).unwrap();
+    }
+    arc_z.flush().unwrap();
+
+    // Write to deflate dataset
+    let ds_d = store.open_dataset("deflate_ds", "data").unwrap();
+    let arc_d = store.get_dataset(&ds_d).unwrap();
+    for i in 0..20i64 {
+        let data = vec![0xCCu8; 4096];
+        arc_d.write(i * 10 + 1, &data).unwrap();
+    }
+    arc_d.flush().unwrap();
+
+    // Close and reopen to ensure all blocks are sealed with their algorithms
+    store.close().unwrap();
+    let mut store = Store::open(&dir, StoreConfig::builder().cache_max_memory(0).build()).unwrap();
+
+    // Verify zstd data
+    let ds_z = store.open_dataset("zstd_ds", "data").unwrap();
+    let arc_z = store.get_dataset(&ds_z).unwrap();
+    for i in 0..20i64 {
+        let result = arc_z.read(i * 10 + 1).unwrap().unwrap();
+        assert_eq!(result.0, i * 10 + 1);
+        assert!(result.1.iter().all(|&b| b == 0xAA));
+    }
+
+    // Verify deflate data
+    let ds_d = store.open_dataset("deflate_ds", "data").unwrap();
+    let arc_d = store.get_dataset(&ds_d).unwrap();
+    for i in 0..20i64 {
+        let result = arc_d.read(i * 10 + 1).unwrap().unwrap();
+        assert_eq!(result.0, i * 10 + 1);
+        assert!(result.1.iter().all(|&b| b == 0xCC));
+    }
+
+    // Verify inspect shows correct compress_type for each
+    let info_z = store.inspect_dataset("zstd_ds", "data").unwrap();
+    assert_eq!(
+        info_z.info.compress_type, 0,
+        "zstd dataset compress_type should be 0"
+    );
+
+    let info_d = store.inspect_dataset("deflate_ds", "data").unwrap();
+    assert_eq!(
+        info_d.info.compress_type, 1,
+        "deflate dataset compress_type should be 1"
+    );
+
+    store.close().unwrap();
+}
+
+/// P0-C-9: tampered compress_type in meta file returns error
+///
+/// Create a dataset, close, tamper the compress_type byte in the
+/// meta file to an invalid value, reopen and verify error.
+#[test]
+fn t30_9_tampered_compress_type_meta() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset(
+            "tamper_meta",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    // Close store
+    store.close().unwrap();
+
+    // Tamper meta file: compress_type byte is at offset 37
+    // TLV layout: magic(4)+ver(2)+len(2) + 3 full TLVs + compress_type TLV
+    //   0x01+2+8=11, 0x02+2+8=11, 0x03+2+1=4, 0x09+2+1=4
+    //   base=8, compress_type value = 8+11+11+4+2 = offset 37
+    let meta_path = dir.join("tamper_meta").join("data").join("meta");
+    assert!(meta_path.exists(), "meta file should exist");
+    let mut meta_bytes = fs::read(&meta_path).unwrap();
+    assert!(
+        meta_bytes[37] == 0 || meta_bytes[37] == 1,
+        "original compress_type should be valid"
+    );
+    // Set to invalid compress_type
+    meta_bytes[37] = 0xFF;
+    fs::write(&meta_path, &meta_bytes).unwrap();
+
+    // Reopen store (lazy) then try to open dataset — should fail on meta parse
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let result = store.open_dataset("tamper_meta", "data");
+    assert!(
+        result.is_err(),
+        "opening dataset with tampered compress_type should fail"
+    );
+
+    // Cleanup
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// P0-C-10: segment header compress_type matches meta
+///
+/// Create a dataset with deflate, write data, then verify the
+/// segment header file's compress_type byte matches the meta.
+#[test]
+fn t30_10_segment_header_compress_type() {
+    use timslite::{DataSetConfigBuilder, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let store_cfg = StoreConfig::default();
+    let mut store = Store::open(&dir, store_cfg.clone()).unwrap();
+
+    let ds_cfg = DataSetConfigBuilder::from_store(&store_cfg).compress_type(1); // deflate
+    store
+        .create_dataset_with_config("seg_hdr", "data", Some(ds_cfg))
+        .unwrap();
+
+    let ds = store.open_dataset("seg_hdr", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+
+    // Write enough data to ensure a data segment file exists
+    for i in 0..30i64 {
+        let data = vec![0xDDu8; 4096];
+        arc.write(i * 10 + 1, &data).unwrap();
+    }
+    arc.flush().unwrap();
+
+    // Inspect to confirm meta compress_type
+    let info = store.inspect_dataset("seg_hdr", "data").unwrap();
+    assert_eq!(info.info.compress_type, 1, "meta should say deflate");
+
+    store.close().unwrap();
+
+    // Read data segment header file directly from disk.
+    // Data segment files are in {dir}/seg_hdr/data/data/
+    // The filename is the base offset (a number).
+    let data_dir = dir.join("seg_hdr").join("data").join("data");
+    let seg_files: Vec<_> = fs::read_dir(&data_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .map(|n| n.chars().all(|c| c.is_ascii_digit()))
+                .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        !seg_files.is_empty(),
+        "should have at least one data segment file"
+    );
+
+    for entry in &seg_files {
+        let path = entry.path();
+        let bytes = fs::read(&path).unwrap();
+        assert!(
+            bytes.len() > 49,
+            "segment file {:?} should be at least 50 bytes",
+            path.file_name()
+        );
+        // Verify magic "TMSL"
+        assert_eq!(&bytes[0..4], b"TMSL", "segment header magic should be TMSL");
+        // Segment header compress_type is at offset 49:
+        //   fixed_prefix(9) + created_at(11) + file_offset(11) + file_size(11) + compress_level(4) + type(1)+len(2)
+        // = 9 + 11 + 11 + 11 + 4 + 3 = 49
+        assert_eq!(
+            bytes[49],
+            1,
+            "segment {:?} header compress_type should be 1 (deflate), got {}",
+            path.file_name(),
+            bytes[49]
+        );
+    }
+}

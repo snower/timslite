@@ -372,3 +372,264 @@ fn t33_6_iterator_correction_writes() {
 
     store.close().unwrap();
 }
+
+/// P1-I-7: Iterator across idle-closed segment
+///
+/// Write data, trigger idle-close, then query across the closed segment.
+/// The query should transparently re-open the segment and return all data.
+#[test]
+fn t33_7_closed_segment_transparent_reopen() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .idle_timeout(Duration::from_millis(50))
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset(
+            "closed_seg",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("closed_seg", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+
+    // Write records in the first batch
+    {
+        let lock = arc.clone();
+        for i in 0..20i64 {
+            lock.write(i * 10 + 1, &[0xAA; 256]).unwrap();
+        }
+    }
+
+    // Drop arc to release the dataset reference before idle-close
+    drop(arc);
+
+    // Wait for idle timeout to expire, then trigger idle-close
+    std::thread::sleep(Duration::from_millis(100));
+    let _ = store.tick_background_tasks().unwrap();
+
+    // Write more records (this will re-open the dataset and create new data)
+    let arc = store.get_dataset(&ds).unwrap();
+    {
+        let lock = arc.clone();
+        for i in 20..40i64 {
+            lock.write(i * 10 + 1, &[0xBB; 256]).unwrap();
+        }
+    }
+
+    // Query across the entire range including the closed segment data
+    {
+        let lock = arc.clone();
+        let entries = lock.query(1, 391).unwrap();
+        assert_eq!(
+            entries.len(),
+            40,
+            "should return all 40 records after idle-close reopen"
+        );
+
+        // Verify first batch (from closed segment)
+        for i in 0..20usize {
+            assert_eq!(entries[i].0, i as i64 * 10 + 1);
+            assert!(entries[i].1.iter().all(|&b| b == 0xAA));
+        }
+
+        // Verify second batch (from new data)
+        for i in 20..40usize {
+            assert_eq!(entries[i].0, i as i64 * 10 + 1);
+            assert!(entries[i].1.iter().all(|&b| b == 0xBB));
+        }
+    }
+
+    store.close().unwrap();
+}
+
+/// P1-I-8: Iterator with in-memory pending block data
+///
+/// Write data without flushing, then query immediately.
+/// The query should include data from the in-memory pending block.
+#[test]
+fn t33_8_in_memory_pending_block_query() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset(
+            "pending_q",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("pending_q", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+
+    // Write some data and flush it to disk
+    {
+        let lock = arc.clone();
+        for i in 0..10i64 {
+            lock.write(i * 10 + 1, &[0xCC; 128]).unwrap();
+        }
+        lock.flush().unwrap();
+    }
+
+    // Write more data WITHOUT flushing (stays in pending block)
+    {
+        let lock = arc.clone();
+        for i in 10..20i64 {
+            lock.write(i * 10 + 1, &[0xDD; 128]).unwrap();
+        }
+        // Intentionally NOT flushing
+    }
+
+    // Query should include both flushed and unflushed data
+    {
+        let lock = arc.clone();
+        let entries = lock.query(1, 191).unwrap();
+        assert_eq!(
+            entries.len(),
+            20,
+            "query should include both flushed and pending data"
+        );
+
+        // Verify flushed records
+        for i in 0..10usize {
+            assert_eq!(entries[i].0, i as i64 * 10 + 1);
+            assert!(entries[i].1.iter().all(|&b| b == 0xCC));
+        }
+
+        // Verify pending (unflushed) records
+        for i in 10..20usize {
+            assert_eq!(entries[i].0, i as i64 * 10 + 1);
+            assert!(entries[i].1.iter().all(|&b| b == 0xDD));
+        }
+    }
+
+    // Query a range that only covers pending data
+    {
+        let lock = arc.clone();
+        let entries = lock.query(101, 191).unwrap();
+        assert_eq!(
+            entries.len(),
+            10,
+            "query on pending-only range should return 10 records"
+        );
+        for (ts, data) in &entries {
+            assert!(*ts >= 101 && *ts <= 191);
+            assert!(data.iter().all(|&b| b == 0xDD));
+        }
+    }
+
+    store.close().unwrap();
+}
+
+/// P1-I-9: Iterator after data modification
+///
+/// Query initial data, write more records, then query again.
+/// The second query should include the newly written data.
+#[test]
+fn t33_9_query_after_data_modification() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    store
+        .create_dataset(
+            "mod_iter",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("mod_iter", "data").unwrap();
+    let arc = store.get_dataset(&ds).unwrap();
+
+    // Write initial batch
+    {
+        let lock = arc.clone();
+        for i in 0..10i64 {
+            lock.write(i * 10 + 1, &[0x11; 64]).unwrap();
+        }
+    }
+
+    // First query: should return 10 records
+    {
+        let lock = arc.clone();
+        let entries = lock.query(1, 91).unwrap();
+        assert_eq!(entries.len(), 10, "initial query should return 10 records");
+
+        for (i, (ts, data)) in entries.iter().enumerate() {
+            assert_eq!(*ts, i as i64 * 10 + 1);
+            assert!(data.iter().all(|&b| b == 0x11));
+        }
+    }
+
+    // Write a second batch with higher timestamps
+    {
+        let lock = arc.clone();
+        for i in 10..20i64 {
+            lock.write(i * 10 + 1, &[0x22; 64]).unwrap();
+        }
+    }
+
+    // Second query over the full range: should return all 20 records
+    {
+        let lock = arc.clone();
+        let entries = lock.query(1, 191).unwrap();
+        assert_eq!(
+            entries.len(),
+            20,
+            "second query should return all 20 records"
+        );
+
+        // Verify first batch
+        for i in 0..10usize {
+            assert_eq!(entries[i].0, i as i64 * 10 + 1);
+            assert!(entries[i].1.iter().all(|&b| b == 0x11));
+        }
+
+        // Verify second batch
+        for i in 10..20usize {
+            assert_eq!(entries[i].0, i as i64 * 10 + 1);
+            assert!(entries[i].1.iter().all(|&b| b == 0x22));
+        }
+    }
+
+    // Third query: only the new range should return 10 records
+    {
+        let lock = arc.clone();
+        let entries = lock.query(101, 191).unwrap();
+        assert_eq!(
+            entries.len(),
+            10,
+            "query on new range should return 10 records"
+        );
+        for (ts, data) in &entries {
+            assert!(*ts >= 101 && *ts <= 191);
+            assert!(data.iter().all(|&b| b == 0x22));
+        }
+    }
+
+    store.close().unwrap();
+}
