@@ -415,7 +415,10 @@ fn t21_9_reclaim_expired_data_returns_none() {
 
     // latest_written_timestamp=110, threshold = 110 - 50 = 60
     let result = arc.read(10).unwrap();
-    assert!(result.is_none(), "expired timestamp 10 should return None");
+    assert!(
+        result.is_none(),
+        "expired timestamp 10 should return None"
+    );
 
     let (ts, _) = arc.read(60).unwrap().unwrap();
     assert_eq!(ts, 60);

@@ -192,18 +192,9 @@ fn t27_1_6_poll_skips_natural_gap_filler() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
 
-    assert!(
-        !store.dataset_read_exist(h, 20).unwrap(),
-        "ts=20 gap should not exist"
-    );
-    assert!(
-        store.dataset_read_exist(h, 10).unwrap(),
-        "ts=10 should exist"
-    );
-    assert!(
-        store.dataset_read_exist(h, 30).unwrap(),
-        "ts=30 should exist"
-    );
+    assert!(!store.dataset_read_exist(h, 20).unwrap(), "ts=20 gap should not exist");
+    assert!(store.dataset_read_exist(h, 10).unwrap(), "ts=10 should exist");
+    assert!(store.dataset_read_exist(h, 30).unwrap(), "ts=30 should exist");
 
     let exist_map = store.dataset_query_exist(h, 1, 40).unwrap();
     assert_eq!(exist_map.len(), 5, "40 timestamps = 5 bytes bitmap");
