@@ -58,11 +58,22 @@ fn t31_1_cache_correction_write() {
         assert_eq!(result.unwrap().1, b"original_data");
     }
 
+    let cache = store.block_cache();
+    let count_before = cache.stats().entry_count;
+
     // Correction write: overwrite with new data
     {
         let lock = arc.clone();
         lock.write(100, b"corrected_data").unwrap();
     }
+
+    let count_after = cache.stats().entry_count;
+    assert!(
+        count_after <= count_before,
+        "cache entries should not increase after correction write: before={}, after={}",
+        count_before,
+        count_after
+    );
 
     // Read again - should get corrected data (not cached old data)
     {

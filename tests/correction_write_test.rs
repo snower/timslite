@@ -140,6 +140,12 @@ fn t17_3_correction_write_on_sealed_compressed_block() {
             assert_eq!(ts, i);
             assert_eq!(data, big_data);
         }
+
+        let info = lock.inspect().unwrap();
+        assert_eq!(
+            info.state.total_invalid_record_count, 1,
+            "correction write on sealed block should increment invalid_record_count"
+        );
     }
 
     store.close().unwrap();

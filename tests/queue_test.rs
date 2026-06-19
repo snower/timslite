@@ -152,6 +152,66 @@ fn t27_1_4_poll_skips_continuous_filler_gap() {
 }
 
 #[test]
+fn t27_1_6_poll_skips_natural_gap_filler() {
+    use timslite::{DataSet, DataSetKey, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store
+        .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
+        .unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+
+    store.write_dataset(h, 10, b"first").unwrap();
+    store.write_dataset(h, 30, b"third").unwrap();
+
+    let (ts, data) = store
+        .queue_poll(&c, Duration::from_millis(100))
+        .unwrap()
+        .unwrap();
+    assert_eq!(ts, 10);
+    assert_eq!(data, b"first");
+    store.queue_ack(&c, ts).unwrap();
+
+    let (ts, data) = store
+        .queue_poll(&c, Duration::from_millis(100))
+        .unwrap()
+        .unwrap();
+    assert_eq!(ts, 30);
+    assert_eq!(data, b"third");
+    store.queue_ack(&c, ts).unwrap();
+
+    assert!(store
+        .queue_poll(&c, Duration::from_millis(50))
+        .unwrap()
+        .is_none());
+
+    store.close().unwrap();
+
+    let id = DataSetKey {
+        name: "t27q".into(),
+        dataset_type: "events".into(),
+    };
+    let ds_dir = dir.join("t27q").join("events");
+    let ds = DataSet::open(id, ds_dir).unwrap();
+
+    assert!(!ds.read_exist(20).unwrap(), "ts=20 gap should not exist");
+    assert!(ds.read_exist(10).unwrap(), "ts=10 should exist");
+    assert!(ds.read_exist(30).unwrap(), "ts=30 should exist");
+
+    let exist_map = ds.query_exist(1, 40).unwrap();
+    assert_eq!(exist_map.len(), 5, "40 timestamps = 5 bytes bitmap");
+    assert_ne!(exist_map[1] & (1u8 << 1), 0, "ts=10 should exist in bitmap");
+    assert_eq!(
+        exist_map[2] & (1u8 << 3),
+        0,
+        "ts=20 gap should not exist in bitmap"
+    );
+    assert_ne!(exist_map[3] & (1u8 << 5), 0, "ts=30 should exist in bitmap");
+}
+
+#[test]
 fn t27_1_5_sparse_gap_acked_progress_persists_after_reopen() {
     use timslite::{Store, StoreConfig};
 
