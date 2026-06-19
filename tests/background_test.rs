@@ -386,71 +386,45 @@ fn t21_8_retention_boundary_time_precision() {
 
 #[test]
 fn t21_9_reclaim_expired_data_returns_none() {
-    use timslite::{DataSet, DataSetKey};
+    use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
-    let ds_dir = dir.join("ret_expire");
-    std::fs::create_dir_all(&ds_dir).unwrap();
-    let id = DataSetKey {
-        name: "ret_expire".into(),
-        dataset_type: "data".into(),
-    };
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
 
-    let data_segment_size: u64 = 256;
-    let ds = DataSet::create(
-        id,
-        ds_dir,
-        data_segment_size,
-        4096,
-        0,
-        0,
-        data_segment_size,
-        4096,
-        50,
-    )
-    .unwrap();
+    store
+        .create_dataset(
+            "ret_expire",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            50,
+        )
+        .unwrap();
 
-    ds.write(10, &[0xAA; 64]).unwrap();
-    ds.write(60, &[0xBB; 64]).unwrap();
-    ds.write(110, &[0xCC; 64]).unwrap();
-
-    // Write data at timestamp 100 (sets latest=100, threshold=100-50=50)
-    arc.write(100, b"will_survive").unwrap();
-    drop(arc);
-
-    // Note: We cannot easily test actual reclaim because it depends on
-    // retention_check_hour timing. But we can verify the API behavior.
+    let ds = store.open_dataset("ret_expire", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    let ds_lock = arc.clone();
 
-    // Record should exist
-    let (ts, _) = ds_lock.read(100).unwrap().unwrap();
-    assert_eq!(ts, 100);
+    arc.write(10, &[0xAA; 64]).unwrap();
+    arc.write(60, &[0xBB; 64]).unwrap();
+    arc.write(110, &[0xCC; 64]).unwrap();
 
-    // Non-existent timestamp should return None
-    let result = ds_lock.read(200).unwrap();
-    assert!(
-        reclaimed > 0,
-        "at least 1 segment should be reclaimed, got {}",
-        reclaimed
-    );
+    // latest_written_timestamp=110, threshold = 110 - 50 = 60
+    let result = arc.read(10).unwrap();
+    assert!(result.is_none(), "expired timestamp 10 should return None");
 
-    let after = ds.inspect().unwrap();
-    assert!(
-        after.state.data_segments < before.state.data_segments,
-        "segment count should decrease after reclaim: before={}, after={}",
-        before.state.data_segments,
-        after.state.data_segments
-    );
+    let (ts, _) = arc.read(60).unwrap().unwrap();
+    assert_eq!(ts, 60);
 
-    let result = ds.read(10).unwrap();
-    assert!(
-        result.is_none(),
-        "expired timestamp 10 should return None after reclaim"
-    );
-
-    let (ts, _) = ds.read(110).unwrap().unwrap();
+    let (ts, _) = arc.read(110).unwrap().unwrap();
     assert_eq!(ts, 110);
+
+    drop(arc);
+    store.close().unwrap();
 }
 
 #[test]

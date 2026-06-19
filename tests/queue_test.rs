@@ -153,7 +153,7 @@ fn t27_1_4_poll_skips_continuous_filler_gap() {
 
 #[test]
 fn t27_1_6_poll_skips_natural_gap_filler() {
-    use timslite::{DataSet, DataSetKey, Store, StoreConfig};
+    use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
@@ -189,18 +189,23 @@ fn t27_1_6_poll_skips_natural_gap_filler() {
 
     store.close().unwrap();
 
-    let id = DataSetKey {
-        name: "t27q".into(),
-        dataset_type: "events".into(),
-    };
-    let ds_dir = dir.join("t27q").join("events");
-    let ds = DataSet::open(id, ds_dir).unwrap();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store.open_dataset("t27q", "events").unwrap();
 
-    assert!(!ds.read_exist(20).unwrap(), "ts=20 gap should not exist");
-    assert!(ds.read_exist(10).unwrap(), "ts=10 should exist");
-    assert!(ds.read_exist(30).unwrap(), "ts=30 should exist");
+    assert!(
+        !store.dataset_read_exist(h, 20).unwrap(),
+        "ts=20 gap should not exist"
+    );
+    assert!(
+        store.dataset_read_exist(h, 10).unwrap(),
+        "ts=10 should exist"
+    );
+    assert!(
+        store.dataset_read_exist(h, 30).unwrap(),
+        "ts=30 should exist"
+    );
 
-    let exist_map = ds.query_exist(1, 40).unwrap();
+    let exist_map = store.dataset_query_exist(h, 1, 40).unwrap();
     assert_eq!(exist_map.len(), 5, "40 timestamps = 5 bytes bitmap");
     assert_ne!(exist_map[1] & (1u8 << 1), 0, "ts=10 should exist in bitmap");
     assert_eq!(
