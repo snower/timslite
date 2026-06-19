@@ -44,17 +44,11 @@ fn t12_1_lazy_create_write_query_small_data() {
     let ds = store.open_dataset("lazy_small", "data").unwrap();
     for i in 0..100i64 {
         let data = format!("small_{}", i).into_bytes();
-        store
-            .get_dataset(&ds)
-            .unwrap()
-            .lock()
-            .unwrap()
-            .write(i + 1, &data)
-            .unwrap();
+        store.get_dataset(&ds).unwrap().write(i + 1, &data).unwrap();
     }
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 100).unwrap();
+    let entries = arc.query(1, 100).unwrap();
     assert_eq!(entries.len(), 100);
     assert_eq!(entries[0].0, 1);
     assert_eq!(entries[99].0, 100);
@@ -90,19 +84,14 @@ fn t12_2_lazy_write_until_max_then_new_segment() {
     // Each record: overhead ~10 + 500 bytes = ~510 bytes
     for i in 0..200i64 {
         let data = vec![i as u8; 500];
-        let write_result = store
-            .get_dataset(&ds)
-            .unwrap()
-            .lock()
-            .unwrap()
-            .write(i + 1, &data);
+        let write_result = store.get_dataset(&ds).unwrap().write(i + 1, &data);
         if write_result.is_err() {
-            break; // May fail at segment boundary 鈥?that's fine
+            break; // May fail at segment boundary 閳?that's fine
         }
     }
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 200).unwrap();
+    let entries = arc.query(1, 200).unwrap();
     assert!(!entries.is_empty(), "should have some data");
 
     store.close().unwrap();
@@ -130,13 +119,7 @@ fn t12_3_open_legacy_full_allocated_dataset() {
     let ds = store.open_dataset("legacy_full", "data").unwrap();
     for i in 0..50i64 {
         let data = format!("legacy_{}", i).into_bytes();
-        store
-            .get_dataset(&ds)
-            .unwrap()
-            .lock()
-            .unwrap()
-            .write(i + 1, &data)
-            .unwrap();
+        store.get_dataset(&ds).unwrap().write(i + 1, &data).unwrap();
     }
     store.close().unwrap();
 
@@ -145,7 +128,7 @@ fn t12_3_open_legacy_full_allocated_dataset() {
     let ds = store.open_dataset("legacy_full", "data").unwrap();
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 50).unwrap();
+    let entries = arc.query(1, 50).unwrap();
     assert_eq!(entries.len(), 50);
 
     store.close().unwrap();
@@ -178,13 +161,7 @@ fn t12_4_disk_space_efficiency() {
     let ds = store.open_dataset("small_data", "data").unwrap();
     for i in 0..100i64 {
         let data = format!("small_{}", i).into_bytes();
-        store
-            .get_dataset(&ds)
-            .unwrap()
-            .lock()
-            .unwrap()
-            .write(i + 1, &data)
-            .unwrap();
+        store.get_dataset(&ds).unwrap().write(i + 1, &data).unwrap();
     }
 
     // Verify disk usage is well under the 64MB max segment size
@@ -204,7 +181,7 @@ fn t12_4_disk_space_efficiency() {
 
     // Verify data integrity
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 100).unwrap();
+    let entries = arc.query(1, 100).unwrap();
     assert_eq!(entries.len(), 100);
 
     store.close().unwrap();
@@ -234,11 +211,11 @@ fn t12_5_segment_2x_expansion_on_overflow() {
 
     // Write enough data to force expansion beyond initial_size
     // Each record: ~12 overhead + 100 data = ~112 bytes
-    // initial=512 → usable ~396 → fits ~3 records, then expand to 1024, etc.
+    // initial=512 鈫?usable ~396 鈫?fits ~3 records, then expand to 1024, etc.
     for i in 1..=20i64 {
         let data = vec![i as u8; 100];
         let arc = store.get_dataset(&ds).unwrap();
-        arc.lock().unwrap().write(i, &data).unwrap();
+        arc.write(i, &data).unwrap();
     }
 
     // Check that file has expanded beyond initial_size
@@ -267,7 +244,7 @@ fn t12_5_segment_2x_expansion_on_overflow() {
 
     // Verify data integrity after expansion
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 20).unwrap();
+    let entries = arc.query(1, 20).unwrap();
     assert_eq!(entries.len(), 20);
 
     store.close().unwrap();
@@ -275,30 +252,29 @@ fn t12_5_segment_2x_expansion_on_overflow() {
 
 #[test]
 fn t12_6_retention_reclaim_after_expansion() {
-    use timslite::{DataSet, DataSetKey};
+    use timslite::{DataSetConfigBuilder, Store, StoreConfig};
 
     let dir = temp_dir();
-    let ds_dir = dir.join("ret_exp");
-    fs::create_dir_all(&ds_dir).unwrap();
-    let id = DataSetKey {
-        name: "ret_exp".into(),
-        dataset_type: "data".into(),
-    };
-
     // Use small segment to force expansion + multiple segments
     let data_segment_size: u64 = 188;
-    let ds = DataSet::create(
-        id.clone(),
-        ds_dir.clone(),
-        data_segment_size,
-        4096,
-        0, // compress_level=0 to keep sizes predictable
-        0,
-        data_segment_size, // initial = max (no expansion, rollover instead)
-        4096,
-        15, // retention_window
-    )
-    .unwrap();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .data_segment_size(data_segment_size)
+        .index_segment_size(4096)
+        .compress_level(0)
+        .initial_data_segment_size(data_segment_size)
+        .initial_index_segment_size(4096)
+        .build();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
+    let handle = store
+        .create_dataset_with_config(
+            "ret_exp",
+            "data",
+            Some(DataSetConfigBuilder::from_store(&config).retention_window(15)),
+        )
+        .unwrap();
+    let ds = store.get_dataset(&handle).unwrap();
 
     // Write records that span multiple segments
     ds.write(10, &[0xAA; 32]).unwrap();
@@ -321,39 +297,34 @@ fn t12_6_retention_reclaim_after_expansion() {
     );
 }
 
-// ─── Index segment expansion test (P1-L-1) ──────────────────────────────────
+// 鈹€鈹€鈹€ Index segment expansion test (P1-L-1) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[test]
 fn t12_5_index_segment_expansion_from_initial_to_max() {
     // P1-L-1: Test index segment expansion from initial to max size
-    use timslite::{DataSet, DataSetKey};
+    use timslite::Store;
 
     let dir = temp_dir();
-    let ds_dir = dir.join("idx_expand");
-    fs::create_dir_all(&ds_dir).unwrap();
-
-    let id = DataSetKey {
-        name: "idx_expand".into(),
-        dataset_type: "data".into(),
-    };
 
     // Small initial index segment (4KB) with larger max (64KB)
     let initial_index_size = 4 * 1024; // 4KB
     let max_index_size = 64 * 1024; // 64KB
     let data_segment_size = 64 * 1024 * 1024; // 64MB
 
-    let ds = DataSet::create(
-        id.clone(),
-        ds_dir.clone(),
-        data_segment_size,
-        max_index_size,
-        0, // compress_level=0
-        0,
-        data_segment_size,
-        initial_index_size,
-        0,
-    )
-    .unwrap();
+    let config = timslite::StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .data_segment_size(data_segment_size)
+        .index_segment_size(max_index_size)
+        .compress_level(0)
+        .initial_data_segment_size(data_segment_size)
+        .initial_index_segment_size(initial_index_size)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+    let handle = store
+        .create_dataset_with_config("idx_expand", "data", None)
+        .unwrap();
+    let ds = store.get_dataset(&handle).unwrap();
 
     // Write enough records to trigger index segment expansion
     // Each index entry is ~24 bytes (timestamp + block_offset + in_block_offset)

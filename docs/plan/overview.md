@@ -295,3 +295,4 @@ Phase 41 (Queue Consumer Retry: QSTF v1 18B pending + visibility timeout + retry
 | [phase-39-dataset-journal-toggle.md](phase-39-dataset-journal-toggle.md) | Dataset Journal Toggle | ✅ |
 | [phase-40-dataset-inspect-state.md](phase-40-dataset-inspect-state.md) | Dataset Inspect State Cache | ✅ |
 | [phase-41-queue-consumer-retry.md](phase-41-queue-consumer-retry.md) | Queue Consumer Retry / Visibility Timeout | ✅ |
+| [phase-42-rust-public-api-boundary.md](phase-42-rust-public-api-boundary.md) | Rust Public API Boundary | ✅ |

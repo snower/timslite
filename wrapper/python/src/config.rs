@@ -54,62 +54,62 @@ impl PyStoreConfig {
 
     #[getter]
     fn flush_interval(&self) -> u64 {
-        self.inner.flush_interval.as_secs()
+        self.inner.flush_interval().as_secs()
     }
 
     #[getter]
     fn idle_timeout(&self) -> u64 {
-        self.inner.idle_timeout.as_secs()
+        self.inner.idle_timeout().as_secs()
     }
 
     #[getter]
     fn data_segment_size(&self) -> u64 {
-        self.inner.data_segment_size
+        self.inner.data_segment_size()
     }
 
     #[getter]
     fn index_segment_size(&self) -> u64 {
-        self.inner.index_segment_size
+        self.inner.index_segment_size()
     }
 
     #[getter]
     fn initial_data_segment_size(&self) -> u64 {
-        self.inner.initial_data_segment_size
+        self.inner.initial_data_segment_size()
     }
 
     #[getter]
     fn initial_index_segment_size(&self) -> u64 {
-        self.inner.initial_index_segment_size
+        self.inner.initial_index_segment_size()
     }
 
     #[getter]
     fn compress_level(&self) -> u8 {
-        self.inner.compress_level
+        self.inner.compress_level()
     }
 
     #[getter]
     fn cache_max_memory(&self) -> usize {
-        self.inner.cache_max_memory
+        self.inner.cache_max_memory()
     }
 
     #[getter]
     fn cache_idle_timeout(&self) -> u64 {
-        self.inner.cache_idle_timeout.as_secs()
+        self.inner.cache_idle_timeout().as_secs()
     }
 
     #[getter]
     fn retention_check_hour(&self) -> u8 {
-        self.inner.retention_check_hour
+        self.inner.retention_check_hour()
     }
 
     #[getter]
     fn enable_background_thread(&self) -> bool {
-        self.inner.enable_background_thread
+        self.inner.enable_background_thread()
     }
 
     #[getter]
     fn enable_journal(&self) -> bool {
-        self.inner.enable_journal
+        self.inner.enable_journal()
     }
 }
 

@@ -8,12 +8,69 @@ use std::time::Duration;
 use crate::compress::COMPRESS_TYPE_ZSTD;
 use crate::error::{Result, TmslError};
 
+fn validate_nonzero_size(field: &str, value: u64) -> Result<()> {
+    if value == 0 {
+        return Err(TmslError::InvalidData(format!("{field} must be > 0")));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_compress_level(compress_level: u8) -> Result<()> {
+    if compress_level > 9 {
+        return Err(TmslError::InvalidData(format!(
+            "compress_level must be <= 9, got {compress_level}"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_index_continuous(index_continuous: u8) -> Result<()> {
+    if index_continuous > 1 {
+        return Err(TmslError::InvalidData(format!(
+            "index_continuous must be 0 or 1, got {index_continuous}"
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_retention_window(retention_window: u64) -> Result<()> {
     if retention_window > i64::MAX as u64 {
         return Err(TmslError::InvalidData(format!(
             "retention_window must be <= i64::MAX, got {retention_window}"
         )));
     }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_dataset_config_values(
+    data_segment_size: u64,
+    index_segment_size: u64,
+    compress_level: u8,
+    compress_type: u8,
+    index_continuous: u8,
+    initial_data_segment_size: u64,
+    initial_index_segment_size: u64,
+    retention_window: u64,
+) -> Result<()> {
+    validate_nonzero_size("data_segment_size", data_segment_size)?;
+    validate_nonzero_size("index_segment_size", index_segment_size)?;
+    validate_nonzero_size("initial_data_segment_size", initial_data_segment_size)?;
+    validate_nonzero_size("initial_index_segment_size", initial_index_segment_size)?;
+    if initial_data_segment_size > data_segment_size {
+        return Err(TmslError::InvalidData(format!(
+            "initial_data_segment_size must be <= data_segment_size, got {initial_data_segment_size} > {data_segment_size}"
+        )));
+    }
+    if initial_index_segment_size > index_segment_size {
+        return Err(TmslError::InvalidData(format!(
+            "initial_index_segment_size must be <= index_segment_size, got {initial_index_segment_size} > {index_segment_size}"
+        )));
+    }
+    validate_compress_level(compress_level)?;
+    crate::compress::validate_compress_type(compress_type)?;
+    validate_index_continuous(index_continuous)?;
+    validate_retention_window(retention_window)?;
     Ok(())
 }
 
@@ -38,32 +95,32 @@ pub(crate) fn validate_retention_window(retention_window: u64) -> Result<()> {
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
     /// Interval between background flush cycles (mmap sync only).
-    pub flush_interval: Duration,
+    pub(crate) flush_interval: Duration,
     /// Time of inactivity before segments are idle-closed.
-    pub idle_timeout: Duration,
+    pub(crate) idle_timeout: Duration,
     /// Default data segment file size for newly created datasets.
-    pub data_segment_size: u64,
+    pub(crate) data_segment_size: u64,
     /// Default index segment file size for newly created datasets.
-    pub index_segment_size: u64,
+    pub(crate) index_segment_size: u64,
     /// Default initial data segment file size for newly created datasets.
-    pub initial_data_segment_size: u64,
+    pub(crate) initial_data_segment_size: u64,
     /// Default initial index segment file size for newly created datasets.
-    pub initial_index_segment_size: u64,
+    pub(crate) initial_index_segment_size: u64,
     /// Default compression level for newly created datasets (0-9).
-    pub compress_level: u8,
+    pub(crate) compress_level: u8,
     /// Default compression algorithm for newly created datasets (0=zstd, 1=deflate).
-    pub compress_type: u8,
+    pub(crate) compress_type: u8,
     /// Maximum memory for the read block cache (bytes, 0 = disabled).
-    pub cache_max_memory: usize,
+    pub(crate) cache_max_memory: usize,
     /// Idle timeout for cache entries (eviction by background thread).
-    pub cache_idle_timeout: Duration,
+    pub(crate) cache_idle_timeout: Duration,
     /// UTC hour (0-23) at which the daily retention reclamation runs.
-    pub retention_check_hour: u8,
+    pub(crate) retention_check_hour: u8,
     /// Whether to launch a background thread. When false, callers must invoke
     /// `Store::tick_background_tasks()` periodically to drive flush/idle/cache/retention.
-    pub enable_background_thread: bool,
+    pub(crate) enable_background_thread: bool,
     /// Whether to enable the built-in `.journal/logs` change log.
-    pub enable_journal: bool,
+    pub(crate) enable_journal: bool,
 }
 
 impl Default for StoreConfig {
@@ -90,6 +147,78 @@ impl StoreConfig {
     /// Create a new builder.
     pub fn builder() -> StoreConfigBuilder {
         StoreConfigBuilder::default()
+    }
+
+    pub fn flush_interval(&self) -> Duration {
+        self.flush_interval
+    }
+
+    pub fn idle_timeout(&self) -> Duration {
+        self.idle_timeout
+    }
+
+    pub fn data_segment_size(&self) -> u64 {
+        self.data_segment_size
+    }
+
+    pub fn index_segment_size(&self) -> u64 {
+        self.index_segment_size
+    }
+
+    pub fn initial_data_segment_size(&self) -> u64 {
+        self.initial_data_segment_size
+    }
+
+    pub fn initial_index_segment_size(&self) -> u64 {
+        self.initial_index_segment_size
+    }
+
+    pub fn compress_level(&self) -> u8 {
+        self.compress_level
+    }
+
+    pub fn compress_type(&self) -> u8 {
+        self.compress_type
+    }
+
+    pub fn cache_max_memory(&self) -> usize {
+        self.cache_max_memory
+    }
+
+    pub fn cache_idle_timeout(&self) -> Duration {
+        self.cache_idle_timeout
+    }
+
+    pub fn retention_check_hour(&self) -> u8 {
+        self.retention_check_hour
+    }
+
+    pub fn enable_background_thread(&self) -> bool {
+        self.enable_background_thread
+    }
+
+    pub fn enable_journal(&self) -> bool {
+        self.enable_journal
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_dataset_config_values(
+            self.data_segment_size,
+            self.index_segment_size,
+            self.compress_level,
+            self.compress_type,
+            0,
+            self.initial_data_segment_size,
+            self.initial_index_segment_size,
+            0,
+        )?;
+        if self.retention_check_hour > 23 {
+            return Err(TmslError::InvalidData(format!(
+                "retention_check_hour must be <= 23, got {}",
+                self.retention_check_hour
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -229,19 +358,19 @@ impl StoreConfigBuilder {
 /// Dataset-level creation/open configuration.
 #[derive(Clone, Debug)]
 pub struct DataSetConfig {
-    pub data_segment_size: u64,
-    pub index_segment_size: u64,
-    pub compress_level: u8,
-    pub compress_type: u8,
-    pub index_continuous: u8,
-    pub initial_data_segment_size: u64,
-    pub initial_index_segment_size: u64,
+    pub(crate) data_segment_size: u64,
+    pub(crate) index_segment_size: u64,
+    pub(crate) compress_level: u8,
+    pub(crate) compress_type: u8,
+    pub(crate) index_continuous: u8,
+    pub(crate) initial_data_segment_size: u64,
+    pub(crate) initial_index_segment_size: u64,
     /// Data validity period in same unit as timestamps. 0 = no limit.
-    pub retention_window: u64,
+    pub(crate) retention_window: u64,
     /// Whether this dataset records journal entries when the Store journal is enabled.
-    pub enable_journal: bool,
+    pub(crate) enable_journal: bool,
     /// Dataset creation time (Unix milliseconds).
-    pub create_time: i64,
+    pub(crate) create_time: i64,
 }
 
 #[allow(dead_code)]
@@ -264,6 +393,59 @@ impl DataSetConfig {
     /// Create a new builder.
     pub fn builder() -> DataSetConfigBuilder {
         DataSetConfigBuilder::default()
+    }
+
+    pub fn data_segment_size(&self) -> u64 {
+        self.data_segment_size
+    }
+
+    pub fn index_segment_size(&self) -> u64 {
+        self.index_segment_size
+    }
+
+    pub fn compress_level(&self) -> u8 {
+        self.compress_level
+    }
+
+    pub fn compress_type(&self) -> u8 {
+        self.compress_type
+    }
+
+    pub fn index_continuous(&self) -> u8 {
+        self.index_continuous
+    }
+
+    pub fn initial_data_segment_size(&self) -> u64 {
+        self.initial_data_segment_size
+    }
+
+    pub fn initial_index_segment_size(&self) -> u64 {
+        self.initial_index_segment_size
+    }
+
+    pub fn retention_window(&self) -> u64 {
+        self.retention_window
+    }
+
+    pub fn enable_journal(&self) -> bool {
+        self.enable_journal
+    }
+
+    pub fn create_time(&self) -> i64 {
+        self.create_time
+    }
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_dataset_config_values(
+            self.data_segment_size,
+            self.index_segment_size,
+            self.compress_level,
+            self.compress_type,
+            self.index_continuous,
+            self.initial_data_segment_size,
+            self.initial_index_segment_size,
+            self.retention_window,
+        )
     }
 }
 
@@ -376,7 +558,7 @@ impl DataSetConfigBuilder {
         let defaults = DataSetConfig::from_store(&StoreConfig::default());
         let retention_window = self.retention_window.unwrap_or(0);
         validate_retention_window(retention_window)?;
-        Ok(DataSetConfig {
+        let config = DataSetConfig {
             data_segment_size: self.data_segment_size.unwrap_or(defaults.data_segment_size),
             index_segment_size: self
                 .index_segment_size
@@ -393,7 +575,9 @@ impl DataSetConfigBuilder {
             retention_window,
             enable_journal: self.enable_journal.unwrap_or(true),
             create_time: 0, // Set at dataset creation
-        })
+        };
+        config.validate()?;
+        Ok(config)
     }
 }
 

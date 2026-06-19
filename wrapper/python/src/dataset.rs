@@ -126,27 +126,14 @@ impl PyDataset {
     /// Yields (timestamp: int, data: bytes) tuples.
     /// Implements Python iterator protocol (__iter__ / __next__).
     fn query(&mut self, start_ts: i64, end_ts: i64) -> PyResult<PyQueryIterator> {
-        let ds_arc = self.inner_arc();
-        let entries = wrap(ds_arc.query_index_entries(start_ts, end_ts))?;
-        Ok(PyQueryIterator::new(ds_arc, entries))
+        let rows = wrap(self.inner.query(start_ts, end_ts))?;
+        Ok(PyQueryIterator::new(rows))
     }
 
     /// Query and collect all results into a list.
     /// Convenience wrapper: equivalent to list(dataset.query(...)).
     fn query_all(&mut self, start_ts: i64, end_ts: i64) -> PyResult<Vec<(i64, Vec<u8>)>> {
-        let ds_arc = self.inner_arc();
-        let entries = wrap(ds_arc.query_index_entries(start_ts, end_ts))?;
-        let entries_len = entries.len();
-
-        let mut results = Vec::with_capacity(entries_len);
-        for entry in entries {
-            if entry.block_offset == timslite::BLOCK_OFFSET_FILLER {
-                continue;
-            }
-            let (ts, data) = wrap(ds_arc.read_entry_at_index(&entry))?;
-            results.push((ts, data));
-        }
-        Ok(results)
+        wrap(self.inner.query(start_ts, end_ts))
     }
 
     /// Flush pending data to disk.
@@ -217,26 +204,13 @@ impl PyDataset {
     /// Yields (timestamp: int, data_len: int) tuples.
     /// Implements Python iterator protocol (__iter__ / __next__).
     fn query_length(&mut self, start_ts: i64, end_ts: i64) -> PyResult<PyQueryLengthIterator> {
-        let ds_arc = self.inner_arc();
-        let entries = wrap(ds_arc.query_index_entries(start_ts, end_ts))?;
-        Ok(PyQueryLengthIterator::new(ds_arc, entries))
+        let rows = wrap(self.inner.query_length(start_ts, end_ts))?;
+        Ok(PyQueryLengthIterator::new(rows))
     }
 
     /// Query data lengths and collect all results into a list.
     /// Convenience wrapper: equivalent to list(dataset.query_length(...)).
     fn query_length_all(&mut self, start_ts: i64, end_ts: i64) -> PyResult<Vec<(i64, u32)>> {
-        let ds_arc = self.inner_arc();
-        let entries = wrap(ds_arc.query_index_entries(start_ts, end_ts))?;
-        let entries_len = entries.len();
-
-        let mut results = Vec::with_capacity(entries_len);
-        for entry in entries {
-            if entry.block_offset == timslite::BLOCK_OFFSET_FILLER {
-                continue;
-            }
-            let data_len = wrap(ds_arc.read_length_at_index(&entry))?;
-            results.push((entry.timestamp, data_len));
-        }
-        Ok(results)
+        wrap(self.inner.query_length(start_ts, end_ts))
     }
 }

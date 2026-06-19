@@ -57,6 +57,7 @@
 | 模块 | 对应文档 |
 |------|---------|
 | `Store` + `create_dataset` + `open_dataset` | [Store 与 FFI](docs/design/store-and-ffi.md) |
+| Rust public API boundary | [Store 与 FFI](docs/design/store-and-ffi.md#111-rust-public-api-boundary) |
 | `DataSet` | [数据集操作](docs/design/dataset-operations.md) |
 | `DataSetMeta` (meta.rs) | [元数据格式](docs/design/meta-format.md) |
 | Dataset Identifier | [Dataset Identifier](docs/design/dataset-identifier.md) |

@@ -1,6 +1,8 @@
 //! Integration tests for dataset inspect API.
 
-use timslite::{DataSet, DataSetKey, Store, StoreConfig};
+use std::sync::Arc;
+
+use timslite::{DataSet, DataSetConfigBuilder, DataSetHandle, Store, StoreConfig};
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join("timslite_inspect_test");
@@ -10,16 +12,49 @@ fn temp_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
+fn store_config() -> StoreConfig {
+    StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .build()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_dataset(
+    dir: &std::path::Path,
+    name: &str,
+    dataset_type: &str,
+    data_segment_size: u64,
+    index_segment_size: u64,
+    compress_level: u8,
+    index_continuous: u8,
+    initial_data_segment_size: u64,
+    initial_index_segment_size: u64,
+    retention_window: u64,
+) -> (Store, DataSetHandle, Arc<DataSet>) {
+    let mut store = Store::open(dir, store_config()).unwrap();
+    let builder = DataSetConfigBuilder::from_store(store.config())
+        .data_segment_size(data_segment_size)
+        .index_segment_size(index_segment_size)
+        .compress_level(compress_level)
+        .index_continuous(index_continuous)
+        .initial_data_segment_size(initial_data_segment_size)
+        .initial_index_segment_size(initial_index_segment_size)
+        .retention_window(retention_window);
+    let handle = store
+        .create_dataset_with_config(name, dataset_type, Some(builder))
+        .unwrap();
+    let dataset = store.get_dataset(&handle).unwrap();
+    (store, handle, dataset)
+}
+
 #[test]
 fn test_inspect_basic() {
     let dir = temp_dir("inspect_basic");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
-    let ds = DataSet::create(
-        id,
-        dir.clone(),
+    let (_store, _handle, ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
         64 * 1024 * 1024,
         4 * 1024 * 1024,
         6,
@@ -27,8 +62,7 @@ fn test_inspect_basic() {
         256 * 1024,
         4 * 1024,
         0,
-    )
-    .unwrap();
+    );
 
     let result = ds.inspect().unwrap();
 
@@ -66,13 +100,10 @@ fn test_inspect_basic() {
 #[test]
 fn test_inspect_timestamp_zero_is_present_value() {
     let dir = temp_dir("inspect_timestamp_zero");
-    let id = DataSetKey {
-        name: "zero".into(),
-        dataset_type: "metrics".into(),
-    };
-    let ds = DataSet::create(
-        id,
-        dir.clone(),
+    let (_store, _handle, ds) = create_dataset(
+        &dir,
+        "zero",
+        "metrics",
         64 * 1024 * 1024,
         4 * 1024 * 1024,
         6,
@@ -80,8 +111,7 @@ fn test_inspect_timestamp_zero_is_present_value() {
         256 * 1024,
         4 * 1024,
         0,
-    )
-    .unwrap();
+    );
 
     ds.write(0, b"zero").unwrap();
     let result = ds.inspect().unwrap();
@@ -95,13 +125,10 @@ fn test_inspect_timestamp_zero_is_present_value() {
 #[test]
 fn test_inspect_info_fields() {
     let dir = temp_dir("inspect_info_fields");
-    let id = DataSetKey {
-        name: "test_data".into(),
-        dataset_type: "metrics".into(),
-    };
-    let ds = DataSet::create(
-        id,
-        dir.clone(),
+    let (_store, _handle, ds) = create_dataset(
+        &dir,
+        "test_data",
+        "metrics",
         128 * 1024 * 1024, // data_segment_size
         8 * 1024 * 1024,   // index_segment_size
         9,                 // compress_level
@@ -109,8 +136,7 @@ fn test_inspect_info_fields() {
         512 * 1024,        // initial_data_segment_size
         8 * 1024,          // initial_index_segment_size
         1000,              // retention_window
-    )
-    .unwrap();
+    );
 
     let result = ds.inspect().unwrap();
 
@@ -128,13 +154,10 @@ fn test_inspect_info_fields() {
 #[test]
 fn test_inspect_state_after_write() {
     let dir = temp_dir("inspect_state_after_write");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
-    let ds = DataSet::create(
-        id,
-        dir.clone(),
+    let (_store, _handle, ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
         64 * 1024 * 1024,
         4 * 1024 * 1024,
         6,
@@ -142,8 +165,7 @@ fn test_inspect_state_after_write() {
         256 * 1024,
         4 * 1024,
         0,
-    )
-    .unwrap();
+    );
 
     // Write some data
     ds.write(100, b"hello").unwrap();
@@ -165,15 +187,12 @@ fn test_inspect_state_after_write() {
 #[test]
 fn test_inspect_state_multi_segment() {
     let dir = temp_dir("inspect_state_multi_segment");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
     // Use small segment size to force multiple segments
     let data_segment_size = 256;
-    let ds = DataSet::create(
-        id,
-        dir.clone(),
+    let (_store, _handle, ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
         data_segment_size,
         4096,
         0,
@@ -181,8 +200,7 @@ fn test_inspect_state_multi_segment() {
         data_segment_size,
         4096,
         0,
-    )
-    .unwrap();
+    );
 
     // Write data that will span multiple segments
     for i in 0..10 {
@@ -203,13 +221,20 @@ fn test_inspect_state_multi_segment() {
 #[test]
 fn test_inspect_state_file_created_on_dataset_create() {
     let dir = temp_dir("inspect_state_file_created");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
-    let _ds = DataSet::create(id, dir.clone(), 1024, 4096, 6, 0, 1024, 4096, 0).unwrap();
+    let (_store, _handle, _ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
+        1024,
+        4096,
+        6,
+        0,
+        1024,
+        4096,
+        0,
+    );
 
-    let state_path = dir.join("state");
+    let state_path = dir.join("sensor").join("temperature").join("state");
     assert!(state_path.exists(), "dataset state file should be created");
     assert_eq!(std::fs::metadata(state_path).unwrap().len(), 64);
 }
@@ -217,14 +242,11 @@ fn test_inspect_state_file_created_on_dataset_create() {
 #[test]
 fn test_inspect_counts_archived_segments_after_reopen_without_opening_all_segments() {
     let dir = temp_dir("inspect_archived_after_reopen");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
     let data_segment_size = 256;
-    let ds = DataSet::create(
-        id.clone(),
-        dir.clone(),
+    let (mut store, _handle, ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
         data_segment_size,
         4096,
         0,
@@ -232,15 +254,15 @@ fn test_inspect_counts_archived_segments_after_reopen_without_opening_all_segmen
         data_segment_size,
         4096,
         0,
-    )
-    .unwrap();
+    );
 
     for i in 0..10 {
         ds.write((i + 1) * 100, &[0xAA; 64]).unwrap();
     }
     ds.close().unwrap();
 
-    let reopened = DataSet::open(id, dir).unwrap();
+    let reopened_handle = store.open_dataset("sensor", "temperature").unwrap();
+    let reopened = store.get_dataset(&reopened_handle).unwrap();
     let result = reopened.inspect().unwrap();
 
     assert_eq!(result.state.open_data_segments, 0);
@@ -256,14 +278,11 @@ fn test_inspect_counts_archived_segments_after_reopen_without_opening_all_segmen
 #[test]
 fn test_inspect_archived_delete_updates_invalid_count() {
     let dir = temp_dir("inspect_archived_delete_invalid");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
     let data_segment_size = 256;
-    let ds = DataSet::create(
-        id,
-        dir,
+    let (_store, _handle, ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
         data_segment_size,
         4096,
         0,
@@ -271,8 +290,7 @@ fn test_inspect_archived_delete_updates_invalid_count() {
         data_segment_size,
         4096,
         0,
-    )
-    .unwrap();
+    );
 
     for i in 0..10 {
         ds.write((i + 1) * 100, &[0xAA; 64]).unwrap();
@@ -294,14 +312,11 @@ fn test_inspect_archived_delete_updates_invalid_count() {
 #[test]
 fn test_inspect_retention_reclaim_subtracts_archived_stats() {
     let dir = temp_dir("inspect_retention_subtracts_state");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
     let data_segment_size = 256;
-    let ds = DataSet::create(
-        id,
-        dir,
+    let (_store, _handle, ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
         data_segment_size,
         4096,
         0,
@@ -309,8 +324,7 @@ fn test_inspect_retention_reclaim_subtracts_archived_stats() {
         data_segment_size,
         4096,
         500,
-    )
-    .unwrap();
+    );
 
     for i in 0..10 {
         ds.write((i + 1) * 100, &[0xAA; 64]).unwrap();
@@ -330,13 +344,10 @@ fn test_inspect_retention_reclaim_subtracts_archived_stats() {
 #[test]
 fn test_inspect_state_empty_dataset() {
     let dir = temp_dir("inspect_state_empty");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
-    let ds = DataSet::create(
-        id,
-        dir.clone(),
+    let (_store, _handle, ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
         64 * 1024 * 1024,
         4 * 1024 * 1024,
         6,
@@ -344,8 +355,7 @@ fn test_inspect_state_empty_dataset() {
         256 * 1024,
         4 * 1024,
         0,
-    )
-    .unwrap();
+    );
 
     let result = ds.inspect().unwrap();
 
@@ -360,13 +370,10 @@ fn test_inspect_state_empty_dataset() {
 #[test]
 fn test_inspect_with_queue() {
     let dir = temp_dir("inspect_with_queue");
-    let id = DataSetKey {
-        name: "sensor".into(),
-        dataset_type: "temperature".into(),
-    };
-    let ds = DataSet::create(
-        id,
-        dir.clone(),
+    let (mut store, handle, ds) = create_dataset(
+        &dir,
+        "sensor",
+        "temperature",
         64 * 1024 * 1024,
         4 * 1024 * 1024,
         6,
@@ -374,11 +381,10 @@ fn test_inspect_with_queue() {
         256 * 1024,
         4 * 1024,
         0,
-    )
-    .unwrap();
+    );
 
     // Open queue
-    ds.open_queue().unwrap();
+    let _queue = store.open_queue(handle).unwrap();
 
     let result = ds.inspect().unwrap();
 
@@ -388,12 +394,7 @@ fn test_inspect_with_queue() {
 #[test]
 fn test_inspect_not_found() {
     let dir = temp_dir("inspect_not_found");
-    let config = StoreConfig {
-        enable_background_thread: false,
-        enable_journal: false,
-        ..Default::default()
-    };
-    let store = Store::open(&dir, config).unwrap();
+    let store = Store::open(&dir, store_config()).unwrap();
 
     let result = store.inspect_dataset("nonexistent", "data");
     assert!(result.is_err());
@@ -402,11 +403,7 @@ fn test_inspect_not_found() {
 #[test]
 fn test_store_inspect_unopened_dataset_opens_and_keeps_it_loaded() {
     let dir = temp_dir("inspect_lazy_open");
-    let config = StoreConfig {
-        enable_background_thread: false,
-        enable_journal: false,
-        ..Default::default()
-    };
+    let config = store_config();
 
     {
         let mut store = Store::open(&dir, config.clone()).unwrap();
@@ -428,12 +425,7 @@ fn test_store_inspect_unopened_dataset_opens_and_keeps_it_loaded() {
 #[test]
 fn test_inspect_after_drop() {
     let dir = temp_dir("inspect_after_drop");
-    let config = StoreConfig {
-        enable_background_thread: false,
-        enable_journal: false,
-        ..Default::default()
-    };
-    let mut store = Store::open(&dir, config).unwrap();
+    let mut store = Store::open(&dir, store_config()).unwrap();
 
     store
         .create_dataset(

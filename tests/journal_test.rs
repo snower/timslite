@@ -48,14 +48,34 @@ fn read_all_journal_records(store: &mut Store) -> Vec<JournalRecord> {
 }
 
 #[test]
+fn t28_0_store_reads_journal_source_record_through_safe_api() {
+    let dir = temp_dir("source_record_api");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+    let handle = store
+        .create_dataset_with_config("source_ds", "data", None)
+        .unwrap();
+    store.write_dataset(handle, 42, b"journal-source").unwrap();
+
+    let record = read_all_journal_records(&mut store)
+        .into_iter()
+        .find(|record| record.kind == JournalRecordKind::DataWrite)
+        .expect("write journal record");
+    let index_info = record.index_info.expect("write index info");
+
+    let (ts, data) = store
+        .read_journal_source_record(record.dataset_identifier, index_info)
+        .unwrap();
+    assert_eq!(ts, 42);
+    assert_eq!(data, b"journal-source");
+}
+
+#[test]
 fn t28_1_store_config_defaults_enable_journal() {
-    assert!(StoreConfig::default().enable_journal);
-    assert!(
-        !StoreConfig::builder()
-            .enable_journal(false)
-            .build()
-            .enable_journal
-    );
+    assert!(StoreConfig::default().enable_journal());
+    assert!(!StoreConfig::builder()
+        .enable_journal(false)
+        .build()
+        .enable_journal());
 }
 
 #[test]
@@ -243,7 +263,7 @@ fn t28_11_direct_dataset_mutations_use_store_context_journal() {
     let identifier = store.dataset_identifier(handle).unwrap();
     {
         let ds = store.get_dataset(&handle).unwrap();
-        let mut ds = ds.lock().unwrap();
+        let ds = ds.clone();
         ds.write(10, b"direct").unwrap();
         ds.append(20, b"append").unwrap();
         ds.delete(10).unwrap();
@@ -319,7 +339,7 @@ fn t28_13_journal_dedicated_api_queryable_at_store_level() {
     store.close().unwrap();
 }
 
-// ─── Journal 0x13 append tests (P0-J-1~2) ───────────────────────────────────
+// 鈹€鈹€鈹€ Journal 0x13 append tests (P0-J-1~2) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[test]
 fn t28_14_append_writes_journal_0x13_record() {

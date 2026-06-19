@@ -6,7 +6,7 @@
 
 Journal v1 是 **pointer-based 辅助变更日志**: 用于热迁移、增量同步、审计和有限恢复工具。它不是自包含 redo log, 不携带业务 payload、payload checksum 或 record version, 因此不能独立重建业务数据。
 
-处理 `0x11/0x12/0x13` 的 consumer 必须把 journal record 中的 `index_info` 视为读取指针, 在源 dataset 仍可访问且未被 retention/checkpoint 清除时, 通过源 dataset 的 `read_entry_at_index(index_info)` 拉取或验证业务数据。
+处理 `0x11/0x12/0x13` 的 consumer 必须把 journal record 中的 `index_info` 视为读取指针, 在源 dataset 仍可访问且未被 retention/checkpoint 清除时, 通过 `Store::read_journal_source_record(dataset_identifier, index_info)` 拉取或验证业务数据。该 Store API 在内部解析 dataset identifier、打开 Store 管理的 DataSet 并执行物理 entry 校验; 外部 Rust 调用方不直接构造 `IndexEntry` 或调用 `read_entry_at_index`。
 
 Journal 不提供事务语义:
 
@@ -211,7 +211,7 @@ Offset  Size  Type       Field
 4       4     u32 LE     data_len
 ```
 
-`0x13` 不携带 `name`/`type` 或 append bytes。consumer 必须先解析 identifier, 再通过源 dataset 的 `read_entry_at_index(index_info)` 获取完整 record, 并用 `data_offset/data_len` 理解本次追加范围。
+`0x13` 不携带 `name`/`type` 或 append bytes。consumer 必须先解析 identifier, 再通过 `Store::read_journal_source_record(dataset_identifier, index_info)` 获取完整 record, 并用 `data_offset/data_len` 理解本次追加范围。
 
 ### 25.6 Store/DataSet 集成
 
@@ -255,7 +255,7 @@ trait DataSetJournalSink {
 }
 ```
 
-Store 管理的业务 `DataSet` 在执行 journal hook 前必须已经持有非零 identifier。低层 `DataSet::create/open` 绕过 Store 时没有 Store runtime context, journal hook 仍为 no-op。全局 journal disabled 或 dataset journal disabled 时 hook 均为 no-op。
+Store 管理的业务 `DataSet` 在执行 journal hook 前必须已经持有非零 identifier。低层 `DataSet::create/open` 是 crate-internal 路径, 没有 Store runtime context 时 journal hook 仍为 no-op。全局 journal disabled 或 dataset journal disabled 时 hook 均为 no-op。
 
 ### 25.7 JournalManager API
 

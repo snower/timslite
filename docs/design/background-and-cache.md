@@ -82,7 +82,7 @@ enum SegmentFlushTarget {
 - queue state file: `group_name`
 - dataset state file: dataset key 本身
 
-后台 `run_flush()` drain 全局队列后按 dataset key 分组, 再逐个执行队列中出现过的精确 target; 不遍历全部 dataset。data/index target 分别同步对应 segment, queue state target 同步对应 consumer group state file, dataset state target 同步 `{dataset_dir}/state`。`DataSet::flush()` 同步当前 dataset 的所有打开 data/index segment、已打开 queue state files 和 dataset state file, 并清除全局队列中属于当前 dataset 的 stale target; 低层 `DataSet::create/open` 绕过 Store 且没有 runtime context 时, `flush()` 退化为同步所有打开 data/index segment、queue state files 和 dataset state file, 保持直接使用 API 的可用性。
+后台 `run_flush()` drain 全局队列后按 dataset key 分组, 再逐个执行队列中出现过的精确 target; 不遍历全部 dataset。data/index target 分别同步对应 segment, queue state target 同步对应 consumer group state file, dataset state target 同步 `{dataset_dir}/state`。`DataSet::flush()` 同步当前 dataset 的所有打开 data/index segment、已打开 queue state files 和 dataset state file, 并清除全局队列中属于当前 dataset 的 stale target; crate-internal 低层 `DataSet::create/open` 如果没有 runtime context, `flush()` 退化为同步所有打开 data/index segment、queue state files 和 dataset state file, 仅供 Store/内部测试路径使用。
 
 Journal 不把 segment 写入加入 Store 级 `flush_queue`。Journal 是全局单一 append log, 后台 flush 到期时直接调用 `JournalManager::flush_dirty()`; 该方法内部检查 `is_flushed`, clean segment/state file 直接跳过。这样既避免普通 flush queue 被 journal 高频写入污染, 也避免后台为了 journal 扫描普通 dataset。
 

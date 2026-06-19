@@ -4,6 +4,18 @@
 
 ### 11.1 Store API
 
+### 11.1.1 Rust public API boundary
+
+`Store` is the only public Rust entry for dataset lifecycle and queue lifecycle. Normal Rust callers create, open, drop, inspect, and open queues through `Store`; `Store::get_dataset` returns a Store-managed `Arc<DataSet>` view for safe record operations.
+
+Public `DataSet` methods are limited to Store-managed record/state operations: `write`, `append`, `delete`, `read`, `read_latest`, `read_exist`, `read_length`, `query`, `query_exist`, `query_length`, `query_length_iter`, `flush`, `close`, `inspect`, and read-only state getters. These methods acquire the internal dataset mutex, check the open/read-only state, and use the Store-injected runtime context for cache, journal, dirty flush queue, lifecycle invalidation, and read-only journal access.
+
+The following remain crate-internal implementation details and are not part of the Rust library public API: `DataSetKey`, `DataSet::create/open/drop_dataset`, `DataSet::lock`, `DataSetGuard`, `DataSet::query_index_entries`, `DataSet::query_sources`, `DataSet::read_entry_at_index`, `DataSet::read_length_at_index`, `DataSet::open_queue/close_queue`, raw `DatasetQueue::new`, `ConsumerStateFile`, `QueueInner`, `IndexEntry`, `ReadIndexEntry`, `QueryIterator`, `QuerySource`, `SourceIndex`, and `util` mmap/path helpers.
+
+Journal source-data dereference uses the safe Store-level API `Store::read_journal_source_record(dataset_identifier, index_info)`. It resolves the Store-managed dataset by identifier and internally validates/reads the referenced entry; external Rust consumers do not construct or pass raw `IndexEntry`.
+
+`StoreConfig` and `DataSetConfig` expose builders and read-only getters as the public Rust configuration surface. Their stored fields are crate-internal so external crates cannot bypass validation by constructing invalid config literals.
+
 > **核心原则**: `create_dataset` 与 `open_dataset` 分离。
 > - `create_dataset`: 显式创建新数据集, 需传入 `data_segment_size`, `index_segment_size`, `compress_level`; 已存在返回错误
 > - `open_dataset`: 仅打开已有数据集, 参数从 meta 文件读取
@@ -617,6 +629,6 @@ struct DataSetRuntimeContext {
 }
 ```
 
-普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入、普通 queue consumer state 变更和 dataset inspect state 缓存变更复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位普通 dataset, 再执行 `Data`、`Index`、`QueueState`、`DatasetState` target, 不遍历所有 dataset。Journal 使用专用 append log, 不把 journal segment 加入该 dirty queue; 后台 flush 到期时直接调用 `JournalManager::flush_dirty()`。低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment、queue state files 和 dataset state file。
+普通 Store facade 写入、通过 Store 获取的 `DataSet` 直接写入、普通 queue consumer state 变更和 dataset inspect state 缓存变更复用同一个全局 dirty queue。后台 flush 任务 drain 队列后按 dataset key 精确定位普通 dataset, 再执行 `Data`、`Index`、`QueueState`、`DatasetState` target, 不遍历所有 dataset。Journal 使用专用 append log, 不把 journal segment 加入该 dirty queue; 后台 flush 到期时直接调用 `JournalManager::flush_dirty()`。crate-internal 低层 `DataSet::create/open` 如果没有 runtime context, `DataSet::flush()` 退化为同步所有打开 segment、queue state files 和 dataset state file, 仅供 Store/内部测试路径使用。
 
 > Rust API mutability note: methods that allocate or remove handles, mutate the handle registry, mutate dataset contents, open/close queue producer state, or push queue data require &mut self. Read/query, queue poll/ack, config/cache access, dataset listing, inspect, and background executor tick/query use internal synchronization and keep &self.

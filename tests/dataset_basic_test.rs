@@ -1,4 +1,4 @@
-﻿//! Dataset basic lifecycle tests: create, open, close, persistence, flush.
+//! Dataset basic lifecycle tests: create, open, close, persistence, flush.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -46,11 +46,11 @@ fn t8_1_1_basic_lifecycle() {
     for i in 0..100i64 {
         let data: Vec<u8> = format!("event_{}", i).into_bytes();
         let ds_arc = store.get_dataset(&ds_handle).unwrap();
-        ds_arc.lock().unwrap().write(i + 1, &data).unwrap();
+        ds_arc.write(i + 1, &data).unwrap();
     }
 
     let ds_arc = store.get_dataset(&ds_handle).unwrap();
-    let mut ds = ds_arc.lock().unwrap();
+    let ds = ds_arc.clone();
     ds.flush().unwrap();
 
     let entries = ds.query(1, 100).unwrap();
@@ -100,18 +100,18 @@ fn t8_1_2_multi_dataset_isolation() {
     for i in 0..50i64 {
         let data: Vec<u8> = format!("a_{}", i).into_bytes();
         let ds_arc = store.get_dataset(&ds1).unwrap();
-        ds_arc.lock().unwrap().write(i + 1, &data).unwrap();
+        ds_arc.write(i + 1, &data).unwrap();
     }
     for i in 0..30i64 {
         let data: Vec<u8> = format!("b_{}", i).into_bytes();
         let ds_arc = store.get_dataset(&ds2).unwrap();
-        ds_arc.lock().unwrap().write(i + 1, &data).unwrap();
+        ds_arc.write(i + 1, &data).unwrap();
     }
 
     // Verify dataset_a
     {
         let ds_arc = store.get_dataset(&ds1).unwrap();
-        let mut ds = ds_arc.lock().unwrap();
+        let ds = ds_arc.clone();
         let entries = ds.query(1, 50).unwrap();
         assert_eq!(entries.len(), 50);
         for (i, (ts, data)) in entries.iter().enumerate() {
@@ -123,7 +123,7 @@ fn t8_1_2_multi_dataset_isolation() {
     // Verify dataset_b isolated
     {
         let ds_arc = store.get_dataset(&ds2).unwrap();
-        let mut ds = ds_arc.lock().unwrap();
+        let ds = ds_arc.clone();
         let entries = ds.query(1, 30).unwrap();
         assert_eq!(entries.len(), 30);
         for (i, (ts, data)) in entries.iter().enumerate() {
@@ -196,11 +196,11 @@ fn t8_1_3_block_aggregation() {
     for i in 0..200i64 {
         let data: Vec<u8> = format!("value_{}", i).into_bytes();
         let arc = store.get_dataset(&ds).unwrap();
-        arc.lock().unwrap().write(i + 1, &data).unwrap();
+        arc.write(i + 1, &data).unwrap();
     }
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 200).unwrap();
+    let entries = arc.query(1, 200).unwrap();
     assert_eq!(entries.len(), 200);
 
     store.close().unwrap();
@@ -229,10 +229,10 @@ fn t8_1_6_persistence() {
         for i in 0..50i64 {
             let data = format!("persist_{}", i).into_bytes();
             let arc = store.get_dataset(&ds).unwrap();
-            arc.lock().unwrap().write(i + 1, &data).unwrap();
+            arc.write(i + 1, &data).unwrap();
         }
         let arc = store.get_dataset(&ds).unwrap();
-        arc.lock().unwrap().flush().unwrap();
+        arc.flush().unwrap();
         store.close().unwrap();
     }
 
@@ -241,7 +241,7 @@ fn t8_1_6_persistence() {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
         let arc = store.get_dataset(&ds).unwrap();
-        let entries = arc.lock().unwrap().query(1, 50).unwrap();
+        let entries = arc.query(1, 50).unwrap();
         assert_eq!(entries.len(), 50);
         for (i, (ts, data)) in entries.iter().enumerate() {
             assert_eq!(*ts, (i + 1) as i64);
@@ -278,14 +278,14 @@ fn t8_1_7_flush_does_not_seal() {
     let data = b"pending_data".to_vec();
     {
         let arc = store.get_dataset(&ds).unwrap();
-        arc.lock().unwrap().write(1000, &data).unwrap();
+        arc.write(1000, &data).unwrap();
     }
 
     // Wait for background flush
     std::thread::sleep(std::time::Duration::from_secs(2));
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(999, 1001).unwrap();
+    let entries = arc.query(999, 1001).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, data);
 

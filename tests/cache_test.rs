@@ -46,13 +46,13 @@ fn t31_1_cache_correction_write() {
 
     // Write original data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"original_data").unwrap();
     }
 
     // Read to populate cache (if cache is enabled)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"original_data");
@@ -60,13 +60,13 @@ fn t31_1_cache_correction_write() {
 
     // Correction write: overwrite with new data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"corrected_data").unwrap();
     }
 
     // Read again - should get corrected data (not cached old data)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         let (ts, data) = result.unwrap();
@@ -105,13 +105,13 @@ fn t31_2_cache_delete() {
 
     // Write data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"to_be_deleted").unwrap();
     }
 
     // Read to populate cache
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"to_be_deleted");
@@ -119,13 +119,13 @@ fn t31_2_cache_delete() {
 
     // Delete the record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.delete(100).unwrap();
     }
 
     // Read again - should return None (deleted)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_none(), "deleted record should return None");
     }
@@ -162,33 +162,33 @@ fn t31_3_cache_retention_reclaim() {
 
     // Write data at timestamp 50 (within retention window)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(50, b"old_data").unwrap();
     }
 
     // Read to populate cache
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(50).unwrap();
         assert!(result.is_some());
     }
 
     // Write data at timestamp 200 (outside retention window)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(200, b"new_data").unwrap();
     }
 
     // Trigger retention reclaim
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let _reclaimed = lock.reclaim_expired_segments().unwrap();
         // May or may not reclaim segments depending on segment boundaries
     }
 
     // Read old timestamp - should return None if expired
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(50).unwrap();
         // If retention window is 100 and latest_written_timestamp is 200,
         // then timestamp 50 is expired (200 - 50 = 150 > 100)
@@ -200,7 +200,7 @@ fn t31_3_cache_retention_reclaim() {
 
     // Read new timestamp - should always be readable
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(200).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"new_data");
@@ -237,7 +237,7 @@ fn t31_4_cache_out_of_order_write() {
 
     // Write data at timestamps 100, 200, 300
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"data_100").unwrap();
         lock.write(200, b"data_200").unwrap();
         lock.write(300, b"data_300").unwrap();
@@ -245,7 +245,7 @@ fn t31_4_cache_out_of_order_write() {
 
     // Read all to populate cache
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         assert_eq!(lock.read(100).unwrap().unwrap().1, b"data_100");
         assert_eq!(lock.read(200).unwrap().unwrap().1, b"data_200");
         assert_eq!(lock.read(300).unwrap().unwrap().1, b"data_300");
@@ -253,13 +253,13 @@ fn t31_4_cache_out_of_order_write() {
 
     // Out-of-order write: overwrite timestamp 200 with new data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(200, b"new_data_200").unwrap();
     }
 
     // Read again - should get new data (not cached old data)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(200).unwrap();
         assert!(result.is_some());
         let (ts, data) = result.unwrap();
@@ -269,7 +269,7 @@ fn t31_4_cache_out_of_order_write() {
 
     // Other timestamps should be unaffected
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         assert_eq!(lock.read(100).unwrap().unwrap().1, b"data_100");
         assert_eq!(lock.read(300).unwrap().unwrap().1, b"data_300");
     }
@@ -309,7 +309,7 @@ fn t31_5_cache_lru_eviction() {
     // Write enough data to exceed cache size
     // Each record ~8KB, cache is 1MB, so ~128 records to fill
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..200i64 {
             let data = vec![0xABu8; 8192]; // 8KB per record
             lock.write(i * 10 + 1, &data).unwrap();
@@ -318,7 +318,7 @@ fn t31_5_cache_lru_eviction() {
 
     // Read all records to populate cache
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..200i64 {
             let result = lock.read(i * 10 + 1).unwrap();
             assert!(result.is_some(), "record {} should exist", i);
@@ -328,7 +328,7 @@ fn t31_5_cache_lru_eviction() {
     // Cache should have evicted some entries due to LRU
     // We can't directly inspect cache state, but we can verify data is still readable
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..200i64 {
             let result = lock.read(i * 10 + 1).unwrap();
             assert!(result.is_some(), "record {} should still be readable", i);

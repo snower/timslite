@@ -37,7 +37,7 @@
 
 pub mod config;
 pub mod error;
-pub mod util;
+mod util;
 
 mod bg;
 mod block;
@@ -52,23 +52,19 @@ mod journal;
 mod meta;
 #[allow(clippy::module_inception)]
 mod query;
-pub mod queue;
+mod queue;
 mod segment;
 mod store;
 
 pub use bg::TickResult;
 pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
-pub use dataset::{DataSet, DataSetInfo, DataSetInspectResult, DataSetKey, DataSetState};
+pub use dataset::{DataSet, DataSetInfo, DataSetInspectResult, DataSetState};
 pub use error::{Result, TmslError};
-pub use index::segment::{IndexEntry, BLOCK_OFFSET_FILLER};
 pub use journal::{
     JournalAppendInfo, JournalIndexInfo, JournalQueue, JournalQueueConsumer, JournalRecord,
     JournalRecordKind, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
-pub use query::hot_block::HotBlockCache;
-pub use query::iter::{QueryIterator, QuerySource, SourceIndex};
 pub use queue::{DatasetQueue, DatasetQueueConsumer, PendingEntry, QueueConsumerConfig};
-pub use segment::ReadIndexEntry;
 pub use store::{DataSetHandle, Store};
 
 /// Queue state file magic bytes ("QSTF").

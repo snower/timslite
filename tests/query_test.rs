@@ -41,12 +41,12 @@ fn t13_1_iterator_small_range() {
     for i in 0..30i64 {
         let data = format!("item_{}", i).into_bytes();
         let arc = store.get_dataset(&ds).unwrap();
-        arc.lock().unwrap().write(i * 10 + 10, &data).unwrap();
+        arc.write(i * 10 + 10, &data).unwrap();
     }
 
     let arc = store.get_dataset(&ds).unwrap();
     // Query small range: ts 50..120 (should return items at 60,70,80,90,100,110)
-    let entries = arc.lock().unwrap().query(50, 120).unwrap();
+    let entries = arc.query(50, 120).unwrap();
     assert!(!entries.is_empty());
     for (ts, _) in &entries {
         assert!(*ts >= 50 && *ts <= 120);
@@ -77,7 +77,7 @@ fn t13_3_query_backward_compat() {
     let ds = store.open_dataset("back_compat", "data").unwrap();
     // ts_start > ts_end should return empty
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(100, 1).unwrap();
+    let entries = arc.query(100, 1).unwrap();
     assert_eq!(entries.len(), 0);
 
     store.close().unwrap();
@@ -105,8 +105,8 @@ fn t13_4_query_empty_range() {
     let ds = store.open_dataset("empty_range", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
 
-    // Query before any writes 鈥?should return empty
-    let entries = arc.lock().unwrap().query(1, 100).unwrap();
+    // Query before any writes 閳?should return empty
+    let entries = arc.query(1, 100).unwrap();
     assert_eq!(entries.len(), 0);
 
     store.close().unwrap();
@@ -114,30 +114,26 @@ fn t13_4_query_empty_range() {
 
 #[test]
 fn t13_5_cross_segment_query() {
-    use timslite::{DataSet, DataSetKey};
+    use timslite::Store;
 
     let dir = temp_dir();
-    let ds_dir = dir.join("cross_seg");
-    fs::create_dir_all(&ds_dir).unwrap();
-    let id = DataSetKey {
-        name: "cross_seg".into(),
-        dataset_type: "data".into(),
-    };
 
     // Use small segment size to force data across multiple segments
     let data_segment_size: u64 = 180;
-    let ds = DataSet::create(
-        id.clone(),
-        ds_dir.clone(),
-        data_segment_size,
-        4096,
-        0, // no compression for predictable sizing
-        0,
-        data_segment_size, // initial = max → rollover on overflow
-        4096,
-        0,
-    )
-    .unwrap();
+    let config = timslite::StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .data_segment_size(data_segment_size)
+        .index_segment_size(4096)
+        .compress_level(0)
+        .initial_data_segment_size(data_segment_size)
+        .initial_index_segment_size(4096)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+    let handle = store
+        .create_dataset_with_config("cross_seg", "data", None)
+        .unwrap();
+    let ds = store.get_dataset(&handle).unwrap();
 
     // Write records that span multiple data segments
     for i in 1..=6i64 {
@@ -146,7 +142,7 @@ fn t13_5_cross_segment_query() {
     }
 
     // Verify multiple segment files exist
-    let data_dir = ds_dir.join("data");
+    let data_dir = dir.join("cross_seg").join("data").join("data");
     let seg_count = fs::read_dir(&data_dir).unwrap().count();
     assert!(
         seg_count >= 2,
@@ -212,7 +208,7 @@ fn t13_6_query_iterator_full_lifecycle() {
     // Phase 1: Write data through Store (flushed to disk, paths 2, 3)
     {
         let arc = store.get_dataset(&handle).unwrap();
-        let mut ds = arc.lock().unwrap();
+        let ds = arc.clone();
         for i in 1..=50i64 {
             let data = format!("record_{:03}", i);
             ds.write(i * 100, data.as_bytes()).unwrap();
@@ -225,7 +221,7 @@ fn t13_6_query_iterator_full_lifecycle() {
     let handle2 = store.open_dataset("lifecycle", "data").unwrap();
     {
         let arc = store.get_dataset(&handle2).unwrap();
-        let mut ds = arc.lock().unwrap();
+        let ds = arc.clone();
 
         // Write additional records that stay in memory buffer (path 1)
         for i in 51..=60i64 {
@@ -254,7 +250,7 @@ fn t13_6_query_iterator_full_lifecycle() {
             );
         }
 
-        // Query again — BlockCache should serve cached reads (path 5)
+        // Query again 鈥?BlockCache should serve cached reads (path 5)
         let entries2 = ds.query(100, 6000).unwrap();
         assert_eq!(entries2.len(), 60);
 

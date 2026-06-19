@@ -37,9 +37,9 @@ fn t14_1_create_with_none_config_uses_store_defaults() {
 
     let ds = store.open_dataset("defaults_test", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"hello").unwrap();
+    arc.write(1, b"hello").unwrap();
 
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"hello");
 
@@ -70,10 +70,10 @@ fn t14_2_create_with_builder_override() {
     let arc = store.get_dataset(&ds).unwrap();
     for i in 0..10i64 {
         let data = format!("data_{}", i).into_bytes();
-        arc.lock().unwrap().write(i + 1, &data).unwrap();
+        arc.write(i + 1, &data).unwrap();
     }
 
-    let entries = arc.lock().unwrap().query(1, 10).unwrap();
+    let entries = arc.query(1, 10).unwrap();
     assert_eq!(entries.len(), 10);
 
     store.close().unwrap();
@@ -88,7 +88,7 @@ fn t39_1_dataset_config_builder_defaults_and_overrides_journal() {
         .build()
         .unwrap();
     assert!(
-        default_dataset.enable_journal,
+        default_dataset.enable_journal(),
         "dataset journal defaults to true independent of the global store switch"
     );
 
@@ -96,7 +96,7 @@ fn t39_1_dataset_config_builder_defaults_and_overrides_journal() {
         .enable_journal(false)
         .build()
         .unwrap();
-    assert!(!disabled_dataset.enable_journal);
+    assert!(!disabled_dataset.enable_journal());
 }
 
 #[test]
@@ -122,15 +122,15 @@ fn t14_3_backward_compat_existing_api() {
 
     let ds = store.open_dataset("compat_old", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"compat_test").unwrap();
+    arc.write(1, b"compat_test").unwrap();
 
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
 
     store.close().unwrap();
 }
 
-// ─── Config boundary value tests (P1-F-1~4) ─────────────────────────────────
+// 鈹€鈹€鈹€ Config boundary value tests (P1-F-1~4) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[test]
 fn t14_4_data_segment_size_boundary_values() {
@@ -170,8 +170,8 @@ fn t14_5_compress_level_boundary_values() {
         .unwrap();
     let ds = store.open_dataset("comp0", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"no_compress").unwrap();
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    arc.write(1, b"no_compress").unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     store.close().unwrap();
 
@@ -192,8 +192,8 @@ fn t14_5_compress_level_boundary_values() {
         .unwrap();
     let ds = store.open_dataset("comp10", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"high_compress").unwrap();
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    arc.write(1, b"high_compress").unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     store.close().unwrap();
 }
@@ -211,7 +211,7 @@ fn t14_6_retention_window_boundary_values() {
         .unwrap();
     let ds = store.open_dataset("ret0", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    assert_eq!(arc.lock().unwrap().retention_window(), 0);
+    assert_eq!(arc.retention_window(), 0);
     store.close().unwrap();
 
     // Test retention_window with maximum signed timestamp-domain value
@@ -230,7 +230,7 @@ fn t14_6_retention_window_boundary_values() {
         .unwrap();
     let ds = store.open_dataset("ret_large", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    assert_eq!(arc.lock().unwrap().retention_window(), i64::MAX as u64);
+    assert_eq!(arc.retention_window(), i64::MAX as u64);
     store.close().unwrap();
 
     let dir3 = temp_dir();
@@ -261,11 +261,11 @@ fn t14_7_flush_interval_boundary_values() {
         .flush_interval(Duration::from_millis(0))
         .build();
     // Config should be created without panic
-    assert!(config.flush_interval.as_millis() == 0);
+    assert!(config.flush_interval().as_millis() == 0);
 
     // Test very large flush_interval
     let config = StoreConfig::builder()
         .flush_interval(Duration::from_secs(86400)) // 24 hours
         .build();
-    assert_eq!(config.flush_interval.as_secs(), 86400);
+    assert_eq!(config.flush_interval().as_secs(), 86400);
 }

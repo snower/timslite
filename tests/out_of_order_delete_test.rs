@@ -1,4 +1,4 @@
-﻿//! Out-of-order writes, continuous index, delete lifecycle, and mixed operations tests.
+//! Out-of-order writes, continuous index, delete lifecycle, and mixed operations tests.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,7 +32,7 @@ fn t18_1_out_of_order_write() {
     let ds = store.open_dataset("ooo_ds", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"v1").unwrap();
         lock.write(200, b"v2").unwrap();
         lock.write(300, b"v3").unwrap();
@@ -67,7 +67,7 @@ fn t18_1b_out_of_order_write_continuous() {
     let ds = store.open_dataset("ooo_ds", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"v1").unwrap();
         lock.write(150, b"v2").unwrap();
 
@@ -98,7 +98,7 @@ fn t18_2_delete_lifecycle() {
     let ds = store.open_dataset("del_ds", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(1, b"keep").unwrap();
         lock.write(2, b"delete_me").unwrap();
         lock.write(3, b"also_keep").unwrap();
@@ -142,7 +142,7 @@ fn t18_3_mixed_operations() {
     let ds = store.open_dataset("mixed_ds", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(1, b"first").unwrap();
         lock.write(3, b"third").unwrap();
         lock.write(5, b"fifth").unwrap();

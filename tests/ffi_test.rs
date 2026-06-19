@@ -54,13 +54,13 @@ fn t34_1_api_basic_operations() {
     // Test dataset write
     let arc = store.get_dataset(&ds).unwrap();
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"hello api").unwrap();
     }
 
     // Test dataset read
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         let (ts, data) = result.unwrap();
@@ -70,13 +70,13 @@ fn t34_1_api_basic_operations() {
 
     // Test latest timestamp
     {
-        let lock = arc.lock().unwrap();
+        let lock = arc.clone();
         assert_eq!(lock.latest_written_timestamp(), Some(100));
     }
 
     // Test flush
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.flush().unwrap();
     }
 
@@ -147,12 +147,12 @@ fn t34_3_api_memory_safety() {
         let data_bytes = data.as_bytes();
 
         {
-            let mut lock = arc.lock().unwrap();
+            let lock = arc.clone();
             lock.write(i + 1, data_bytes).unwrap();
         }
 
         {
-            let mut lock = arc.lock().unwrap();
+            let lock = arc.clone();
             let result = lock.read(i + 1).unwrap();
             assert!(result.is_some());
             let (ts, read_data) = result.unwrap();
@@ -191,7 +191,7 @@ fn t34_4_api_concurrent_reads() {
 
     // Write initial data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..50 {
             let data = format!("data_{}", i);
             lock.write(i + 1, data.as_bytes()).unwrap();
@@ -204,7 +204,7 @@ fn t34_4_api_concurrent_reads() {
         let arc_clone = arc.clone();
         let handle = thread::spawn(move || {
             for i in 0..50 {
-                let mut lock = arc_clone.lock().unwrap();
+                let lock = arc_clone.clone();
                 let result = lock.read(i + 1).unwrap();
                 assert!(result.is_some());
                 let (ts, data) = result.unwrap();
@@ -251,7 +251,7 @@ fn t34_5_api_query_operations() {
 
     // Write data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..20 {
             let data = format!("record_{}", i);
             lock.write(i * 10 + 1, data.as_bytes()).unwrap();
@@ -260,7 +260,7 @@ fn t34_5_api_query_operations() {
 
     // Query range
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let results = lock.query(1, 200).unwrap();
         assert_eq!(results.len(), 20);
         for (i, (ts, data)) in results.iter().enumerate() {
@@ -272,7 +272,7 @@ fn t34_5_api_query_operations() {
 
     // Query subset
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let results = lock.query(51, 100).unwrap();
         assert_eq!(results.len(), 5);
     }
@@ -307,7 +307,7 @@ fn t34_6_api_delete_and_correction() {
 
     // Write data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"original").unwrap();
         lock.write(200, b"to_delete").unwrap();
         lock.write(300, b"keep").unwrap();
@@ -315,26 +315,26 @@ fn t34_6_api_delete_and_correction() {
 
     // Delete record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.delete(200).unwrap();
     }
 
     // Verify delete
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(200).unwrap();
         assert!(result.is_none(), "deleted record should return None");
     }
 
     // Correction write
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"corrected").unwrap();
     }
 
     // Verify correction
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"corrected");
@@ -342,7 +342,7 @@ fn t34_6_api_delete_and_correction() {
 
     // Verify other record unchanged
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(300).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"keep");

@@ -48,7 +48,7 @@ fn t30_1_pending_overflow_seal() {
     // Each record ~4KB, block max 64KB, so ~16 records per block
     // Write 50 records to ensure at least 2 blocks are created
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..50i64 {
             let data = vec![0xABu8; 4096]; // 4KB per record
             lock.write(i * 10 + 1, &data).unwrap();
@@ -105,7 +105,7 @@ fn t30_2_single_record_block() {
     // Write a record > 64KB (BLOCK_MAX_SIZE = 65536)
     let large_data = vec![0xCDu8; 100 * 1024]; // 100KB
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, &large_data).unwrap();
 
         // Verify the large record is readable
@@ -119,7 +119,7 @@ fn t30_2_single_record_block() {
 
     // Write a normal-sized record after the large one
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let normal_data = vec![0xEFu8; 1024];
         lock.write(200, &normal_data).unwrap();
 
@@ -162,7 +162,7 @@ fn t30_3_sealed_compressed_flags() {
 
     // Write data to create blocks
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..20i64 {
             let data = format!("record_{}", i).into_bytes();
             lock.write(i * 10 + 1, &data).unwrap();
@@ -171,7 +171,7 @@ fn t30_3_sealed_compressed_flags() {
 
     // Flush to ensure blocks are sealed
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.flush().unwrap();
     }
 
@@ -183,7 +183,7 @@ fn t30_3_sealed_compressed_flags() {
 
     // Verify all data is still readable after reopen
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..20i64 {
             let result = lock.read(i * 10 + 1).unwrap();
             assert!(result.is_some(), "record {} should exist after reopen", i);
@@ -225,7 +225,7 @@ fn t30_4_compression_larger_payload() {
 
     // Write incompressible data (each byte different)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..30i64 {
             // Create data that's hard to compress
             let mut data = vec![0u8; 4096];
@@ -271,7 +271,7 @@ fn t30_5_compress_level_effect() {
 
     // Write compressible data
     {
-        let mut lock = arc1.lock().unwrap();
+        let lock = arc1.clone();
         for i in 0..20i64 {
             let data = vec![0xAAu8; 4096];
             lock.write(i * 10 + 1, &data).unwrap();
@@ -290,7 +290,7 @@ fn t30_5_compress_level_effect() {
 
     // Write same data
     {
-        let mut lock = arc2.lock().unwrap();
+        let lock = arc2.clone();
         for i in 0..20i64 {
             let data = vec![0xAAu8; 4096];
             lock.write(i * 10 + 1, &data).unwrap();
@@ -299,8 +299,8 @@ fn t30_5_compress_level_effect() {
 
     // Verify both datasets have correct data
     {
-        let mut lock1 = arc1.lock().unwrap();
-        let mut lock2 = arc2.lock().unwrap();
+        let lock1 = arc1.clone();
+        let lock2 = arc2.clone();
         for i in 0..20i64 {
             let result1 = lock1.read(i * 10 + 1).unwrap();
             let result2 = lock2.read(i * 10 + 1).unwrap();
@@ -355,13 +355,13 @@ fn t30_6_compression_data_patterns() {
 
     // Pattern 1: All zeros (highly compressible)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(1, &vec![0u8; 8192]).unwrap();
     }
 
     // Pattern 2: Repeated pattern
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let mut data = Vec::with_capacity(8192);
         for _ in 0..2048 {
             data.extend_from_slice(&[0xDE, 0xAD]);
@@ -371,14 +371,14 @@ fn t30_6_compression_data_patterns() {
 
     // Pattern 3: Incremental values
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let data: Vec<u8> = (0..8192).map(|i| (i % 256) as u8).collect();
         lock.write(3, &data).unwrap();
     }
 
     // Pattern 4: Random-like but deterministic
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let mut data = vec![0u8; 8192];
         let mut state = 12345u64;
         for byte in data.iter_mut() {
@@ -390,7 +390,7 @@ fn t30_6_compression_data_patterns() {
 
     // Verify all patterns are readable
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
 
         // Pattern 1
         let result = lock.read(1).unwrap().unwrap();

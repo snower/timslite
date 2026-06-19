@@ -10,7 +10,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::cache::BlockCache;
-use crate::config::{validate_retention_window, DataSetConfig};
+use crate::config::{validate_dataset_config_values, DataSetConfig};
 use crate::dataset_state::DatasetStateFile;
 use crate::error::{Result, TmslError};
 use crate::header::{TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
@@ -129,9 +129,9 @@ fn data_len_u32(data_len: usize) -> Result<u32> {
 
 /// Dataset key for identifying a (name, type) pair.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct DataSetKey {
-    pub name: String,
-    pub dataset_type: String,
+pub(crate) struct DataSetKey {
+    pub(crate) name: String,
+    pub(crate) dataset_type: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,13 +199,8 @@ impl DataSet {
         f(&inner)
     }
 
-    #[doc(hidden)]
-    pub fn lock(&self) -> Result<DataSetGuard<'_>> {
-        self.lock_inner().map(|inner| DataSetGuard { inner })
-    }
-
     /// Create a new dataset (explicit creation, errors if already exists).
-    pub fn create(
+    pub(crate) fn create(
         id: DataSetKey,
         base_dir: PathBuf,
         data_segment_size: u64,
@@ -231,7 +226,7 @@ impl DataSet {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn create_with_compression(
+    pub(crate) fn create_with_compression(
         id: DataSetKey,
         base_dir: PathBuf,
         data_segment_size: u64,
@@ -260,7 +255,7 @@ impl DataSet {
         .map(Self::new)
     }
 
-    pub fn open(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
+    pub(crate) fn open(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
         DataSetInner::open(id, base_dir).map(Self::new)
     }
 
@@ -302,7 +297,7 @@ impl DataSet {
         self.with_inner(|inner| inner.sync_queued_flush_targets(targets))
     }
 
-    pub fn drop_dataset(base_dir: &std::path::Path) -> Result<()> {
+    pub(crate) fn drop_dataset(base_dir: &std::path::Path) -> Result<()> {
         DataSetInner::drop_dataset(base_dir)
     }
 
@@ -338,11 +333,15 @@ impl DataSet {
         self.with_open_inner(|inner| inner.query(start_ts, end_ts))
     }
 
-    pub fn query_index_entries(&self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
+    pub(crate) fn query_index_entries(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Vec<IndexEntry>> {
         self.with_open_inner(|inner| inner.query_index_entries(start_ts, end_ts))
     }
 
-    pub fn query_sources(&self, start_ts: i64, end_ts: i64) -> Result<Vec<QuerySource>> {
+    pub(crate) fn query_sources(&self, start_ts: i64, end_ts: i64) -> Result<Vec<QuerySource>> {
         self.with_open_inner(|inner| inner.query_sources(start_ts, end_ts))
     }
 
@@ -363,7 +362,7 @@ impl DataSet {
         Ok(rows.into_iter().map(Ok).collect::<Vec<_>>().into_iter())
     }
 
-    pub fn read_entry_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
+    pub(crate) fn read_entry_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
         self.with_open_inner(|inner| inner.read_entry_at_index(entry))
     }
 
@@ -393,11 +392,11 @@ impl DataSet {
         self.with_inner_ref(|inner| Ok(inner.queue_dir()))
     }
 
-    pub fn open_queue(&self) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
+    pub(crate) fn open_queue(&self) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
         self.with_open_inner(|inner| inner.open_queue())
     }
 
-    pub fn close_queue(&self) -> Result<()> {
+    pub(crate) fn close_queue(&self) -> Result<()> {
         self.with_inner(|inner| inner.close_queue())
     }
 
@@ -442,7 +441,7 @@ impl DataSet {
         })
     }
 
-    pub fn read_length_at_index(&self, entry: &IndexEntry) -> Result<u32> {
+    pub(crate) fn read_length_at_index(&self, entry: &IndexEntry) -> Result<u32> {
         self.read_record_data_len_at_index(entry)
     }
 
@@ -462,84 +461,6 @@ impl DataSet {
 
     pub(crate) fn idle_close_segments(&self) -> Result<()> {
         self.with_inner(|inner| inner.idle_close_segments())
-    }
-}
-
-pub struct DataSetGuard<'a> {
-    inner: MutexGuard<'a, DataSetInner>,
-}
-
-impl DataSetGuard<'_> {
-    pub fn write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
-        self.inner.write(timestamp, data)
-    }
-
-    pub fn append(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
-        self.inner.append(timestamp, data)
-    }
-
-    pub fn delete(&mut self, timestamp: i64) -> Result<()> {
-        self.inner.delete(timestamp)
-    }
-
-    pub fn read(&mut self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
-        self.inner.read(timestamp)
-    }
-
-    pub fn read_latest(&mut self) -> Result<Option<(i64, Vec<u8>)>> {
-        self.inner.read_latest()
-    }
-
-    pub fn read_exist(&mut self, timestamp: i64) -> Result<bool> {
-        self.inner.read_exist(timestamp)
-    }
-
-    pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>> {
-        self.inner.read_length(timestamp)
-    }
-
-    pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
-        self.inner.query(start_ts, end_ts)
-    }
-
-    pub fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>> {
-        self.inner.query_exist(start_ts, end_ts)
-    }
-
-    pub fn query_length(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>> {
-        self.inner.query_length(start_ts, end_ts)
-    }
-
-    pub fn query_length_iter(
-        &mut self,
-        start_ts: i64,
-        end_ts: i64,
-    ) -> Result<QueryLengthIterator<'_>> {
-        self.inner.query_length_iter(start_ts, end_ts)
-    }
-
-    pub fn flush(&mut self) -> Result<()> {
-        self.inner.flush()
-    }
-
-    pub fn close(&mut self) -> Result<()> {
-        self.inner.close()
-    }
-
-    pub fn latest_written_timestamp(&self) -> Option<i64> {
-        self.inner.latest_written_timestamp()
-    }
-
-    pub fn retention_window(&self) -> u64 {
-        self.inner.retention_window()
-    }
-
-    pub fn reclaim_expired_segments(&mut self) -> Result<usize> {
-        self.inner.reclaim_expired_segments()
-    }
-
-    pub fn inspect(&self) -> Result<DataSetInspectResult> {
-        self.inner.inspect()
     }
 }
 
@@ -565,7 +486,7 @@ impl DataSetInner {
     ///
     /// Parameters are written to the meta file and are **immutable**; they cannot be changed
     /// after creation.
-    pub fn create(
+    pub(crate) fn create(
         id: DataSetKey,
         base_dir: PathBuf,
         data_segment_size: u64,
@@ -591,7 +512,7 @@ impl DataSetInner {
         )
     }
 
-    pub fn create_with_compression(
+    pub(crate) fn create_with_compression(
         id: DataSetKey,
         base_dir: PathBuf,
         data_segment_size: u64,
@@ -604,8 +525,16 @@ impl DataSetInner {
         retention_window: u64,
         enable_journal: bool,
     ) -> Result<Self> {
-        crate::compress::validate_compress_type(compress_type)?;
-        validate_retention_window(retention_window)?;
+        validate_dataset_config_values(
+            data_segment_size,
+            index_segment_size,
+            compress_level,
+            compress_type,
+            index_continuous,
+            initial_data_segment_size,
+            initial_index_segment_size,
+            retention_window,
+        )?;
         let meta_path = base_dir.join("meta");
         if meta_path.exists() {
             return Err(TmslError::AlreadyExists(format!(
@@ -685,7 +614,7 @@ impl DataSetInner {
     ///
     /// Fails if the dataset does not exist (no meta file).
     /// Segment sizes and compress_level are read from meta and cannot be overridden.
-    pub fn open(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
+    pub(crate) fn open(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
         let meta_path = base_dir.join("meta");
         if !meta_path.exists() {
             return Err(TmslError::NotFound(format!(
@@ -709,6 +638,7 @@ impl DataSetInner {
             enable_journal: meta.enable_journal,
             create_time: meta.create_time,
         };
+        config.validate()?;
         let retention_window = meta.retention_window;
 
         let segments = DataSegmentSet::load_existing_with_compression(
@@ -979,7 +909,7 @@ impl DataSetInner {
     }
 
     /// Delete an entire dataset directory (destructive, not recoverable).
-    pub fn drop_dataset(base_dir: &std::path::Path) -> Result<()> {
+    pub(crate) fn drop_dataset(base_dir: &std::path::Path) -> Result<()> {
         std::fs::remove_dir_all(base_dir)?;
         Ok(())
     }
@@ -2087,6 +2017,33 @@ mod tests {
             Some(Default::default()),
         ));
         ds
+    }
+
+    #[test]
+    fn test_create_rejects_invalid_index_mode_before_writing_meta() {
+        let dir = temp_dir("invalid_index_mode_create");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+
+        let result = DataSetInner::create(
+            id,
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            2,
+            256 * 1024,
+            4 * 1024,
+            0,
+        );
+
+        assert!(matches!(result, Err(TmslError::InvalidData(_))));
+        assert!(
+            !dir.join("meta").exists(),
+            "invalid create parameters must not persist unreadable meta"
+        );
     }
 
     #[test]

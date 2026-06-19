@@ -49,7 +49,7 @@ fn t33_1_iterator_cross_segment() {
     // 256KB segment / 4KB per record = ~64 records per segment
     // Write 200 records to ensure at least 3 segments
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..200i64 {
             let data = vec![0xABu8; 4096]; // 4KB per record
             lock.write(i * 10 + 1, &data).unwrap();
@@ -58,7 +58,7 @@ fn t33_1_iterator_cross_segment() {
 
     // Query across all segments
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let entries = lock.query(1, 2001).unwrap();
         assert_eq!(entries.len(), 200, "should return all 200 records");
 
@@ -72,7 +72,7 @@ fn t33_1_iterator_cross_segment() {
 
     // Query a range that spans segment boundary
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         // Query records 501..=1501 (inclusive, should span multiple segments)
         let entries = lock.query(501, 1501).unwrap();
         assert_eq!(
@@ -120,7 +120,7 @@ fn t33_2_iterator_cross_block() {
     // So ~16 records per block
     // Write 50 records to ensure at least 3 blocks
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 0..50i64 {
             let data = vec![0xCDu8; 4096]; // 4KB per record
             lock.write(i * 10 + 1, &data).unwrap();
@@ -129,7 +129,7 @@ fn t33_2_iterator_cross_block() {
 
     // Query all records
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let entries = lock.query(1, 501).unwrap();
         assert_eq!(entries.len(), 50, "should return all 50 records");
 
@@ -142,7 +142,7 @@ fn t33_2_iterator_cross_block() {
 
     // Query a range that spans block boundary
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         // Query records 101..=301 (inclusive, should span multiple blocks)
         let entries = lock.query(101, 301).unwrap();
         assert_eq!(
@@ -186,7 +186,7 @@ fn t33_3_iterator_empty_range() {
 
     // Write some data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"data_100").unwrap();
         lock.write(200, b"data_200").unwrap();
         lock.write(300, b"data_300").unwrap();
@@ -194,14 +194,14 @@ fn t33_3_iterator_empty_range() {
 
     // Query with start > end should return empty
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let entries = lock.query(300, 100).unwrap();
         assert_eq!(entries.len(), 0, "start > end should return empty");
     }
 
     // Query with range that has no data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let entries = lock.query(500, 600).unwrap();
         assert_eq!(entries.len(), 0, "range with no data should return empty");
     }
@@ -236,13 +236,13 @@ fn t33_4_iterator_single_record() {
 
     // Write one record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"only_record").unwrap();
     }
 
     // Query exact timestamp
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let entries = lock.query(100, 100).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, 100);
@@ -251,7 +251,7 @@ fn t33_4_iterator_single_record() {
 
     // Query range containing the record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let entries = lock.query(50, 150).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].0, 100);
@@ -287,7 +287,7 @@ fn t33_5_iterator_skip_deleted() {
 
     // Write records
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"keep_100").unwrap();
         lock.write(200, b"delete_200").unwrap();
         lock.write(300, b"keep_300").unwrap();
@@ -297,14 +297,14 @@ fn t33_5_iterator_skip_deleted() {
 
     // Delete some records
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.delete(200).unwrap();
         lock.delete(400).unwrap();
     }
 
     // Query should skip deleted records
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let entries = lock.query(100, 500).unwrap();
         assert_eq!(entries.len(), 3, "should return 3 non-deleted records");
 
@@ -342,7 +342,7 @@ fn t33_6_iterator_correction_writes() {
 
     // Write original data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"original_100").unwrap();
         lock.write(200, b"original_200").unwrap();
         lock.write(300, b"original_300").unwrap();
@@ -350,13 +350,13 @@ fn t33_6_iterator_correction_writes() {
 
     // Correction write
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(200, b"corrected_200").unwrap();
     }
 
     // Query should return corrected data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let entries = lock.query(100, 300).unwrap();
         assert_eq!(entries.len(), 3);
 

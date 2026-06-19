@@ -62,7 +62,7 @@ fn negative_delete_nonexistent_timestamp() {
     let h = create_dataset(&mut store, "ds1", "data");
     let arc = store.get_dataset(&h).unwrap();
 
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     // Write one record so dataset is not empty
     ds.write(100, b"hello").unwrap();
     // Delete a timestamp that doesn't exist - should return NotFound
@@ -88,7 +88,7 @@ fn negative_correction_write_rejected_for_sealed() {
     let arc = store.get_dataset(&h).unwrap();
 
     {
-        let mut ds = arc.lock().unwrap();
+        let ds = arc.clone();
         // Write enough data to seal the first block (fill > 64KB)
         for i in 1..=20i64 {
             ds.write(i, &vec![0xAAu8; 4096]).unwrap();
@@ -124,7 +124,7 @@ fn negative_read_latest_no_data_and_minus_one_exact() {
     let h = create_dataset(&mut store, "ds3", "data");
     let arc = store.get_dataset(&h).unwrap();
 
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     assert!(ds.read_latest().unwrap().is_none());
     assert!(ds.read(-1).unwrap().is_none());
 }
@@ -137,7 +137,7 @@ fn negative_query_start_greater_than_end() {
     let h = create_dataset(&mut store, "ds4", "data");
     let arc = store.get_dataset(&h).unwrap();
 
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     ds.write(100, b"data").unwrap();
     // Query with start > end
     let result = ds.query(200, 100).unwrap();
@@ -152,7 +152,7 @@ fn negative_query_exist_start_greater_than_end() {
     let h = create_dataset(&mut store, "ds5", "data");
     let arc = store.get_dataset(&h).unwrap();
 
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     ds.write(100, b"data").unwrap();
     let result = ds.query_exist(200, 100).unwrap();
     assert!(result.is_empty());
@@ -166,7 +166,7 @@ fn negative_read_length_nonexistent() {
     let h = create_dataset(&mut store, "ds6", "data");
     let arc = store.get_dataset(&h).unwrap();
 
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     ds.write(100, b"hello").unwrap();
     let result = ds.read_length(999).unwrap();
     assert!(result.is_none());
@@ -180,7 +180,7 @@ fn negative_query_length_start_greater_than_end() {
     let h = create_dataset(&mut store, "ds7", "data");
     let arc = store.get_dataset(&h).unwrap();
 
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     ds.write(100, b"data").unwrap();
     let result = ds.query_length(200, 100).unwrap();
     assert!(result.is_empty());
@@ -194,7 +194,7 @@ fn negative_flush_empty_dataset() {
     let h = create_dataset(&mut store, "ds8", "data");
     let arc = store.get_dataset(&h).unwrap();
 
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     // Flush with no data should succeed (no-op)
     ds.flush().unwrap();
 }
@@ -207,7 +207,7 @@ fn negative_append_oversized_data() {
     let h = create_dataset(&mut store, "ds9", "data");
     let arc = store.get_dataset(&h).unwrap();
 
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     let big_data = vec![0xBBu8; 5 * 1024 * 1024]; // 5MB
     let result = ds.append(1, &big_data);
     assert!(result.is_err());
@@ -228,7 +228,7 @@ fn negative_write_close_reopen_verify() {
         let mut store = make_store(&dir);
         let h = create_dataset(&mut store, "ds10", "data");
         let arc = store.get_dataset(&h).unwrap();
-        let mut ds = arc.lock().unwrap();
+        let ds = arc.clone();
         ds.write(42, b"persistent").unwrap();
         ds.flush().unwrap();
     }
@@ -236,7 +236,7 @@ fn negative_write_close_reopen_verify() {
     let mut store = make_store(&dir);
     let h = store.open_dataset("ds10", "data").unwrap();
     let arc = store.get_dataset(&h).unwrap();
-    let mut ds = arc.lock().unwrap();
+    let ds = arc.clone();
     let result = ds.read(42).unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().1, b"persistent");
@@ -351,7 +351,9 @@ fn negative_drop_by_name_nonexistent() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("not found") || msg.contains("系统找不到") || msg.contains("os error"),
+        msg.contains("not found")
+            || msg.contains("\u{7cfb}\u{7edf}\u{627e}\u{4e0d}\u{5230}")
+            || msg.contains("os error"),
         "unexpected error: {msg}"
     );
 }
@@ -658,8 +660,8 @@ fn negative_config_zero_segments() {
     let builder = DataSetConfigBuilder::default()
         .data_segment_size(0)
         .index_segment_size(0);
-    // Build should succeed; validation happens at dataset creation
-    let _config = builder.build().unwrap();
+    // Build rejects invalid config before any dataset files can be created.
+    assert_err_contains(builder.build(), "data_segment_size");
 }
 
 /// DataSetConfigBuilder with max values.
@@ -695,7 +697,7 @@ fn negative_validation_dotted_names() {
 fn negative_validation_unicode_names() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
-    for name in &["数据", "café", "naïve"] {
+    for name in &["\u{6570}\u{636e}", "caf\u{e9}", "na\u{ef}ve"] {
         let result = store.create_dataset(name, "data", 1024, 1024, 0, 0, 0);
         assert_err_contains(result, "must match");
     }
@@ -710,7 +712,15 @@ fn positive_validation_valid_names() {
         .iter()
         .enumerate()
     {
-        let result = store.create_dataset(name, &format!("type{i}"), 1024, 1024, 0, 0, 0);
+        let result = store.create_dataset(
+            name,
+            &format!("type{i}"),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            0,
+            0,
+            0,
+        );
         assert!(result.is_ok(), "name '{name}' should be accepted");
     }
 }

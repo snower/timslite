@@ -171,7 +171,7 @@ impl PendingEntry {
 /// - magic (4B) + version (4B) + state_length (2B) + processed_ts (8B)
 /// - pending_length (2B) + pending_value_size (1B)
 /// - pending_entries (pending_length * 18 B)
-pub struct ConsumerStateFile {
+pub(crate) struct ConsumerStateFile {
     path: PathBuf,
     mmap: MmapMut,
     processed_ts: i64,
@@ -493,7 +493,7 @@ fn write_i64_at(mmap: &mut MmapMut, offset: usize, val: i64) {
 }
 
 /// Shared internal state for a dataset queue.
-pub struct QueueInner {
+pub(crate) struct QueueInner {
     consumers: HashMap<String, Arc<Mutex<ConsumerStateFile>>>,
     consumer_configs: HashMap<String, QueueConsumerConfig>,
     closed: Arc<AtomicBool>,
@@ -559,7 +559,7 @@ impl DatasetQueue {
     ///
     /// Used by FFI and Python wrappers that manage dataset lifecycle
     /// separately from Store's internal handle registry.
-    pub fn new(
+    pub(crate) fn new(
         dataset: Arc<DataSet>,
         inner: Arc<Mutex<QueueInner>>,
         notify: Arc<(Mutex<bool>, Condvar)>,

@@ -194,6 +194,7 @@ pub struct PyStore {
     /// Track open datasets: dataset_id -> Arc<DataSet>
     /// This runs parallel to Store's internal registry.
     datasets: std::collections::HashMap<u64, Arc<timslite::DataSet>>,
+    handles: std::collections::HashMap<u64, timslite::DataSetHandle>,
     next_id: u64,
 }
 
@@ -204,6 +205,7 @@ impl PyStore {
         Self {
             inner: None,
             datasets: std::collections::HashMap::new(),
+            handles: std::collections::HashMap::new(),
             next_id: 1,
         }
     }
@@ -227,6 +229,7 @@ impl PyStore {
         Ok(Self {
             inner: Some(store),
             datasets: std::collections::HashMap::new(),
+            handles: std::collections::HashMap::new(),
             next_id: 1,
         })
     }
@@ -257,6 +260,7 @@ impl PyStore {
             let _ = ds_arc.close();
         }
         self.datasets.clear();
+        self.handles.clear();
 
         let store = self
             .inner
@@ -322,6 +326,7 @@ impl PyStore {
 
         let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
         self.datasets.insert(id, py_ds.inner_arc());
+        self.handles.insert(id, handle);
         Ok(py_ds)
     }
 
@@ -343,6 +348,7 @@ impl PyStore {
 
         let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
         self.datasets.insert(id, py_ds.inner_arc());
+        self.handles.insert(id, handle);
         Ok(py_ds)
     }
 
@@ -362,6 +368,7 @@ impl PyStore {
 
         let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
         self.datasets.insert(id, py_ds.inner_arc());
+        self.handles.insert(id, handle);
         Ok(py_ds)
     }
 
@@ -375,21 +382,20 @@ impl PyStore {
     /// Raises:
     ///     TmslQueueAlreadyOpenError: Queue is already open for this dataset.
     fn open_queue(&mut self, dataset_id: u64) -> PyResult<PyDatasetQueue> {
-        let ds_arc = self
-            .datasets
+        let handle = *self
+            .handles
             .get(&dataset_id)
             .ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(format!(
                     "dataset_id {dataset_id} not found"
                 ))
-            })?
-            .clone();
+            })?;
+        let store = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
 
-        let (inner, notify) = wrap(ds_arc.open_queue())?;
-
-        Ok(PyDatasetQueue::new(timslite::DatasetQueue::new(
-            ds_arc, inner, notify,
-        )))
+        Ok(PyDatasetQueue::new(wrap(store.open_queue(handle))?))
     }
 
     /// Return the latest journal sequence, or None when journal is empty.

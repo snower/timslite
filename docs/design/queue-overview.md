@@ -106,6 +106,8 @@ pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
 
 **所有权模型**: `DatasetQueue` 和 `DatasetQueueConsumer` 都是 Clone-safe handle, 内部通过 `Arc` 共享状态。`open_queue()` 返回一个 handle, 重复调用返回相同内部引用的新 handle。
 
+Rust public API ownership boundary: callers open and close ordinary dataset queues through `Store::open_queue(handle)` and `Store::close_queue(handle)`. `DataSet::open_queue`, `DataSet::close_queue`, `DatasetQueue::new`, `QueueInner`, and `ConsumerStateFile` are crate-internal plumbing; wrapper and FFI layers also route queue open/close through Store-owned handles.
+
 ### 28.4 API 概览
 
 #### Dataset 新增方法
@@ -200,7 +202,7 @@ journal_consumer = journal_queue.open_consumer(
 ```
 Dataset.open()
     ↓
-Dataset.open_queue() → DatasetQueue (singleton, repeatable)
+Store.open_queue(handle) → DatasetQueue (singleton, repeatable)
     ↓
 DatasetQueue.open_consumer("group_a") → Consumer (multi-instance)
     ↓

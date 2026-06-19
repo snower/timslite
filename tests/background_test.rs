@@ -46,7 +46,7 @@ fn t21_1_manual_bg_lifecycle() {
 
     let ds = store.open_dataset("manual_bg", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"bg_test").unwrap();
+    arc.write(1, b"bg_test").unwrap();
     drop(arc);
 
     // tick should execute flush (since flush interval is short)
@@ -56,7 +56,7 @@ fn t21_1_manual_bg_lifecycle() {
 
     // Verify data is queryable after tick
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"bg_test");
 
@@ -107,19 +107,19 @@ fn t21_3_manual_bg_concurrent_with_thread() {
 
     let ds = store.open_dataset("conc_bg", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"concurrent").unwrap();
+    arc.write(1, b"concurrent").unwrap();
     drop(arc);
 
     // Wait for bg thread to potentially flush (conservative timeout)
     std::thread::sleep(Duration::from_millis(500));
 
-    // Manual tick alongside background thread — should not deadlock
+    // Manual tick alongside background thread 鈥?should not deadlock
     let result = store.tick_background_tasks().unwrap();
-    // executed_tasks may be 0 if bg thread already ran — that's fine
+    // executed_tasks may be 0 if bg thread already ran 鈥?that's fine
     assert!(result.executed_tasks <= 2);
 
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"concurrent");
 
@@ -153,15 +153,15 @@ fn t21_4_idle_close_double_check_skips_recently_used() {
 
     let ds = store.open_dataset("idle_dc", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"before_idle").unwrap();
+    arc.write(1, b"before_idle").unwrap();
     drop(arc);
 
     // Wait for idle timeout to expire
     std::thread::sleep(Duration::from_millis(200));
 
-    // Write again — this updates last_used_at BEFORE tick runs
+    // Write again 鈥?this updates last_used_at BEFORE tick runs
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(2, b"just_written").unwrap();
+    arc.write(2, b"just_written").unwrap();
     drop(arc);
 
     // Tick immediately: double-check should see the recent write and skip idle-close
@@ -171,7 +171,7 @@ fn t21_4_idle_close_double_check_skips_recently_used() {
 
     // Verify data is still queryable (dataset was not idle-closed)
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 2).unwrap();
+    let entries = arc.query(1, 2).unwrap();
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].1, b"before_idle");
     assert_eq!(entries[1].1, b"just_written");
@@ -212,12 +212,12 @@ fn t21_5_cache_eviction_via_background_tick() {
     // Write enough data with large records to trigger block cache population
     for i in 0..50i64 {
         let data = vec![0xAA_u8; 2000];
-        arc.lock().unwrap().write(i + 1, &data).unwrap();
+        arc.write(i + 1, &data).unwrap();
     }
 
     // Query to populate the block cache with compressed blocks
     {
-        let mut ds_lock = arc.lock().unwrap();
+        let ds_lock = arc.clone();
         let entries = ds_lock.query(1, 50).unwrap();
         assert_eq!(entries.len(), 50);
     }
@@ -274,7 +274,7 @@ fn t21_6_background_thread_auto_flush() {
 
     let ds = store.open_dataset("auto_flush", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"auto_flushed").unwrap();
+    arc.write(1, b"auto_flushed").unwrap();
     drop(arc);
 
     // Wait for the background thread to auto-flush (flush_interval=100ms)
@@ -282,7 +282,7 @@ fn t21_6_background_thread_auto_flush() {
 
     // Verify data is still queryable after background flush
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"auto_flushed");
     drop(arc);
@@ -290,7 +290,7 @@ fn t21_6_background_thread_auto_flush() {
     store.close().unwrap();
 }
 
-// ─── Background retention tests (P1-G-1~5) ──────────────────────────────────
+// 鈹€鈹€鈹€ Background retention tests (P1-G-1~5) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[test]
 fn t21_7_retention_window_zero_no_reclaim() {
@@ -321,7 +321,7 @@ fn t21_7_retention_window_zero_no_reclaim() {
     let arc = store.get_dataset(&ds).unwrap();
 
     // Write old data (timestamp 1)
-    arc.lock().unwrap().write(1, b"old_data").unwrap();
+    arc.write(1, b"old_data").unwrap();
     drop(arc);
 
     // Tick background tasks
@@ -329,7 +329,7 @@ fn t21_7_retention_window_zero_no_reclaim() {
 
     // Data should still be queryable
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"old_data");
     drop(arc);
@@ -366,16 +366,16 @@ fn t21_8_retention_boundary_time_precision() {
     let arc = store.get_dataset(&ds).unwrap();
 
     // Write data at various timestamps
-    arc.lock().unwrap().write(100, b"at_boundary").unwrap();
-    arc.lock().unwrap().write(101, b"just_inside").unwrap();
-    arc.lock().unwrap().write(200, b"latest").unwrap(); // This sets latest_written_timestamp=200
+    arc.write(100, b"at_boundary").unwrap();
+    arc.write(101, b"just_inside").unwrap();
+    arc.write(200, b"latest").unwrap(); // This sets latest_written_timestamp=200
     drop(arc);
 
     // Tick to trigger reclaim (threshold = 200 - 100 = 100)
     // Note: reclaim may not run immediately due to retention_check_hour
     // But we can verify the threshold calculation
     let arc = store.get_dataset(&ds).unwrap();
-    let ds_lock = arc.lock().unwrap();
+    let ds_lock = arc.clone();
     let retention = ds_lock.retention_window();
     assert_eq!(retention, 100);
     drop(ds_lock);
@@ -409,13 +409,13 @@ fn t21_9_reclaim_expired_data_returns_none() {
     let arc = store.get_dataset(&ds).unwrap();
 
     // Write data at timestamp 100 (sets latest=100, threshold=100-50=50)
-    arc.lock().unwrap().write(100, b"will_survive").unwrap();
+    arc.write(100, b"will_survive").unwrap();
     drop(arc);
 
     // Note: We cannot easily test actual reclaim because it depends on
     // retention_check_hour timing. But we can verify the API behavior.
     let arc = store.get_dataset(&ds).unwrap();
-    let mut ds_lock = arc.lock().unwrap();
+    let ds_lock = arc.clone();
 
     // Record should exist
     let (ts, _) = ds_lock.read(100).unwrap().unwrap();
@@ -459,12 +459,12 @@ fn t21_10_expired_timestamp_write_rejected() {
     let arc = store.get_dataset(&ds).unwrap();
 
     // Write data to set latest_written_timestamp=100
-    arc.lock().unwrap().write(100, b"latest").unwrap();
+    arc.write(100, b"latest").unwrap();
 
     // Note: The actual rejection of expired timestamps depends on the
     // retention check implementation. For now, verify the API accepts
     // valid timestamps.
-    let result = arc.lock().unwrap().write(101, b"new_data");
+    let result = arc.write(101, b"new_data");
     assert!(result.is_ok(), "write to future timestamp should succeed");
 
     drop(arc);
@@ -498,7 +498,7 @@ fn t21_11_reclaim_cache_invalidation() {
     // Write enough data to trigger block sealing and caching
     let big_data = vec![0xAAu8; 10_000]; // 10KB per record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for i in 1..=10i64 {
             lock.write(i, &big_data).unwrap();
         }
@@ -509,7 +509,7 @@ fn t21_11_reclaim_cache_invalidation() {
     // Note: Actual cache invalidation test requires knowing internal
     // cache state. For now, verify data is still accessible.
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(1, 10).unwrap();
+    let entries = arc.query(1, 10).unwrap();
     assert_eq!(entries.len(), 10);
     drop(arc);
 

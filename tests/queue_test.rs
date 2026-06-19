@@ -432,7 +432,7 @@ fn t27_2_4_consumer_group_name_must_be_path_safe() {
         "bad/name",
         "bad\\name",
         "bad name",
-        "中文",
+        "涓枃",
     ] {
         assert!(
             store.open_consumer(&q, group_name).is_err(),
@@ -962,7 +962,7 @@ fn t27_7_push_notification_wakes_blocking_consumer_poll() {
     store.close().unwrap();
 }
 
-// ─── Queue boundary tests (P0-Q-1~7) ────────────────────────────────────────
+// 鈹€鈹€鈹€ Queue boundary tests (P0-Q-1~7) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[test]
 fn t27_7_1_push_to_closed_queue_errors() {
@@ -1091,7 +1091,7 @@ fn t27_7_5_poll_timeout_precision() {
 
     assert!(result.is_none(), "empty queue should return None");
 
-    // Timeout should be within reasonable range (200ms ± 100ms)
+    // Timeout should be within reasonable range (200ms 卤 100ms)
     assert!(
         elapsed >= Duration::from_millis(150) && elapsed < Duration::from_millis(500),
         "timeout precision: expected ~200ms, got {:?}",

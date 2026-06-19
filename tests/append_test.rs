@@ -46,13 +46,13 @@ fn t32_1_append_existing_latest_exceeding_pending_capacity_errors() {
 
     // Write initial record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"initial").unwrap();
     }
 
     // Append data multiple times to grow the record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         for _i in 0..10 {
             let append_data = vec![0xABu8; 1024]; // 1KB each append
             lock.append(100, &append_data).unwrap();
@@ -69,7 +69,7 @@ fn t32_1_append_existing_latest_exceeding_pending_capacity_errors() {
 
     // Try to append until we exceed BLOCK_MAX_SIZE (65536 bytes)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         // Current size is ~10KB, need to append ~55KB more to exceed 64KB
         let big_append = vec![0xCDu8; 60 * 1024]; // 60KB
         let result = lock.append(100, &big_append);
@@ -82,7 +82,7 @@ fn t32_1_append_existing_latest_exceeding_pending_capacity_errors() {
 
     // Verify original data is still intact
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         let (ts, data) = result.unwrap();
@@ -121,26 +121,26 @@ fn t32_2_append_to_sealed_block() {
 
     // Write record at timestamp 100
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"data_100").unwrap();
     }
 
     // Write record at timestamp 200 (may seal the block containing ts=100)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(200, b"data_200").unwrap();
     }
 
     // Flush to ensure blocks are sealed
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.flush().unwrap();
     }
 
     // Try to append to timestamp 100
     // This should fail because the block is sealed
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.append(100, b"_appended");
         // Append to a non-latest timestamp should fail
         assert!(
@@ -151,7 +151,7 @@ fn t32_2_append_to_sealed_block() {
 
     // Verify original data is unchanged
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"data_100");
@@ -187,19 +187,19 @@ fn t32_3_append_empty_data() {
 
     // Write initial record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"initial_data").unwrap();
     }
 
     // Append empty data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.append(100, b"").unwrap();
     }
 
     // Verify data is unchanged
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().1, b"initial_data");
@@ -207,7 +207,7 @@ fn t32_3_append_empty_data() {
 
     // Latest written timestamp should still be 100
     {
-        let lock = arc.lock().unwrap();
+        let lock = arc.clone();
         assert_eq!(lock.latest_written_timestamp(), Some(100));
     }
 
@@ -241,7 +241,7 @@ fn t32_4_append_timestamp_order() {
 
     // Write records at timestamps 100, 200, 300
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"data_100").unwrap();
         lock.write(200, b"data_200").unwrap();
         lock.write(300, b"data_300").unwrap();
@@ -249,7 +249,7 @@ fn t32_4_append_timestamp_order() {
 
     // Try to append with timestamp < latest (300)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
 
         // timestamp < latest_written_timestamp should fail
         let result = lock.append(150, b"new_data");
@@ -268,7 +268,7 @@ fn t32_4_append_timestamp_order() {
 
     // Verify all data is unchanged
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         assert_eq!(lock.read(100).unwrap().unwrap().1, b"data_100");
         assert_eq!(lock.read(200).unwrap().unwrap().1, b"data_200");
         assert_eq!(lock.read(300).unwrap().unwrap().1, b"data_300");
@@ -304,19 +304,19 @@ fn t32_5_append_forward_new_record() {
 
     // Write initial record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"data_100").unwrap();
     }
 
     // Append with timestamp > latest (forward append)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.append(200, b"data_200").unwrap();
     }
 
     // Verify both records exist
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result1 = lock.read(100).unwrap();
         assert!(result1.is_some());
         assert_eq!(result1.unwrap().1, b"data_100");
@@ -328,20 +328,20 @@ fn t32_5_append_forward_new_record() {
 
     // Latest written timestamp should be 200
     {
-        let lock = arc.lock().unwrap();
+        let lock = arc.clone();
         assert_eq!(lock.latest_written_timestamp(), Some(200));
     }
 
     // Continue forward append
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.append(300, b"data_300").unwrap();
         lock.append(400, b"data_400").unwrap();
     }
 
     // Verify all records
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         assert_eq!(lock.read(100).unwrap().unwrap().1, b"data_100");
         assert_eq!(lock.read(200).unwrap().unwrap().1, b"data_200");
         assert_eq!(lock.read(300).unwrap().unwrap().1, b"data_300");
@@ -379,20 +379,20 @@ fn t32_6_append_to_tail_record() {
 
     // Write initial record
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.write(100, b"initial").unwrap();
     }
 
     // Append to the latest record (should work for tail record)
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         lock.append(100, b"_part2").unwrap();
         lock.append(100, b"_part3").unwrap();
     }
 
     // Verify the record has all appended data
     {
-        let mut lock = arc.lock().unwrap();
+        let lock = arc.clone();
         let result = lock.read(100).unwrap();
         assert!(result.is_some());
         let (ts, data) = result.unwrap();

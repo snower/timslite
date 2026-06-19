@@ -15,9 +15,10 @@ use crate::dataset::{
     DataSetRuntimeContext, SegmentFlushQueue,
 };
 use crate::error::{Result, TmslError};
+use crate::index::segment::IndexEntry;
 use crate::journal::{
-    meta_values_from_file, validate_create_drop_record_inputs, JournalManager, JournalQueue,
-    JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
+    meta_values_from_file, validate_create_drop_record_inputs, JournalIndexInfo, JournalManager,
+    JournalQueue, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
 use crate::meta::META_VALUES_LEN_V1;
 use crate::queue::{DatasetQueue, DatasetQueueConsumer, QueueConsumerConfig};
@@ -292,6 +293,7 @@ impl Store {
 
     /// Open a store at the given directory.
     pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self> {
+        config.validate()?;
         let data_dir = data_dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&data_dir)?;
         let block_cache = Arc::new(BlockCache::new(config.cache_max_memory));
@@ -1043,6 +1045,22 @@ impl Store {
         end_sequence: i64,
     ) -> Result<Vec<(i64, Vec<u8>)>> {
         self.journal.query(start_sequence, end_sequence)
+    }
+
+    /// Read the source dataset record referenced by a journal write/delete/append record.
+    pub fn read_journal_source_record(
+        &mut self,
+        dataset_identifier: u64,
+        index_info: JournalIndexInfo,
+    ) -> Result<(i64, Vec<u8>)> {
+        let handle = self.open_dataset_by_identifier(dataset_identifier)?;
+        let ds_arc = self.get_dataset(&handle)?;
+        let entry = IndexEntry::new(
+            index_info.timestamp,
+            index_info.block_offset,
+            index_info.in_block_offset,
+        );
+        ds_arc.read_entry_at_index(&entry)
     }
 
     /// Open the built-in journal queue.

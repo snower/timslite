@@ -125,7 +125,7 @@ fn t8_2_3_drop_deletes_dataset() {
 
     // Write some data
     let arc = store.get_dataset(&ds_handle).unwrap();
-    arc.lock().unwrap().write(100, b"test").unwrap();
+    arc.write(100, b"test").unwrap();
     store.close_dataset(ds_handle).unwrap();
 
     // Drop the dataset
@@ -158,7 +158,7 @@ fn t8_2_4_create_after_drop() {
         .unwrap();
     let ds = store.open_dataset("recreate", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
-    arc.lock().unwrap().write(1, b"first").unwrap();
+    arc.write(1, b"first").unwrap();
     store.close().unwrap();
 
     // Re-open store, drop, recreate
@@ -181,7 +181,7 @@ fn t8_2_4_create_after_drop() {
 
     // Data from first creation should be gone
     let arc = store.get_dataset(&ds).unwrap();
-    let entries = arc.lock().unwrap().query(0, 10).unwrap();
+    let entries = arc.query(0, 10).unwrap();
     assert_eq!(entries.len(), 0);
 
     store.close().unwrap();
@@ -269,7 +269,7 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
     let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
-    // Space in name → rejected
+    // Space in name 鈫?rejected
     let r = store.create_dataset(
         "my dataset",
         "data",
@@ -284,7 +284,7 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
         "space in name should be rejected"
     );
 
-    // Backslash → rejected
+    // Backslash 鈫?rejected
     let r = store.create_dataset(
         "my\\dataset",
         "data",
@@ -299,14 +299,22 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
         "backslash in name should be rejected"
     );
 
-    // Unicode characters → rejected (non-ASCII)
-    let r = store.create_dataset("数据集", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0);
+    // Unicode characters 鈫?rejected (non-ASCII)
+    let r = store.create_dataset(
+        "\u{6570}\u{636e}\u{96c6}",
+        "data",
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+    );
     assert!(
         matches!(r, Err(TmslError::InvalidData(_))),
         "unicode in name should be rejected"
     );
 
-    // Exactly 255-byte name → accepted (boundary)
+    // Exactly 255-byte name 鈫?accepted (boundary)
     let name_255 = "a".repeat(255);
     let r = store.create_dataset(&name_255, "data", 1024 * 1024, 64 * 1024, 6, 0, 0);
     assert!(
@@ -315,7 +323,7 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
         r.err()
     );
 
-    // 256-byte name → rejected (over limit)
+    // 256-byte name 鈫?rejected (over limit)
     let name_256 = "b".repeat(256);
     let r = store.create_dataset(&name_256, "data", 1024 * 1024, 64 * 1024, 6, 0, 0);
     assert!(r.is_err(), "256-byte name should be rejected");
@@ -399,7 +407,7 @@ fn t8_2_10_store_close_with_open_dataset_handles() {
     // Write some data
     {
         let arc = store.get_dataset(&_h1).unwrap();
-        arc.lock().unwrap().write(1, b"data1").unwrap();
+        arc.write(1, b"data1").unwrap();
     }
 
     // Close store without explicitly closing dataset handles
@@ -415,7 +423,7 @@ fn t8_2_10_store_close_with_open_dataset_handles() {
     let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
     let h = store2.open_dataset("ds1", "data").unwrap();
     let arc = store2.get_dataset(&h).unwrap();
-    let entries = arc.lock().unwrap().query(1, 1).unwrap();
+    let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"data1");
     store2.close().unwrap();
