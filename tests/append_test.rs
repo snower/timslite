@@ -425,22 +425,16 @@ fn t32_7_append_to_deleted_latest() {
     let ds = store.open_dataset("append_del", "data").unwrap();
     let arc = store.get_dataset(&ds).unwrap();
 
-    {
-        let mut lock = arc.lock().unwrap();
-        lock.write(100, b"first").unwrap();
-        lock.write(200, b"latest").unwrap();
-        lock.delete(200).unwrap();
-    }
+    arc.write(100, b"first").unwrap();
+    arc.write(200, b"latest").unwrap();
+    arc.delete(200).unwrap();
 
-    {
-        let mut lock = arc.lock().unwrap();
-        assert_eq!(lock.latest_written_timestamp(), Some(200));
-        let result = lock.append(200, b"reappend");
-        assert!(
-            result.is_err(),
-            "append to deleted latest should fail (no uncompressed tail)"
-        );
-    }
+    assert_eq!(arc.latest_written_timestamp(), Some(200));
+    let result = arc.append(200, b"reappend");
+    assert!(
+        result.is_err(),
+        "append to deleted latest should fail (no uncompressed tail)"
+    );
 
     store.close().unwrap();
 }
@@ -468,23 +462,17 @@ fn t32_8_append_to_sealed_block() {
     let arc = store.get_dataset(&ds).unwrap();
 
     let big_data = vec![0xAAu8; 10_000];
-    {
-        let mut lock = arc.lock().unwrap();
-        for i in 1..=7i64 {
-            lock.write(i, &big_data).unwrap();
-        }
+    for i in 1..=7i64 {
+        arc.write(i, &big_data).unwrap();
     }
 
-    {
-        let mut lock = arc.lock().unwrap();
-        let result = lock.append(7, b"extra");
-        assert!(
-            result.is_ok(),
-            "append to latest record should succeed even after earlier blocks are sealed"
-        );
-        let result = lock.read(7).unwrap().unwrap();
-        assert_eq!(result.1.len(), 10_000 + 5);
-    }
+    let result = arc.append(7, b"extra");
+    assert!(
+        result.is_ok(),
+        "append to latest record should succeed even after earlier blocks are sealed"
+    );
+    let result = arc.read(7).unwrap().unwrap();
+    assert_eq!(result.1.len(), 10_000 + 5);
 
     store.close().unwrap();
 }
