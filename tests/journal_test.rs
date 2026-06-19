@@ -623,3 +623,285 @@ fn t39_2_dataset_journal_disabled_persists_after_reopen() {
 
     store.close().unwrap();
 }
+
+// ── End-to-end hot migration tests ────────────────────────────────────────────
+
+#[test]
+fn t28_20_end_to_end_write_journal_replay() {
+    // Source store writes data → journal records it → read journal →
+    // replay on target store using read_journal_source_record
+    let source_dir = temp_dir("e2e_source");
+    let target_dir = temp_dir("e2e_target");
+    let mut source = Store::open(&source_dir, test_config()).unwrap();
+
+    source
+        .create_dataset("migrate", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let src_handle = source.open_dataset("migrate", "data").unwrap();
+    let src_identifier = source.dataset_identifier(src_handle).unwrap();
+
+    // Write multiple records
+    source
+        .write_dataset(src_handle, 100, b"record_100")
+        .unwrap();
+    source
+        .write_dataset(src_handle, 200, b"record_200")
+        .unwrap();
+    source
+        .write_dataset(src_handle, 300, b"record_300")
+        .unwrap();
+
+    // Read journal and extract DataWrite records for our dataset
+    let records = read_all_journal_records(&mut source);
+    let write_records: Vec<_> = records
+        .iter()
+        .filter(|r| {
+            r.kind == JournalRecordKind::DataWrite && r.dataset_identifier == src_identifier
+        })
+        .collect();
+    assert!(
+        write_records.len() >= 3,
+        "expected at least 3 write records, got {}",
+        write_records.len()
+    );
+
+    // Replay onto target store: create dataset, read source data, write to target
+    let mut target = Store::open(&target_dir, test_config()).unwrap();
+    target
+        .create_dataset("migrate", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let tgt_handle = target.open_dataset("migrate", "data").unwrap();
+
+    for wr in &write_records {
+        let index_info = wr.index_info.expect("write index_info");
+        let (ts, data) = source
+            .read_journal_source_record(src_identifier, index_info)
+            .unwrap();
+        target.write_dataset(tgt_handle, ts, &data).unwrap();
+    }
+
+    // Verify replayed data matches source
+    for ts in [100, 200, 300] {
+        let src_data = source.read_dataset(src_handle, ts).unwrap().unwrap();
+        let tgt_data = target.read_dataset(tgt_handle, ts).unwrap().unwrap();
+        assert_eq!(src_data, tgt_data, "mismatch at ts={}", ts);
+    }
+
+    source.close().unwrap();
+    target.close().unwrap();
+}
+
+#[test]
+fn t28_21_delete_replay_via_journal() {
+    // Source store writes then deletes data → journal records 0x11 and 0x12 →
+    // consume and verify delete on target
+    let source_dir = temp_dir("delete_source");
+    let target_dir = temp_dir("delete_target");
+    let mut source = Store::open(&source_dir, test_config()).unwrap();
+
+    source
+        .create_dataset("del_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let src_handle = source.open_dataset("del_ds", "data").unwrap();
+    let src_identifier = source.dataset_identifier(src_handle).unwrap();
+
+    // Write then delete
+    source.write_dataset(src_handle, 50, b"to_delete").unwrap();
+    source.delete_dataset_record(src_handle, 50).unwrap();
+
+    // Also write a record that stays
+    source.write_dataset(src_handle, 60, b"survivor").unwrap();
+
+    let records = read_all_journal_records(&mut source);
+    let write_records: Vec<_> = records
+        .iter()
+        .filter(|r| {
+            r.kind == JournalRecordKind::DataWrite && r.dataset_identifier == src_identifier
+        })
+        .collect();
+    let delete_records: Vec<_> = records
+        .iter()
+        .filter(|r| {
+            r.kind == JournalRecordKind::DataDelete && r.dataset_identifier == src_identifier
+        })
+        .collect();
+    assert!(
+        !write_records.is_empty(),
+        "expected at least one write record"
+    );
+    assert!(
+        !delete_records.is_empty(),
+        "expected at least one delete record"
+    );
+
+    // Replay: create target, replay writes, replay deletes
+    let mut target = Store::open(&target_dir, test_config()).unwrap();
+    target
+        .create_dataset("del_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let tgt_handle = target.open_dataset("del_ds", "data").unwrap();
+
+    // Replay all writes first
+    for wr in &write_records {
+        let index_info = wr.index_info.expect("write index_info");
+        let (ts, data) = source
+            .read_journal_source_record(src_identifier, index_info)
+            .unwrap();
+        target.write_dataset(tgt_handle, ts, &data).unwrap();
+    }
+
+    // Replay deletes
+    for dr in &delete_records {
+        let index_info = dr.index_info.expect("delete index_info");
+        let (ts, _) = source
+            .read_journal_source_record(src_identifier, index_info)
+            .unwrap();
+        target.delete_dataset_record(tgt_handle, ts).unwrap();
+    }
+
+    // ts=50 should be deleted, ts=60 should exist
+    assert!(
+        target.read_dataset(tgt_handle, 50).unwrap().is_none(),
+        "ts=50 should be deleted on target"
+    );
+    let survivor = target.read_dataset(tgt_handle, 60).unwrap().unwrap();
+    assert_eq!(survivor, (60, b"survivor".to_vec()));
+
+    source.close().unwrap();
+    target.close().unwrap();
+}
+
+#[test]
+fn t28_22_corrupted_journal_returns_error() {
+    // Write data, corrupt journal file on disk, reopen and verify error handling
+    let dir = temp_dir("corrupt_journal");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    store
+        .create_dataset("cj_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let cj_handle = store.open_dataset("cj_ds", "data").unwrap();
+    store
+        .write_dataset(cj_handle, 1, b"before_corrupt")
+        .unwrap();
+
+    let before = read_all_journal_records(&mut store);
+    assert!(!before.is_empty());
+    store.close().unwrap();
+
+    // Corrupt journal data segment files
+    let journal_data_dir = dir
+        .join(JOURNAL_DATASET_NAME)
+        .join(JOURNAL_DATASET_TYPE)
+        .join("data");
+    let mut corrupted = false;
+    if journal_data_dir.exists() {
+        for entry in fs::read_dir(&journal_data_dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_file() {
+                // Truncate file to 1 byte to corrupt it
+                let metadata = fs::metadata(&path).unwrap();
+                if metadata.len() > 1 {
+                    fs::write(&path, [0xFFu8; 1]).unwrap();
+                    corrupted = true;
+                }
+            }
+        }
+    }
+    assert!(
+        corrupted,
+        "expected at least one journal segment file to corrupt"
+    );
+
+    // Reopen with journal disabled - store must open fine
+    let config_no_journal = StoreConfig::builder()
+        .enable_background_thread(false)
+        .data_segment_size(1024 * 1024)
+        .index_segment_size(64 * 1024)
+        .initial_data_segment_size(4096)
+        .initial_index_segment_size(4096)
+        .enable_journal(false)
+        .build();
+    let mut store2 = Store::open(&dir, config_no_journal).unwrap();
+    // Source dataset should still be readable even with corrupted journal
+    let cj_handle2 = store2.open_dataset("cj_ds", "data").unwrap();
+    let read_back = store2.read_dataset(cj_handle2, 1).unwrap();
+    assert!(
+        read_back.is_some(),
+        "source data must survive journal corruption"
+    );
+
+    // Reopen with journal enabled - either opens and re-creates or returns error
+    let store3_result = Store::open(&dir, test_config());
+    match store3_result {
+        Ok(mut store3) => {
+            // If store opens, journal query must not panic
+            let _ = store3.journal_query(1, i64::MAX);
+            store3.close().unwrap();
+        }
+        Err(_) => {
+            // Acceptable: store refuses to open with corrupted journal
+        }
+    }
+
+    store2.close().unwrap();
+}
+
+#[test]
+fn t28_23_journal_sequence_is_contiguous_from_one() {
+    // Write many records and verify journal sequences are 1, 2, 3, ... N
+    let dir = temp_dir("seq_boundary");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+
+    store
+        .create_dataset("seq_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("seq_ds", "data").unwrap();
+
+    let write_count = 20usize;
+    for i in 0..write_count {
+        let ts = (i as i64) + 1;
+        store
+            .write_dataset(handle, ts, format!("val_{}", ts).as_bytes())
+            .unwrap();
+    }
+
+    // Query all journal records
+    let entries = store.journal_query(1, i64::MAX).unwrap();
+    assert!(
+        entries.len() >= write_count,
+        "expected at least {} journal entries, got {}",
+        write_count,
+        entries.len()
+    );
+
+    // Verify sequences start from 1 and are contiguous
+    for (i, (seq, _)) in entries.iter().enumerate() {
+        assert_eq!(
+            *seq,
+            (i as i64) + 1,
+            "journal sequence should be contiguous from 1, got seq={} at index={}",
+            seq,
+            i
+        );
+    }
+
+    // Verify latest_sequence matches
+    let latest = store.journal_latest_sequence().unwrap().unwrap();
+    assert_eq!(latest, entries.len() as i64);
+
+    // Verify we can read a single entry by sequence
+    let (seq, payload) = store.journal_read(1).unwrap().unwrap();
+    assert_eq!(seq, 1);
+    let record = JournalRecord::decode(&payload).unwrap();
+    assert_eq!(record.kind, JournalRecordKind::CreateDataset);
+
+    // Verify we can read a specific range
+    let mid_entries = store.journal_query(5, 10).unwrap();
+    assert_eq!(mid_entries.len(), 6); // seq 5,6,7,8,9,10
+    for (i, (seq, _)) in mid_entries.iter().enumerate() {
+        assert_eq!(*seq, (i as i64) + 5);
+    }
+
+    store.close().unwrap();
+}
