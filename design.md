@@ -50,7 +50,7 @@
 - **崩溃安全**: [内存与并发](docs/design/memory-and-concurrency.md#崩溃安全)
 - **磁盘优化**: [懒分配与扩容](docs/design/lazy-allocation.md)
 - **连续时间索引**: [索引连续存储](docs/design/index-continuous.md) (稀疏 filler + 逻辑空洞)
-- **队列消费**: [Queue 架构与 API](docs/design/queue-overview.md) → [Queue 状态文件](docs/design/queue-state-file.md)
+- **队列消费 / 轻量唤醒回调**: [Queue 架构与 API](docs/design/queue-overview.md) → [Queue 状态文件](docs/design/queue-state-file.md)
 - **变更日志/热迁移**: [Journal 变更日志](docs/design/journal.md) → [Journal 专用存储](docs/design/journal-storage.md)
 
 ### 按模块查找

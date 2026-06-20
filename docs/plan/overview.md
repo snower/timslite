@@ -50,6 +50,7 @@ Phase 40: Dataset Inspect State Cache      ✅ 完成
 Phase 41: Queue Consumer Retry             ✅ 完成
 Phase 42: Rust Public API Boundary         ✅ 完成
 Phase 43: Index Entry Timestamp Delta      ✅ 完成
+Phase 44: Queue Poll Callback              ✅ 完成
 ```
 
 ## 目录结构变更 (核心)
@@ -201,6 +202,9 @@ Phase 42 (Rust Public API Boundary)
           │
           ▼
 Phase 43 (Index Entry Timestamp Delta: index header v1 + 14B timestamp_delta entry)
+          │
+          ▼
+Phase 44 (Queue Poll Callback: Rust/FFI/Python best-effort wake callback)
 ```
 
 ## 风险与应对
@@ -307,3 +311,4 @@ Phase 43 (Index Entry Timestamp Delta: index header v1 + 14B timestamp_delta ent
 | [phase-41-queue-consumer-retry.md](phase-41-queue-consumer-retry.md) | Queue Consumer Retry / Visibility Timeout | ✅ |
 | [phase-42-rust-public-api-boundary.md](phase-42-rust-public-api-boundary.md) | Rust Public API Boundary | ✅ |
 | [phase-43-index-entry-delta.md](phase-43-index-entry-delta.md) | Index Entry Timestamp Delta | ✅ |
+| [phase-44-queue-poll-callback.md](phase-44-queue-poll-callback.md) | Queue Poll Callback | ✅ |

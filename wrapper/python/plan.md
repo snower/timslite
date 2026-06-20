@@ -19,6 +19,7 @@
 | PY-7 | 集成测试 (8 个测试文件, 39 用例) | ✅ 完成 | `tests/` — 全部通过 |
 | PY-8 | CI/CD + 多平台 Wheel 构建 | 🔲 待开始 | GitHub Actions workflow |
 | PY-9 | Queue 模块 Python 包装 | ✅ 完成 | `src/queue.rs` — DatasetQueue + Consumer |
+| PY-10 | Queue poll callback 包装 | ✅ 完成 | `DatasetQueueConsumer.poll_callback`, `JournalQueueConsumer.poll_callback` |
 
 **验证结果**:
 - ✅ `cargo clippy -- -D warnings` — wrapper crate 无警告

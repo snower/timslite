@@ -6,7 +6,7 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::cache::BlockCache;
@@ -19,12 +19,14 @@ use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::query::iter::{QueryIterator, QuerySource};
 use crate::query::length_iter::QueryLengthIterator;
-use crate::queue::{flush_queue_state_file, flush_queue_state_files, queue_dir_for, QueueInner};
+use crate::queue::{
+    flush_queue_state_file, flush_queue_state_files, queue_dir_for, QueueInner, QueueNotifier,
+};
 use crate::segment::data::MAX_RECORD_DATA_SIZE;
 use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
 
-type QueueCondvarPair = Arc<(Mutex<bool>, Condvar)>;
+type QueueCondvarPair = Arc<QueueNotifier>;
 
 const QUERY_EXIST_MAX_BITMAP_BYTES: usize = 4 * 1024 * 1024;
 
@@ -476,7 +478,7 @@ pub(crate) struct DataSetInner {
     retention_window: u64,                 // 0 = no limit (same unit as timestamp)
     dataset_state: DatasetStateFile,
     queue_inner: Option<Arc<Mutex<QueueInner>>>,
-    queue_notify: Option<Arc<(Mutex<bool>, Condvar)>>,
+    queue_notify: Option<Arc<QueueNotifier>>,
     runtime_context: DataSetRuntimeContext,
     closed: bool,
 }
@@ -1119,11 +1121,7 @@ impl DataSetInner {
 
     fn notify_queue(&self) {
         if let Some(ref notify) = self.queue_notify {
-            let (lock, cvar) = (&notify.0, &notify.1);
-            if let Ok(mut guard) = lock.lock() {
-                *guard = true;
-                cvar.notify_all();
-            }
+            notify.notify_data_available_best_effort();
         }
     }
 
@@ -1602,7 +1600,7 @@ impl DataSetInner {
         std::fs::create_dir_all(&q_dir)?;
 
         let inner = Arc::new(Mutex::new(QueueInner::new()));
-        let pair: Arc<(Mutex<bool>, Condvar)> = Arc::new((Mutex::new(false), Condvar::new()));
+        let pair = Arc::new(QueueNotifier::new());
         self.queue_inner = Some(Arc::clone(&inner));
         self.queue_notify = Some(Arc::clone(&pair));
         Ok((inner, pair))
@@ -2201,7 +2199,7 @@ mod tests {
 
         ds.append(100, b"first").unwrap();
         {
-            let (lock, _) = &*notify;
+            let (lock, _) = notify.wait_parts();
             let mut flag = lock.lock().unwrap();
             assert!(*flag, "append creating a new timestamp must notify queue");
             *flag = false;
@@ -2209,7 +2207,7 @@ mod tests {
 
         ds.append(100, b"_tail").unwrap();
         {
-            let (lock, _) = &*notify;
+            let (lock, _) = notify.wait_parts();
             let flag = lock.lock().unwrap();
             assert!(
                 !*flag,

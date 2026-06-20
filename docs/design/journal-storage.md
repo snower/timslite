@@ -250,17 +250,20 @@ JournalQueue 是独立队列实现, 不复用 `DatasetQueue`, 但复用 `Consume
 pub struct JournalQueue {
     log: Arc<Mutex<JournalLog>>,
     inner: Arc<Mutex<JournalQueueInner>>,
-    notify: Arc<(Mutex<bool>, Condvar)>,
+    notify: Arc<QueueNotifier>,
 }
 
 pub struct JournalQueueConsumer {
     group_name: String,
     state_file: Arc<Mutex<ConsumerStateFile>>,
     log: Arc<Mutex<JournalLog>>,
-    notify: Arc<(Mutex<bool>, Condvar)>,
+    notify: Arc<QueueNotifier>,
     closed: Arc<AtomicBool>,
+    poll_callback: Arc<Mutex<Option<QueuePollCallback>>>,
 }
 ```
+
+`JournalQueueConsumer::poll_callback(Some(callback))` 与普通 queue consumer 一致, 只注册同步轻量唤醒回调; `None` 清除。callback 不参与 journal queue state、sequence、pending、retry 或 ack 语义。
 
 新 consumer 的 `processed_ts` 初始值:
 

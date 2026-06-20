@@ -64,7 +64,9 @@ pub use journal::{
     JournalAppendInfo, JournalIndexInfo, JournalQueue, JournalQueueConsumer, JournalRecord,
     JournalRecordKind, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
-pub use queue::{DatasetQueue, DatasetQueueConsumer, PendingEntry, QueueConsumerConfig};
+pub use queue::{
+    DatasetQueue, DatasetQueueConsumer, PendingEntry, QueueConsumerConfig, QueuePollCallback,
+};
 pub use store::{DataSetHandle, Store};
 
 /// Queue state file magic bytes ("QSTF").

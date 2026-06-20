@@ -1,7 +1,10 @@
 //! Queue integration tests: push/poll/ack, consumer groups, persistence, threading.
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    Arc,
+};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -1024,6 +1027,56 @@ fn t27_7_push_notification_wakes_blocking_consumer_poll() {
     );
 
     producer.join().unwrap();
+    store.close().unwrap();
+}
+
+#[test]
+fn t44_1_poll_callback_runs_for_dataset_queue_write_and_can_be_cleared() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store
+        .create_dataset(
+            "t44callback",
+            "events",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let q = store.open_queue(h).unwrap();
+    let c = store.open_consumer(&q, "g1").unwrap();
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let callback_hits = Arc::clone(&hits);
+    c.poll_callback(Some(Arc::new(move || {
+        callback_hits.fetch_add(1, Ordering::SeqCst);
+    })))
+    .unwrap();
+
+    store.write_dataset(h, 1, b"row1").unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    let (ts, data) = c.poll(Duration::from_millis(0)).unwrap().unwrap();
+    assert_eq!(ts, 1);
+    assert_eq!(data, b"row1");
+    c.ack(ts).unwrap();
+
+    c.poll_callback(None).unwrap();
+    store.write_dataset(h, 2, b"row2").unwrap();
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "clearing the callback must stop future wake callbacks"
+    );
+
+    let (ts, data) = c.poll(Duration::from_millis(0)).unwrap().unwrap();
+    assert_eq!(ts, 2);
+    assert_eq!(data, b"row2");
+    c.ack(ts).unwrap();
     store.close().unwrap();
 }
 

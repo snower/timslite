@@ -13,7 +13,7 @@ use crate::config::{validate_retention_window, DataSetConfigBuilder, StoreConfig
 use crate::error::TmslError;
 use crate::index::segment::IndexEntry;
 use crate::journal::{JournalQueue, JournalQueueConsumer};
-use crate::queue::{DatasetQueue, DatasetQueueConsumer, QueueConsumerConfig};
+use crate::queue::{DatasetQueue, DatasetQueueConsumer, QueueConsumerConfig, QueuePollCallback};
 use crate::store::{DataSetHandle, Store};
 
 use std::sync::LazyLock;
@@ -25,6 +25,8 @@ static QUEUE_REGISTRY: LazyLock<Mutex<HashMap<usize, FfiQueueEntry>>> =
 static NEXT_CONSUMER_ID: AtomicUsize = AtomicUsize::new(1);
 static CONSUMER_REGISTRY: LazyLock<Mutex<HashMap<usize, FfiConsumerEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+pub type TmslQueuePollCallback = Option<extern "C" fn(userdata: *mut c_void)>;
 
 /// Write an error message to a C string buffer.
 pub fn write_error(buf: *mut c_char, len: usize, msg: &str) {
@@ -405,6 +407,46 @@ fn remove_consumers_for_group(
         consumers.remove(&id);
     }
     Ok(count)
+}
+
+fn ffi_poll_callback_to_rust(
+    callback: TmslQueuePollCallback,
+    userdata: *mut c_void,
+) -> Option<QueuePollCallback> {
+    callback.map(|cb| {
+        let userdata_value = userdata as usize;
+        Arc::new(move || cb(userdata_value as *mut c_void)) as QueuePollCallback
+    })
+}
+
+fn set_consumer_poll_callback(
+    consumer_handle: usize,
+    callback: TmslQueuePollCallback,
+    userdata: *mut c_void,
+    require_journal: bool,
+) -> crate::error::Result<()> {
+    let consumer = {
+        let registry = CONSUMER_REGISTRY
+            .lock()
+            .map_err(|_| TmslError::InvalidData("consumer registry mutex poisoned".into()))?;
+        registry
+            .get(&consumer_handle)
+            .ok_or_else(|| TmslError::NotFound("consumer handle not found".into()))?
+            .consumer
+            .clone()
+    };
+    let callback = ffi_poll_callback_to_rust(callback, userdata);
+    match consumer {
+        FfiConsumerKind::Dataset(consumer) => {
+            if require_journal {
+                return Err(TmslError::InvalidData(
+                    "consumer handle is not journal".into(),
+                ));
+            }
+            consumer.poll_callback(callback)
+        }
+        FfiConsumerKind::Journal(consumer) => consumer.poll_callback(callback),
+    }
 }
 
 /// Write default store config to `out_config`.
@@ -1843,6 +1885,21 @@ pub extern "C" fn tmsl_queue_ack(
     }}
 }
 
+/// Register or clear a lightweight poll wake callback for a queue consumer.
+#[no_mangle]
+pub extern "C" fn tmsl_queue_consumer_poll_callback(
+    consumer_handle: usize,
+    callback: TmslQueuePollCallback,
+    userdata: *mut c_void,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    ffi_catch_int! { err_buf, err_len, {
+        set_consumer_poll_callback(consumer_handle, callback, userdata, false)?;
+        Ok::<c_int, TmslError>(0)
+    }}
+}
+
 // ─── Journal FFI functions ─────────────────────────────────────────────────
 
 /// Return the latest journal sequence.
@@ -2101,6 +2158,21 @@ pub extern "C" fn tmsl_journal_queue_consumer_open_with_config(
         let config = queue_consumer_config_from_ffi(config)?;
         open_queue_consumer_with_config_impl(queue_handle, group_name, config)
     })
+}
+
+/// Register or clear a lightweight poll wake callback for a journal queue consumer.
+#[no_mangle]
+pub extern "C" fn tmsl_journal_queue_consumer_poll_callback(
+    consumer_handle: usize,
+    callback: TmslQueuePollCallback,
+    userdata: *mut c_void,
+    err_buf: *mut c_char,
+    err_len: usize,
+) -> c_int {
+    ffi_catch_int! { err_buf, err_len, {
+        set_consumer_poll_callback(consumer_handle, callback, userdata, true)?;
+        Ok::<c_int, TmslError>(0)
+    }}
 }
 
 /// Poll data from a journal queue consumer.
@@ -2398,6 +2470,12 @@ pub extern "C" fn tmsl_free_inspect_result(result: *mut TmslInspectResult) {
 mod tests {
     use super::*;
     use std::ffi::CString;
+    use std::sync::atomic::{AtomicUsize as TestAtomicUsize, Ordering as TestOrdering};
+
+    extern "C" fn ffi_poll_callback(userdata: *mut c_void) {
+        let hits = unsafe { &*(userdata as *const TestAtomicUsize) };
+        hits.fetch_add(1, TestOrdering::SeqCst);
+    }
 
     fn temp_store_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join("timslite_ffi_test").join(name);
@@ -3001,6 +3079,98 @@ mod tests {
     }
 
     #[test]
+    fn test_ffi_queue_poll_callback_register_and_clear() {
+        let dir = temp_store_dir("ffi_queue_poll_callback");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+        config.enable_journal = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("queuecallbackffi").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        let queue = tmsl_queue_open(dataset, err.as_mut_ptr(), err_len);
+        assert_ne!(queue, 0);
+        let group = CString::new("group_callback").unwrap();
+        let consumer = tmsl_queue_consumer_open(queue, group.as_ptr(), err.as_mut_ptr(), err_len);
+        assert_ne!(consumer, 0);
+
+        let hits = TestAtomicUsize::new(0);
+        assert_eq!(
+            tmsl_queue_consumer_poll_callback(
+                consumer,
+                Some(ffi_poll_callback),
+                &hits as *const TestAtomicUsize as *mut c_void,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+
+        let payload = b"wake";
+        assert_eq!(
+            tmsl_queue_push(
+                queue,
+                payload.as_ptr(),
+                payload.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            1
+        );
+        assert_eq!(hits.load(TestOrdering::SeqCst), 1);
+
+        assert_eq!(
+            tmsl_queue_consumer_poll_callback(
+                consumer,
+                None,
+                std::ptr::null_mut(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        let payload = b"quiet";
+        assert_eq!(
+            tmsl_queue_push(
+                queue,
+                payload.as_ptr(),
+                payload.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            2
+        );
+        assert_eq!(hits.load(TestOrdering::SeqCst), 1);
+
+        assert_eq!(tmsl_queue_close(queue, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
     fn test_ffi_queue_consumer_open_with_config_validates_bounds() {
         let dir = temp_store_dir("ffi_queue_consumer_config");
         let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
@@ -3263,6 +3433,102 @@ mod tests {
             0
         );
 
+        assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
+        assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
+        cleanup_store_dir(&dir);
+    }
+
+    #[test]
+    fn test_ffi_journal_queue_poll_callback_register_and_clear() {
+        let dir = temp_store_dir("ffi_journal_queue_poll_callback");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        config.enable_background_thread = 0;
+
+        let store = tmsl_store_open_with_config(dir_c.as_ptr(), &config, err.as_mut_ptr(), err_len);
+        assert!(!store.is_null());
+
+        let name = CString::new("journalcallbackffi").unwrap();
+        let ty = CString::new("data").unwrap();
+        let dataset = tmsl_dataset_create(
+            store,
+            name.as_ptr(),
+            ty.as_ptr(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+            err.as_mut_ptr(),
+            err_len,
+        );
+        assert!(!dataset.is_null());
+
+        let queue = tmsl_journal_queue_open(store, err.as_mut_ptr(), err_len);
+        assert_ne!(queue, 0);
+        let group = CString::new("journal_callback").unwrap();
+        let consumer =
+            tmsl_journal_queue_consumer_open(queue, group.as_ptr(), err.as_mut_ptr(), err_len);
+        assert_ne!(consumer, 0);
+
+        let hits = TestAtomicUsize::new(0);
+        assert_eq!(
+            tmsl_journal_queue_consumer_poll_callback(
+                consumer,
+                Some(ffi_poll_callback),
+                &hits as *const TestAtomicUsize as *mut c_void,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+
+        let payload = b"wake";
+        assert_eq!(
+            tmsl_dataset_write(
+                dataset,
+                1,
+                payload.as_ptr(),
+                payload.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(hits.load(TestOrdering::SeqCst), 1);
+
+        assert_eq!(
+            tmsl_journal_queue_consumer_poll_callback(
+                consumer,
+                None,
+                std::ptr::null_mut(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(
+            tmsl_dataset_write(
+                dataset,
+                2,
+                payload.as_ptr(),
+                payload.len(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(hits.load(TestOrdering::SeqCst), 1);
+
+        assert_eq!(
+            tmsl_journal_queue_close(queue, err.as_mut_ptr(), err_len),
+            0
+        );
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
         assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err_len), 0);
         cleanup_store_dir(&dir);

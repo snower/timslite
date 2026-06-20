@@ -3,7 +3,9 @@
 //! Wraps DatasetQueue (push + consumer group management) and
 //! DatasetQueueConsumer (poll + ack) with Pythonic API.
 
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::exceptions::wrap;
@@ -118,6 +120,30 @@ impl PyDatasetQueueConsumer {
     fn ack(&self, timestamp: i64) -> PyResult<()> {
         wrap(self.inner.ack(timestamp))
     }
+
+    /// Register or clear a lightweight wake callback.
+    ///
+    /// The callback is invoked synchronously after data waiters are notified.
+    /// It must only wake external processing; call poll() separately to handle
+    /// data. Pass None to clear the callback.
+    fn poll_callback(&self, py: Python<'_>, callback: Option<Py<PyAny>>) -> PyResult<()> {
+        let callback = match callback {
+            Some(callback) => {
+                if !callback.bind(py).is_callable() {
+                    return Err(PyTypeError::new_err("poll_callback requires a callable or None"));
+                }
+                Some(Arc::new(move || {
+                    Python::attach(|py| {
+                        if let Err(err) = callback.call0(py) {
+                            err.write_unraisable(py, None);
+                        }
+                    });
+                }) as timslite::QueuePollCallback)
+            }
+            None => None,
+        };
+        wrap(self.inner.poll_callback(callback))
+    }
 }
 
 impl PyDatasetQueueConsumer {
@@ -189,5 +215,25 @@ impl PyJournalQueueConsumer {
     /// Acknowledge a previously polled journal sequence.
     fn ack(&self, sequence: i64) -> PyResult<()> {
         wrap(self.inner.ack(sequence))
+    }
+
+    /// Register or clear a lightweight wake callback.
+    fn poll_callback(&self, py: Python<'_>, callback: Option<Py<PyAny>>) -> PyResult<()> {
+        let callback = match callback {
+            Some(callback) => {
+                if !callback.bind(py).is_callable() {
+                    return Err(PyTypeError::new_err("poll_callback requires a callable or None"));
+                }
+                Some(Arc::new(move || {
+                    Python::attach(|py| {
+                        if let Err(err) = callback.call0(py) {
+                            err.write_unraisable(py, None);
+                        }
+                    });
+                }) as timslite::QueuePollCallback)
+            }
+            None => None,
+        };
+        wrap(self.inner.poll_callback(callback))
     }
 }

@@ -58,6 +58,8 @@ typedef struct TmslQueueConsumerConfigFFI {
     uint32_t max_retry_count;         /* 0=unlimited, default 3, max 255 */
 } TmslQueueConsumerConfigFFI;
 
+typedef void (*TmslQueuePollCallback)(void* userdata);
+
 typedef struct TmslLengthEntry {
     int64_t timestamp;
     uint32_t data_len;
@@ -645,6 +647,25 @@ int tmsl_queue_poll(size_t consumer_handle, int64_t timeout_ms,
 int tmsl_queue_ack(size_t consumer_handle, int64_t timestamp,
                    char* err_buf, size_t err_buf_len);
 
+/**
+ * Register or clear a lightweight wake callback for a queue consumer.
+ *
+ * The callback is invoked synchronously after data waiters are notified. It is
+ * best-effort, may be skipped or repeated, and must only wake external
+ * processing. Pass callback = NULL to clear the callback.
+ *
+ * @param consumer_handle Consumer handle returned by tmsl_queue_consumer_open.
+ * @param callback        Wake callback, or NULL to clear.
+ * @param userdata        Opaque pointer passed to callback.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_queue_consumer_poll_callback(size_t consumer_handle,
+                                      TmslQueuePollCallback callback,
+                                      void* userdata,
+                                      char* err_buf, size_t err_buf_len);
+
 /* Journal API */
 
 /**
@@ -800,6 +821,25 @@ int tmsl_journal_queue_poll(size_t consumer_handle, int64_t timeout_ms,
  */
 int tmsl_journal_queue_ack(size_t consumer_handle, int64_t sequence,
                            char* err_buf, size_t err_buf_len);
+
+/**
+ * Register or clear a lightweight wake callback for a journal queue consumer.
+ *
+ * The callback is invoked synchronously after journal data waiters are
+ * notified. It is best-effort, may be skipped or repeated, and must only wake
+ * external processing. Pass callback = NULL to clear the callback.
+ *
+ * @param consumer_handle Journal consumer handle.
+ * @param callback        Wake callback, or NULL to clear.
+ * @param userdata        Opaque pointer passed to callback.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_journal_queue_consumer_poll_callback(size_t consumer_handle,
+                                              TmslQueuePollCallback callback,
+                                              void* userdata,
+                                              char* err_buf, size_t err_buf_len);
 
 /* ─── Dataset Inspect ─────────────────────────────────────────────────── */
 

@@ -99,6 +99,8 @@ impl Store {
 }
 ```
 
+`DatasetQueueConsumer::poll_callback(Some(callback))` 与 `JournalQueueConsumer::poll_callback(Some(callback))` 注册无参轻量唤醒回调, `None` 清除。callback 在数据通知完成 waiter 唤醒后由触发通知的线程同步执行, 仅用于唤醒外部处理线程; 不参与 queue state、pending、retry、ack、journal sequence 或任何可靠事件语义。
+
 `Store.datasets` 的 `RwLock` 只保护 registry 的增删查和 lifecycle 边界。打开后的 `DataSet` 以 `Arc<DataSet>` 暴露, `DataSet` 内部持有 mutex 并在 `write/append/delete/read/query/queue` 等 public API 中自行加锁; 因此通过 `Store::get_dataset` 取得 dataset 后直接调用其读写 API, 不会绕过同步边界。
 
 `DataSet::close()` 是公开 lifecycle close: Store 管理的 dataset 会关闭 queue、flush 并释放分段资源、标记 dataset closed, 然后通过 runtime context 从 `Store.datasets` registry 移除并使旧 Store handle generation 失效。后台 idle-close 不调用 `DataSet::close()`, 只调用内部 `idle_close_segments()` 释放已打开的 data/index segment; dataset 仍处于打开状态, Store handle 仍有效。
@@ -479,6 +481,8 @@ pub struct TmslQueueConsumerConfigFFI {
 #[no_mangle] pub extern "C" fn tmsl_queue_push(queue_handle: usize, data: *const c_uchar, data_len: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_longlong;
 #[no_mangle] pub extern "C" fn tmsl_queue_poll(consumer_handle: usize, timeout_ms: c_longlong, out_timestamp: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_queue_ack(consumer_handle: usize, timestamp: c_longlong, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
+pub type TmslQueuePollCallback = Option<extern "C" fn(userdata: *mut c_void)>;
+#[no_mangle] pub extern "C" fn tmsl_queue_consumer_poll_callback(consumer_handle: usize, callback: TmslQueuePollCallback, userdata: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 // Journal C ABI (dedicated append log, not DataSet)
 #[no_mangle] pub extern "C" fn tmsl_journal_latest_sequence(store: *mut c_void,
@@ -501,6 +505,7 @@ pub struct TmslQueueConsumerConfigFFI {
     err_buf: *mut c_char, err_buf_len: usize) -> usize;
 #[no_mangle] pub extern "C" fn tmsl_journal_queue_consumer_open_with_config(queue_handle: usize, group_name: *const c_char,
     config: *const TmslQueueConsumerConfigFFI, err_buf: *mut c_char, err_buf_len: usize) -> usize;
+#[no_mangle] pub extern "C" fn tmsl_journal_queue_consumer_poll_callback(consumer_handle: usize, callback: TmslQueuePollCallback, userdata: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 #[no_mangle] pub extern "C" fn tmsl_journal_queue_poll(consumer_handle: usize, timeout_ms: c_longlong,
     out_sequence: *mut c_longlong, out_data: *mut *mut c_uchar, out_data_len: *mut usize,
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;

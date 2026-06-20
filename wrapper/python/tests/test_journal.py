@@ -99,6 +99,31 @@ def test_journal_queue_retry_limit_drops_expired_pending(tmpdir):
         queue.close()
 
 
+def test_journal_queue_poll_callback_wakes_and_can_be_cleared(tmpdir):
+    cfg = timslite.StoreConfig(enable_background_thread=False)
+    with timslite.Store.open(tmpdir, cfg) as store:
+        store.create_dataset("journalpy", "data")
+        queue = store.open_journal_queue()
+        consumer = queue.open_consumer("callback")
+        ds = store.open_dataset("journalpy", "data")
+
+        hits = []
+        consumer.poll_callback(lambda: hits.append("wake"))
+        ds.write(10, b"first")
+        assert hits == ["wake"]
+        first = consumer.poll(0)
+        assert first is not None
+        consumer.ack(first[0])
+
+        consumer.poll_callback(None)
+        ds.write(11, b"second")
+        assert hits == ["wake"]
+        second = consumer.poll(0)
+        assert second is not None
+        consumer.ack(second[0])
+        queue.close()
+
+
 def test_public_journal_dataset_is_not_openable(tmpdir):
     cfg = timslite.StoreConfig(enable_background_thread=False)
     with timslite.Store.open(tmpdir, cfg) as store:

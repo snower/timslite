@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::error::{Result, TmslError};
 use crate::journal::log::JournalLog;
 use crate::queue::{
-    now_unix_seconds, ConsumerStateFile, PendingEntry, QueueConsumerConfig, PENDING_STATUS_UNACKED,
+    now_unix_seconds, ConsumerStateFile, PendingEntry, QueueConsumerConfig, QueueNotifier,
+    QueuePollCallback, QueuePollCallbackSlot, PENDING_STATUS_UNACKED,
 };
 use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
@@ -42,7 +43,7 @@ pub struct JournalQueue {
     log: Arc<Mutex<JournalLog>>,
     queue_dir: PathBuf,
     inner: Arc<Mutex<JournalQueueInner>>,
-    notify: Arc<(Mutex<bool>, Condvar)>,
+    notify: Arc<QueueNotifier>,
 }
 
 impl JournalQueue {
@@ -51,7 +52,7 @@ impl JournalQueue {
             log,
             queue_dir,
             inner: Arc::new(Mutex::new(JournalQueueInner::new())),
-            notify: Arc::new((Mutex::new(false), Condvar::new())),
+            notify: Arc::new(QueueNotifier::new()),
         }
     }
 
@@ -101,12 +102,16 @@ impl JournalQueue {
                 .insert(group_name.to_string(), config);
             state
         };
+        let callback_slot = Arc::new(Mutex::new(None));
+        self.notify.register_callback_slot(&callback_slot)?;
+
         Ok(JournalQueueConsumer {
             state_file,
             config,
             log: Arc::clone(&self.log),
             notify: Arc::clone(&self.notify),
             closed: Arc::clone(&inner.closed),
+            poll_callback: callback_slot,
         })
     }
 
@@ -127,15 +132,16 @@ impl JournalQueue {
         inner.consumers.clear();
         inner.consumer_configs.clear();
         drop(inner);
-        self.notify_record_appended();
+        self.notify_waiters();
         Ok(())
     }
 
     pub(crate) fn notify_record_appended(&self) {
-        if let Ok(mut notified) = self.notify.0.lock() {
-            *notified = true;
-            self.notify.1.notify_all();
-        }
+        let _ = self.notify.notify_data_available();
+    }
+
+    fn notify_waiters(&self) {
+        let _ = self.notify.notify_waiters();
     }
 
     pub(crate) fn flush_state_files(&self) -> Result<()> {
@@ -159,8 +165,9 @@ pub struct JournalQueueConsumer {
     state_file: Arc<Mutex<ConsumerStateFile>>,
     config: QueueConsumerConfig,
     log: Arc<Mutex<JournalLog>>,
-    notify: Arc<(Mutex<bool>, Condvar)>,
+    notify: Arc<QueueNotifier>,
     closed: Arc<AtomicBool>,
+    poll_callback: QueuePollCallbackSlot,
 }
 
 impl JournalQueueConsumer {
@@ -175,7 +182,7 @@ impl JournalQueueConsumer {
             return Ok(None);
         }
         let deadline = Instant::now() + timeout;
-        let (lock, cvar) = (&self.notify.0, &self.notify.1);
+        let (lock, cvar) = self.notify.wait_parts();
         let mut notified = lock
             .lock()
             .map_err(|_| TmslError::InvalidData("journal notify mutex poisoned".into()))?;
@@ -218,6 +225,14 @@ impl JournalQueueConsumer {
         state.ack_pending(sequence)?;
         state.cleanup_acked();
         state.sync()?;
+        Ok(())
+    }
+
+    pub fn poll_callback(&self, callback: Option<QueuePollCallback>) -> Result<()> {
+        let mut slot = self.poll_callback.lock().map_err(|_| {
+            TmslError::InvalidData("journal queue callback slot mutex poisoned".into())
+        })?;
+        *slot = callback;
         Ok(())
     }
 

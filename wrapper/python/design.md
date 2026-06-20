@@ -484,9 +484,20 @@ class DatasetQueueConsumer:
         Raises:
             TmslConsumerGroupNotFoundError: Consumer group not found.
         """
+
+    def poll_callback(self, callback: Callable[[], None] | None) -> None:
+        """Register or clear a lightweight wake callback.
+
+        The callback is invoked synchronously after queue data waiters
+        are notified. It is best-effort and must only wake external
+        processing; use poll() and ack() for all data handling. Passing
+        None clears the callback.
+        """
 ```
 
 **Rust backing**: `PyDatasetQueue` wraps `timslite::DatasetQueue` (Clone-safe, all fields Arc). `PyDatasetQueueConsumer` wraps `timslite::DatasetQueueConsumer`. 
+
+`PyJournalQueueConsumer` exposes the same `poll_callback(callback_or_none)` method for dedicated journal queue wake notifications.
 
 **Store integration**: `PyStore.open_queue(dataset_id)` looks up the `Arc<DataSet>` from its internal dataset registry by ID, then calls `DataSet::open_queue()` and constructs `DatasetQueue` from the resulting components.
 

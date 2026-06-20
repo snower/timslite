@@ -2,7 +2,10 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, AtomicUsize, Ordering},
+    Arc,
+};
 
 use std::time::Duration;
 
@@ -516,6 +519,47 @@ fn t41_5_journal_queue_retry_limit_drops_before_next_sequence() {
     assert_eq!(second.index_info.unwrap().timestamp, 2);
 
     consumer.ack(seq2).unwrap();
+    store.close().unwrap();
+}
+
+#[test]
+fn t44_2_poll_callback_runs_for_journal_queue_and_can_be_cleared() {
+    let dir = temp_dir("journal_queue_poll_callback");
+    let mut store = Store::open(&dir, test_config()).unwrap();
+    let handle = store
+        .create_dataset("jcallback", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let queue = store.open_journal_queue().unwrap();
+    let consumer = queue.open_consumer("wake").unwrap();
+
+    let hits = Arc::new(AtomicUsize::new(0));
+    let callback_hits = Arc::clone(&hits);
+    consumer
+        .poll_callback(Some(Arc::new(move || {
+            callback_hits.fetch_add(1, Ordering::SeqCst);
+        })))
+        .unwrap();
+
+    store.write_dataset(handle, 1, b"first").unwrap();
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    let (_seq, payload) = consumer.poll(Duration::from_millis(0)).unwrap().unwrap();
+    let record = JournalRecord::decode(&payload).unwrap();
+    assert_eq!(record.kind, JournalRecordKind::DataWrite);
+    assert_eq!(record.index_info.unwrap().timestamp, 1);
+
+    consumer.poll_callback(None).unwrap();
+    store.write_dataset(handle, 2, b"second").unwrap();
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "clearing the journal callback must stop future wake callbacks"
+    );
+
+    let (_seq, payload) = consumer.poll(Duration::from_millis(0)).unwrap().unwrap();
+    let record = JournalRecord::decode(&payload).unwrap();
+    assert_eq!(record.kind, JournalRecordKind::DataWrite);
+    assert_eq!(record.index_info.unwrap().timestamp, 2);
     store.close().unwrap();
 }
 

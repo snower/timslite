@@ -59,7 +59,7 @@ pub struct QueueConsumerConfig {
 pub struct DatasetQueue {
     dataset: Arc<DataSet>,
     inner: Arc<Mutex<QueueInner>>,
-    notify: Arc<(Mutex<bool>, Condvar)>,   // (guard_mutex, condvar) pair
+    notify: Arc<QueueNotifier>,            // Condvar + lightweight callback slots
 }
 
 impl DatasetQueue {
@@ -80,12 +80,15 @@ pub struct DatasetQueueConsumer {
     group_name: String,
     state_file: Arc<Mutex<ConsumerStateFile>>,  // 同组共享
     config: QueueConsumerConfig,
-    notify: Arc<(Mutex<bool>, Condvar)>,        // 共享 DatasetQueue 的 Condvar
+    notify: Arc<QueueNotifier>,                 // 共享 DatasetQueue 的 notifier
     dataset: Arc<DataSet>,
     closed: Arc<AtomicBool>,                    // 共享 QueueInner.closed
+    poll_callback: Arc<Mutex<Option<QueuePollCallback>>>,
 }
 
 impl DatasetQueueConsumer {
+    pub fn poll_callback(&self, callback: Option<QueuePollCallback>) -> Result<()>;
+
     /// Poll for the next real record.
 pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
     // 1. Scan pending entries and only return an unacked entry if it is
@@ -139,6 +142,9 @@ impl DataSet {
 |------|------|--------|
 | `poll(timeout)` | 拉取下一条数据 (无数据时等待) | `Option<(timestamp, data)>` |
 | `ack(timestamp)` | 标记已处理 (更新进度) | `Result<()>` |
+| `poll_callback(callback)` | 注册或清除轻量唤醒回调; `None` 清除 | `Result<()>` |
+
+`poll_callback` 是 best-effort 唤醒钩子, 不属于 queue state、pending、ack 或 retry 语义。回调在数据通知完成 `notify_all()` 后由触发通知的线程同步执行, 只用于唤醒外部处理线程; 不保证每条数据正好触发一次, 不保证触发后 `poll(0)` 一定有数据, 也不处理 `poll(0)` 返回 `None` 与注册之间的 lost-wake 窗口。调用方不得在回调内执行耗时处理或依赖精确通知计数。
 
 #### C ABI Queue 方法
 
@@ -164,6 +170,7 @@ typedef struct TmslQueueConsumerConfigFFI {
 | `tmsl_queue_push(queue_handle, data, data_len)` | 普通 queue 写入数据并返回自动分配 timestamp | `timestamp`, `-1` 错误 |
 | `tmsl_queue_poll(consumer_handle, timeout_ms, ...)` | poll 下一条数据; 成功数据由 `malloc` 分配 | `0` 成功, `-2` 超时, `-1` 错误 |
 | `tmsl_queue_ack(consumer_handle, timestamp)` | ack 已 poll 的 timestamp | `0` 成功, `-1` 错误 |
+| `tmsl_queue_consumer_poll_callback(consumer_handle, callback, userdata)` | 注册轻量唤醒回调; `callback == NULL` 清除 | `0` 成功, `-1` 错误 |
 
 FFI queue/consumer 是 Store 的子句柄。`tmsl_store_close` 在存在 queue 或 consumer handle 时必须失败; `tmsl_dataset_close` 在该 dataset 仍有 queue handle 时必须失败。`tmsl_queue_close` 会移除该 queue 下所有 FFI consumer handle, 防止 C 侧继续 poll/ack 已关闭 queue。
 
@@ -177,6 +184,7 @@ Journal queue 使用专用 FFI:
 | `tmsl_journal_queue_consumer_open_with_config(queue_handle, group_name, config)` | 使用显式 consumer 配置打开 journal 消费组 | `usize` consumer handle, `0` 表示失败 |
 | `tmsl_journal_queue_poll(consumer_handle, timeout_ms, ...)` | poll 下一条 journal payload | `0` 成功, `-2` 超时, `-1` 错误 |
 | `tmsl_journal_queue_ack(consumer_handle, sequence)` | ack 已 poll 的 journal sequence | `0` 成功, `-1` 错误 |
+| `tmsl_journal_queue_consumer_poll_callback(consumer_handle, callback, userdata)` | 注册 journal consumer 轻量唤醒回调; `callback == NULL` 清除 | `0` 成功, `-1` 错误 |
 
 #### Python Queue 方法
 
@@ -188,11 +196,15 @@ consumer = queue.open_consumer(
     running_expired_seconds=900,
     max_retry_count=3,
 )
+consumer.poll_callback(lambda: wake_worker())
+consumer.poll_callback(None)
 journal_consumer = journal_queue.open_consumer(
     "journal_workers",
     running_expired_seconds=900,
     max_retry_count=3,
 )
+journal_consumer.poll_callback(lambda: wake_worker())
+journal_consumer.poll_callback(None)
 ```
 
 省略参数时使用默认配置。传入超过 Rust 配置上限的值必须抛出对应 `TmslInvalidDataError`。
@@ -275,12 +287,12 @@ pub enum TmslError {
 pub struct DataSet {
     // ... 现有字段 ...
     queue_inner: Option<Arc<Mutex<QueueInner>>>,   // Queue 内部状态 (打开时 Some)
-    queue_notify: Option<Arc<(Mutex<bool>, Condvar)>>, // Condvar pair
+    queue_notify: Option<Arc<QueueNotifier>>,      // Condvar + callback notifier
 }
 ```
 
 - `queue_inner.is_some()` 表示 Queue 已打开, 同时阻止 idle-close
-- `queue_notify` 用于 normal write / append-created-new-timestamp hook 唤醒等待 consumer
+- `queue_notify` 用于 normal write / append-created-new-timestamp hook 唤醒等待 consumer 并触发已注册的轻量 poll callback
 
 ### 29.2 Write Hook
 
@@ -294,16 +306,14 @@ pub struct DataSet {
 
 ```rust
 // 在 write_with_cache 末尾, 正常写入 (timestamp > old_latest) 成功后:
-if let Some(ref notify_pair) = self.queue_notify {
-    let (ref guard, ref condvar) = **notify_pair;
-    let mut flag = guard.lock().unwrap();
-    *flag = true;
-    condvar.notify_all();
-    *flag = false;
+if let Some(ref notifier) = self.queue_notify {
+    notifier.notify_data_available_best_effort();
 }
 ```
 
 **注意**: correction/out-of-order 写入不触发通知, 避免 consumer 处理更新数据。判断依据: 仅在 `old_latest_written_timestamp.is_none() || timestamp > old_latest_written_timestamp.unwrap()` (正常写入分支) 成功后通知。
+
+`DatasetQueue::push()` 内部通过 `DataSet::write_next_queue_record()` 走 normal write 分支, 因此真实数据通知和 callback 由 dataset write hook 触发。`push()` 仍保留一次 waiter-only wake 以维持既有 Condvar 行为, 但不再次执行 callback, 避免单次 push 产生双回调。
 
 ### 29.3 Idle-Close 检查
 
@@ -417,6 +427,8 @@ pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
 **关键设计**: poll 先检查 retryable pending, 再检查新数据可用性; 无数据时释放 state/dataset 锁后只持有 notify mutex 进入 Condvar wait。write 完成后 notify_all 唤醒所有等待 consumer。唤醒后循环重新检查 retryable pending 和数据可用性。
 
 **Condvar 竞态处理**: notify mutex 只保护通知 flag。poll 在释放 dataset/state 锁后进入 wait; 如果 write 在窗口内完成并设置 flag/notify, poll 唤醒后或下一轮都会重新检查数据。实现必须在 wait 超时后做最后一次 retryable pending 与新数据检查, 避免 missed wakeup 造成可见记录被漏读。
+
+`poll_callback` 不参与上述竞态处理。它只是数据通知后的同步轻量回调, 不记录 generation, 不补偿 lost wake, 不影响 `poll()` 的最后一次检查。需要可靠事件语义的调用方必须仍以 `poll/ack` 状态机为准。
 
 ### 30.4 Ack 流程
 

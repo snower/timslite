@@ -14,9 +14,10 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, OpenOptions};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use memmap2::MmapMut;
@@ -57,6 +58,90 @@ pub const DEFAULT_RUNNING_EXPIRED_SECONDS: u16 = 900;
 
 /// Default retry limit. Zero means unlimited.
 pub const DEFAULT_MAX_RETRY_COUNT: u8 = 3;
+
+/// Lightweight callback invoked after queue data notifications.
+///
+/// The callback is best-effort and only intended to wake external processing.
+/// It does not participate in queue state, pending, retry, or ack semantics.
+pub type QueuePollCallback = Arc<dyn Fn() + Send + Sync + 'static>;
+
+pub(crate) type QueuePollCallbackSlot = Arc<Mutex<Option<QueuePollCallback>>>;
+
+/// Shared queue notification primitive for blocking polls and lightweight callbacks.
+pub(crate) struct QueueNotifier {
+    notified: Mutex<bool>,
+    cvar: Condvar,
+    callbacks: Mutex<Vec<Weak<Mutex<Option<QueuePollCallback>>>>>,
+}
+
+impl QueueNotifier {
+    pub(crate) fn new() -> Self {
+        Self {
+            notified: Mutex::new(false),
+            cvar: Condvar::new(),
+            callbacks: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn wait_parts(&self) -> (&Mutex<bool>, &Condvar) {
+        (&self.notified, &self.cvar)
+    }
+
+    pub(crate) fn register_callback_slot(&self, slot: &QueuePollCallbackSlot) -> Result<()> {
+        self.callbacks
+            .lock()
+            .map_err(|_| TmslError::InvalidData("queue callback mutex poisoned".into()))?
+            .push(Arc::downgrade(slot));
+        Ok(())
+    }
+
+    pub(crate) fn notify_waiters(&self) -> Result<()> {
+        let mut notified = self
+            .notified
+            .lock()
+            .map_err(|_| TmslError::InvalidData("notify mutex poisoned".into()))?;
+        *notified = true;
+        self.cvar.notify_all();
+        Ok(())
+    }
+
+    pub(crate) fn notify_data_available(&self) -> Result<()> {
+        self.notify_waiters()?;
+        self.run_callbacks();
+        Ok(())
+    }
+
+    pub(crate) fn notify_data_available_best_effort(&self) {
+        if self.notify_waiters().is_ok() {
+            self.run_callbacks();
+        }
+    }
+
+    fn run_callbacks(&self) {
+        let mut ready = Vec::new();
+        let Ok(mut callbacks) = self.callbacks.lock() else {
+            return;
+        };
+        callbacks.retain(|weak| {
+            let Some(slot) = weak.upgrade() else {
+                return false;
+            };
+            if let Ok(guard) = slot.lock() {
+                if let Some(callback) = guard.as_ref() {
+                    ready.push(Arc::clone(callback));
+                }
+            }
+            true
+        });
+        drop(callbacks);
+
+        for callback in ready {
+            if catch_unwind(AssertUnwindSafe(|| callback())).is_err() {
+                log::warn!("[queue] poll callback panicked");
+            }
+        }
+    }
+}
 
 fn validate_consumer_group_name(group_name: &str) -> Result<()> {
     if is_path_safe_component(group_name) {
@@ -533,7 +618,7 @@ impl QueueInner {
 pub struct DatasetQueue {
     pub(crate) dataset: Arc<DataSet>,
     pub(crate) inner: Arc<Mutex<QueueInner>>,
-    pub(crate) notify: Arc<(Mutex<bool>, Condvar)>,
+    pub(crate) notify: Arc<QueueNotifier>,
     pub(crate) allow_push: bool,
 }
 
@@ -562,7 +647,7 @@ impl DatasetQueue {
     pub(crate) fn new(
         dataset: Arc<DataSet>,
         inner: Arc<Mutex<QueueInner>>,
-        notify: Arc<(Mutex<bool>, Condvar)>,
+        notify: Arc<QueueNotifier>,
     ) -> Self {
         DatasetQueue {
             dataset,
@@ -575,7 +660,7 @@ impl DatasetQueue {
     pub(crate) fn new_readonly_producer(
         dataset: Arc<DataSet>,
         inner: Arc<Mutex<QueueInner>>,
-        notify: Arc<(Mutex<bool>, Condvar)>,
+        notify: Arc<QueueNotifier>,
     ) -> Self {
         DatasetQueue {
             dataset,
@@ -635,6 +720,9 @@ impl DatasetQueue {
             sf
         };
 
+        let callback_slot = Arc::new(Mutex::new(None));
+        self.notify.register_callback_slot(&callback_slot)?;
+
         Ok(DatasetQueueConsumer {
             group_name: group_name.to_string(),
             state_file,
@@ -642,6 +730,7 @@ impl DatasetQueue {
             notify: Arc::clone(&self.notify),
             dataset: Arc::clone(&self.dataset),
             closed: Arc::clone(&inner.closed),
+            poll_callback: callback_slot,
         })
     }
 
@@ -697,13 +786,8 @@ impl DatasetQueue {
 
         let timestamp = self.dataset.write_next_queue_record(data)?;
 
-        // Notify waiting consumers (only on normal write, ts > old_latest)
-        let (lock, cvar) = (&self.notify.0, &self.notify.1);
-        let mut notified = lock
-            .lock()
-            .map_err(|_| TmslError::InvalidData("notify mutex poisoned".into()))?;
-        *notified = true;
-        cvar.notify_all();
+        // Dataset write already emits the data callback; keep the legacy waiter wake.
+        self.notify.notify_waiters()?;
 
         Ok(timestamp)
     }
@@ -721,13 +805,8 @@ impl DatasetQueue {
         inner.consumers.clear();
         inner.consumer_configs.clear();
 
-        // Notify any waiting polls
-        let (lock, cvar) = (&self.notify.0, &self.notify.1);
-        let mut notified = lock
-            .lock()
-            .map_err(|_| TmslError::InvalidData("notify mutex poisoned".into()))?;
-        *notified = true;
-        cvar.notify_all();
+        // Close wakes blocking polls, but is not a data notification callback.
+        self.notify.notify_waiters()?;
 
         Ok(())
     }
@@ -741,9 +820,10 @@ pub struct DatasetQueueConsumer {
     group_name: String,
     state_file: Arc<Mutex<ConsumerStateFile>>,
     config: QueueConsumerConfig,
-    notify: Arc<(Mutex<bool>, Condvar)>,
+    notify: Arc<QueueNotifier>,
     dataset: Arc<DataSet>,
     closed: Arc<AtomicBool>,
+    poll_callback: QueuePollCallbackSlot,
 }
 
 impl Clone for DatasetQueueConsumer {
@@ -755,6 +835,7 @@ impl Clone for DatasetQueueConsumer {
             notify: Arc::clone(&self.notify),
             dataset: Arc::clone(&self.dataset),
             closed: Arc::clone(&self.closed),
+            poll_callback: Arc::clone(&self.poll_callback),
         }
     }
 }
@@ -850,7 +931,7 @@ impl DatasetQueueConsumer {
     }
 
     fn wait_for_data(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
-        let (lock, cvar) = (&self.notify.0, &self.notify.1);
+        let (lock, cvar) = self.notify.wait_parts();
         let mut notified = lock
             .lock()
             .map_err(|_| TmslError::InvalidData("notify mutex poisoned".into()))?;
@@ -914,6 +995,20 @@ impl DatasetQueueConsumer {
         sf.cleanup_acked();
         drop(sf);
         self.dataset.enqueue_queue_state_flush(&self.group_name)
+    }
+
+    /// Register or clear a lightweight wake callback for queue data notifications.
+    ///
+    /// The callback is invoked synchronously after queue waiters are notified.
+    /// It is best-effort and must only wake external processing; it must not
+    /// perform data processing or rely on exact notification counts.
+    pub fn poll_callback(&self, callback: Option<QueuePollCallback>) -> Result<()> {
+        let mut slot = self
+            .poll_callback
+            .lock()
+            .map_err(|_| TmslError::InvalidData("queue callback slot mutex poisoned".into()))?;
+        *slot = callback;
+        Ok(())
     }
 }
 

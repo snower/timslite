@@ -81,6 +81,28 @@ class TestQueueBasicFlow:
 
             q.close()
 
+    def test_poll_callback_wakes_and_can_be_cleared(self, tmpdir):
+        cfg = timslite.StoreConfig(enable_background_thread=False)
+        with timslite.Store.open(tmpdir, cfg) as store:
+            store.create_dataset("events", "events")
+            ds = store.open_dataset("events", "events")
+            q = store.open_queue(ds.id)
+            c = q.open_consumer("worker-callback")
+
+            hits = []
+            c.poll_callback(lambda: hits.append("wake"))
+            q.push(b"row1")
+            assert hits == ["wake"]
+            assert c.poll(0) == (1, b"row1")
+            c.ack(1)
+
+            c.poll_callback(None)
+            q.push(b"row2")
+            assert hits == ["wake"]
+            assert c.poll(0) == (2, b"row2")
+            c.ack(2)
+            q.close()
+
 
 class TestConsumerGroups:
     def test_independent_progress(self, tmpdir):

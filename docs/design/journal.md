@@ -311,6 +311,7 @@ JournalQueue 单独实现, 不复用 `DatasetQueue`, 但复用 queue state file 
 ```rust
 let queue = store.open_journal_queue()?;
 let consumer = queue.open_consumer("migrate-node-a")?;
+consumer.poll_callback(Some(Arc::new(|| wake_worker())))?;
 let tuned = queue.open_consumer_with_config(
     "migrate-node-b",
     QueueConsumerConfig::builder()
@@ -331,6 +332,7 @@ Queue 语义:
 - 外部 push 返回 `InvalidData`。
 - 新 consumer 默认从当前 `latest_sequence.unwrap_or(0)` 开始, 只消费后续新增记录。
 - 每条成功写入的 journal record 都 notify waiting consumers。
+- `JournalQueueConsumer::poll_callback(Some(callback))` 注册轻量唤醒回调, `None` 清除。callback 在 journal 数据通知完成 waiter 唤醒后同步执行, 只用于唤醒外部处理线程; 不参与 sequence 状态、pending、retry 或 ack 语义, 不保证每条 journal record 精确触发一次。
 - consumer group state 文件路径为 `{data_dir}/.journal/logs/queue/{group_name}`。
 - 未 ack sequence 只有运行超时或 state file reopen 恢复后才会被重试投递; 重试前递增 `retry_count`。
 - `max_retry_count > 0 && retry_count >= max_retry_count` 时, 下一次重试机会不返回 payload, 而是将该 sequence 标记为完成并按连续完成前缀推进 `processed_ts`。
