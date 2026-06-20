@@ -370,13 +370,13 @@ assert_eq!(info.state.base_timestamp, Some(10), "base_timestamp should be 10");
 8. **§2.6 Consumer group name 字符集扩展** — 补全边界字符
 9. **§2.2 Cache invalidation 直接验证** — 确保 read 实际经过 cache
 
-### P3 - 低优先级 (本轮暂不处理)
+### P3 - 低优先级
 
-10. **§3.5 proptest 使用** — 增强测试深度 — **暂不处理**
-11. **§3.6 Query iterator 复杂场景** — 补充 segment 切换和 closed segment — **暂不处理**
-12. **§4.1 临时目录清理** — 工程化改善 — **暂不处理**
-13. **§4.2 Sleep 替代** — 稳定性改善 — **暂不处理**
-14. **§4.3 命名统一** — 可维护性改善 — **暂不处理**
+10. **§3.5 proptest 使用** — 增强测试深度
+11. **§3.6 Query iterator 复杂场景** — 补充 segment 切换和 closed segment
+12. **§4.1 临时目录清理** — 工程化改善
+13. **§4.2 Sleep 替代** — 稳定性改善
+14. **§4.3 命名统一** — 可维护性改善
 
 ---
 
