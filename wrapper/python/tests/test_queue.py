@@ -88,19 +88,30 @@ class TestQueueBasicFlow:
             ds = store.open_dataset("events", "events")
             q = store.open_queue(ds.id)
             c = q.open_consumer("worker-callback")
+            c2 = q.open_consumer("worker-callback-2")
 
             hits = []
+            hits2 = []
             c.poll_callback(lambda: hits.append("wake"))
+            with pytest.raises(timslite.TmslError):
+                c.poll_callback(lambda: hits.append("duplicate"))
+            c2.poll_callback(lambda: hits2.append("wake2"))
             q.push(b"row1")
             assert hits == ["wake"]
+            assert hits2 == ["wake2"]
             assert c.poll(0) == (1, b"row1")
             c.ack(1)
+            assert c2.poll(0) == (1, b"row1")
+            c2.ack(1)
 
             c.poll_callback(None)
             q.push(b"row2")
             assert hits == ["wake"]
+            assert hits2 == ["wake2", "wake2"]
             assert c.poll(0) == (2, b"row2")
             c.ack(2)
+            assert c2.poll(0) == (2, b"row2")
+            c2.ack(2)
             q.close()
 
 

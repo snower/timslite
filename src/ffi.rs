@@ -3128,6 +3128,18 @@ mod tests {
             0
         );
 
+        let duplicate_hits = TestAtomicUsize::new(0);
+        assert_eq!(
+            tmsl_queue_consumer_poll_callback(
+                consumer,
+                Some(ffi_poll_callback),
+                &duplicate_hits as *const TestAtomicUsize as *mut c_void,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            -1
+        );
+
         let payload = b"wake";
         assert_eq!(
             tmsl_queue_push(
@@ -3140,6 +3152,7 @@ mod tests {
             1
         );
         assert_eq!(hits.load(TestOrdering::SeqCst), 1);
+        assert_eq!(duplicate_hits.load(TestOrdering::SeqCst), 0);
 
         assert_eq!(
             tmsl_queue_consumer_poll_callback(
@@ -3151,7 +3164,17 @@ mod tests {
             ),
             0
         );
-        let payload = b"quiet";
+        assert_eq!(
+            tmsl_queue_consumer_poll_callback(
+                consumer,
+                Some(ffi_poll_callback),
+                &duplicate_hits as *const TestAtomicUsize as *mut c_void,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        let payload = b"rearmed";
         assert_eq!(
             tmsl_queue_push(
                 queue,
@@ -3163,6 +3186,7 @@ mod tests {
             2
         );
         assert_eq!(hits.load(TestOrdering::SeqCst), 1);
+        assert_eq!(duplicate_hits.load(TestOrdering::SeqCst), 1);
 
         assert_eq!(tmsl_queue_close(queue, err.as_mut_ptr(), err_len), 0);
         assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err_len), 0);
@@ -3488,6 +3512,18 @@ mod tests {
             0
         );
 
+        let duplicate_hits = TestAtomicUsize::new(0);
+        assert_eq!(
+            tmsl_journal_queue_consumer_poll_callback(
+                consumer,
+                Some(ffi_poll_callback),
+                &duplicate_hits as *const TestAtomicUsize as *mut c_void,
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            -1
+        );
+
         let payload = b"wake";
         assert_eq!(
             tmsl_dataset_write(
@@ -3501,12 +3537,23 @@ mod tests {
             0
         );
         assert_eq!(hits.load(TestOrdering::SeqCst), 1);
+        assert_eq!(duplicate_hits.load(TestOrdering::SeqCst), 0);
 
         assert_eq!(
             tmsl_journal_queue_consumer_poll_callback(
                 consumer,
                 None,
                 std::ptr::null_mut(),
+                err.as_mut_ptr(),
+                err_len,
+            ),
+            0
+        );
+        assert_eq!(
+            tmsl_journal_queue_consumer_poll_callback(
+                consumer,
+                Some(ffi_poll_callback),
+                &duplicate_hits as *const TestAtomicUsize as *mut c_void,
                 err.as_mut_ptr(),
                 err_len,
             ),
@@ -3524,6 +3571,7 @@ mod tests {
             0
         );
         assert_eq!(hits.load(TestOrdering::SeqCst), 1);
+        assert_eq!(duplicate_hits.load(TestOrdering::SeqCst), 1);
 
         assert_eq!(
             tmsl_journal_queue_close(queue, err.as_mut_ptr(), err_len),

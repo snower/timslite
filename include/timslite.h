@@ -655,7 +655,9 @@ int tmsl_queue_ack(size_t consumer_handle, int64_t timestamp,
  * processing. Pass callback = NULL to clear the callback.
  *
  * @param consumer_handle Consumer handle returned by tmsl_queue_consumer_open.
- * @param callback        Wake callback, or NULL to clear.
+ * @param callback        Wake callback, or NULL to clear. Passing a non-NULL
+ *                        callback while one is already registered for this
+ *                        consumer returns -1 and keeps the old callback.
  * @param userdata        Opaque pointer passed to callback.
  * @param err_buf         Buffer for error message.
  * @param err_buf_len     Length of error buffer.
@@ -830,7 +832,9 @@ int tmsl_journal_queue_ack(size_t consumer_handle, int64_t sequence,
  * external processing. Pass callback = NULL to clear the callback.
  *
  * @param consumer_handle Journal consumer handle.
- * @param callback        Wake callback, or NULL to clear.
+ * @param callback        Wake callback, or NULL to clear. Passing a non-NULL
+ *                        callback while one is already registered for this
+ *                        consumer returns -1 and keeps the old callback.
  * @param userdata        Opaque pointer passed to callback.
  * @param err_buf         Buffer for error message.
  * @param err_buf_len     Length of error buffer.

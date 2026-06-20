@@ -531,6 +531,7 @@ fn t44_2_poll_callback_runs_for_journal_queue_and_can_be_cleared() {
         .unwrap();
     let queue = store.open_journal_queue().unwrap();
     let consumer = queue.open_consumer("wake").unwrap();
+    let consumer2 = queue.open_consumer("wake2").unwrap();
 
     let hits = Arc::new(AtomicUsize::new(0));
     let callback_hits = Arc::clone(&hits);
@@ -539,11 +540,32 @@ fn t44_2_poll_callback_runs_for_journal_queue_and_can_be_cleared() {
             callback_hits.fetch_add(1, Ordering::SeqCst);
         })))
         .unwrap();
+    let duplicate_hits = Arc::new(AtomicUsize::new(0));
+    let callback_duplicate_hits = Arc::clone(&duplicate_hits);
+    assert!(consumer
+        .poll_callback(Some(Arc::new(move || {
+            callback_duplicate_hits.fetch_add(1, Ordering::SeqCst);
+        })))
+        .is_err());
+
+    let consumer2_hits = Arc::new(AtomicUsize::new(0));
+    let callback_consumer2_hits = Arc::clone(&consumer2_hits);
+    consumer2
+        .poll_callback(Some(Arc::new(move || {
+            callback_consumer2_hits.fetch_add(1, Ordering::SeqCst);
+        })))
+        .unwrap();
 
     store.write_dataset(handle, 1, b"first").unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(duplicate_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(consumer2_hits.load(Ordering::SeqCst), 1);
 
     let (_seq, payload) = consumer.poll(Duration::from_millis(0)).unwrap().unwrap();
+    let record = JournalRecord::decode(&payload).unwrap();
+    assert_eq!(record.kind, JournalRecordKind::DataWrite);
+    assert_eq!(record.index_info.unwrap().timestamp, 1);
+    let (_seq, payload) = consumer2.poll(Duration::from_millis(0)).unwrap().unwrap();
     let record = JournalRecord::decode(&payload).unwrap();
     assert_eq!(record.kind, JournalRecordKind::DataWrite);
     assert_eq!(record.index_info.unwrap().timestamp, 1);
@@ -555,8 +577,13 @@ fn t44_2_poll_callback_runs_for_journal_queue_and_can_be_cleared() {
         1,
         "clearing the journal callback must stop future wake callbacks"
     );
+    assert_eq!(consumer2_hits.load(Ordering::SeqCst), 2);
 
     let (_seq, payload) = consumer.poll(Duration::from_millis(0)).unwrap().unwrap();
+    let record = JournalRecord::decode(&payload).unwrap();
+    assert_eq!(record.kind, JournalRecordKind::DataWrite);
+    assert_eq!(record.index_info.unwrap().timestamp, 2);
+    let (_seq, payload) = consumer2.poll(Duration::from_millis(0)).unwrap().unwrap();
     let record = JournalRecord::decode(&payload).unwrap();
     assert_eq!(record.kind, JournalRecordKind::DataWrite);
     assert_eq!(record.index_info.unwrap().timestamp, 2);

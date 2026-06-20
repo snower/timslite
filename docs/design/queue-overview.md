@@ -142,9 +142,9 @@ impl DataSet {
 |------|------|--------|
 | `poll(timeout)` | 拉取下一条数据 (无数据时等待) | `Option<(timestamp, data)>` |
 | `ack(timestamp)` | 标记已处理 (更新进度) | `Result<()>` |
-| `poll_callback(callback)` | 注册或清除轻量唤醒回调; `None` 清除 | `Result<()>` |
+| `poll_callback(callback)` | 为当前 consumer 实例注册或清除轻量唤醒回调; `None` 清除; 当前实例已有 callback 时再次设置非空 callback 返回错误 | `Result<()>` |
 
-`poll_callback` 是 best-effort 唤醒钩子, 不属于 queue state、pending、ack 或 retry 语义。回调在数据通知完成 `notify_all()` 后由触发通知的线程同步执行, 只用于唤醒外部处理线程; 不保证每条数据正好触发一次, 不保证触发后 `poll(0)` 一定有数据, 也不处理 `poll(0)` 返回 `None` 与注册之间的 lost-wake 窗口。调用方不得在回调内执行耗时处理或依赖精确通知计数。
+`poll_callback` 是 best-effort 唤醒钩子, 不属于 queue state、pending、ack 或 retry 语义。callback slot 属于 consumer 实例; 同一个 queue 上多个 consumer 实例可以各自注册 callback, 当前 consumer 实例已有 callback 时再次传入 `Some(callback)` 返回错误且不覆盖, 需要先传入 `None` 清除。回调在数据通知完成 `notify_all()` 后由触发通知的线程同步执行, 只用于唤醒外部处理线程; 不保证每条数据正好触发一次, 不保证触发后 `poll(0)` 一定有数据, 也不处理 `poll(0)` 返回 `None` 与注册之间的 lost-wake 窗口。调用方不得在回调内执行耗时处理或依赖精确通知计数。
 
 #### C ABI Queue 方法
 
@@ -170,7 +170,7 @@ typedef struct TmslQueueConsumerConfigFFI {
 | `tmsl_queue_push(queue_handle, data, data_len)` | 普通 queue 写入数据并返回自动分配 timestamp | `timestamp`, `-1` 错误 |
 | `tmsl_queue_poll(consumer_handle, timeout_ms, ...)` | poll 下一条数据; 成功数据由 `malloc` 分配 | `0` 成功, `-2` 超时, `-1` 错误 |
 | `tmsl_queue_ack(consumer_handle, timestamp)` | ack 已 poll 的 timestamp | `0` 成功, `-1` 错误 |
-| `tmsl_queue_consumer_poll_callback(consumer_handle, callback, userdata)` | 注册轻量唤醒回调; `callback == NULL` 清除 | `0` 成功, `-1` 错误 |
+| `tmsl_queue_consumer_poll_callback(consumer_handle, callback, userdata)` | 为当前 consumer 注册轻量唤醒回调; `callback == NULL` 清除; 已有 callback 时重复设置非空 callback 返回错误 | `0` 成功, `-1` 错误 |
 
 FFI queue/consumer 是 Store 的子句柄。`tmsl_store_close` 在存在 queue 或 consumer handle 时必须失败; `tmsl_dataset_close` 在该 dataset 仍有 queue handle 时必须失败。`tmsl_queue_close` 会移除该 queue 下所有 FFI consumer handle, 防止 C 侧继续 poll/ack 已关闭 queue。
 
@@ -184,7 +184,7 @@ Journal queue 使用专用 FFI:
 | `tmsl_journal_queue_consumer_open_with_config(queue_handle, group_name, config)` | 使用显式 consumer 配置打开 journal 消费组 | `usize` consumer handle, `0` 表示失败 |
 | `tmsl_journal_queue_poll(consumer_handle, timeout_ms, ...)` | poll 下一条 journal payload | `0` 成功, `-2` 超时, `-1` 错误 |
 | `tmsl_journal_queue_ack(consumer_handle, sequence)` | ack 已 poll 的 journal sequence | `0` 成功, `-1` 错误 |
-| `tmsl_journal_queue_consumer_poll_callback(consumer_handle, callback, userdata)` | 注册 journal consumer 轻量唤醒回调; `callback == NULL` 清除 | `0` 成功, `-1` 错误 |
+| `tmsl_journal_queue_consumer_poll_callback(consumer_handle, callback, userdata)` | 为当前 journal consumer 注册轻量唤醒回调; `callback == NULL` 清除; 已有 callback 时重复设置非空 callback 返回错误 | `0` 成功, `-1` 错误 |
 
 #### Python Queue 方法
 

@@ -1007,6 +1007,11 @@ impl DatasetQueueConsumer {
             .poll_callback
             .lock()
             .map_err(|_| TmslError::InvalidData("queue callback slot mutex poisoned".into()))?;
+        if callback.is_some() && slot.is_some() {
+            return Err(TmslError::InvalidData(
+                "queue poll callback is already registered".into(),
+            ));
+        }
         *slot = callback;
         Ok(())
     }

@@ -1049,6 +1049,7 @@ fn t44_1_poll_callback_runs_for_dataset_queue_write_and_can_be_cleared() {
         .unwrap();
     let q = store.open_queue(h).unwrap();
     let c = store.open_consumer(&q, "g1").unwrap();
+    let c2 = store.open_consumer(&q, "g2").unwrap();
 
     let hits = Arc::new(AtomicUsize::new(0));
     let callback_hits = Arc::clone(&hits);
@@ -1056,14 +1057,34 @@ fn t44_1_poll_callback_runs_for_dataset_queue_write_and_can_be_cleared() {
         callback_hits.fetch_add(1, Ordering::SeqCst);
     })))
     .unwrap();
+    let duplicate_hits = Arc::new(AtomicUsize::new(0));
+    let callback_duplicate_hits = Arc::clone(&duplicate_hits);
+    assert!(c
+        .poll_callback(Some(Arc::new(move || {
+            callback_duplicate_hits.fetch_add(1, Ordering::SeqCst);
+        })))
+        .is_err());
+
+    let c2_hits = Arc::new(AtomicUsize::new(0));
+    let callback_c2_hits = Arc::clone(&c2_hits);
+    c2.poll_callback(Some(Arc::new(move || {
+        callback_c2_hits.fetch_add(1, Ordering::SeqCst);
+    })))
+    .unwrap();
 
     store.write_dataset(h, 1, b"row1").unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(duplicate_hits.load(Ordering::SeqCst), 0);
+    assert_eq!(c2_hits.load(Ordering::SeqCst), 1);
 
     let (ts, data) = c.poll(Duration::from_millis(0)).unwrap().unwrap();
     assert_eq!(ts, 1);
     assert_eq!(data, b"row1");
     c.ack(ts).unwrap();
+    let (ts, data) = c2.poll(Duration::from_millis(0)).unwrap().unwrap();
+    assert_eq!(ts, 1);
+    assert_eq!(data, b"row1");
+    c2.ack(ts).unwrap();
 
     c.poll_callback(None).unwrap();
     store.write_dataset(h, 2, b"row2").unwrap();
@@ -1072,11 +1093,16 @@ fn t44_1_poll_callback_runs_for_dataset_queue_write_and_can_be_cleared() {
         1,
         "clearing the callback must stop future wake callbacks"
     );
+    assert_eq!(c2_hits.load(Ordering::SeqCst), 2);
 
     let (ts, data) = c.poll(Duration::from_millis(0)).unwrap().unwrap();
     assert_eq!(ts, 2);
     assert_eq!(data, b"row2");
     c.ack(ts).unwrap();
+    let (ts, data) = c2.poll(Duration::from_millis(0)).unwrap().unwrap();
+    assert_eq!(ts, 2);
+    assert_eq!(data, b"row2");
+    c2.ack(ts).unwrap();
     store.close().unwrap();
 }
 

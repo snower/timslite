@@ -491,7 +491,8 @@ class DatasetQueueConsumer:
         The callback is invoked synchronously after queue data waiters
         are notified. It is best-effort and must only wake external
         processing; use poll() and ack() for all data handling. Passing
-        None clears the callback.
+        None clears the callback. Setting a non-None callback while this
+        consumer already has one raises TmslError instead of replacing it.
         """
 ```
 

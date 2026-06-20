@@ -105,22 +105,35 @@ def test_journal_queue_poll_callback_wakes_and_can_be_cleared(tmpdir):
         store.create_dataset("journalpy", "data")
         queue = store.open_journal_queue()
         consumer = queue.open_consumer("callback")
+        consumer2 = queue.open_consumer("callback2")
         ds = store.open_dataset("journalpy", "data")
 
         hits = []
+        hits2 = []
         consumer.poll_callback(lambda: hits.append("wake"))
+        with pytest.raises(timslite.TmslError):
+            consumer.poll_callback(lambda: hits.append("duplicate"))
+        consumer2.poll_callback(lambda: hits2.append("wake2"))
         ds.write(10, b"first")
         assert hits == ["wake"]
+        assert hits2 == ["wake2"]
         first = consumer.poll(0)
         assert first is not None
         consumer.ack(first[0])
+        first2 = consumer2.poll(0)
+        assert first2 is not None
+        consumer2.ack(first2[0])
 
         consumer.poll_callback(None)
         ds.write(11, b"second")
         assert hits == ["wake"]
+        assert hits2 == ["wake2", "wake2"]
         second = consumer.poll(0)
         assert second is not None
         consumer.ack(second[0])
+        second2 = consumer2.poll(0)
+        assert second2 is not None
+        consumer2.ack(second2[0])
         queue.close()
 
 

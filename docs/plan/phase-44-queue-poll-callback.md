@@ -14,7 +14,8 @@
 
 ## 设计决策
 
-- `poll_callback(Some(callback))` 注册无参轻量唤醒回调, `poll_callback(None)` 清除。
+- `poll_callback(Some(callback))` 为当前 consumer 实例注册无参轻量唤醒回调, `poll_callback(None)` 清除。
+- 同一 queue 上多个 consumer 实例可以各自注册 callback; 单个 consumer 当前 callback 非空时再次设置非空 callback 返回错误, 不覆盖原 callback。
 - callback 在数据通知完成 waiter `notify_all()` 后由触发通知的线程同步执行。
 - callback 仅用于唤醒外部处理线程, 不得执行数据处理、耗时逻辑或依赖精确通知次数。
 - callback 不记录 generation, 不补偿 lost wake, 不改变 pending、`processed_ts`、retry、ack 或 journal sequence 语义。

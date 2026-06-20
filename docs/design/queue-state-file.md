@@ -292,7 +292,7 @@ poll 等待时必须释放 Dataset 锁和 StateFile 锁, 进入 Condvar wait 时
 - N 个 consumer 同时 poll, push 后全部唤醒, 但只有部分能拿到数据
 - 如果 consumer 数量远大于 push 频率, 大部分唤醒是空跑, 但 poll 循环会重新检查 retryable pending 和新数据
 
-`DatasetQueueConsumer::poll_callback` / `JournalQueueConsumer::poll_callback` 是额外的轻量唤醒钩子, 不写入 QSTF, 不改变 pending entry、`processed_ts`、`retry_count` 或 ack 规则。数据通知完成 waiter `notify_all()` 后, 当前通知线程会同步调用已注册 callback; `None` / `NULL` / Python `None` 清除 callback。该 callback 是 best-effort: 可能重复、合并或错过, 不保证触发后一定有数据可 poll, 也不处理 `poll(0)` 返回 `None` 与注册之间的 lost-wake 窗口。调用方只能用它唤醒外部处理线程, 具体消费仍必须通过正常 `poll/ack` 完成。
+`DatasetQueueConsumer::poll_callback` / `JournalQueueConsumer::poll_callback` 是额外的轻量唤醒钩子, 不写入 QSTF, 不改变 pending entry、`processed_ts`、`retry_count` 或 ack 规则。callback slot 属于 consumer 实例; 同一 queue 上多个 consumer 实例可以各自注册 callback, 但单个 consumer 当前值非空时再次设置非空 callback 返回错误, 不覆盖原 callback; `None` / `NULL` / Python `None` 清除 callback。数据通知完成 waiter `notify_all()` 后, 当前通知线程会同步调用已注册 callback。该 callback 是 best-effort: 可能重复、合并或错过, 不保证触发后一定有数据可 poll, 也不处理 `poll(0)` 返回 `None` 与注册之间的 lost-wake 窗口。调用方只能用它唤醒外部处理线程, 具体消费仍必须通过正常 `poll/ack` 完成。
 
 ### 34.5 poll next-entry efficiency
 

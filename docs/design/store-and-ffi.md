@@ -99,7 +99,7 @@ impl Store {
 }
 ```
 
-`DatasetQueueConsumer::poll_callback(Some(callback))` 与 `JournalQueueConsumer::poll_callback(Some(callback))` 注册无参轻量唤醒回调, `None` 清除。callback 在数据通知完成 waiter 唤醒后由触发通知的线程同步执行, 仅用于唤醒外部处理线程; 不参与 queue state、pending、retry、ack、journal sequence 或任何可靠事件语义。
+`DatasetQueueConsumer::poll_callback(Some(callback))` 与 `JournalQueueConsumer::poll_callback(Some(callback))` 为当前 consumer 实例注册无参轻量唤醒回调, `None` 清除; 当前实例已有 callback 时再次设置非空 callback 返回错误, 不覆盖原 callback。同一 queue 上多个 consumer 实例可以各自注册 callback。callback 在数据通知完成 waiter 唤醒后由触发通知的线程同步执行, 仅用于唤醒外部处理线程; 不参与 queue state、pending、retry、ack、journal sequence 或任何可靠事件语义。
 
 `Store.datasets` 的 `RwLock` 只保护 registry 的增删查和 lifecycle 边界。打开后的 `DataSet` 以 `Arc<DataSet>` 暴露, `DataSet` 内部持有 mutex 并在 `write/append/delete/read/query/queue` 等 public API 中自行加锁; 因此通过 `Store::get_dataset` 取得 dataset 后直接调用其读写 API, 不会绕过同步边界。
 

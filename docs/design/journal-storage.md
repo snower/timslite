@@ -263,7 +263,7 @@ pub struct JournalQueueConsumer {
 }
 ```
 
-`JournalQueueConsumer::poll_callback(Some(callback))` 与普通 queue consumer 一致, 只注册同步轻量唤醒回调; `None` 清除。callback 不参与 journal queue state、sequence、pending、retry 或 ack 语义。
+`JournalQueueConsumer::poll_callback(Some(callback))` 与普通 queue consumer 一致, 为当前 consumer 实例注册同步轻量唤醒回调; 同一 queue 上多个 consumer 实例可以各自注册 callback, 但当前实例已有 callback 时再次设置非空 callback 返回错误, `None` 清除。callback 不参与 journal queue state、sequence、pending、retry 或 ack 语义。
 
 新 consumer 的 `processed_ts` 初始值:
 
