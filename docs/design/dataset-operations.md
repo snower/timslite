@@ -300,7 +300,7 @@ DataSet::write(timestamp, data):
 //   1. 新数据追加到最新数据段 (正常写入到 pending block 或创建新 block)
 //      → (segment.file_offset, block_segment_offset, in_block_offset)
 //   2. 更新索引:
-//      → 非连续模式: 查找现有索引条目, 原地覆盖 18 字节为新的 (block_offset, in_block_offset)
+//      → 非连续模式: 查找现有索引条目, 原地覆盖 14 字节 delta entry 为新的 (block_offset, in_block_offset)
 //      → 连续模式: 目标可为真实 entry / filler / 逻辑空洞; 逻辑空洞按需创建 segment
 //      → 返回 old_entry: Option<IndexEntry>
 //   3. if old_entry 存在且 block_offset ≠ FILLER (旧索引引用了实际数据):
@@ -313,10 +313,10 @@ DataSet::write(timestamp, data):
 //        // 无旧索引和旧数据, invalid_record_count 不变
 ```
 
-> **索引原地更新**: 索引条目 18 字节通过 mmap 直接覆盖, 不改变条目总数。
+> **索引原地更新**: 索引条目 14 字节通过 mmap 直接覆盖, 不改变条目总数。
 > - **连续模式**: 先用 `base_timestamp` 计算逻辑 `seg_start_ts` 和 `entry_index`; 如果 segment 不存在或 `entry_index >= wrote_count`, 该位置是逻辑空洞
 > - **非连续模式**: 在 in_memory_buffer 中线性搜索, 或在已打开的 IndexSegment 中二分查找; 若目标在 closed segment 中, 临时打开 → 覆盖 → idle_close
-> - **崩溃边界**: 18 字节索引条目不是原子事务写入。本库不保证 crash 后保留该次更新; reopen/query 必须依靠 entry 边界、filler sentinel 和 record timestamp 校验避免返回错位数据。
+> - **崩溃边界**: 14 字节索引条目不是原子事务写入。本库不保证 crash 后保留该次更新; reopen/query 必须依靠 entry 边界、filler sentinel 和 record timestamp 校验避免返回错位数据。
 >
 > **invalid_record_count 更新**: 通过 `block_offset` 计算旧数据所在数据段 (段路由: `segment.file_offset = (block_offset / segment_size) × segment_size`), 再对该段 `invalid_record_count` 字段 +1。段可能已关闭, 需通过 `lazy_open` 临时打开以更新 mmap state 字段。
 >

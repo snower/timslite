@@ -15,7 +15,7 @@
 | 2 | [元数据格式](docs/design/meta-format.md) | DataSetMeta TLV 格式、字段定义、序列化/反序列化、向前兼容 | 新增 meta 字段时 |
 | 3 | [数据模型](docs/design/data-model.md) | Record(`u32 data_len`)/Block/IndexEntry 结构、可变长度 FileMetadata 布局、类型定义 | 理解存储格式 |
 | 4 | [数据段管理](docs/design/data-segment.md) | DataSegmentSet 路由、DataSegment Block 生命周期、Pending 恢复 | 数据写入/读取相关 |
-| 5 | [时间索引](docs/design/time-index.md) | TimeIndex 生命周期、IndexSegment 二分查找、18 字节序列化 | 索引查询优化 |
+| 5 | [时间索引](docs/design/time-index.md) | TimeIndex 生命周期、IndexSegment 二分查找、14 字节 timestamp-delta 序列化 | 索引查询优化 |
 | 6 | [数据集操作](docs/design/dataset-operations.md) | DataSet create/open/close 生命周期、写入/读取/流程详解 | 数据集 API 行为 |
 | 7 | [Store 与 FFI](docs/design/store-and-ffi.md) | Store 门面 API、FFI C ABI 函数列表、C 侧调用示例 | 外部集成/跨语言调用 |
 | 8 | [后台任务与缓存](docs/design/background-and-cache.md) | 统一执行器 (线程/手动双路径)、Flush/Idle-Close/Retention、外部手动 Execute、BlockCache LRU+Idle 回收 | 性能调优/后台行为/外部事件循环集成 |

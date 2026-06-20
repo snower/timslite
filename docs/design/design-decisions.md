@@ -10,7 +10,7 @@
 | 内存映射 | MappedByteBuffer | memmap2::MmapMut, 懒加载/超时关闭(30min) |
 | 元数据 | Protobuf | 可变长度 header (v1 data=124B, index=128B, meta/state 分离) |
 | 索引目录 | 同级子目录 | `data/` + `index/` 独立子目录 |
-| 索引条目 | 16B (ts+offset) | 18B (ts+block+in_block) |
+| 索引条目 | 16B (ts+offset) | 14B (`timestamp_delta`+block+in_block) |
 | 文件头 | 64B | 可变长度 header (meta/state分离) |
 | Record编码 | size+ts+data | data_len(u32)+ts(i64)+data |
 | FFI | 无 | `extern "C"` |
@@ -24,7 +24,7 @@
 | 压缩时机 | 延迟 (pending→sealed, 仅 next write overflow 或 exclusive/single-record block) | 写入时零 CPU, 避免重复压缩 |
 | exclusive/single-record block | 单条 record 独占 block | 支持编码后大小超过普通聚合 Block 上限的单条 record |
 | Record 编码 | data_len(4)+ts(8)+data | 支持 block 内随机定位, `u32` 长度可表达超大独占 record |
-| 索引条目 | 18 字节 | 精确定位到 block 内 record |
+| 索引条目 | 14 字节 | 用 segment 起点 + u32 delta 还原 timestamp, 并精确定位到 block 内 record |
 | 文件头 | 可变长度 | meta(不可变TLV)/state(可变)分离, 打开文件时按 header 中长度计算数据区起点 |
 | meta 扩展 | TLV {type:1}{len:2}{value:N} | 未知 type 通过 length 跳过, 向前兼容 |
 | 索引目录 | `data/` + `index/` 独立子目录 | 数据与索引物理隔离 |

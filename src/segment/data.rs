@@ -974,7 +974,7 @@ impl DataSegment {
 // ─── Read Operations ─────────────────────────────────────────────────────────
 
 /// Index entry used to locate a record.
-/// Mirrors the 18-byte IndexEntry from the index module.
+/// Carries the in-memory index fields needed for data reads.
 #[derive(Clone, Copy)]
 pub struct ReadIndexEntry {
     pub timestamp: i64,

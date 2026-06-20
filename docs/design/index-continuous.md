@@ -22,7 +22,7 @@
 连续模式使用固定的逻辑分段网格:
 
 ```text
-index_entry_size      = 18
+index_entry_size      = 14
 index_entry_area_start = 128
 segment_capacity      = floor((index_segment_size - index_entry_area_start) / index_entry_size)
 time_step             = 1
@@ -39,6 +39,7 @@ entry_index(ts)       = (ts - segment_start(ts)) / time_step
 - index segment 文件前 128 字节统一保留给 fixed prefix、Meta TLV、state 与未来扩展; 所有 index entry 无论连续/非连续模式都从文件内绝对偏移 128 开始。
 - index segment 文件名仍使用 `segment_start` 的 20 位十进制格式。
 - 每个 index segment 的 `start_timestamp` 表示该 segment 的逻辑起点, 不一定表示第一条真实数据的时间戳。
+- index entry 落盘时不再保存完整 `timestamp:i64`, 而是保存 `timestamp_delta:u32 = timestamp - segment_start`。连续模式的 `entry_index` 与 `timestamp_delta` 数值一致; 读取时用 `segment_start + timestamp_delta` 还原业务 timestamp。
 
 ## 23.3 缺失时间戳表示
 

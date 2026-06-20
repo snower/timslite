@@ -735,6 +735,8 @@ impl TimeIndex {
             let latest_available = {
                 let latest = self.open_index_segment(latest_key)?;
                 !latest.is_full()
+                    && IndexEntry::timestamp_delta_for_segment(start_ts, latest.start_timestamp)
+                        .is_ok()
             };
             if latest_available {
                 return self.open_index_segment(latest_key);
@@ -1021,8 +1023,12 @@ impl TimeIndex {
                         None
                     } else {
                         let pos = header_size as usize + (count - 1) * INDEX_ENTRY_SIZE;
-                        if pos + 8 <= mmap.len() {
-                            Some(i64::from_le_bytes(mmap[pos..pos + 8].try_into().unwrap()))
+                        if pos + INDEX_ENTRY_SIZE <= mmap.len() {
+                            let buf: [u8; INDEX_ENTRY_SIZE] =
+                                mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
+                            IndexEntry::from_bytes_for_segment(metadata.file_offset, &buf)
+                                .ok()
+                                .map(|entry| entry.timestamp)
                         } else {
                             None
                         }
@@ -1077,16 +1083,16 @@ mod tests {
     #[test]
     fn test_index_entry_roundtrip() {
         let entry = IndexEntry::new(1234567890, 1024, 42);
-        let bytes = entry.to_bytes();
-        let parsed = IndexEntry::from_bytes(&bytes);
+        let bytes = entry.to_bytes_for_segment(1234567000).unwrap();
+        let parsed = IndexEntry::from_bytes_for_segment(1234567000, &bytes).unwrap();
         assert_eq!(entry, parsed);
     }
 
     #[test]
     fn test_index_entry_binary_size() {
-        assert_eq!(INDEX_ENTRY_SIZE, 18);
-        let entry = IndexEntry::new(i64::MAX, u64::MAX, u16::MAX);
-        assert_eq!(entry.to_bytes().len(), 18);
+        assert_eq!(INDEX_ENTRY_SIZE, 14);
+        let entry = IndexEntry::new(42, u64::MAX, u16::MAX);
+        assert_eq!(entry.to_bytes_for_segment(0).unwrap().len(), 14);
     }
 
     #[test]
@@ -1099,9 +1105,10 @@ mod tests {
         let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
         idx.ensure_base_timestamp(1000).unwrap();
 
-        assert_eq!(idx.segment_capacity().unwrap(), 4);
+        assert_eq!(idx.segment_capacity().unwrap(), 5);
         assert_eq!(idx.segment_start_for(1003).unwrap(), 1000);
-        assert_eq!(idx.segment_start_for(1004).unwrap(), 1004);
+        assert_eq!(idx.segment_start_for(1004).unwrap(), 1000);
+        assert_eq!(idx.segment_start_for(1005).unwrap(), 1005);
     }
 
     #[test]
@@ -1136,7 +1143,7 @@ mod tests {
             idx.open_index_segments()
                 .map(|seg| seg.start_timestamp)
                 .collect::<Vec<_>>(),
-            vec![100, 104]
+            vec![100, 105]
         );
 
         idx.idle_close_all().unwrap();
@@ -1145,16 +1152,16 @@ mod tests {
             idx.closed_index_segment_metas()
                 .map(|meta| meta.start_timestamp)
                 .collect::<Vec<_>>(),
-            vec![100, 104]
+            vec![100, 105]
         );
 
-        idx.get_or_create_segment_by_start(104).unwrap();
+        idx.get_or_create_segment_by_start(105).unwrap();
         idx.get_or_create_segment_by_start(100).unwrap();
         assert_eq!(
             idx.open_index_segments()
                 .map(|seg| seg.start_timestamp)
                 .collect::<Vec<_>>(),
-            vec![100, 104]
+            vec![100, 105]
         );
     }
 
@@ -1198,6 +1205,20 @@ mod tests {
         let deleted = idx.find_and_delete_entry(101).unwrap();
         assert_eq!(deleted.block_offset, 9001);
         assert!(idx.find_and_delete_entry(101).is_err());
+    }
+
+    #[test]
+    fn test_noncontinuous_flush_splits_segment_when_delta_exceeds_u32() {
+        let sub = fresh_subdir("noncontinuous_delta_split");
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+
+        idx.add_entry(0, 100, 0).unwrap();
+        idx.add_entry(u32::MAX as i64 + 1, 200, 0).unwrap();
+        idx.flush_to_disk().unwrap();
+
+        assert_eq!(idx.total_len(), 2);
+        assert!(idx.index_segments.contains_key(&0));
+        assert!(idx.index_segments.contains_key(&(u32::MAX as i64 + 1)));
     }
 
     #[test]

@@ -4,7 +4,7 @@
 
 扩展写入流程支持乱序写入 (`timestamp < latest_written_timestamp`), 并新增 `DataSet::delete(timestamp)` 操作。两项特性共享:
 - **invalid_record_count**: 数据段文件 state 中的新计数器 (原 `reserved` 字段重命名)
-- **索引条目原地更新**: 通过 mmap 直接修改索引段的 18 字节 entry
+- **索引条目原地更新**: 通过 mmap 直接修改索引段的 14 字节 entry
 - **哨兵值复用**: `block_offset = 0xFFFFFFFFFFFFFFFF, in_block_offset = 0xFFFF` 既用于连续模式 filler 也用于 delete 标记
 
 ## 2. 设计概要
@@ -33,7 +33,7 @@
 
 2. time_index.update_entry(ts, new_block_offset, new_in_block_offset)
    → 三级搜索: in_memory_buffer → open segments → closed segments
-   → 若条目存在: 原地覆盖 18 字节, 返回 old_entry
+   → 若条目存在: 原地覆盖 14 字节, 返回 old_entry
    → 若条目不存在: 非连续模式返回 Error; 连续模式在 Phase 24 后可视为逻辑空洞并按需创建目标 segment
 
 3. 根据 old_entry 状态:

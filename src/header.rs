@@ -24,6 +24,7 @@ pub const INDEX_HEADER_SIZE: u64 = 128;
 
 pub const MAGIC: [u8; 4] = *b"TMSL";
 pub const VERSION: u16 = 1;
+pub const INDEX_VERSION: u16 = 2;
 
 /// File type constants
 pub const FILE_TYPE_INDEX: u8 = 1;
@@ -516,7 +517,7 @@ impl IndexFileMetadata {
     ) -> Self {
         Self {
             magic: MAGIC,
-            version: VERSION,
+            version: INDEX_VERSION,
             file_type: FILE_TYPE_INDEX,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -565,6 +566,12 @@ impl IndexFileMetadata {
     /// Read IndexFileMetadata from a byte slice.
     pub fn read_from(mmap: &[u8]) -> Result<Self> {
         let (magic, version, file_type, meta_length) = read_shared_prefix(mmap)?;
+        if version != INDEX_VERSION {
+            return Err(TmslError::InvalidData(format!(
+                "unsupported index file version {}, expected {}",
+                version, INDEX_VERSION
+            )));
+        }
         let (created_at, file_offset, file_size, compress_level, compress_type) =
             parse_meta_tlv(mmap, META_START, meta_length as usize)?;
         validate_compress_type(compress_type)?;
@@ -692,11 +699,11 @@ fn read_shared_prefix(mmap: &[u8]) -> Result<([u8; 4], u16, u8, u16)> {
         return Err(TmslError::InvalidMagic);
     }
     let version = read_u16_from_mmap(mmap, OFF_VERSION);
-    if version > VERSION {
+    if version > INDEX_VERSION {
         log::warn!(
             "File has version {} but we know {}, parsing known fields only",
             version,
-            VERSION,
+            INDEX_VERSION,
         );
     }
     let file_type = mmap[OFF_FILE_TYPE];
@@ -922,7 +929,13 @@ mod tests {
         let dynamic_header_size = state_start as u64 + INDEX_STATE_LENGTH_V1 as u64;
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
 
-        write_shared_prefix(&mut mmap, MAGIC, VERSION, FILE_TYPE_INDEX, meta_length);
+        write_shared_prefix(
+            &mut mmap,
+            MAGIC,
+            INDEX_VERSION,
+            FILE_TYPE_INDEX,
+            meta_length,
+        );
         write_meta_tlv(
             &mut mmap,
             1000,
@@ -947,6 +960,22 @@ mod tests {
         assert!(dynamic_header_size < INDEX_HEADER_SIZE);
         assert_eq!(read.header_size, INDEX_HEADER_SIZE);
         assert_eq!(read.wrote_position, INDEX_HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_index_header_rejects_v1_version() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta = IndexFileMetadata::create_default(
+            1700000000,
+            4 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
+        meta.write_to(&mut mmap);
+        write_u16_to_mmap(&mut mmap, OFF_VERSION, 1);
+
+        let result = IndexFileMetadata::read_from(&mmap);
+        assert!(matches!(result, Err(TmslError::InvalidData(_))));
     }
 
     #[test]
@@ -1033,10 +1062,13 @@ mod tests {
             crate::compress::COMPRESS_TYPE_ZSTD,
         );
         meta.write_to(&mut mmap);
-        meta.write_wrote_position(&mut mmap, INDEX_HEADER_SIZE + 18);
+        meta.write_wrote_position(
+            &mut mmap,
+            INDEX_HEADER_SIZE + crate::index::INDEX_ENTRY_SIZE as u64,
+        );
         assert_eq!(
             read_u64_from_mmap(&mmap, STATE_START + IS_WROTE_POSITION),
-            INDEX_HEADER_SIZE + 18
+            INDEX_HEADER_SIZE + crate::index::INDEX_ENTRY_SIZE as u64
         );
     }
 

@@ -9,7 +9,7 @@
 | Record header | `data_len: u32 LE` + `timestamp: i64 LE`, 固定 12 字节 |
 | 超大 record | 继续走独占 Block; `data_len` 可表达 >64KB payload |
 | 普通 Block 上限 | 64KB hard cap, 防止多 record 聚合时 `in_block_offset` 超过 `u16` 可表达范围或撞 `0xFFFF` 哨兵 |
-| IndexEntry | 保持 18B 不变, `in_block_offset: u16` 不扩展 |
+| IndexEntry | Phase 43 后为 14B timestamp-delta on-disk entry, `in_block_offset: u16` 不扩展 |
 | BlockHeader | 保持 16B 不变, `payload_size` / `uncompressed_size` 继续使用 `u32` |
 | 最大单条数据 | 受 `u32 data_len` 和 `BlockHeader.payload_size: u32` 共同约束 |
 

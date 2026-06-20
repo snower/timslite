@@ -66,33 +66,44 @@ impl TimeIndex {
 }
 ```
 
-### 7.3 IndexEntry 序列化 (18 字节)
+### 7.3 IndexEntry 序列化 (14 字节)
 
 `IndexEntry.block_offset` 字段存储 Block 在数据流中的逻辑全局偏移: 相对各数据段数据区起点, 指向 BlockHeader 起始, 不包含任何数据段 header。读取 data segment 时必须先定位所属 `segment`, 再以 `segment.header_len + (block_offset - segment.file_offset)` 定位 BlockHeader。
 
 ```rust
-const INDEX_ENTRY_SIZE: usize = 18;
+const INDEX_ENTRY_SIZE: usize = 14;
 
 impl IndexEntry {
-    fn to_bytes(&self) -> [u8; INDEX_ENTRY_SIZE] {
+    fn to_bytes_for_segment(&self, segment_start_timestamp: i64) -> Result<[u8; INDEX_ENTRY_SIZE]> {
         let mut buf = [0u8; INDEX_ENTRY_SIZE];
-        buf[0..8].copy_from_slice(&self.timestamp.to_le_bytes());
-        buf[8..16].copy_from_slice(&self.block_offset.to_le_bytes());
-        buf[16..18].copy_from_slice(&self.in_block_offset.to_le_bytes());
-        buf
+        let delta = self
+            .timestamp
+            .checked_sub(segment_start_timestamp)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or(TmslError::InvalidData("index timestamp delta out of range"))?;
+        buf[0..4].copy_from_slice(&delta.to_le_bytes());
+        buf[4..12].copy_from_slice(&self.block_offset.to_le_bytes());
+        buf[12..14].copy_from_slice(&self.in_block_offset.to_le_bytes());
+        Ok(buf)
     }
 
-    fn from_bytes(buf: &[u8; INDEX_ENTRY_SIZE]) -> Self {
-        Self {
-            timestamp: i64::from_le_bytes(buf[0..8].try_into().unwrap()),
-            block_offset: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
-            in_block_offset: u16::from_le_bytes(buf[16..18].try_into().unwrap()),
-        }
+    fn from_bytes_for_segment(segment_start_timestamp: i64, buf: &[u8; INDEX_ENTRY_SIZE]) -> Result<Self> {
+        let delta = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+        let timestamp = segment_start_timestamp
+            .checked_add(delta as i64)
+            .ok_or(TmslError::InvalidData("index timestamp delta overflow"))?;
+        Ok(Self {
+            timestamp,
+            block_offset: u64::from_le_bytes(buf[4..12].try_into().unwrap()),
+            in_block_offset: u16::from_le_bytes(buf[12..14].try_into().unwrap()),
+        })
     }
 }
 ```
 
-`IndexEntry` 的三个多字节字段均为 Little Endian: `timestamp: i64 LE`, `block_offset: u64 LE`, `in_block_offset: u16 LE`。`timestamp` 保持 signed 以兼容业务自定义时间和连续索引基准; `block_offset` 是非负数据区逻辑全局 offset; `in_block_offset=0xFFFF` 仅能与 `block_offset=u64::MAX` 共同表示 filler/deleted sentinel, 真实记录不得使用该组合或单独使用其中一个 sentinel 值。
+`IndexEntry` 内存态仍保留 `timestamp: i64`; 只有 index segment 落盘格式把 timestamp 存为 `timestamp_delta: u32 LE`, 其值为 `timestamp - segment.start_timestamp`。`block_offset: u64 LE` 和 `in_block_offset: u16 LE` 不变。写入前必须校验 delta 非负且不超过 `u32::MAX`; 非连续模式下, 如果最新 index segment 尚未写满但新 timestamp 已超过该 segment 的 u32 delta 范围, 必须创建以该 timestamp 为起点的新 index segment。
+
+这是破坏性 index v2 文件格式升级: 新代码写出的 index segment header version 为 2, 并拒绝打开旧 v1 index segment。JournalRecord 中的 `JournalIndexInfo` 不属于 index segment 物理格式, 仍保持 `timestamp:i64 + block_offset:u64 + in_block_offset:u16` 的 18 字节格式。
 
 ### 7.4 IndexSegment
 
@@ -163,17 +174,17 @@ impl IndexSegment {
 │ - Reserved padding to byte 128               │
 ├──────────────────────────────────────────────┤
 │ Index Area (starts at absolute offset 128)   │
-│ ┌──────────┬──────────┬──────┐               │
-│ │ ts:8     │ block:8  │ ib:2 │ entry 1       │
-│ └──────────┴──────────┴──────┘               │
-│ ┌──────────┬──────────┬──────┐               │
-│ │ ts:8     │ block:8  │ ib:2 │ entry 2       │
-│ └──────────┴──────────┴──────┘               │
+│ ┌─────────┬──────────┬──────┐                │
+│ │ dts:4   │ block:8  │ ib:2 │ entry 1        │
+│ └─────────┴──────────┴──────┘                │
+│ ┌─────────┬──────────┬──────┐                │
+│ │ dts:4   │ block:8  │ ib:2 │ entry 2        │
+│ └─────────┴──────────┴──────┘                │
 │ ...                                           │
 └──────────────────────────────────────────────┘
 ```
 
-> **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - 128) / 18`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。索引段的 Meta TLV/state 仍按可变 header 解析, 但 entry area 起点固定为 128, 不随已知 header 内容长度变化。
+> **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - 128) / 14`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。索引段的 Meta TLV/state 仍按可变 header 解析, 但 entry area 起点固定为 128, 不随已知 header 内容长度变化。
 
 > **发布边界**: `IndexEntry` 是 record 对查询可见的发布点。Data segment append 必须先写 payload 与 block/header state, 最后才追加或覆盖 index entry。若 crash 发生在 index 写入前, data segment 中的孤儿 payload 不可见并按丢失处理。若 crash/reopen 后出现已持久化 index 指向不完整 data 的情况, 读取路径必须通过 block 边界和 record timestamp 校验拒绝返回错误数据; 本库不通过索引事务恢复该写入。
 
@@ -209,7 +220,7 @@ impl IndexSegment {
 连续模式仍保持 O(1) 定位, 但不再要求所有缺失 timestamp 都落盘为 filler。它使用固定逻辑网格:
 
 ```text
-segment_capacity = floor((index_segment_size - 128) / 18)
+segment_capacity = floor((index_segment_size - 128) / 14)
 time_step        = 1
 base_timestamp   = first real write timestamp
 segment_ordinal  = floor((ts - base_timestamp) / segment_capacity)
@@ -245,7 +256,7 @@ reclaim_expired_segments(expiration_threshold: i64):
 
 **`last_entry_timestamp` 实现**:
 - 仅打开文件一次 (read-only mmap, 不使用 `MmapMut::map_mut` 避免 Windows 锁定)
-- 从文件 header 的 `wrote_position` 推算最后条目位置: `128 + (wrote_count - 1) * 18`
+- 从文件 header 的 `wrote_position` 推算最后条目位置: `128 + (wrote_count - 1) * 14`
 - 立即 drop(mmap) + drop(file), 检查完成后不保持打开状态
 - 返回 `Ok(Some(last_ts))`, `Ok(None)` 或 `Err`; 空段/`wrote_count==0` 返回 `Ok(None)`
 - `DataSet::open` 恢复 `latest_written_timestamp` 时, 只需要读取最新非空 index segment 文件的最后一条 entry; delete/filler entry 的 timestamp 仍计入 latest, 因此 `read_latest()` 不会回退到更早有效记录；没有任何 entry 时 latest 为 `None`

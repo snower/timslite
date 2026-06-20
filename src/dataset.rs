@@ -1658,18 +1658,7 @@ impl DataSetInner {
     }
 
     fn last_open_index_entry_timestamp(seg: &IndexSegment) -> Option<i64> {
-        if seg.wrote_count == 0 {
-            return None;
-        }
-        let mmap = seg.mmap.as_ref()?;
-        let pos = seg.header_size as usize + (seg.wrote_count - 1) * crate::index::INDEX_ENTRY_SIZE;
-        let mmap_bytes = mmap.as_ref();
-        if pos + 8 > mmap_bytes.len() {
-            return None;
-        }
-        Some(i64::from_le_bytes(
-            mmap_bytes[pos..pos + 8].try_into().unwrap(),
-        ))
+        seg.last_timestamp_cached()
     }
 
     /// Get the base directory.

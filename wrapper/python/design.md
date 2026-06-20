@@ -841,7 +841,7 @@ pytest tests/ -v
 
 ### 9.2 Iterator Performance
 
-- Pre-fetching `Vec<IndexEntry>` is cheap (18 bytes per entry, timestamps only)
+- Pre-fetching `Vec<IndexEntry>` is cheap relative to payload data; in memory it keeps the full `i64` timestamp plus data offsets, while index segment files store timestamp deltas in 14-byte entries.
 - Data blocks loaded on-demand during `__next__` (lazy, matches Rust `QueryIterator`)
 - BlockCache shared from Store — repeated queries benefit from cache hits
 

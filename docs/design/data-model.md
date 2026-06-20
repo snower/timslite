@@ -80,16 +80,16 @@ Offset  Size  Field                    Description
 
 ### 3.4 IndexEntry (索引条目)
 
-每个索引条目固定 **18字节**:
+index segment v2 中每个索引条目固定 **14字节**:
 
 ```
-┌──────────────────────┬──────────────────────┬──────────────┐
-│ timestamp (i64)      │ block_offset (u64)   │ in_block     │
-│ 8 bytes              │ 8 bytes              │ offset (u16) │
-└──────────────────────┴──────────────────────┴──────────────┘
+┌────────────────────────┬──────────────────────┬──────────────┐
+│ timestamp_delta (u32)  │ block_offset (u64)   │ in_block     │
+│ 4 bytes                │ 8 bytes              │ offset (u16) │
+└────────────────────────┴──────────────────────┴──────────────┘
 ```
 
-- `timestamp`: 秒级时间戳
+- `timestamp_delta`: `timestamp - index_segment.start_timestamp`, little-endian `u32`; 写入前必须校验 delta 非负且不超过 `u32::MAX`。内存中的 `IndexEntry.timestamp` 仍为完整 `i64`。
 - `block_offset`: 对应 Block 在数据流中的**逻辑全局偏移** (相对各数据段数据区起点, 指向 BlockHeader 起始), 不包含任何数据段文件 header 长度。落到具体段后, 物理文件偏移 = `segment.header_len + (block_offset - segment.file_offset)`。
 - `in_block_offset`: record 在 Block Payload 中的**相对偏移** (从 payload 起始算, 指向该 record 的 data_len 字段)。普通聚合 Block 的 payload 受 64KB 上限约束, 因此真实 record 起始偏移不会达到 `0xFFFF` 哨兵值; exclusive/single-record block 只包含一条 record, `in_block_offset` 固定为 0。
 
@@ -123,7 +123,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 |----------|----------|------|
 | 时间戳、时间范围、创建时间 | `i64 LE` | `timestamp`, `min_timestamp`, `max_timestamp`, `created_at/create_time`。允许业务使用负 timestamp; 空数据段使用 `i64::MAX` / `i64::MIN` 作为 sentinel。 |
 | segment header 的 `file_offset` | `i64 LE` | 复用字段: data segment 中必须为非负数据区逻辑起点; index segment 中表示 `start_timestamp`, 因此保持 signed。 |
-| 数据长度、payload 长度、压缩前长度 | `u32 LE` | `data_len`, `block_payload_size`, `uncompressed_size`。写入时必须拒绝超过 `u32::MAX` 的值; 当前 API 还必须拒绝纯数据长度超过 4MiB 的单条 record; 读取时必须校验不会越过 block/file 边界。 |
+| 数据长度、payload 长度、压缩前长度、index timestamp delta | `u32 LE` | `data_len`, `block_payload_size`, `uncompressed_size`, index segment v2 `timestamp_delta`。写入时必须拒绝超过 `u32::MAX` 的值; 当前 API 还必须拒绝纯数据长度超过 4MiB 的单条 record; 读取时必须校验不会越过 block/file 边界。 |
 | 逻辑 offset、写入位置、计数、retention、segment size | `u64 LE` | `block_offset`, `wrote_position`, `record_count`, `pending_*`, `invalid_record_count`, `*_segment_size`, segment header `file_size`, `retention_window`。`retention_window` 使用 timestamp unit, 有效范围为 `0..=i64::MAX`。所有加法/乘法必须使用 checked/saturating 语义并校验上界。 |
 | block 内 offset、flags、version、length | `u16 LE` | `in_block_offset`, `flags`, `version`, `meta_length`, `state_length`, TLV length。`0xFFFF` 是 `in_block_offset` filler sentinel, 真实 record offset 不得使用该值。 |
 | type、fileType、compress_level、boolean flag | `u8` | 单字节字段不涉及端序。 |
@@ -135,7 +135,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 - `block_payload_size` 必须完全落在所属 segment 文件内; compressed block 解压后的长度必须等于 `uncompressed_size`。
 - 遍历 record 时, 每个 `data_len` 必须满足 `record_pos + 12 + data_len <= block_payload_len`; `timestamp` 直接按 `i64 LE` 读取。
 - real `IndexEntry` 不得使用 filler sentinel: `block_offset != u64::MAX` 且 `in_block_offset != 0xFFFF`; filler 必须同时使用 `block_offset = u64::MAX` 与 `in_block_offset = 0xFFFF`。
-- data segment header 中的 `file_offset` 必须可转换为非负 `u64`; index segment header 中的 `file_offset` 作为 signed `start_timestamp` 使用。
+- data segment header 中的 `file_offset` 必须可转换为非负 `u64`; index segment header 中的 `file_offset` 作为 signed `start_timestamp` 使用, 并参与 index entry 的 `timestamp_delta` 还原。
 - 写入路径中所有 size/offset/count 累加必须使用 `checked_add`/`try_from` 或等价校验, 溢出时返回 `InvalidData` 或对应参数错误。
 
 ### 3.5 FileMetadata (文件头, meta + state)
@@ -165,7 +165,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 ```
 Offset  Size  Field                    Description
 0-3     4     magic = b"TMSL"
-4-5     u16   version                  = 1
+4-5     u16   version                  data segment = 1, index segment = 2
 6       u8    fileType                 1 = index segment, 2 = data segment
 7-8     u16   meta_length              Meta TLV 区总字节数
 ```

@@ -82,7 +82,7 @@ pub const QUEUE_MAX_PENDING_ENTRIES: usize = queue::MAX_PENDING_ENTRIES;
 /// Data segment v1 default header size in bytes.
 pub const DATA_HEADER_SIZE: u64 = header::DATA_HEADER_SIZE;
 
-/// Index segment v1 default header size in bytes.
+/// Index segment v2 default header size in bytes.
 pub const INDEX_HEADER_SIZE: u64 = header::INDEX_HEADER_SIZE;
 
 /// Size of a block header in bytes.
@@ -97,8 +97,11 @@ pub const INDEX_ENTRY_SIZE: usize = index::INDEX_ENTRY_SIZE;
 /// Magic bytes identifying a timslite file.
 pub const MAGIC: [u8; 4] = header::MAGIC;
 
-/// Current file format version.
+/// Data segment and journal segment file format version.
 pub const VERSION: u16 = header::VERSION;
+
+/// Index segment file format version.
+pub const INDEX_VERSION: u16 = header::INDEX_VERSION;
 
 /// File type: data segment.
 pub const FILE_TYPE_DATA: u8 = header::FILE_TYPE_DATA;
@@ -114,9 +117,10 @@ mod tests {
         assert_eq!(crate::INDEX_HEADER_SIZE, 128);
         assert_eq!(crate::BLOCK_HEADER_SIZE, 16);
         assert_eq!(crate::BLOCK_MAX_SIZE, 65_536);
-        assert_eq!(crate::INDEX_ENTRY_SIZE, 18);
+        assert_eq!(crate::INDEX_ENTRY_SIZE, 14);
         assert_eq!(&crate::MAGIC, b"TMSL");
         assert_eq!(crate::VERSION, 1);
+        assert_eq!(crate::INDEX_VERSION, 2);
         assert_eq!(crate::FILE_TYPE_DATA, 2);
         assert_eq!(crate::FILE_TYPE_INDEX, 1);
     }

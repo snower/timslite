@@ -9,8 +9,8 @@
 - 新增 `IndexSegment::direct_lookup(target_ts: i64) -> Option<IndexEntry>`
   - 检查范围: `target_ts < start_timestamp || target_ts >= start_timestamp + wrote_count` → None
   - 计算: `entry_index = (target_ts - start_timestamp) as usize`
-  - 从 mmap 读取 8 字节 timestamp → 校验是否等于 `target_ts`
-  - 匹配 → 读取完整 18 字节 entry → return Some(entry)
+  - 从 mmap 读取 4 字节 timestamp_delta, 用 `start_timestamp + delta` 校验是否等于 `target_ts`
+  - 匹配 → 读取完整 14 字节 entry → return Some(entry)
 
 ## 11.2 IndexSegment: 添加 *_cs 连续模式变体方法
 

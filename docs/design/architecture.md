@@ -124,7 +124,7 @@ src/
 ├── block.rs            # BlockHeader (16B, read/write/flags)
 ├── index/
 │   ├── mod.rs          # TimeIndex (index/ 子目录, lazy open/close, query)
-│   └── segment.rs      # IndexSegment (18B entries, lifecycle, binary search)
+│   └── segment.rs      # IndexSegment (14B delta entries, lifecycle, binary search)
 ├── query/
 │   ├── mod.rs          # 查询模块导出
 │   ├── iter.rs         # QueryIterator + source cursor 惰性读取

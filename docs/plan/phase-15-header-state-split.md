@@ -156,7 +156,7 @@ Total: 116 bytes
 ```
 Offset  Size  Field                    Description
 0       4     magic = b"TMSL"
-4       2     version = 1
+4       2     version = 2
 6       1     fileType = 1 (INDEX)
 7       2     meta_length = 33
 9       33    Meta TLV (created_at, file_offset, file_size, compress_level)
@@ -165,6 +165,8 @@ Offset  Size  Field                    Description
 ─────────────────────────────────────
 Total: 52 bytes
 ```
+
+> Phase 43 upgrades only index segment files to version 2 and changes their entry payload to 14-byte timestamp-delta records. Data segment files remain version 1.
 
 ## 5. DataFileMetadata 结构体定义
 

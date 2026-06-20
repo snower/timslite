@@ -39,7 +39,7 @@ const META_INDEX_CONTINUOUS: u8 = 0x05; // u8: 0=非连续, 1=连续
     - 然后写入真实 entry
   - 连续模式补数据:
     - 写入数据到 DataSegmentSet
-    - `replace_filler_with_real(ts)` → mmap 覆盖写 18 字节
+    - `replace_filler_with_real(ts)` → mmap 覆盖写 14 字节 index entry
 
 ## 10.4 IndexSegment: find_entry_index + overwrite_entry
 
@@ -47,7 +47,7 @@ const META_INDEX_CONTINUOUS: u8 = 0x05; // u8: 0=非连续, 1=连续
 - `IndexSegment::overwrite_entry(entry_index: usize, new_entry: &IndexEntry)`
   - 确保 mmap 有效
   - 计算 mmap 偏移: `HEADER_SIZE + entry_index * INDEX_ENTRY_SIZE`
-  - 覆盖写 18 字节
+  - 覆盖写 14 字节 index entry
 
 ## 10.5 TimeIndex 填充逻辑
 
