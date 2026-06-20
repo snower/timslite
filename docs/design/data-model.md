@@ -80,7 +80,7 @@ Offset  Size  Field                    Description
 
 ### 3.4 IndexEntry (索引条目)
 
-index segment v2 中每个索引条目固定 **14字节**:
+当前 index segment 中每个索引条目固定 **14字节**:
 
 ```
 ┌────────────────────────┬──────────────────────┬──────────────┐
@@ -123,7 +123,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 |----------|----------|------|
 | 时间戳、时间范围、创建时间 | `i64 LE` | `timestamp`, `min_timestamp`, `max_timestamp`, `created_at/create_time`。允许业务使用负 timestamp; 空数据段使用 `i64::MAX` / `i64::MIN` 作为 sentinel。 |
 | segment header 的 `file_offset` | `i64 LE` | 复用字段: data segment 中必须为非负数据区逻辑起点; index segment 中表示 `start_timestamp`, 因此保持 signed。 |
-| 数据长度、payload 长度、压缩前长度、index timestamp delta | `u32 LE` | `data_len`, `block_payload_size`, `uncompressed_size`, index segment v2 `timestamp_delta`。写入时必须拒绝超过 `u32::MAX` 的值; 当前 API 还必须拒绝纯数据长度超过 4MiB 的单条 record; 读取时必须校验不会越过 block/file 边界。 |
+| 数据长度、payload 长度、压缩前长度、index timestamp delta | `u32 LE` | `data_len`, `block_payload_size`, `uncompressed_size`, index segment `timestamp_delta`。写入时必须拒绝超过 `u32::MAX` 的值; 当前 API 还必须拒绝纯数据长度超过 4MiB 的单条 record; 读取时必须校验不会越过 block/file 边界。 |
 | 逻辑 offset、写入位置、计数、retention、segment size | `u64 LE` | `block_offset`, `wrote_position`, `record_count`, `pending_*`, `invalid_record_count`, `*_segment_size`, segment header `file_size`, `retention_window`。`retention_window` 使用 timestamp unit, 有效范围为 `0..=i64::MAX`。所有加法/乘法必须使用 checked/saturating 语义并校验上界。 |
 | block 内 offset、flags、version、length | `u16 LE` | `in_block_offset`, `flags`, `version`, `meta_length`, `state_length`, TLV length。`0xFFFF` 是 `in_block_offset` filler sentinel, 真实 record offset 不得使用该值。 |
 | type、fileType、compress_level、boolean flag | `u8` | 单字节字段不涉及端序。 |
@@ -165,7 +165,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 ```
 Offset  Size  Field                    Description
 0-3     4     magic = b"TMSL"
-4-5     u16   version                  data segment = 1, index segment = 2
+4-5     u16   version                  data segment = 1, index segment = 1
 6       u8    fileType                 1 = index segment, 2 = data segment
 7-8     u16   meta_length              Meta TLV 区总字节数
 ```

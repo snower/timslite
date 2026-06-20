@@ -82,7 +82,7 @@ pub const QUEUE_MAX_PENDING_ENTRIES: usize = queue::MAX_PENDING_ENTRIES;
 /// Data segment v1 default header size in bytes.
 pub const DATA_HEADER_SIZE: u64 = header::DATA_HEADER_SIZE;
 
-/// Index segment v2 default header size in bytes.
+/// Index segment default header size in bytes.
 pub const INDEX_HEADER_SIZE: u64 = header::INDEX_HEADER_SIZE;
 
 /// Size of a block header in bytes.
@@ -120,7 +120,7 @@ mod tests {
         assert_eq!(crate::INDEX_ENTRY_SIZE, 14);
         assert_eq!(&crate::MAGIC, b"TMSL");
         assert_eq!(crate::VERSION, 1);
-        assert_eq!(crate::INDEX_VERSION, 2);
+        assert_eq!(crate::INDEX_VERSION, 1);
         assert_eq!(crate::FILE_TYPE_DATA, 2);
         assert_eq!(crate::FILE_TYPE_INDEX, 1);
     }

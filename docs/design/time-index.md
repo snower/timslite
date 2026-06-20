@@ -103,7 +103,7 @@ impl IndexEntry {
 
 `IndexEntry` 内存态仍保留 `timestamp: i64`; 只有 index segment 落盘格式把 timestamp 存为 `timestamp_delta: u32 LE`, 其值为 `timestamp - segment.start_timestamp`。`block_offset: u64 LE` 和 `in_block_offset: u16 LE` 不变。写入前必须校验 delta 非负且不超过 `u32::MAX`; 非连续模式下, 如果最新 index segment 尚未写满但新 timestamp 已超过该 segment 的 u32 delta 范围, 必须创建以该 timestamp 为起点的新 index segment。
 
-这是破坏性 index v2 文件格式升级: 新代码写出的 index segment header version 为 2, 并拒绝打开旧 v1 index segment。JournalRecord 中的 `JournalIndexInfo` 不属于 index segment 物理格式, 仍保持 `timestamp:i64 + block_offset:u64 + in_block_offset:u16` 的 18 字节格式。
+这是破坏性 index entry 落盘布局调整: 当前项目尚未首次 release, 因此 index segment header version 仍保持 1, 且不保留旧 18 字节 entry 解析逻辑。JournalRecord 中的 `JournalIndexInfo` 不属于 index segment 物理格式, 仍保持 `timestamp:i64 + block_offset:u64 + in_block_offset:u16` 的 18 字节格式。
 
 ### 7.4 IndexSegment
 

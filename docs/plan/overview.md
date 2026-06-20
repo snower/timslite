@@ -200,7 +200,7 @@ Phase 41 (Queue Consumer Retry: QSTF v1 18B pending + visibility timeout + retry
 Phase 42 (Rust Public API Boundary)
           │
           ▼
-Phase 43 (Index Entry Timestamp Delta: index v2 14B timestamp_delta entry)
+Phase 43 (Index Entry Timestamp Delta: index header v1 + 14B timestamp_delta entry)
 ```
 
 ## 风险与应对
@@ -234,7 +234,7 @@ Phase 43 (Index Entry Timestamp Delta: index v2 14B timestamp_delta entry)
 | timestamp=0 冲突 | index segment 命名歧义 | timestamp=0 保留为空位标记, 写入时拒绝 |
 | 超大 record 长度截断 | `u16 data_len` 无法表达 >64KB 数据 | Record header 升级为 `u32 data_len`, 普通聚合 Block 保持 64KB 上限 |
 | Header 扩展读歪数据区 | TLV/state 增长但数据/索引区仍按 116/52 固定起点访问 | Phase 25 改为运行时计算 `header_len`, 所有 Block/Entry 物理定位基于动态 header |
-| 旧 index entry 格式被误读 | 18B v1 index segment 若按 14B delta 布局解析会导致 wrote_count、timestamp 和 block_offset 全部错位 | Phase 43 将 index segment header version 升级为 2, 新代码拒绝打开 v1 index 文件 |
+| 旧 index entry 格式被误读 | 18B 开发期 index segment 若按 14B delta 布局解析会导致 wrote_count、timestamp 和 block_offset 全部错位 | 当前尚未首次 release, Phase 43 按破坏性格式调整处理, header version 仍保持 1, 不保留旧 18B 读取逻辑; 旧开发期数据需删除或重建 index |
 | timestamp delta 超范围 | 非连续模式长跨度 timestamp 仍写入同一 index segment 会无法用 `u32` delta 表达 | Phase 43 在最新 segment 未满但 delta 超过 `u32::MAX` 时创建新 index segment |
 | Journal 写入放大 | create/drop/write/delete/append 会额外写 `.journal/logs` | `StoreConfig.enable_journal=false` 可关闭; Phase 36 移除 journal index, 改为专用 append log 降低磁盘放大 |
 | Journal 被误认为事务 WAL | 调用方可能高估 crash 恢复保证 | Phase 28 明确 journal 是 change log, 主操作与 journal append 不回滚、不保证同步落盘 |

@@ -24,7 +24,7 @@ pub const INDEX_HEADER_SIZE: u64 = 128;
 
 pub const MAGIC: [u8; 4] = *b"TMSL";
 pub const VERSION: u16 = 1;
-pub const INDEX_VERSION: u16 = 2;
+pub const INDEX_VERSION: u16 = VERSION;
 
 /// File type constants
 pub const FILE_TYPE_INDEX: u8 = 1;
@@ -963,7 +963,7 @@ mod tests {
     }
 
     #[test]
-    fn test_index_header_rejects_v1_version() {
+    fn test_index_header_version_remains_v1() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
         let meta = IndexFileMetadata::create_default(
             1700000000,
@@ -972,10 +972,10 @@ mod tests {
             crate::compress::COMPRESS_TYPE_ZSTD,
         );
         meta.write_to(&mut mmap);
-        write_u16_to_mmap(&mut mmap, OFF_VERSION, 1);
 
-        let result = IndexFileMetadata::read_from(&mmap);
-        assert!(matches!(result, Err(TmslError::InvalidData(_))));
+        assert_eq!(read_u16_from_mmap(&mmap, OFF_VERSION), VERSION);
+        let read = IndexFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.version, VERSION);
     }
 
     #[test]

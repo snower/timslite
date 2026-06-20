@@ -166,7 +166,7 @@ Offset  Size  Field                    Description
 Total: 52 bytes
 ```
 
-> Phase 43 upgrades only index segment files to version 2 and changes their entry payload to 14-byte timestamp-delta records. Data segment files remain version 1.
+> Phase 43 changes index segment entry payloads to 14-byte timestamp-delta records while keeping all file header versions at 1 because the project has not reached its first release.
 
 ## 5. DataFileMetadata 结构体定义
 
