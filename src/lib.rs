@@ -58,7 +58,7 @@ mod store;
 
 pub use bg::TickResult;
 pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
-pub use dataset::{DataSet, DataSetInfo, DataSetInspectResult, DataSetState};
+pub use dataset::{DataSet, DataSetInfo, DataSetInspectResult, DataSetState, QueryLengthIterator};
 pub use error::{Result, TmslError};
 pub use journal::{
     JournalAppendInfo, JournalIndexInfo, JournalQueue, JournalQueueConsumer, JournalRecord,

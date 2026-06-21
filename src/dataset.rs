@@ -17,8 +17,9 @@ use crate::header::{TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
 use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
+use crate::query::hot_block::HotBlockCache;
 use crate::query::iter::{QueryIterator, QuerySource};
-use crate::query::length_iter::QueryLengthIterator;
+use crate::query::length_iter::QueryLengthIterator as InnerQueryLengthIterator;
 use crate::queue::{
     flush_queue_state_file, flush_queue_state_files, queue_dir_for, QueueInner, QueueNotifier,
 };
@@ -164,6 +165,73 @@ pub struct AppendOutcome {
 #[derive(Clone)]
 pub struct DataSet {
     inner: Arc<Mutex<DataSetInner>>,
+}
+
+/// Public lazy iterator for data lengths returned by `DataSet::query_length_iter`.
+pub struct QueryLengthIterator {
+    sources: Vec<QuerySource>,
+    current_source: usize,
+    dataset: Arc<Mutex<DataSetInner>>,
+    hot_block: HotBlockCache,
+}
+
+impl QueryLengthIterator {
+    fn new(dataset: Arc<Mutex<DataSetInner>>, sources: Vec<QuerySource>) -> Self {
+        Self {
+            sources,
+            current_source: 0,
+            dataset,
+            hot_block: HotBlockCache::new(),
+        }
+    }
+
+    pub fn next_entry(&mut self) -> Result<Option<(i64, u32)>> {
+        while self.current_source < self.sources.len() {
+            match self.sources[self.current_source].next_entry()? {
+                Some(entry) if entry.block_offset == BLOCK_OFFSET_FILLER => continue,
+                Some(entry) => {
+                    let re = ReadIndexEntry {
+                        timestamp: entry.timestamp,
+                        block_offset: entry.block_offset,
+                        in_block_offset: entry.in_block_offset,
+                    };
+                    let mut inner = self
+                        .dataset
+                        .lock()
+                        .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+                    inner.ensure_open()?;
+                    let cache = inner.runtime_context.block_cache.clone();
+                    let data_len = inner.segments.read_record_data_len_with_hot_cache(
+                        &re,
+                        cache.as_deref(),
+                        &mut self.hot_block,
+                    )?;
+                    inner.last_used_at = Instant::now();
+                    return Ok(Some((entry.timestamp, data_len)));
+                }
+                None => {
+                    self.current_source += 1;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn collect_all(mut self) -> Result<Vec<(i64, u32)>> {
+        let mut result = Vec::new();
+        while let Some(pair) = self.next_entry()? {
+            result.push(pair);
+        }
+        Ok(result)
+    }
+}
+
+impl Iterator for QueryLengthIterator {
+    type Item = Result<(i64, u32)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_entry().transpose()
+    }
 }
 
 impl DataSet {
@@ -355,13 +423,15 @@ impl DataSet {
         self.with_open_inner(|inner| inner.query_length(start_ts, end_ts))
     }
 
-    pub fn query_length_iter(
-        &self,
-        start_ts: i64,
-        end_ts: i64,
-    ) -> Result<std::vec::IntoIter<Result<(i64, u32)>>> {
-        let rows = self.query_length(start_ts, end_ts)?;
-        Ok(rows.into_iter().map(Ok).collect::<Vec<_>>().into_iter())
+    pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator> {
+        let sources = self.with_open_inner(|inner| {
+            let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts);
+            if start_ts > end_ts {
+                return Ok(Vec::new());
+            }
+            inner.time_index.prepare_query_sources(start_ts, end_ts)
+        })?;
+        Ok(QueryLengthIterator::new(Arc::clone(&self.inner), sources))
     }
 
     pub(crate) fn read_entry_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
@@ -1502,14 +1572,18 @@ impl DataSetInner {
         &'a mut self,
         start_ts: i64,
         end_ts: i64,
-    ) -> Result<QueryLengthIterator<'a>> {
+    ) -> Result<InnerQueryLengthIterator<'a>> {
         let cache = self.runtime_context.block_cache.clone();
         let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
         if start_ts > end_ts {
-            return Ok(QueryLengthIterator::new(vec![], &mut self.segments, cache));
+            return Ok(InnerQueryLengthIterator::new(
+                vec![],
+                &mut self.segments,
+                cache,
+            ));
         }
         let sources = self.time_index.prepare_query_sources(start_ts, end_ts)?;
-        Ok(QueryLengthIterator::new_with_sources(
+        Ok(InnerQueryLengthIterator::new_with_sources(
             sources,
             &mut self.segments,
             cache,

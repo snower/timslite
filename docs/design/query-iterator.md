@@ -150,7 +150,7 @@ int tmsl_iter_next_buf(void* iter, int64_t* out_ts,
 
 `QueryIterator`, `QuerySource`, `SourceIndex`, `IndexEntry`, and physical entry read helpers are internal implementation details. They are used by crate-internal dataset code, queue scan logic, journal source dereference, and FFI iterator state, but they are not re-exported as the normal Rust library API.
 
-External Rust callers use `DataSet::query` / `DataSet::query_length` snapshots, or the Store-level facades. Journal consumers that need to dereference a write/delete/append journal pointer call `Store::read_journal_source_record(dataset_identifier, index_info)` instead of constructing an `IndexEntry`.
+External Rust callers use `DataSet::query` / `DataSet::query_length` snapshots, `DataSet::query_length_iter` for source-cursor lazy length iteration, or the Store-level facades. Journal consumers that need to dereference a write/delete/append journal pointer call `Store::read_journal_source_record(dataset_identifier, index_info)` instead of constructing an `IndexEntry`.
 
 | 场景 | 当前实现口径 |
 |------|-------------|

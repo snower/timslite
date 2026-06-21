@@ -31,10 +31,10 @@
 
 | 状态 | ID | 任务 | 主要文件 | 验收标准 |
 |------|----|------|----------|----------|
-| [ ] | P1-1 | 收敛 `query_length_iter` 的公开 Rust/FFI 语义与内存口径 | `docs/design/dataset-read-operations.md`, `docs/design/query-iterator.md`, `docs/design/store-and-ffi.md`, `src/dataset.rs`, `src/ffi.rs`, `src/query/length_iter.rs`, wrapper docs/tests 如需 | 二选一完成：公开 API/FFI 真正提供 source-cursor + HotBlockCache lazy iterator，或文档明确当前 Rust public 是 `query_length()` snapshot iterator、FFI 是 index-entry snapshot；大范围查询内存边界不再被描述为严格流式 |
-| [ ] | P1-2 | 更新轻量读操作 FFI 文档，移除旧式 `TmslStore* + name/type` 签名 | `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `include/timslite.h` | `read_exist/query_exist/read_length/query_length/query_length_iter` 在设计文档中只有一套当前 C ABI；使用 dataset handle、return code、err_buf、out 参数和 `tmsl_data_free` 释放规则；旧 bool/裸指针/name-type 签名被删除或明确标为历史草案 |
-| [ ] | P1-3 | 同步 Inspect 文档的 `identifier` 字段与 Store facade 流程 | `docs/design/dataset-inspect.md`, `docs/design/dataset-identifier.md`, `docs/design/store-and-ffi.md`, `include/timslite.h`, wrapper docs/tests 如需 | Rust/FFI/Python `DataSetInfo` 文档均包含 `identifier`; `inspect_dataset(name,type)` 伪代码与当前流程一致：validate、registry hit、读取 identifier、校验 max_identifier、open/inject context、保留 registry、inspect；内存释放说明准确 |
-| [ ] | P1-4 | 修正 JournalQueue poll 伪代码，保持 retry/visibility timeout 与普通 queue state 一致 | `docs/design/journal-storage.md`, `docs/design/journal.md`, `docs/design/queue-state-file.md`, `src/journal/queue.rs` tests 如需 | JournalQueue 文档明确只重投 retryable pending；未过期 pending 不立即返回；`max_retry_count` 和 `running_expired_seconds` 语义与 `ConsumerStateFile` 一致；“journal sequence 连续”只简化新 sequence 查找，不改变 retry/ack 状态机 |
+| [x] | P1-1 | 收敛 `query_length_iter` 的公开 Rust/FFI 语义与内存口径 | `docs/design/dataset-read-operations.md`, `docs/design/query-iterator.md`, `docs/design/store-and-ffi.md`, `src/dataset.rs`, `src/ffi.rs`, `src/query/length_iter.rs`, wrapper docs/tests 如需 | 二选一完成：公开 API/FFI 真正提供 source-cursor + HotBlockCache lazy iterator，或文档明确当前 Rust public 是 `query_length()` snapshot iterator、FFI 是 index-entry snapshot；大范围查询内存边界不再被描述为严格流式 |
+| [x] | P1-2 | 更新轻量读操作 FFI 文档，移除旧式 `TmslStore* + name/type` 签名 | `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `include/timslite.h` | `read_exist/query_exist/read_length/query_length/query_length_iter` 在设计文档中只有一套当前 C ABI；使用 dataset handle、return code、err_buf、out 参数和 `tmsl_data_free` 释放规则；旧 bool/裸指针/name-type 签名被删除或明确标为历史草案 |
+| [x] | P1-3 | 同步 Inspect 文档的 `identifier` 字段与 Store facade 流程 | `docs/design/dataset-inspect.md`, `docs/design/dataset-identifier.md`, `docs/design/store-and-ffi.md`, `include/timslite.h`, wrapper docs/tests 如需 | Rust/FFI/Python `DataSetInfo` 文档均包含 `identifier`; `inspect_dataset(name,type)` 伪代码与当前流程一致：validate、registry hit、读取 identifier、校验 max_identifier、open/inject context、保留 registry、inspect；内存释放说明准确 |
+| [x] | P1-4 | 修正 JournalQueue poll 伪代码，保持 retry/visibility timeout 与普通 queue state 一致 | `docs/design/journal-storage.md`, `docs/design/journal.md`, `docs/design/queue-state-file.md`, `src/journal/queue.rs` tests 如需 | JournalQueue 文档明确只重投 retryable pending；未过期 pending 不立即返回；`max_retry_count` 和 `running_expired_seconds` 语义与 `ConsumerStateFile` 一致；“journal sequence 连续”只简化新 sequence 查找，不改变 retry/ack 状态机 |
 
 ## P2: 可以随后优化
 
@@ -54,6 +54,10 @@
 
 | 日期 | ID | 状态 | 处理摘要 | 验证 |
 |------|----|------|----------|------|
+| 2026-06-21 | P1-1 | [x] | Public Rust `DataSet::query_length_iter()` 改为 source-cursor iterator, 创建时准备 `QuerySource`, `next()` 时按需读取 record header; FFI 文档明确保持 index-entry snapshot iterator 语义 | 新增 `test_public_query_length_iter_reads_from_source_cursor`; 先在旧实现下失败, 实现后通过; `cargo check`; `cargo test --test read_operations -- --test-threads=1` |
+| 2026-06-21 | P1-2 | [x] | 删除 `dataset-read-operations.md` 中旧式 `TmslStore* + name/type` 轻量读 C ABI 签名, 改为引用 `store-and-ffi.md` 与 `include/timslite.h` 作为权威 ABI | 静态检索旧式 `tmsl_dataset_*` Store/name/type 签名 |
+| 2026-06-21 | P1-3 | [x] | `dataset-inspect.md` 补齐 Rust/FFI/Python `DataSetInfo.identifier`, 并把 Store facade 伪代码改为 validate/open-or-get/load-and-keep 流程 | 静态检索 `DataSetInfo` identifier 和 inspect 流程说明 |
+| 2026-06-21 | P1-4 | [x] | `journal-storage.md` / `journal.md` 的 JournalQueue poll 伪代码改为先处理 retryable pending, 未过期 pending 不重投, retry 超限按完成前缀推进, 再查找新 sequence | 静态检索 retryable pending、未过期 pending 与 sequence 连续性说明 |
 | 2026-06-21 | P0-1 | [x] | 统一 retention reclaim 文档术语: 回收前执行 `flush()` + data/index segment `idle_close_all()` 使分段 entry sync+unmap, 明确不调用 lifecycle `DataSet::close()`、不关闭 queue、不移除 Store registry、不使 handle 失效 | 静态检索确认 P0-1 相关 active docs 不再把 retention 前置条件写成 `DataSet 已 close()` 或裸 `close()` 流程 |
 | 2026-06-21 | ALL | [ ] | 根据第 8 轮设计审查报告创建 TODO 跟踪文件，尚未开始修复 | `docs/review/design-review.md` 与 `docs/review/design-review-todo.md` 已创建；本轮未修改设计/实现代码 |
 
@@ -62,6 +66,6 @@
 | 优先级 | 总数 | 已完成 | 未完成 |
 |--------|------|--------|--------|
 | P0 | 1 | 1 | 0 |
-| P1 | 4 | 0 | 4 |
+| P1 | 4 | 4 | 0 |
 | P2 | 2 | 0 | 2 |
-| 合计 | 7 | 1 | 6 |
+| 合计 | 7 | 5 | 2 |

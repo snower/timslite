@@ -231,21 +231,24 @@ impl<'a> Iterator for QueryLengthIterator<'a> {
 ```rust
 impl DataSet {
     /// Create a lazy iterator for data lengths in [start_ts, end_ts].
-    pub fn query_length_iter<'a>(&'a mut self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator<'a>>;
+    pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator>;
 }
 ```
 
 ### 实现要点
 1. 复用 `QuerySource` 枚举（与 QueryIterator 相同）
 2. 复用 `HotBlockCache`（需要读取 block 获取 record header）
-3. `next()` 实现：
+3. public Rust wrapper 创建时准备 source cursor, 不预先收集全部 `(timestamp, data_len)`
+4. `next()` 实现：
    - 从当前 source 获取下一个 IndexEntry
    - 跳过 filler
+   - 锁定当前 Store-managed dataset 并检查仍处于 open 状态
    - 检查 HotBlockCache
    - 若 miss，读取 block 并填充 hot_block
    - 从 hot_block 提取 record header 获取 data_len
    - 返回 `Some(Ok((timestamp, data_len)))`
-4. 通过 Store 创建时自动注入 `Arc<BlockCache>`
+5. 通过 Store 创建时自动注入 `Arc<BlockCache>`
+6. FFI `tmsl_dataset_query_length_iter` 保持 index-entry snapshot iterator 语义, `next` 时按 snapshot entry 读取长度
 
 ### 测试用例
 - [x] 迭代器正确遍历所有有效记录
@@ -254,6 +257,7 @@ impl DataSet {
 - [x] 跨 source 边界正确切换
 - [x] 空范围返回 None
 - [x] 与 query_length 结果一致性验证
+- [x] public Rust wrapper 创建 iterator 后才在 `next()` 触达数据源
 
 ---
 
@@ -310,7 +314,7 @@ int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
 ### 内存管理
 - `tmsl_dataset_query_exist` 返回的 bitmap 由 `libc::malloc` 分配，调用方通过 `tmsl_data_free` 释放
 - `tmsl_dataset_query_length` 返回的数组由 `libc::malloc` 分配，调用方通过 `tmsl_data_free` 释放
-- `tmsl_dataset_query_length_iter` 返回的迭代器由 `tmsl_iter_free` 释放
+- `tmsl_dataset_query_length_iter` 返回的迭代器由 `tmsl_iter_close` 释放
 
 ### 测试用例
 - [x] FFI read_exist 正确返回 true/false
@@ -324,7 +328,7 @@ int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
 
 ## 30.8 Store 门面 API
 
-在 Store 层暴露新接口。
+在 Store 层暴露轻量读 snapshot 接口。`query_length_iter` 是 `DataSet` public wrapper 方法; Store facade 当前保留 `dataset_query_length` snapshot 方法, 不再声明单独的 Store-level length iterator。
 
 ### 实现位置
 `src/store.rs`
@@ -336,7 +340,6 @@ impl Store {
     pub fn dataset_query_exist(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
     pub fn dataset_read_length(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<u32>>;
     pub fn dataset_query_length(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
-    pub fn dataset_query_length_iter(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator<'_>>;
 }
 ```
 

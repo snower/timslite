@@ -22,6 +22,7 @@ pub struct DataSetInfo {
     pub name: String,
     pub dataset_type: String,
     pub base_dir: String,
+    pub identifier: u64,
     // 存储配置
     pub data_segment_size: u64,
     pub index_segment_size: u64,
@@ -93,6 +94,7 @@ typedef struct {
     const char *name;
     const char *dataset_type;
     const char *base_dir;
+    uint64_t identifier;
     uint64_t data_segment_size;
     uint64_t index_segment_size;
     uint64_t initial_data_segment_size;
@@ -154,6 +156,7 @@ class DataSetInfo:
     name: str
     dataset_type: str
     base_dir: str
+    identifier: int
     data_segment_size: int
     index_segment_size: int
     initial_data_segment_size: int

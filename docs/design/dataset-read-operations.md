@@ -244,7 +244,7 @@ start_ts = 100, end_ts = 104
 ### 3.5 query_length_iter(start_ts, end_ts)
 
 ```rust
-pub fn query_length_iter<'a>(&'a mut self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator<'a>>
+pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator>
 ```
 
 惰性范围数据长度迭代器。
@@ -257,12 +257,15 @@ pub fn query_length_iter<'a>(&'a mut self, start_ts: i64, end_ts: i64) -> Result
 - 仅返回有效记录（跳过 filler 和不存在的时间戳）
 - 支持 HotBlockCache（需读取 block 获取 record header）
 - 通过 Store 创建时自动注入 `Arc<BlockCache>`
+- public Rust wrapper 使用 `TimeIndex::prepare_query_sources()` 构造 source cursor, 迭代期间按需打开 index segment 并读取 record header; 创建 iterator 时不预先收集全部 `(timestamp, data_len)`。
 
 **与 query_iter 的区别**:
 - `query_iter` 返回完整数据 `(i64, Vec<u8>)`
 - `query_length_iter` 仅返回数据长度 `(i64, u32)`
 
-**新增依赖**: 需创建 `QueryLengthIterator` 结构体
+**Rust 与 FFI 语义差异**:
+- Rust `DataSet::query_length_iter()` 是 source-cursor iterator。每次 `next()` 才读取下一个 index entry 和对应 record header; 如果 dataset 在迭代期间关闭或相关 data segment 被 retention 删除, 后续 `next()` 返回错误。
+- FFI `tmsl_dataset_query_length_iter()` 当前使用 index-entry snapshot iterator。创建 iterator 时 snapshot 当前可见的 `IndexEntry` 列表; `tmsl_length_iter_next()` 再逐条按 snapshot entry 读取 data length。它不会重新查询 index, 但 data segment 缺失、过期或 dataset handle 失效仍会在 next 时返回错误。
 
 ---
 
@@ -300,25 +303,24 @@ timestamp: i64 (8 bytes, little-endian)
 类似 `QueryIterator`，但返回类型不同:
 
 ```rust
-pub struct QueryLengthIterator<'a> {
+pub struct QueryLengthIterator {
     sources: Vec<QuerySource>,
-    segments: &'a mut DataSegmentSet,
-    cache: Option<Arc<BlockCache>>,
+    dataset: Arc<Mutex<DataSetInner>>,
     hot_block: HotBlockCache,
     current_source_idx: usize,
 }
 
-impl<'a> Iterator for QueryLengthIterator<'a> {
+impl Iterator for QueryLengthIterator {
     type Item = Result<(i64, u32)>;
     
     fn next(&mut self) -> Option<Self::Item> {
-        // Similar to QueryIterator::next_entry()
-        // But only reads record header, not full data
+        // Read the next source entry lazily, then lock the dataset
+        // and read only the record header, not the full payload.
     }
 }
 ```
 
-**复用**: `QuerySource` 和 `HotBlockCache` 可直接复用
+**复用**: `QuerySource` 和 `HotBlockCache` 可直接复用。crate-internal `DataSetInner::query_length_iter()` 可以继续返回借用 `DataSegmentSet` 的内部 iterator; public wrapper 需要持有 dataset `Arc<Mutex<...>>` 或等价 guard/cursor 结构，避免退化为 `query_length()` snapshot。
 
 ### 4.3 索引查询优化
 
@@ -330,44 +332,15 @@ impl<'a> Iterator for QueryLengthIterator<'a> {
 
 ## 五、FFI 接口
 
-新增 FFI 函数:
+轻量读操作的 C ABI 以 [Store 与 FFI](store-and-ffi.md#c-abi-清单) 和 [include/timslite.h](../../include/timslite.h) 为权威来源。当前有效 ABI 全部使用 opaque dataset handle (`void* dataset`) 作为入口, 返回 `int` 状态码或 opaque iterator pointer, 并通过 `err_buf` 返回错误文本。
 
-```c
-// read_exist: 检查当前是否存在可见数据
-bool tmsl_dataset_read_exist(TmslStore* store, const char* name, const char* type, int64_t timestamp);
+本文件不再复制完整 C 函数签名, 避免旧式 `TmslStore* + name/type` 草案与当前 ABI 漂移。这里仅记录语义:
 
-// query_exist: 范围数据存在性快速检查，返回位图
-// 过期 timestamp 与 filler/deleted entry 位为 0；bitmap 最大 4MiB。
-// 返回的 bitmap 需要调用方 free
-uint8_t* tmsl_dataset_query_exist(TmslStore* store, const char* name, const char* type, 
-                                   int64_t start_ts, int64_t end_ts, size_t* bitmap_len);
-
-// read_length: 读取数据长度
-bool tmsl_dataset_read_length(TmslStore* store, const char* name, const char* type, 
-                              int64_t timestamp, uint32_t* out_len);
-
-typedef struct TmslLengthEntry {
-    int64_t timestamp;
-    uint32_t data_len;
-} TmslLengthEntry;
-
-// query_length: 范围查询数据长度数组
-// 返回的数组需要调用方通过 tmsl_data_free 释放
-// TmslLengthEntry 使用 C struct 普通布局，非 packed:
-// sizeof(TmslLengthEntry)=16，alignment=8；array_len 为元素数量而非字节数。
-int tmsl_dataset_query_length(void* dataset, int64_t start_ts, int64_t end_ts,
-                              TmslLengthEntry** out_array, size_t* array_len,
-                              char* err_buf, size_t err_buf_len);
-
-// query_length_iter: 创建数据长度迭代器
-TmslIterator* tmsl_dataset_query_length_iter(TmslStore* store, const char* name, const char* type,
-                                              int64_t start_ts, int64_t end_ts);
-
-// 迭代器 next: 返回 timestamp，通过 out_len 返回 data_len
-bool tmsl_length_iter_next(TmslIterator* iter, int64_t* out_ts, uint32_t* out_len);
-```
-
-**相关文档**: [Store 与 FFI](store-and-ffi.md)
+- `tmsl_dataset_read_exist`: 精确 timestamp 存在性检查, `0=false`, `1=true`, `-1=error`。
+- `tmsl_dataset_query_exist`: 返回 malloc 分配的 bitmap, 调用方用 `tmsl_data_free` 释放。
+- `tmsl_dataset_read_length`: `0=found`, `1=not found`, `-1=error`。
+- `tmsl_dataset_query_length`: 返回 malloc 分配的 `TmslLengthEntry` snapshot array, 调用方用 `tmsl_data_free` 释放。
+- `tmsl_dataset_query_length_iter`: 创建 index-entry snapshot iterator; `tmsl_length_iter_next` 按 snapshot entry 逐条读取 data length。
 
 ---
 

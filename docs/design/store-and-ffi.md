@@ -457,6 +457,8 @@ pub struct TmslLengthEntry {
     err_buf: *mut c_char, err_buf_len: usize) -> c_int;
 
 /// 创建数据长度迭代器。返回迭代器句柄，出错时返回 NULL。
+/// FFI iterator snapshots visible IndexEntry values at creation time; next() reads data length
+/// from the current dataset handle for each snapshot entry.
 #[no_mangle] pub extern "C" fn tmsl_dataset_query_length_iter(dataset: *mut c_void, start_ts: c_longlong, end_ts: c_longlong,
     err_buf: *mut c_char, err_buf_len: usize) -> *mut c_void;
 

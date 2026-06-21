@@ -32,6 +32,8 @@ pub struct DataSetInfo {
     pub dataset_type: String,
     /// 数据集目录路径
     pub base_dir: String,
+    /// Store 分配的数字 dataset identifier; 低层非 Store 管理 dataset 为 0
+    pub identifier: u64,
 
     // ─── 存储配置 ─────────────────────────────────────────────────────────
     /// 数据段文件大小上限 (bytes)
@@ -235,12 +237,18 @@ pub struct DataSetInspectResult {
 impl Store {
     /// 获取指定数据集的详细信息和状态。
     pub fn inspect_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetInspectResult> {
-        let handle = DataSetHandle::new(name, dataset_type);
-        let ds = self.get_dataset(&handle)?;
+        // 1. validate public name/type and reject reserved .journal/logs public access
+        // 2. registry hit: reuse the existing Store-managed DataSet
+        // 3. registry miss: read {name}/{type}/identifier and meta from disk
+        // 4. validate identifier <= authoritative max_identifier and reject duplicates
+        // 5. open the dataset, inject Store runtime context, keep it in Store.datasets
+        let ds = self.open_or_get_dataset_for_inspect(name, dataset_type)?;
         ds.inspect()
     }
 }
 ```
+
+`inspect_dataset(name,type)` 是 load-and-keep API, 不是只读目录扫描。它与 `open_dataset(name,type)` 使用相同的 identifier/meta 校验和 Store runtime context 注入规则; 成功 inspect 后, 未打开的普通 dataset 会保留在 `Store.datasets` registry 中。返回的 `DataSetInfo.identifier` 必须是 `{data_dir}/{name}/{type}/identifier` 中的非零 Store 分配值。
 
 ### 5.3 FFI
 
@@ -250,6 +258,7 @@ typedef struct {
     const char *name;               // 需要调用方释放
     const char *dataset_type;       // 需要调用方释放
     const char *base_dir;           // 需要调用方释放
+    uint64_t identifier;
     uint64_t data_segment_size;
     uint64_t index_segment_size;
     uint64_t initial_data_segment_size;
@@ -318,6 +327,7 @@ class DataSetInfo:
     name: str
     dataset_type: str
     base_dir: str
+    identifier: int
     data_segment_size: int
     index_segment_size: int
     initial_data_segment_size: int

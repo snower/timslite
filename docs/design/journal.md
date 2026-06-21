@@ -336,6 +336,7 @@ Queue 语义:
 - consumer group state 文件路径为 `{data_dir}/.journal/logs/queue/{group_name}`。
 - 未 ack sequence 只有运行超时或 state file reopen 恢复后才会被重试投递; 重试前递增 `retry_count`。
 - `max_retry_count > 0 && retry_count >= max_retry_count` 时, 下一次重试机会不返回 payload, 而是将该 sequence 标记为完成并按连续完成前缀推进 `processed_ts`。
+- 未过期 pending 不会被立即重投; `poll()` 先处理 retryable pending, 再从 `processed_ts + 1` 起跳过已 pending sequence 查找新的 journal sequence。journal sequence 连续只简化新数据查找, 不绕过 queue state file 的 pending/retry/ack 规则。
 - 同一 JournalQueue 中同一 `group_name` 的活动 consumer 必须使用相同 `QueueConsumerConfig`。
 
 ### 25.9 并发与锁顺序

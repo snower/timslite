@@ -274,14 +274,24 @@ poll 逻辑:
 
 ```text
 poll(timeout):
-  1. 若已有 unacked pending entry, 直接 JournalLog::read(entry.sequence)
-  2. next = state.next_poll_ts()   # processed_ts + 1; 初始 0 => 1
-  3. 若 next < JournalLog::next_sequence 且不在 pending:
-       read(next), add_pending(next), return
-  4. 否则释放锁并等待 condvar
+  1. 扫描 pending entries, 查找 retryable pending:
+     - start_time=0 表示 reopen 恢复后立即可重试
+     - running_expired_seconds>0 且 now-start_time >= running_expired_seconds 时可重试
+     - 未过期 pending 保留, 不直接重投
+  2. 对 retryable pending:
+     - 若 max_retry_count>0 且 retry_count>=max_retry_count:
+         标记完成, 按连续完成前缀推进 processed_ts, 继续扫描
+     - 否则 retry_count += 1, start_time = now, JournalLog::read(sequence), return
+  3. 若无 retryable pending:
+     next = state.next_poll_ts()   # processed_ts + 1; 初始 0 => 1
+     while next < JournalLog::next_sequence && state.is_in_pending(next):
+       next += 1
+     若 next < JournalLog::next_sequence:
+       read(next), add_pending(next, retry_count=0, start_time=now), return
+  4. 否则释放 JournalLog 和 queue state 锁, 再等待 condvar
 ```
 
-因为 journal sequence 连续且没有 filler/gap, JournalQueue 不需要 `query_index_entries` 或跳过 filler。
+因为 journal sequence 连续且没有 filler/gap, JournalQueue 不需要 `query_index_entries` 或跳过 filler; 该连续性只简化新 sequence 查找, 不改变 pending/retry/ack 状态机。未过期 pending 不会被立即重投, 同一 group 可以继续投递后续未 pending 的 sequence, 直到 pending 容量耗尽或无新数据。
 
 约束:
 

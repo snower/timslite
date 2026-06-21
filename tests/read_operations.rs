@@ -221,6 +221,34 @@ fn test_query_exist_rejects_bitmap_larger_than_4mib() {
     );
 }
 
+#[test]
+fn test_public_query_length_iter_reads_from_source_cursor() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("ds", "type").unwrap();
+
+    let ds = store.get_dataset(&handle).unwrap();
+    ds.write(10, b"ten").unwrap();
+    ds.write(20, b"twenty").unwrap();
+
+    let mut iter = ds.query_length_iter(10, 20).unwrap();
+    ds.close().unwrap();
+
+    let err = iter
+        .next()
+        .expect("source iterator should attempt a read")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("is closed"),
+        "unexpected error: {err}"
+    );
+}
+
 // 鈹€鈹€鈹€ read_length tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[test]
