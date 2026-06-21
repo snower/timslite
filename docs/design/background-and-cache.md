@@ -180,7 +180,8 @@ retention-reclaim (每日 retention_check_hour):
      a. Read lock → 获取 dataset Arc 引用
      b. Lock individual dataset mutex
      c. 调用 DataSet::reclaim_expired_segments()
-        - 先 close() (flush + idle_close_all)
+        - 先 flush(), 再对 data/index segment 执行 idle_close_all()
+        - 该步骤只 sync + unmap 分段 mmap, 不调用 public lifecycle DataSet::close()
         - 若 latest_written_timestamp 为 None 则跳过; 否则计算 threshold = latest.saturating_sub(retention_window as i64)
         - 删除 data 分段 (max_timestamp < threshold)
         - 删除 index 分段 (last_entry_timestamp < threshold)
@@ -190,7 +191,8 @@ retention-reclaim (每日 retention_check_hour):
 ```
 
 **关键约束**:
-- 回收过程中**不保留打开的 mmap**: close() 后分段均为 closed 状态, 检查文件后立即释放
+- 回收过程中**不保留打开的 mmap**: `flush()` + segment `idle_close_all()` 后分段 entry 均处于 closed/unmapped 状态, 检查文件后立即释放
+- retention reclaim 不关闭 dataset lifecycle: 不关闭 queue、不从 `Store.datasets` registry 移除、不使 Store handle 或已有 `Arc<DataSet>` 失效
 - **不在 idle-close 中回收**: 回收是独立的、显式的操作, 不依赖 idle 超时
 - 若 foreground 线程正在使用某个 dataset, retention reclaim 会阻塞等待 (mutex)
 - 回收期间打开的索引文件必须**检查后立即释放** (read-only mmap → drop → fs::remove_file)

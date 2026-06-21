@@ -244,7 +244,8 @@ entry_index      = ts - segment_start
 **回收规则 (TimeIndex)**:
 ```
 reclaim_expired_segments(expiration_threshold: i64):
-  前置条件: DataSet 已 close(), 所有 index segment 处于 closed 状态
+  前置条件: 调用方已 flush() 并对 index segment 执行 idle_close_all();
+           所有 index segment entry 均已 sync + unmap, 处于 closed/unmapped 状态
   for (start_timestamp, entry) in index_segments:
     if entry is not Closed(meta):
       continue
@@ -265,6 +266,7 @@ reclaim_expired_segments(expiration_threshold: i64):
 - 回收期间打开的索引段文件必须**检查完成后立即释放** (不用 idle-close)
 - 如果 index segment 同时包含过期和未过期 timestamp, 该混合分段必须保留, 不做部分裁剪
 - 索引回收不检查 entry 指向的数据段是否仍存在; 查询入口会先按 retention threshold 钳制, 再通过 data segment 边界校验避免读取异常
+- 索引回收不调用 public lifecycle `DataSet::close()`, 不关闭 queue, 不移除 Store registry 中的 dataset, 也不使现有 handle 失效
 - 数据段和索引段按各自分段时间范围独立回收, 不要求成对删除同一时间窗口
 
 ---

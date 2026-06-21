@@ -622,6 +622,7 @@ DataSet::reclaim_expired_segments():
   4. self.time_index.idle_close_all()
      self.segments.idle_close_all()
      确保所有打开分段完成 sync + unmap, 但分段注册表仍保留统一 BTreeMap 条目
+     不调用 public lifecycle DataSet::close(), 不关闭 queue, 不移除 Store registry, 不使 handle 失效
   5. self.time_index.reclaim_expired_segments(threshold, index_segment_size)
      逐个检查索引段 last_entry_timestamp() < threshold → 删除
   6. self.segments.reclaim_expired_segments(threshold)
@@ -661,6 +662,7 @@ retention_threshold = latest_written_timestamp.map(|latest| latest.saturating_su
 ### 11.5 约束
 
 - 回收前必须先 `flush()` + `idle_close_all()` 使所有分段进入 closed 集合
+- 这里的 closed 指分段 entry 已 sync + unmap, 不是 public lifecycle `DataSet::close()`; retention reclaim 不关闭 queue, 不移除 Store registry, 不使 handle 失效
 - 回收操作是**破坏性**的 (物理删除文件), 不可恢复
 - 回收过程中打开的文件必须**检查完成后立即释放**, 不依赖 idle-close
 - 数据段和索引段分别按各自分段的时间范围独立回收: 数据段要求 `max_timestamp < threshold`, 索引段要求最后 entry timestamp `< threshold`

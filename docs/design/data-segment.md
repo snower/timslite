@@ -429,7 +429,8 @@ segment_file_offset = (block_offset / data_segment_size) * data_segment_size
 **回收规则 (DataSegmentSet)**:
 ```
 reclaim_expired_segments(expiration_threshold: i64):
-  前置条件: DataSet 已 close (), 所有 segment 均处于 closed 状态
+  前置条件: 调用方已 flush() 并对 data segment 执行 idle_close_all();
+           所有 segment entry 均已 sync + unmap, 处于 closed/unmapped 状态
   for (file_offset, entry) in segments:
     if entry is Closed(meta) && meta.max_timestamp < expiration_threshold:
       fs::remove_file(meta.path)
@@ -446,6 +447,7 @@ reclaim_expired_segments(expiration_threshold: i64):
 **触发时机**:
 - 由 `DataSet::reclaim_expired_segments()` 调用 (见 [数据集操作 §6.8](dataset-operations.md))
 - 后台线程按 `retention_check_hour` 指定的 UTC hour 每日执行一次
+- 回收只释放和删除过期 data segment 文件; 不调用 public lifecycle `DataSet::close()`, 不关闭 queue, 不改变 Store registry 或 handle generation
 
 `invalid_record_count` 只记录乱序写入、纠正写入回退和 delete 造成的无效 record 数量。当前版本不基于该字段执行 compaction, 也不回收段内局部空间。
 

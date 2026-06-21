@@ -25,7 +25,7 @@
 
 | 状态 | ID | 任务 | 主要文件 | 验收标准 |
 |------|----|------|----------|----------|
-| [ ] | P0-1 | 统一 retention reclaim 的 “closed segment” 与 lifecycle `DataSet::close()` 术语，避免后台任务关闭 dataset | `docs/design/background-and-cache.md`, `docs/design/data-segment.md`, `docs/design/time-index.md`, `docs/design/dataset-operations.md`, `docs/design/store-and-ffi.md`, retention/background tests 如需 | retention 文档只使用 `flush()` + `idle_close_segments()` / `idle_close_all()` 表达分段释放；不再写 `DataSet 已 close()` 或裸 `close()`；明确 reclaim 不关闭 queue、不移除 Store registry、不使 handle 失效；必要时补充后台 retention 不关闭 dataset 的回归测试 |
+| [x] | P0-1 | 统一 retention reclaim 的 “closed segment” 与 lifecycle `DataSet::close()` 术语，避免后台任务关闭 dataset | `docs/design/background-and-cache.md`, `docs/design/data-segment.md`, `docs/design/time-index.md`, `docs/design/dataset-operations.md`, `docs/design/store-and-ffi.md`, retention/background tests 如需 | retention 文档只使用 `flush()` + `idle_close_segments()` / `idle_close_all()` 表达分段释放；不再写 `DataSet 已 close()` 或裸 `close()`；明确 reclaim 不关闭 queue、不移除 Store registry、不使 handle 失效；必要时补充后台 retention 不关闭 dataset 的回归测试 |
 
 ## P1: 应尽快处理
 
@@ -54,13 +54,14 @@
 
 | 日期 | ID | 状态 | 处理摘要 | 验证 |
 |------|----|------|----------|------|
+| 2026-06-21 | P0-1 | [x] | 统一 retention reclaim 文档术语: 回收前执行 `flush()` + data/index segment `idle_close_all()` 使分段 entry sync+unmap, 明确不调用 lifecycle `DataSet::close()`、不关闭 queue、不移除 Store registry、不使 handle 失效 | 静态检索确认 P0-1 相关 active docs 不再把 retention 前置条件写成 `DataSet 已 close()` 或裸 `close()` 流程 |
 | 2026-06-21 | ALL | [ ] | 根据第 8 轮设计审查报告创建 TODO 跟踪文件，尚未开始修复 | `docs/review/design-review.md` 与 `docs/review/design-review-todo.md` 已创建；本轮未修改设计/实现代码 |
 
 ## 完成统计
 
 | 优先级 | 总数 | 已完成 | 未完成 |
 |--------|------|--------|--------|
-| P0 | 1 | 0 | 1 |
+| P0 | 1 | 1 | 0 |
 | P1 | 4 | 0 | 4 |
 | P2 | 2 | 0 | 2 |
-| 合计 | 7 | 0 | 7 |
+| 合计 | 7 | 1 | 6 |
