@@ -60,22 +60,22 @@ impl DataSet {
     // 轻量级读操作 (仅索引或 record header)
     /// 检查 timestamp 当前是否存在可见数据。timestamp 为精确业务时间戳。
     /// 不读取数据段；过期 timestamp 与 filler/deleted entry 返回 false。
-    fn read_exist(&mut self, timestamp: i64) -> io::Result<bool>;
+    fn read_exist(&self, timestamp: i64) -> io::Result<bool>;
 
     /// 范围数据存在性快速检查，返回位图。位 i 代表 (start_ts + i) 当前是否存在可见数据。
     /// 不读取数据段；过期 timestamp 与 filler/deleted entry 位为 0；bitmap 最大 4MiB。
-    fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<u8>>;
+    fn query_exist(&self, start_ts: i64, end_ts: i64) -> io::Result<Vec<u8>>;
 
     /// 读取单条记录的逻辑数据长度。timestamp 为精确业务时间戳。
     /// 跳过 filler 和过期记录，仅读取 record header (12 bytes)。
-    fn read_length(&mut self, timestamp: i64) -> io::Result<Option<u32>>;
+    fn read_length(&self, timestamp: i64) -> io::Result<Option<u32>>;
 
     /// 范围查询数据长度，返回有效记录列表。跳过 filler 和过期记录。
     /// 每个元素为 (timestamp, data_len)，按时间戳排序。
-    fn query_length(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<(i64, u32)>>;
+    fn query_length(&self, start_ts: i64, end_ts: i64) -> io::Result<Vec<(i64, u32)>>;
 
     /// 惰性范围数据长度迭代器。支持 HotBlockCache，按需读取 record header。
-    fn query_length_iter(&mut self, start_ts: i64, end_ts: i64) -> io::Result<QueryLengthIterator<'_>>;
+    fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> io::Result<QueryLengthIterator>;
 
     fn flush(&mut self) -> io::Result<()>;
     fn config(&self) -> &DataSetConfig;

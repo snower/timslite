@@ -53,7 +53,7 @@ impl DataSegmentSet {
 impl DataSet {
     /// Check if visible data exists for the given timestamp.
     /// timestamp is an exact signed i64 business timestamp.
-    pub fn read_exist(&mut self, timestamp: i64) -> Result<bool>;
+    pub fn read_exist(&self, timestamp: i64) -> Result<bool>;
 }
 ```
 
@@ -86,7 +86,7 @@ impl DataSet {
     /// Check visible data existence in [start_ts, end_ts].
     /// Returns bitmap as byte array. Bit i represents (start_ts + i).
     /// Bit is 1 if visible data exists, 0 otherwise.
-    pub fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
+    pub fn query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
 }
 ```
 
@@ -133,7 +133,7 @@ impl DataSet {
     /// Read the logical data length for a timestamp.
     /// timestamp is an exact signed i64 business timestamp.
     /// Returns Some(data_len) if record exists, None if not found or filler.
-    pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>>;
+    pub fn read_length(&self, timestamp: i64) -> Result<Option<u32>>;
 }
 ```
 
@@ -168,7 +168,7 @@ impl DataSet {
 impl DataSet {
     /// Query data lengths for timestamps in [start_ts, end_ts].
     /// Returns Vec<(timestamp, data_len)> for valid records only.
-    pub fn query_length(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
+    pub fn query_length(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
 }
 ```
 

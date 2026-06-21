@@ -40,8 +40,8 @@
 
 | 状态 | ID | 任务 | 主要文件 | 验收标准 |
 |------|----|------|----------|----------|
-| [ ] | P2-1 | 清理 `data-model.md` 中旧 `StoreConfig` / `DataSetConfig` 示例 | `docs/design/data-model.md`, `src/config.rs` | 同一文档内不再存在两套配置字段列表；核心类型示例与 active contract / `src/config.rs` 对齐；若保留历史草案，明确标注不可作为实现依据 |
-| [ ] | P2-2 | 将读操作文档中的 public Rust 签名改为 Store-managed `&self` wrapper 口径 | `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `src/dataset.rs` | public `DataSet` 读/轻量读/length API 示例使用 `&self`；如需展示 `DataSetInner`，单独标注为 crate-internal；文档末尾并发边界与前文签名一致 |
+| [x] | P2-1 | 清理 `data-model.md` 中旧 `StoreConfig` / `DataSetConfig` 示例 | `docs/design/data-model.md`, `src/config.rs` | 同一文档内不再存在两套配置字段列表；核心类型示例与 active contract / `src/config.rs` 对齐；若保留历史草案，明确标注不可作为实现依据 |
+| [x] | P2-2 | 将读操作文档中的 public Rust 签名改为 Store-managed `&self` wrapper 口径 | `docs/design/dataset-read-operations.md`, `docs/design/store-and-ffi.md`, `src/dataset.rs` | public `DataSet` 读/轻量读/length API 示例使用 `&self`；如需展示 `DataSetInner`，单独标注为 crate-internal；文档末尾并发边界与前文签名一致 |
 
 ## 建议处理顺序
 
@@ -54,6 +54,8 @@
 
 | 日期 | ID | 状态 | 处理摘要 | 验证 |
 |------|----|------|----------|------|
+| 2026-06-21 | P2-1 | [x] | `data-model.md` 删除旧 `StoreConfig` / `DataSetConfig` 草案字段示例，替换为与 `src/config.rs` 对齐的 active contract，并明确实现字段为 crate-private、public 通过 builder/getters 暴露 | 静态检索确认旧草案字段列表不再与 active contract 并存；核对 `src/config.rs` 字段与 getter/builder 口径 |
+| 2026-06-21 | P2-2 | [x] | `dataset-read-operations.md` public Rust 签名统一为 Store-managed `&self` wrapper，补充 `DataSetInner` internal helper 可继续使用 `&mut self`; 同步 `dataset-operations.md` 与 phase 30 计划文档 | 静态检索确认 docs 中 public read/length/query 签名不再使用 `&mut self`; `src/dataset.rs` public wrapper 已是 `&self` |
 | 2026-06-21 | P1-1 | [x] | Public Rust `DataSet::query_length_iter()` 改为 source-cursor iterator, 创建时准备 `QuerySource`, `next()` 时按需读取 record header; FFI 文档明确保持 index-entry snapshot iterator 语义 | 新增 `test_public_query_length_iter_reads_from_source_cursor`; 先在旧实现下失败, 实现后通过; `cargo check`; `cargo test --test read_operations -- --test-threads=1` |
 | 2026-06-21 | P1-2 | [x] | 删除 `dataset-read-operations.md` 中旧式 `TmslStore* + name/type` 轻量读 C ABI 签名, 改为引用 `store-and-ffi.md` 与 `include/timslite.h` 作为权威 ABI | 静态检索旧式 `tmsl_dataset_*` Store/name/type 签名 |
 | 2026-06-21 | P1-3 | [x] | `dataset-inspect.md` 补齐 Rust/FFI/Python `DataSetInfo.identifier`, 并把 Store facade 伪代码改为 validate/open-or-get/load-and-keep 流程 | 静态检索 `DataSetInfo` identifier 和 inspect 流程说明 |
@@ -67,5 +69,5 @@
 |--------|------|--------|--------|
 | P0 | 1 | 1 | 0 |
 | P1 | 4 | 4 | 0 |
-| P2 | 2 | 0 | 2 |
-| 合计 | 7 | 5 | 2 |
+| P2 | 2 | 2 | 0 |
+| 合计 | 7 | 7 | 0 |

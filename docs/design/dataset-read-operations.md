@@ -28,10 +28,12 @@
 
 ## 二、现有接口
 
+本节签名描述 Store-managed public `DataSet` wrapper。Public wrapper 内部持有 `Arc<Mutex<DataSetInner>>`, 因此读操作使用 `&self` 并在方法内部获取 dataset mutex。若文档需要展示 crate-internal `DataSetInner` helper, 会明确标注为 internal; internal helper 可以继续使用 `&mut self`。
+
 ### 2.1 read(timestamp)
 
 ```rust
-pub fn read(&mut self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>
+pub fn read(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>
 ```
 
 读取单条完整记录。
@@ -52,7 +54,7 @@ pub fn read(&mut self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>
 ### 2.1.1 read_latest()
 
 ```rust
-pub fn read_latest(&mut self) -> Result<Option<(i64, Vec<u8>)>>
+pub fn read_latest(&self) -> Result<Option<(i64, Vec<u8>)>>
 ```
 
 读取 `latest_written_timestamp` 对应的完整记录。
@@ -69,7 +71,7 @@ pub fn read_latest(&mut self) -> Result<Option<(i64, Vec<u8>)>>
 ### 2.2 query(start_ts, end_ts)
 
 ```rust
-pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>>
+pub fn query(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>>
 ```
 
 范围查询，返回所有有效记录。
@@ -89,7 +91,7 @@ pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)
 ### 2.3 query_iter(start_ts, end_ts)
 
 ```rust
-pub fn query_iter<'a>(&'a mut self, start_ts: i64, end_ts: i64) -> Result<QueryIterator<'a>>
+pub fn query_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryIterator>
 ```
 
 惰性范围查询迭代器。
@@ -112,7 +114,7 @@ pub fn query_iter<'a>(&'a mut self, start_ts: i64, end_ts: i64) -> Result<QueryI
 ### 3.1 read_exist(timestamp)
 
 ```rust
-pub fn read_exist(&mut self, timestamp: i64) -> Result<bool>
+pub fn read_exist(&self, timestamp: i64) -> Result<bool>
 ```
 
 检查单个时间戳当前是否有可见数据。
@@ -141,7 +143,7 @@ pub fn read_exist(&mut self, timestamp: i64) -> Result<bool>
 ### 3.2 query_exist(start_ts, end_ts)
 
 ```rust
-pub fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>
+pub fn query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>
 ```
 
 范围数据存在性快速检查，返回位图。
@@ -182,7 +184,7 @@ start_ts = 100, end_ts = 107
 ### 3.3 read_length(timestamp)
 
 ```rust
-pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>>
+pub fn read_length(&self, timestamp: i64) -> Result<Option<u32>>
 ```
 
 读取单条记录的逻辑数据长度。
@@ -209,7 +211,7 @@ pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>>
 ### 3.4 query_length(start_ts, end_ts)
 
 ```rust
-pub fn query_length(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>
+pub fn query_length(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>
 ```
 
 范围查询数据长度，返回有效记录列表。

@@ -303,45 +303,13 @@ struct DataSet {
     last_used_at: Instant,
 }
 
-/// Store 配置: 后台/缓存等运行时设置 + 新建 DataSet 默认值
-pub struct StoreConfig {
-    pub flush_interval: Duration,    // 默认 15 秒 (dirty segment mmap sync, 不密封/不压缩)
-    pub idle_timeout: Duration,      // 默认 30 分钟 (sync + unmmap + close, 不改变 pending)
-    pub data_segment_size: u64,      // 新建 DataSet 默认 64MB
-    pub index_segment_size: u64,     // 新建 DataSet 默认 4MB
-    pub initial_data_segment_size: u64,  // 新建 DataSet 默认 256KB
-    pub initial_index_segment_size: u64, // 新建 DataSet 默认 4KB
-    pub compress_level: u8,          // 新建 DataSet 默认 6
-    pub cache_max_memory: usize,     // 读缓存池上限 (字节, 0=禁用, 默认 256MB)
-    pub cache_idle_timeout: Duration, // 缓存块空闲超时 (默认 30 分钟)
-    pub enable_journal: bool,        // 是否启用内置 .journal/logs (默认 true)
-}
+/// Store 配置: 后台/缓存等运行时设置 + 新建 DataSet 默认值。
+/// 字段在实现中保持 crate-private, public API 通过 builder 和 getters 暴露。
+pub struct StoreConfig { /* active fields见本节下方 */ }
 
-impl Default for StoreConfig {
-    fn default() -> Self {
-        Self {
-            flush_interval: Duration::from_secs(15),
-            idle_timeout: Duration::from_secs(1800),     // 30 分钟
-            data_segment_size: 64 * 1024 * 1024,         // 64MB
-            index_segment_size: 4 * 1024 * 1024,         // 4MB
-            initial_data_segment_size: 256 * 1024,       // 256KB
-            initial_index_segment_size: 4 * 1024,        // 4KB
-            compress_level: 6,
-            cache_max_memory: 256 * 1024 * 1024,         // 256MB
-            cache_idle_timeout: Duration::from_secs(1800), // 30 分钟
-            enable_journal: true,
-        }
-    }
-}
-
-/// 数据集内部配置 (创建时来自 StoreConfig/DataSetConfigBuilder; 打开时来自 meta)
-struct DataSetConfig {
-    data_segment_size: u64,
-    index_segment_size: u64,
-    initial_data_segment_size: u64,
-    initial_index_segment_size: u64,
-    compress_level: u8,
-}
+/// 数据集创建/open 配置。
+/// 字段在实现中保持 crate-private, public API 通过 builder 和 getters 暴露。
+pub struct DataSetConfig { /* active fields见本节下方 */ }
 
 /// Block 头
 struct BlockHeader {
@@ -452,44 +420,44 @@ Active segment header immutable TLV set:
 | 0x04 | compress_level | 1 | u8 | Compression level |
 | 0x05 | compress_type | 1 | u8 | Compression algorithm: 0=zstd, 1=deflate |
 
-## P2-2 Active Contract: StoreConfig And DataSetConfig
+## Active Contract: StoreConfig And DataSetConfig
 
 The authoritative field list is `src/config.rs`; this section records the active design-level contract so the data model document does not omit current fields.
 
-`StoreConfig` contains runtime settings and defaults for newly created datasets:
+`StoreConfig` contains runtime settings and defaults for newly created datasets. Fields are crate-private in implementation; callers use `StoreConfig::builder()` and getters.
 
 ```rust
 pub struct StoreConfig {
-    pub flush_interval: Duration,          // default 15s
-    pub idle_timeout: Duration,            // default 30min
-    pub data_segment_size: u64,            // default 64MiB
-    pub index_segment_size: u64,           // default 4MiB
-    pub initial_data_segment_size: u64,    // default 256KiB
-    pub initial_index_segment_size: u64,   // default 4KiB
-    pub compress_level: u8,                // default 6
-    pub compress_type: u8,                 // default 0=zstd, 1=deflate
-    pub cache_max_memory: usize,           // default 256MiB, 0=disabled
-    pub cache_idle_timeout: Duration,      // default 30min
-    pub retention_check_hour: u8,          // UTC hour 0..=23, default 0
-    pub enable_background_thread: bool,    // default true
-    pub enable_journal: bool,              // default true
+    flush_interval: Duration,          // default 15s
+    idle_timeout: Duration,            // default 30min
+    data_segment_size: u64,            // default 64MiB
+    index_segment_size: u64,           // default 4MiB
+    initial_data_segment_size: u64,    // default 256KiB
+    initial_index_segment_size: u64,   // default 4KiB
+    compress_level: u8,                // default 6
+    compress_type: u8,                 // default 0=zstd, 1=deflate
+    cache_max_memory: usize,           // default 256MiB, 0=disabled
+    cache_idle_timeout: Duration,      // default 30min
+    retention_check_hour: u8,          // UTC hour 0..=23, default 0
+    enable_background_thread: bool,    // default true
+    enable_journal: bool,              // default true
 }
 ```
 
-`DataSetConfig` contains dataset creation/open configuration. Values persisted in dataset meta must be read from meta on reopen, not compared against Store defaults:
+`DataSetConfig` contains dataset creation/open configuration. Fields are crate-private in implementation; callers use `DataSetConfig::builder()`, `DataSetConfigBuilder::from_store()`, and getters. Values persisted in dataset meta must be read from meta on reopen, not compared against Store defaults:
 
 ```rust
 pub struct DataSetConfig {
-    pub data_segment_size: u64,
-    pub index_segment_size: u64,
-    pub compress_level: u8,
-    pub compress_type: u8,
-    pub index_continuous: u8,
-    pub initial_data_segment_size: u64,
-    pub initial_index_segment_size: u64,
-    pub retention_window: u64, // same unit as timestamp, 0=no limit
-    pub enable_journal: bool,  // default true, persisted in meta
-    pub create_time: i64,      // unix milliseconds
+    data_segment_size: u64,
+    index_segment_size: u64,
+    compress_level: u8,
+    compress_type: u8,
+    index_continuous: u8,
+    initial_data_segment_size: u64,
+    initial_index_segment_size: u64,
+    retention_window: u64, // same unit as timestamp, 0=no limit
+    enable_journal: bool,  // default true, persisted in meta
+    create_time: i64,      // unix milliseconds
 }
 ```
 
