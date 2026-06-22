@@ -28,6 +28,9 @@ pub(crate) enum JournalManager {
         queue_dir: std::path::PathBuf,
         queue: Mutex<Option<JournalQueue>>,
     },
+    ReadOnly {
+        log: Option<Arc<Mutex<JournalLog>>>,
+    },
     Disabled,
 }
 
@@ -54,6 +57,18 @@ impl JournalManager {
         })
     }
 
+    pub(crate) fn open_read_only(data_dir: &Path, config: &StoreConfig) -> Result<Self> {
+        if !config.enable_journal {
+            return Ok(Self::Disabled);
+        }
+        let base_dir = data_dir
+            .join(JOURNAL_DATASET_NAME)
+            .join(JOURNAL_DATASET_TYPE);
+        Ok(Self::ReadOnly {
+            log: JournalLog::open_read_only(base_dir, config)?.map(|log| Arc::new(Mutex::new(log))),
+        })
+    }
+
     pub(crate) fn key() -> DataSetKey {
         DataSetKey {
             name: JOURNAL_DATASET_NAME.to_string(),
@@ -66,7 +81,10 @@ impl JournalManager {
     }
 
     pub(crate) fn is_enabled(&self) -> bool {
-        matches!(self, JournalManager::Enabled { .. })
+        matches!(
+            self,
+            JournalManager::Enabled { .. } | JournalManager::ReadOnly { .. }
+        )
     }
 
     pub(crate) fn open_queue(&self) -> Result<JournalQueue> {
@@ -86,6 +104,9 @@ impl JournalManager {
                 *cached = Some(q.clone());
                 Ok(q)
             }
+            JournalManager::ReadOnly { .. } => Err(TmslError::InvalidData(
+                "journal queue is not available in read-only store".into(),
+            )),
             JournalManager::Disabled => Err(TmslError::NotFound("journal is disabled".into())),
         }
     }
@@ -154,31 +175,37 @@ impl JournalManager {
     }
 
     pub(crate) fn flush_dirty(&self) -> Result<()> {
-        if let JournalManager::Enabled { log, queue, .. } = self {
-            log.lock()
-                .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
-                .flush_dirty()?;
-            if let Some(q) = queue
-                .lock()
-                .map_err(|_| TmslError::InvalidData("journal queue mutex poisoned".into()))?
-                .as_ref()
-            {
-                q.flush_state_files()?;
+        match self {
+            JournalManager::Enabled { log, queue, .. } => {
+                log.lock()
+                    .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
+                    .flush_dirty()?;
+                if let Some(q) = queue
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("journal queue mutex poisoned".into()))?
+                    .as_ref()
+                {
+                    q.flush_state_files()?;
+                }
             }
+            JournalManager::ReadOnly { .. } | JournalManager::Disabled => {}
         }
         Ok(())
     }
 
     pub(crate) fn close(&self) -> Result<()> {
-        if let JournalManager::Enabled { queue, .. } = self {
-            if let Some(q) = queue
-                .lock()
-                .map_err(|_| TmslError::InvalidData("journal queue mutex poisoned".into()))?
-                .as_ref()
-            {
-                let _ = q.close();
+        match self {
+            JournalManager::Enabled { queue, .. } => {
+                if let Some(q) = queue
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("journal queue mutex poisoned".into()))?
+                    .as_ref()
+                {
+                    let _ = q.close();
+                }
+                self.flush_dirty()?;
             }
-            self.flush_dirty()?;
+            JournalManager::ReadOnly { .. } | JournalManager::Disabled => {}
         }
         Ok(())
     }
@@ -190,6 +217,13 @@ impl JournalManager {
                 .lock()
                 .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
                 .latest_sequence()),
+            JournalManager::ReadOnly { log } => match log {
+                Some(log) => Ok(log
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
+                    .latest_sequence()),
+                None => Ok(None),
+            },
         }
     }
 
@@ -200,6 +234,13 @@ impl JournalManager {
                 .lock()
                 .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
                 .read(sequence),
+            JournalManager::ReadOnly { log } => match log {
+                Some(log) => log
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
+                    .read(sequence),
+                None => Ok(None),
+            },
         }
     }
 
@@ -210,12 +251,22 @@ impl JournalManager {
                 .lock()
                 .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
                 .query(start, end),
+            JournalManager::ReadOnly { log } => match log {
+                Some(log) => log
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
+                    .query(start, end),
+                None => Ok(Vec::new()),
+            },
         }
     }
 
     fn append(&self, record: JournalRecord) -> Result<Option<i64>> {
         match self {
             JournalManager::Disabled => Ok(None),
+            JournalManager::ReadOnly { .. } => Err(TmslError::InvalidData(
+                "read-only journal cannot append records".into(),
+            )),
             JournalManager::Enabled { log, queue, .. } => {
                 let payload = record.encode()?;
                 let sequence = log

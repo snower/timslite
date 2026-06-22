@@ -96,6 +96,13 @@ impl DataSetRuntimeContext {
         self
     }
 
+    pub(crate) fn with_read_only(mut self) -> Self {
+        self.journal = None;
+        self.flush_queue = None;
+        self.read_only = true;
+        self
+    }
+
     pub(crate) fn read_only() -> Self {
         Self {
             block_cache: None,
@@ -329,6 +336,10 @@ impl DataSet {
         DataSetInner::open(id, base_dir).map(Self::new)
     }
 
+    pub(crate) fn open_read_only(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
+        DataSetInner::open_read_only(id, base_dir).map(Self::new)
+    }
+
     pub(crate) fn set_runtime_context(&self, context: DataSetRuntimeContext) -> Result<()> {
         self.with_inner(|inner| {
             inner.set_runtime_context(context);
@@ -498,6 +509,11 @@ impl DataSet {
     }
 
     pub fn reclaim_expired_segments(&self) -> Result<usize> {
+        if self.with_inner_ref(|inner| Ok(inner.runtime_context.read_only))? {
+            return Err(TmslError::InvalidData(
+                "read-only dataset cannot reclaim expired segments".into(),
+            ));
+        }
         self.with_open_inner(|inner| inner.reclaim_expired_segments())
     }
 
@@ -687,6 +703,14 @@ impl DataSetInner {
     /// Fails if the dataset does not exist (no meta file).
     /// Segment sizes and compress_level are read from meta and cannot be overridden.
     pub(crate) fn open(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
+        Self::open_with_read_only(id, base_dir, false)
+    }
+
+    pub(crate) fn open_read_only(id: DataSetKey, base_dir: PathBuf) -> Result<Self> {
+        Self::open_with_read_only(id, base_dir, true)
+    }
+
+    fn open_with_read_only(id: DataSetKey, base_dir: PathBuf, read_only: bool) -> Result<Self> {
         let meta_path = base_dir.join("meta");
         if !meta_path.exists() {
             return Err(TmslError::NotFound(format!(
@@ -729,7 +753,11 @@ impl DataSetInner {
             config.compress_level,
             config.compress_type,
         )?;
-        let dataset_state = DatasetStateFile::open_or_create(&base_dir)?;
+        let dataset_state = if read_only {
+            DatasetStateFile::open_read_only_or_default(&base_dir)?
+        } else {
+            DatasetStateFile::open_or_create(&base_dir)?
+        };
 
         // Recover latest_written_timestamp from index segments
         let latest_written_timestamp = Self::recover_latest_timestamp(&time_index);
@@ -1613,6 +1641,9 @@ impl DataSetInner {
 
     /// Flush all data.
     pub fn flush(&mut self) -> Result<()> {
+        if self.runtime_context.read_only {
+            return Ok(());
+        }
         if self.runtime_context.flush_queue.is_some() {
             self.flush_dirty_segments()?;
             self.remove_queued_flush_targets_for_self();
@@ -1635,6 +1666,10 @@ impl DataSetInner {
     /// Close all segments.
     pub fn close(&mut self) -> Result<()> {
         if self.closed {
+            return Ok(());
+        }
+        if self.runtime_context.read_only {
+            self.closed = true;
             return Ok(());
         }
         self.close_queue()?;

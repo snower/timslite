@@ -14,7 +14,7 @@ use crate::exceptions::wrap;
 use crate::queue::{PyDatasetQueue, PyJournalQueue};
 
 /// Immutable dataset configuration info.
-#[pyclass(name = "DataSetInfo")]
+#[pyclass(name = "DataSetInfo", skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyDataSetInfo {
     /// Dataset name
@@ -62,7 +62,7 @@ pub struct PyDataSetInfo {
 }
 
 /// Mutable dataset state info.
-#[pyclass(name = "DataSetState")]
+#[pyclass(name = "DataSetState", skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyDataSetState {
     /// Highest written timestamp
@@ -122,7 +122,7 @@ pub struct PyDataSetState {
 }
 
 /// Result of `Store.inspect_dataset()`.
-#[pyclass(name = "DataSetInspectResult")]
+#[pyclass(name = "DataSetInspectResult", skip_from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PyDataSetInspectResult {
     /// Immutable configuration info
@@ -324,7 +324,7 @@ impl PyStore {
         self.next_id += 1;
         let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
 
-        let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
+        let py_ds = PyDataset::new(ds_arc, id, base_dir, store.is_read_only());
         self.datasets.insert(id, py_ds.inner_arc());
         self.handles.insert(id, handle);
         Ok(py_ds)
@@ -346,7 +346,7 @@ impl PyStore {
         self.next_id += 1;
         let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
 
-        let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
+        let py_ds = PyDataset::new(ds_arc, id, base_dir, store.is_read_only());
         self.datasets.insert(id, py_ds.inner_arc());
         self.handles.insert(id, handle);
         Ok(py_ds)
@@ -366,7 +366,7 @@ impl PyStore {
         self.next_id += 1;
         let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
 
-        let py_ds = PyDataset::new(ds_arc, id, base_dir, false);
+        let py_ds = PyDataset::new(ds_arc, id, base_dir, store.is_read_only());
         self.datasets.insert(id, py_ds.inner_arc());
         self.handles.insert(id, handle);
         Ok(py_ds)

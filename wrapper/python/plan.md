@@ -180,7 +180,7 @@ wrapper/python/
 - [ ] 验证: 手动调用 `store.close()` 后再调用操作 → 友好错误
 
 **验收标准**:
-- `StoreConfig` 所有 10 个字段正确, 默认值匹配 Rust 端
+- `StoreConfig` 所有当前字段正确, 默认值匹配 Rust 端, 包括 `read_only=None|False|True`
 - `Store.open()` 创建/打开存储成功, 自动创建目录
 - Context manager (`with` 语句) 正确管理生命周期
 - `close()` 后 Store 不可用, 尝试操作返回明确错误

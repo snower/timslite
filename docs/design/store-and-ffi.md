@@ -122,6 +122,22 @@ impl Store {
 | `Store::open_queue` / `open_journal_queue` | `open_queue` 打开普通 dataset queue; `open_journal_queue` 打开专用 JournalQueue | `DatasetQueue::close()` 与 `Store::close_queue()` 都会关闭 dataset 上的 queue 状态; journal queue producer 只允许 `JournalManager` |
 | `Store::drop_dataset` | 未打开时先按 `open_dataset` 语义加载并获取 dataset 锁; 关闭 queue/dataset, 删除 `{name}/{type}/` 整个目录树; 有效 journal 开启时成功后写 `0x02` | `remove_dir_all(base_dir)` |
 
+### 11.2.1 Store read-only and lock contract
+
+`Store::open` uses a sibling `.lock` file next to `max_identifier` only as the OS file-lock target. The contract must never treat `.lock` file existence as a lock signal; only the OS lock result matters. A stale unlocked `.lock` file must still allow writable open.
+
+`StoreConfig::read_only() -> Option<bool>` controls the open mode:
+
+- `None` (default): auto mode. `Store::open` creates the Store root if needed, tries to acquire the `.lock` OS lock, opens writable when it succeeds, and falls back to read-only when another instance holds the lock.
+- `Some(false)`: explicit writable mode. `Store::open` creates the Store root if needed and returns an error when the `.lock` OS lock is already held.
+- `Some(true)`: forced read-only mode. `Store::open` does not create, check, or lock `.lock`; it opens a read-only Store view directly.
+
+The acquired lock handle is stored inside `Store` as `Option<File>` and is released by normal Store drop/close semantics. Read-only Stores store no lock handle.
+
+Read-only Store mode rejects every mutating Store or Store-managed `DataSet` operation, including create/drop/write/append/delete, retention reclaim, queue open/close/push/poll/ack, and `open_journal_queue`. `read`, `read_latest`, `query`, inspect/list operations, and journal latest/read/query remain read-capable. Background tasks are not started in read-only mode, and manual background task APIs are unavailable for that Store.
+
+The read-only view is an open-time persisted view, not a live reader. It only needs to read bytes already flushed to the Store files before the read-only Store opened.
+
 ### 11.3 Dataset name/type 校验
 
 `name` 和 `dataset_type` 直接作为目录名使用, 不做转义。两者必须非空、最长 255 字节且整体匹配 `^[0-9A-Za-z_-]+$`。
@@ -200,6 +216,25 @@ impl StoreConfigBuilder {
 - `tmsl_store_open(data_dir)` 使用默认配置, journal 默认开启。
 - 如果宿主希望完全避免 journal 写放大或不希望自动创建 `.journal/`, 必须使用 `tmsl_store_open_with_config` 并设置 `enable_journal=false`。
 - 禁用 journal 不影响普通 dataset 的 create/write/delete/drop 成功语义, 对应 journal hook 为 no-op。
+
+### 11.5.0 StoreConfig: read_only
+
+```rust
+pub struct StoreConfig {
+    // ... existing fields ...
+    /// None=auto, Some(false)=require writable, Some(true)=force read-only.
+    pub read_only: Option<bool>,
+}
+
+impl StoreConfigBuilder {
+    pub fn read_only(mut self, read_only: Option<bool>) -> Self {
+        self.read_only = Some(read_only);
+        self
+    }
+}
+```
+
+Read-only mode is a Store runtime setting. It is not persisted in dataset meta and does not change existing dataset configuration.
 
 ### 11.5.1 DataSetConfig: enable_journal
 
@@ -316,7 +351,7 @@ C ABI 句柄内部同步:
 ```rust
 #[repr(C)]
 pub struct TmslStoreConfigFFI {
-    pub version: u32,                    // 必须为支持 enable_journal 的 TMSL_STORE_CONFIG_FFI_VERSION
+    pub version: u32,                    // must be TMSL_STORE_CONFIG_FFI_VERSION
     pub flush_interval_ms: u64,
     pub idle_timeout_ms: u64,
     pub data_segment_size: u64,
@@ -329,10 +364,12 @@ pub struct TmslStoreConfigFFI {
     pub retention_check_hour: u8,
     pub enable_background_thread: u8,    // 0=false, non-zero=true
     pub enable_journal: u8,              // 0=false, non-zero=true
+    pub read_only_mode: u8,              // TMSL_STORE_READ_ONLY_*
 }
 
-// enable_journal 追加后必须提升 TMSL_STORE_CONFIG_FFI_VERSION。
-// 若实现选择兼容旧版本 config, 旧版本缺失的 enable_journal 按默认 true 处理。
+// read_only_mode is encoded as:
+// TMSL_STORE_READ_ONLY_AUTO=0, FALSE=1, TRUE=2.
+// Adding read_only_mode requires TMSL_STORE_CONFIG_FFI_VERSION=5.
 
 #[repr(C)]
 pub struct TmslDatasetConfigFFI {

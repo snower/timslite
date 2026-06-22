@@ -20,6 +20,7 @@ class TestConfig:
         assert config.retention_check_hour == 0
         assert config.enable_background_thread is True
         assert config.enable_journal is True
+        assert config.read_only is None
 
     def test_store_config_constructor_defaults_match_rust_defaults(self):
         """StoreConfig() defaults match StoreConfig.default()."""
@@ -28,6 +29,7 @@ class TestConfig:
         assert config.idle_timeout == 1800
         assert config.enable_background_thread is True
         assert config.enable_journal is True
+        assert config.read_only is None
 
     def test_store_config_custom(self):
         """Custom config sets all fields including retention_check_hour and enable_background_thread."""
@@ -44,6 +46,7 @@ class TestConfig:
             retention_check_hour=3,
             enable_background_thread=False,
             enable_journal=False,
+            read_only=True,
         )
         assert config.flush_interval == 300
         assert config.idle_timeout == 900
@@ -57,6 +60,13 @@ class TestConfig:
         assert config.retention_check_hour == 3
         assert config.enable_background_thread is False
         assert config.enable_journal is False
+        assert config.read_only is True
+
+    def test_store_config_read_only_tristate(self):
+        """read_only accepts None, False, and True."""
+        assert timslite.StoreConfig(read_only=None).read_only is None
+        assert timslite.StoreConfig(read_only=False).read_only is False
+        assert timslite.StoreConfig(read_only=True).read_only is True
 
     def test_create_dataset_with_kwargs(self, tmpdir):
         """create_dataset kwargs override store defaults."""

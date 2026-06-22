@@ -49,10 +49,11 @@ impl Default for DatasetStateSnapshot {
 
 pub(crate) struct DatasetStateFile {
     path: PathBuf,
-    mmap: MmapMut,
+    mmap: Option<MmapMut>,
     snapshot: DatasetStateSnapshot,
     is_flushed: bool,
     queued_for_flush: bool,
+    read_only: bool,
 }
 
 impl DatasetStateFile {
@@ -91,10 +92,11 @@ impl DatasetStateFile {
         mmap.flush()?;
         Ok(Self {
             path,
-            mmap,
+            mmap: Some(mmap),
             snapshot,
             is_flushed: true,
             queued_for_flush: false,
+            read_only: false,
         })
     }
 
@@ -127,11 +129,29 @@ impl DatasetStateFile {
         };
         Ok(Self {
             path,
-            mmap,
+            mmap: Some(mmap),
             snapshot,
             is_flushed: true,
             queued_for_flush: false,
+            read_only: false,
         })
+    }
+
+    pub(crate) fn open_read_only_or_default(dataset_dir: &Path) -> Result<Self> {
+        let path = dataset_dir.join("state");
+        if !path.exists() {
+            return Ok(Self {
+                path,
+                mmap: None,
+                snapshot: DatasetStateSnapshot::default(),
+                is_flushed: true,
+                queued_for_flush: false,
+                read_only: true,
+            });
+        }
+        let mut state = Self::open_existing(path)?;
+        state.read_only = true;
+        Ok(state)
     }
 
     pub(crate) fn snapshot(&self) -> DatasetStateSnapshot {
@@ -222,9 +242,18 @@ impl DatasetStateFile {
     }
 
     pub(crate) fn sync(&mut self) -> Result<()> {
+        if self.read_only {
+            self.is_flushed = true;
+            self.queued_for_flush = false;
+            return Ok(());
+        }
         if !self.is_flushed {
-            Self::write_snapshot_to_mmap(&mut self.mmap, self.snapshot);
-            self.mmap.flush()?;
+            let mmap = self
+                .mmap
+                .as_mut()
+                .ok_or_else(|| TmslError::MmapError("dataset state file is not mapped".into()))?;
+            Self::write_snapshot_to_mmap(mmap, self.snapshot);
+            mmap.flush()?;
             self.is_flushed = true;
         }
         self.queued_for_flush = false;
@@ -232,7 +261,12 @@ impl DatasetStateFile {
     }
 
     fn mark_dirty(&mut self) {
-        Self::write_snapshot_to_mmap(&mut self.mmap, self.snapshot);
+        if self.read_only {
+            return;
+        }
+        if let Some(mmap) = self.mmap.as_mut() {
+            Self::write_snapshot_to_mmap(mmap, self.snapshot);
+        }
         self.is_flushed = false;
     }
 

@@ -1,6 +1,8 @@
 //! Store: facade that manages all datasets and background tasks.
 
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::fs::{File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -26,6 +28,12 @@ use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
 const MAX_IDENTIFIER_FILE: &str = "max_identifier";
 const DATASET_IDENTIFIER_FILE: &str = "identifier";
+const STORE_LOCK_FILE: &str = ".lock";
+
+enum StoreLockAttempt {
+    Acquired(File),
+    Locked,
+}
 
 fn validate_dataset_component(label: &str, value: &str) -> Result<()> {
     if is_path_safe_component(value) {
@@ -101,6 +109,20 @@ struct DataSetHandleEntry {
     generation: u64,
 }
 
+fn try_acquire_store_lock(data_dir: &Path) -> Result<StoreLockAttempt> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data_dir.join(STORE_LOCK_FILE))?;
+    match file.try_lock() {
+        Ok(()) => Ok(StoreLockAttempt::Acquired(file)),
+        Err(fs::TryLockError::WouldBlock) => Ok(StoreLockAttempt::Locked),
+        Err(fs::TryLockError::Error(err)) => Err(err.into()),
+    }
+}
+
 struct StoreDatasetLifecycle {
     datasets: Arc<RwLock<HashMap<DataSetKey, Arc<DataSet>>>>,
     generations: Mutex<HashMap<DataSetKey, u64>>,
@@ -153,30 +175,51 @@ pub struct Store {
     next_handle_id: u64,
     handles: HashMap<u64, DataSetHandleEntry>,
     read_only_handles: HashSet<u64>,
+    read_only: bool,
+    store_lock: Option<File>,
 }
 
 impl Store {
     fn dataset_runtime_context(
         block_cache: &Arc<BlockCache>,
         journal: &Arc<JournalManager>,
-        flush_queue: &SegmentFlushQueue,
+        flush_queue: Option<&SegmentFlushQueue>,
         lifecycle: &Arc<StoreDatasetLifecycle>,
         enable_journal: bool,
-    ) -> DataSetRuntimeContext {
+        read_only: bool,
+    ) -> Result<DataSetRuntimeContext> {
         let journal_sink: Option<Arc<dyn DataSetJournalSink>> =
-            if enable_journal && journal.is_enabled() {
+            if !read_only && enable_journal && journal.is_enabled() {
                 let sink: Arc<dyn DataSetJournalSink> = journal.clone();
                 Some(sink)
             } else {
                 None
             };
+        let flush_queue = if read_only {
+            None
+        } else {
+            Some(Arc::clone(flush_queue.ok_or_else(|| {
+                TmslError::InvalidData("bg_tasks not initialised".into())
+            })?))
+        };
         let lifecycle_sink: Arc<dyn DataSetLifecycleSink> = lifecycle.clone();
-        DataSetRuntimeContext::new(
-            Some(Arc::clone(block_cache)),
-            journal_sink,
-            Some(Arc::clone(flush_queue)),
-        )
-        .with_lifecycle(lifecycle_sink)
+        let context =
+            DataSetRuntimeContext::new(Some(Arc::clone(block_cache)), journal_sink, flush_queue)
+                .with_lifecycle(lifecycle_sink);
+        Ok(if read_only {
+            context.with_read_only()
+        } else {
+            context
+        })
+    }
+
+    fn ensure_writable(&self, action: &str) -> Result<()> {
+        if self.read_only {
+            return Err(TmslError::InvalidData(format!(
+                "read-only store cannot {action}"
+            )));
+        }
+        Ok(())
     }
 
     fn dataset_dir(&self, key: &DataSetKey) -> PathBuf {
@@ -295,14 +338,34 @@ impl Store {
     pub fn open<P: AsRef<Path>>(data_dir: P, config: StoreConfig) -> Result<Self> {
         config.validate()?;
         let data_dir = data_dir.as_ref().to_path_buf();
-        std::fs::create_dir_all(&data_dir)?;
+        let (read_only, store_lock) = match config.read_only {
+            Some(true) => (true, None),
+            Some(false) => {
+                std::fs::create_dir_all(&data_dir)?;
+                match try_acquire_store_lock(&data_dir)? {
+                    StoreLockAttempt::Acquired(file) => (false, Some(file)),
+                    StoreLockAttempt::Locked => {
+                        return Err(TmslError::InvalidData(
+                            "store is already locked for writing".into(),
+                        ));
+                    }
+                }
+            }
+            None => {
+                std::fs::create_dir_all(&data_dir)?;
+                match try_acquire_store_lock(&data_dir)? {
+                    StoreLockAttempt::Acquired(file) => (false, Some(file)),
+                    StoreLockAttempt::Locked => (true, None),
+                }
+            }
+        };
         let block_cache = Arc::new(BlockCache::new(config.cache_max_memory));
         let flush_queue = DataSetRuntimeContext::new_flush_queue();
-        let journal = Arc::new(JournalManager::open_or_create(
-            &data_dir,
-            &config,
-            Some(Arc::clone(&flush_queue)),
-        )?);
+        let journal = Arc::new(if read_only {
+            JournalManager::open_read_only(&data_dir, &config)?
+        } else {
+            JournalManager::open_or_create(&data_dir, &config, Some(Arc::clone(&flush_queue)))?
+        });
         let max_identifier = read_max_identifier(&data_dir)?;
         let identifier_to_key: HashMap<u64, DataSetKey> = HashMap::new();
         let datasets = Arc::new(RwLock::new(HashMap::new()));
@@ -321,10 +384,14 @@ impl Store {
             next_handle_id: 0,
             handles: HashMap::new(),
             read_only_handles: HashSet::new(),
+            read_only,
+            store_lock,
         };
 
         // Start background tasks (or just the executor)
-        if config.enable_background_thread {
+        if read_only {
+            log::info!("[store] opened in read-only mode, background tasks disabled");
+        } else if config.enable_background_thread {
             store.bg_tasks = Some(BackgroundTasks::start(
                 datasets,
                 Arc::clone(&flush_queue),
@@ -362,6 +429,7 @@ impl Store {
         dataset_type: &str,
         config_builder: Option<DataSetConfigBuilder>,
     ) -> Result<DataSetHandle> {
+        self.ensure_writable("create dataset")?;
         if name == JOURNAL_DATASET_NAME && dataset_type == JOURNAL_DATASET_TYPE {
             return Err(TmslError::InvalidData("journal dataset is reserved".into()));
         }
@@ -424,13 +492,11 @@ impl Store {
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
-            self.bg_tasks
-                .as_ref()
-                .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
-                .flush_queue(),
+            self.bg_tasks.as_ref().map(|bg| bg.flush_queue()),
             &self.lifecycle,
             config.enable_journal,
-        ))?;
+            self.read_only,
+        )?)?;
 
         let ds = Arc::new(ds);
         {
@@ -510,18 +576,20 @@ impl Store {
                 )));
             }
         }
-        let ds = DataSet::open(key.clone(), dir)?;
+        let ds = if self.read_only {
+            DataSet::open_read_only(key.clone(), dir)?
+        } else {
+            DataSet::open(key.clone(), dir)?
+        };
         ds.set_identifier(identifier)?;
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
-            self.bg_tasks
-                .as_ref()
-                .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
-                .flush_queue(),
+            self.bg_tasks.as_ref().map(|bg| bg.flush_queue()),
             &self.lifecycle,
             ds.enable_journal(),
-        ))?;
+            self.read_only,
+        )?)?;
 
         let ds = Arc::new(ds);
         {
@@ -580,6 +648,7 @@ impl Store {
 
     /// Drop (delete) an entire dataset by handle.
     pub fn drop_dataset(&mut self, handle: DataSetHandle) -> Result<()> {
+        self.ensure_writable("drop dataset")?;
         if self.read_only_handles.contains(&handle.0) {
             return Err(TmslError::InvalidData(
                 "read-only internal dataset cannot be dropped".into(),
@@ -620,6 +689,7 @@ impl Store {
 
     /// Drop (delete) an entire dataset by name and type.
     pub fn drop_dataset_by_name(&mut self, name: &str, dataset_type: &str) -> Result<()> {
+        self.ensure_writable("drop dataset")?;
         if name == JOURNAL_DATASET_NAME && dataset_type == JOURNAL_DATASET_TYPE {
             return Err(TmslError::InvalidData("journal dataset is reserved".into()));
         }
@@ -675,6 +745,7 @@ impl Store {
         timestamp: i64,
         data: &[u8],
     ) -> Result<()> {
+        self.ensure_writable("write dataset")?;
         let key = self.handle_entry(handle)?.key;
         if JournalManager::is_journal_key(&key) || self.read_only_handles.contains(&handle.0) {
             return Err(TmslError::InvalidData(
@@ -699,6 +770,7 @@ impl Store {
         timestamp: i64,
         data: &[u8],
     ) -> Result<()> {
+        self.ensure_writable("append dataset")?;
         let key = self.handle_entry(handle)?.key;
         if JournalManager::is_journal_key(&key) || self.read_only_handles.contains(&handle.0) {
             return Err(TmslError::InvalidData(
@@ -718,6 +790,7 @@ impl Store {
 
     /// Delete through the Store so journal and global cache hooks are applied.
     pub fn delete_dataset_record(&mut self, handle: DataSetHandle, timestamp: i64) -> Result<()> {
+        self.ensure_writable("delete dataset record")?;
         let key = self.handle_entry(handle)?.key;
         if JournalManager::is_journal_key(&key) || self.read_only_handles.contains(&handle.0) {
             return Err(TmslError::InvalidData(
@@ -806,6 +879,11 @@ impl Store {
         Ok(ds_arc.latest_written_timestamp())
     }
 
+    /// Whether this Store instance resolved to read-only mode at open time.
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
     /// Get a reference to the global block cache.
     pub fn block_cache(&self) -> &Arc<BlockCache> {
         &self.block_cache
@@ -825,6 +903,11 @@ impl Store {
     /// Safe to call even when the background thread is enabled; it will
     /// be serialised with the thread via the internal `Mutex`.
     pub fn tick_background_tasks(&self) -> Result<TickResult> {
+        if self.read_only {
+            return Err(TmslError::InvalidData(
+                "read-only store has no background tasks".into(),
+            ));
+        }
         let bg = self
             .bg_tasks
             .as_ref()
@@ -837,6 +920,11 @@ impl Store {
     /// Reads a snapshot of the executor state without running any tasks.
     /// Blocks briefly if another thread is currently executing `tick`.
     pub fn next_background_delay(&self) -> Result<Duration> {
+        if self.read_only {
+            return Err(TmslError::InvalidData(
+                "read-only store has no background tasks".into(),
+            ));
+        }
         let bg = self
             .bg_tasks
             .as_ref()
@@ -889,18 +977,20 @@ impl Store {
         let dir = self.dataset_dir(&key);
         let identifier = read_dataset_identifier(&dir)?;
         self.validate_identifier_within_max(identifier, &key)?;
-        let ds = DataSet::open(key.clone(), dir)?;
+        let ds = if self.read_only {
+            DataSet::open_read_only(key.clone(), dir)?
+        } else {
+            DataSet::open(key.clone(), dir)?
+        };
         ds.set_identifier(identifier)?;
         ds.set_runtime_context(Self::dataset_runtime_context(
             &self.block_cache,
             &self.journal,
-            self.bg_tasks
-                .as_ref()
-                .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?
-                .flush_queue(),
+            self.bg_tasks.as_ref().map(|bg| bg.flush_queue()),
             &self.lifecycle,
             ds.enable_journal(),
-        ))?;
+            self.read_only,
+        )?)?;
         let ds_arc = Arc::new(ds);
         {
             let mut guard = self.datasets.write().unwrap();
@@ -936,6 +1026,7 @@ impl Store {
     /// Must be called before any consumer or push operations on the dataset.
     /// Returns a `DatasetQueue` handle that can be cloned and shared.
     pub fn open_queue(&mut self, handle: DataSetHandle) -> Result<DatasetQueue> {
+        self.ensure_writable("open queue")?;
         let key = self.handle_entry(handle)?.key;
         if JournalManager::is_journal_key(&key) {
             return Err(TmslError::InvalidData(
@@ -963,6 +1054,7 @@ impl Store {
 
     /// Close the queue subsystem for a dataset.
     pub fn close_queue(&mut self, handle: DataSetHandle) -> Result<()> {
+        self.ensure_writable("close queue")?;
         let key = self.handle_entry(handle)?.key;
         if JournalManager::is_journal_key(&key) {
             return Err(TmslError::InvalidData(
@@ -989,6 +1081,7 @@ impl Store {
         queue: &DatasetQueue,
         group_name: &str,
     ) -> Result<DatasetQueueConsumer> {
+        self.ensure_writable("open consumer")?;
         queue.open_consumer(group_name)
     }
 
@@ -999,11 +1092,13 @@ impl Store {
         group_name: &str,
         config: QueueConsumerConfig,
     ) -> Result<DatasetQueueConsumer> {
+        self.ensure_writable("open consumer")?;
         queue.open_consumer_with_config(group_name, config)
     }
 
     /// Drop a consumer group for a dataset queue.
     pub fn drop_consumer(&mut self, queue: &DatasetQueue, group_name: &str) -> Result<()> {
+        self.ensure_writable("drop consumer")?;
         queue.drop_consumer(group_name)
     }
 
@@ -1011,6 +1106,7 @@ impl Store {
     ///
     /// Auto-increments timestamp and notifies waiting consumers.
     pub fn queue_push(&mut self, queue: &DatasetQueue, data: &[u8]) -> Result<i64> {
+        self.ensure_writable("push queue")?;
         queue.push(data)
     }
 
@@ -1020,11 +1116,21 @@ impl Store {
         consumer: &DatasetQueueConsumer,
         timeout: Duration,
     ) -> Result<Option<(i64, Vec<u8>)>> {
+        if self.read_only {
+            return Err(TmslError::InvalidData(
+                "read-only store cannot poll queue".into(),
+            ));
+        }
         consumer.poll(timeout)
     }
 
     /// Ack a previously polled record.
     pub fn queue_ack(&self, consumer: &DatasetQueueConsumer, timestamp: i64) -> Result<()> {
+        if self.read_only {
+            return Err(TmslError::InvalidData(
+                "read-only store cannot ack queue".into(),
+            ));
+        }
         consumer.ack(timestamp)
     }
 
@@ -1065,6 +1171,7 @@ impl Store {
 
     /// Open the built-in journal queue.
     pub fn open_journal_queue(&mut self) -> Result<JournalQueue> {
+        self.ensure_writable("open journal queue")?;
         self.journal.open_queue()
     }
 }

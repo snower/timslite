@@ -155,6 +155,7 @@ class TestFFICoverage:
             "cache_max_memory",
             "enable_journal",
             "enable_background_thread",
+            "read_only",
         ]
         for attr in expected_attrs:
             assert hasattr(config, attr), f"Missing StoreConfig.{attr}"

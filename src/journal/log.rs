@@ -65,6 +65,48 @@ impl JournalLog {
         })
     }
 
+    pub(crate) fn open_read_only(base_dir: PathBuf, config: &StoreConfig) -> Result<Option<Self>> {
+        let data_dir = base_dir.join(JOURNAL_DATA_DIR);
+        if !base_dir.exists() || !data_dir.exists() {
+            return Ok(None);
+        }
+
+        let mut segments = BTreeMap::new();
+        for entry in fs::read_dir(&data_dir)? {
+            let path = entry?.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(base_sequence) = parse_segment_file_name(&path) else {
+                log::warn!("[journal] skipping invalid segment filename: {:?}", path);
+                continue;
+            };
+            let segment =
+                JournalSegment::open_read_only(&path, base_sequence, config.data_segment_size)?;
+            segments.insert(base_sequence, segment);
+        }
+
+        let mut next_sequence = 1;
+        if let Some((base, segment)) = segments.iter().next_back() {
+            next_sequence = base
+                .checked_add(i64::try_from(segment.record_count()).map_err(|_| {
+                    TmslError::InvalidData("journal segment record_count exceeds i64".into())
+                })?)
+                .ok_or_else(|| TmslError::InvalidData("journal next_sequence overflow".into()))?;
+        }
+
+        Ok(Some(Self {
+            base_dir,
+            data_dir,
+            segments,
+            next_sequence,
+            segment_size: config.data_segment_size,
+            initial_segment_size: config.initial_data_segment_size,
+            compress_type: config.compress_type,
+            compress_level: config.compress_level,
+        }))
+    }
+
     pub(crate) fn append(&mut self, payload: &[u8]) -> Result<i64> {
         if self.next_sequence <= 0 || self.next_sequence == i64::MAX {
             return Err(TmslError::InvalidData("journal sequence overflow".into()));

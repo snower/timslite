@@ -215,6 +215,10 @@ class StoreConfig:
         compress_level: int = 6,             # 0-9
         cache_max_memory: int = 268435456,   # 256 MiB (0 = disabled)
         cache_idle_timeout: int = 1800,      # seconds
+        retention_check_hour: int = 0,       # UTC hour 0..=23
+        enable_background_thread: bool = True,
+        enable_journal: bool = True,
+        read_only: bool | None = None,       # None=auto, False=writable, True=read-only
     ) -> None:
         ...
 
@@ -223,7 +227,7 @@ class StoreConfig:
         """Return a config with all default values."""
 ```
 
-**Note**: Durations accept `int` (seconds) for simplicity. Could support `timedelta` later.
+**Note**: Durations accept `int` (seconds) for simplicity. Could support `timedelta` later. `read_only=None` follows the Rust auto mode: acquire the Store `.lock` for writable open, or fall back to a read-only Store if another writer holds it.
 
 ### 3.3 `Dataset` — `#[pyclass]`
 

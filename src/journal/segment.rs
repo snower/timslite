@@ -2,7 +2,7 @@ use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use memmap2::MmapMut;
+use memmap2::{Mmap, MmapMut};
 
 use crate::block::{
     BlockHeader, BLOCK_FLAG_COMPRESSED, BLOCK_FLAG_SEALED, BLOCK_FLAG_SINGLE_RECORD,
@@ -293,8 +293,42 @@ pub(crate) struct JournalSegment {
     pending_record_count: u64,
     pub(crate) is_flushed: bool,
     lifecycle: SegmentLifecycle,
-    mmap: Option<MmapMut>,
+    mmap: Option<JournalSegmentMmap>,
+    read_only: bool,
     last_accessed_at: Instant,
+}
+
+enum JournalSegmentMmap {
+    ReadOnly(Mmap),
+    ReadWrite(MmapMut),
+}
+
+impl JournalSegmentMmap {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::ReadOnly(mmap) => mmap,
+            Self::ReadWrite(mmap) => mmap,
+        }
+    }
+
+    fn as_mut_slice(&mut self) -> Result<&mut [u8]> {
+        match self {
+            Self::ReadOnly(_) => Err(TmslError::InvalidData(
+                "read-only journal segment cannot be modified".into(),
+            )),
+            Self::ReadWrite(mmap) => Ok(mmap),
+        }
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        match self {
+            Self::ReadOnly(_) => Ok(()),
+            Self::ReadWrite(mmap) => {
+                mmap.flush()?;
+                Ok(())
+            }
+        }
+    }
 }
 
 impl JournalSegment {
@@ -353,7 +387,8 @@ impl JournalSegment {
             pending_record_count: 0,
             is_flushed: true,
             lifecycle: SegmentLifecycle::OpenReady,
-            mmap: Some(mmap),
+            mmap: Some(JournalSegmentMmap::ReadWrite(mmap)),
+            read_only: false,
             last_accessed_at: Instant::now(),
         })
     }
@@ -362,7 +397,43 @@ impl JournalSegment {
         let file = OpenOptions::new().read(true).write(true).open(path)?;
         let actual_size = file.metadata()?.len();
         let mmap = unsafe { MmapMut::map_mut(&file)? };
-        let header = JournalSegmentHeader::read_from(&mmap)?;
+        Self::open_mapped(
+            path,
+            base_sequence,
+            max_file_size,
+            actual_size,
+            JournalSegmentMmap::ReadWrite(mmap),
+            false,
+        )
+    }
+
+    pub(crate) fn open_read_only(
+        path: &Path,
+        base_sequence: i64,
+        max_file_size: u64,
+    ) -> Result<Self> {
+        let file = OpenOptions::new().read(true).open(path)?;
+        let actual_size = file.metadata()?.len();
+        let mmap = unsafe { memmap2::MmapOptions::new().map(&file)? };
+        Self::open_mapped(
+            path,
+            base_sequence,
+            max_file_size,
+            actual_size,
+            JournalSegmentMmap::ReadOnly(mmap),
+            true,
+        )
+    }
+
+    fn open_mapped(
+        path: &Path,
+        base_sequence: i64,
+        max_file_size: u64,
+        actual_size: u64,
+        mmap: JournalSegmentMmap,
+        read_only: bool,
+    ) -> Result<Self> {
+        let header = JournalSegmentHeader::read_from(mmap.as_slice())?;
         if header.base_sequence != base_sequence {
             return Err(TmslError::InvalidData(format!(
                 "journal segment base_sequence mismatch: expected {base_sequence}, got {}",
@@ -387,10 +458,25 @@ impl JournalSegment {
             is_flushed: true,
             lifecycle: SegmentLifecycle::OpenReady,
             mmap: Some(mmap),
+            read_only,
             last_accessed_at: Instant::now(),
         };
         segment.recover_visible_state()?;
         Ok(segment)
+    }
+
+    fn mmap(&self) -> Result<&[u8]> {
+        self.mmap
+            .as_ref()
+            .map(JournalSegmentMmap::as_slice)
+            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))
+    }
+
+    fn mmap_mut(&mut self) -> Result<&mut [u8]> {
+        self.mmap
+            .as_mut()
+            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?
+            .as_mut_slice()
     }
 
     pub(crate) fn append_record(&mut self, sequence: i64, payload: &[u8]) -> Result<()> {
@@ -437,10 +523,7 @@ impl JournalSegment {
         if sequence >= end_sequence {
             return Ok(None);
         }
-        let mmap = self
-            .mmap
-            .as_ref()
-            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?;
+        let mmap = self.mmap()?;
         let mut pos = self.header_size;
         let mut current_sequence = self.base_sequence;
         while pos + BLOCK_HEADER_SIZE <= self.wrote_position {
@@ -495,10 +578,7 @@ impl JournalSegment {
 
     pub(crate) fn recover_visible_state(&mut self) -> Result<()> {
         self.ensure_open()?;
-        let mmap = self
-            .mmap
-            .as_ref()
-            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?;
+        let mmap = self.mmap()?;
         let mut pos = self.header_size;
         let mut total_records = 0u64;
         let mut total_uncompressed = 0u64;
@@ -579,10 +659,6 @@ impl JournalSegment {
         self.pending_wrote_position = pending_wrote;
         self.pending_record_count = pending_records;
         if let Some(block_offset) = self.pending_block_offset {
-            let mmap = self
-                .mmap
-                .as_mut()
-                .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?;
             let header = BlockHeader::new(
                 u32::try_from(self.pending_wrote_position).map_err(|_| {
                     TmslError::InvalidData("journal recovered pending block too large".into())
@@ -595,9 +671,14 @@ impl JournalSegment {
                     TmslError::InvalidData("journal recovered uncompressed size exceeds u32".into())
                 })?,
             );
-            header.write_to(mmap, (self.header_size + block_offset) as usize);
+            if !self.read_only {
+                let header_pos = (self.header_size + block_offset) as usize;
+                header.write_to(self.mmap_mut()?, header_pos);
+            }
         }
-        self.write_state()?;
+        if !self.read_only {
+            self.write_state()?;
+        }
         Ok(())
     }
 
@@ -621,15 +702,28 @@ impl JournalSegment {
         if self.mmap.is_some() {
             return Ok(());
         }
-        let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
+        let file = if self.read_only {
+            OpenOptions::new().read(true).open(&self.path)?
+        } else {
+            OpenOptions::new().read(true).write(true).open(&self.path)?
+        };
         self.file_size = file.metadata()?.len();
-        self.mmap = Some(unsafe { MmapMut::map_mut(&file)? });
+        self.mmap = Some(if self.read_only {
+            JournalSegmentMmap::ReadOnly(unsafe { memmap2::MmapOptions::new().map(&file)? })
+        } else {
+            JournalSegmentMmap::ReadWrite(unsafe { MmapMut::map_mut(&file)? })
+        });
         self.lifecycle = SegmentLifecycle::OpenReady;
         self.last_accessed_at = Instant::now();
         Ok(())
     }
 
     fn expand(&mut self) -> Result<()> {
+        if self.read_only {
+            return Err(TmslError::InvalidData(
+                "read-only journal segment cannot expand".into(),
+            ));
+        }
         let target = self.file_size.saturating_mul(2).min(self.max_file_size);
         if target == self.file_size {
             return Err(TmslError::SegmentFull);
@@ -637,7 +731,9 @@ impl JournalSegment {
         let file = OpenOptions::new().read(true).write(true).open(&self.path)?;
         self.mmap = None;
         file.set_len(target)?;
-        self.mmap = Some(unsafe { MmapMut::map_mut(&file)? });
+        self.mmap = Some(JournalSegmentMmap::ReadWrite(unsafe {
+            MmapMut::map_mut(&file)?
+        }));
         self.file_size = target;
         self.mark_dirty();
         Ok(())
@@ -653,10 +749,7 @@ impl JournalSegment {
     fn create_pending_and_append(&mut self, sequence: i64, payload: &[u8]) -> Result<()> {
         let block_offset = self.wrote_position - self.header_size;
         let hdr_pos = self.wrote_position as usize;
-        let mmap = self
-            .mmap
-            .as_mut()
-            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?;
+        let mmap = self.mmap_mut()?;
         BlockHeader::new(0, 0, 0, 0).write_to(mmap, hdr_pos);
         self.wrote_position += BLOCK_HEADER_SIZE;
         self.pending_block_offset = Some(block_offset);
@@ -674,14 +767,13 @@ impl JournalSegment {
         let base =
             self.header_size + block_offset + BLOCK_HEADER_SIZE + self.pending_wrote_position;
         let record_size = RECORD_OVERHEAD + payload.len() as u64;
-        let mmap = self
-            .mmap
-            .as_mut()
-            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?;
         let base = base as usize;
-        mmap[base..base + 4].copy_from_slice(&data_len.to_le_bytes());
-        mmap[base + 4..base + 12].copy_from_slice(&sequence.to_le_bytes());
-        mmap[base + 12..base + 12 + payload.len()].copy_from_slice(payload);
+        {
+            let mmap = self.mmap_mut()?;
+            mmap[base..base + 4].copy_from_slice(&data_len.to_le_bytes());
+            mmap[base + 4..base + 12].copy_from_slice(&sequence.to_le_bytes());
+            mmap[base + 12..base + 12 + payload.len()].copy_from_slice(payload);
+        }
 
         self.pending_wrote_position += record_size;
         self.pending_record_count += 1;
@@ -701,7 +793,7 @@ impl JournalSegment {
                 TmslError::InvalidData("journal pending uncompressed size exceeds u32".into())
             })?,
         );
-        header.write_to(mmap, hdr_pos);
+        header.write_to(self.mmap_mut()?, hdr_pos);
         self.write_state()?;
         self.mark_dirty();
         Ok(())
@@ -714,15 +806,13 @@ impl JournalSegment {
         let hdr_pos = (self.header_size + block_offset) as usize;
         let payload_start = hdr_pos + BLOCK_HEADER_SIZE as usize;
         let payload_end = payload_start + self.pending_wrote_position as usize;
-        let mmap = self
-            .mmap
-            .as_mut()
-            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?;
-        let raw = mmap[payload_start..payload_end].to_vec();
+        let raw = {
+            let mmap = self.mmap_mut()?;
+            mmap[payload_start..payload_end].to_vec()
+        };
         let compressed = compress(&raw, self.compress_level, self.compress_type)?;
         let compressed_len = u32::try_from(compressed.len())
             .map_err(|_| TmslError::InvalidData("journal compressed block too large".into()))?;
-        mmap[payload_start..payload_start + compressed.len()].copy_from_slice(&compressed);
         let header = BlockHeader::new(
             compressed_len,
             BLOCK_FLAG_SEALED | BLOCK_FLAG_COMPRESSED,
@@ -732,6 +822,8 @@ impl JournalSegment {
             u32::try_from(raw.len())
                 .map_err(|_| TmslError::InvalidData("journal raw block too large".into()))?,
         );
+        let mmap = self.mmap_mut()?;
+        mmap[payload_start..payload_start + compressed.len()].copy_from_slice(&compressed);
         header.write_to(mmap, hdr_pos);
         self.wrote_position =
             self.header_size + block_offset + BLOCK_HEADER_SIZE + compressed.len() as u64;
@@ -755,10 +847,7 @@ impl JournalSegment {
             .ok_or_else(|| TmslError::InvalidData("journal single block overflow".into()))?;
         self.ensure_capacity(required)?;
         let hdr_pos = self.wrote_position as usize;
-        let mmap = self
-            .mmap
-            .as_mut()
-            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?;
+        let mmap = self.mmap_mut()?;
         let header = BlockHeader::new(
             u32::try_from(compressed.len()).map_err(|_| {
                 TmslError::InvalidData("journal single block compressed size exceeds u32".into())
@@ -804,11 +893,7 @@ impl JournalSegment {
     }
 
     fn write_state(&mut self) -> Result<()> {
-        let mmap = self
-            .mmap
-            .as_mut()
-            .ok_or_else(|| TmslError::MmapError("journal segment is closed".into()))?;
-        JournalSegmentHeader {
+        let header = JournalSegmentHeader {
             base_sequence: self.base_sequence,
             max_file_size: self.max_file_size,
             compress_level: self.compress_level,
@@ -820,8 +905,8 @@ impl JournalSegment {
             pending_block_offset: self.pending_block_offset.unwrap_or(PENDING_NONE),
             pending_wrote_position: self.pending_wrote_position,
             pending_record_count: self.pending_record_count,
-        }
-        .write_state_to(mmap);
+        };
+        header.write_state_to(self.mmap_mut()?);
         Ok(())
     }
 
@@ -832,7 +917,7 @@ impl JournalSegment {
 
     #[cfg(test)]
     fn mmap_for_test(&self) -> &[u8] {
-        self.mmap.as_ref().unwrap()
+        self.mmap.as_ref().unwrap().as_slice()
     }
 
     #[cfg(test)]

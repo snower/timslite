@@ -95,9 +95,12 @@ macro_rules! ffi_catch_usize {
     };
 }
 
-pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 4;
+pub const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 5;
 pub const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 3;
 pub const TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION: u32 = 1;
+pub const TMSL_STORE_READ_ONLY_AUTO: u8 = 0;
+pub const TMSL_STORE_READ_ONLY_FALSE: u8 = 1;
+pub const TMSL_STORE_READ_ONLY_TRUE: u8 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +126,7 @@ pub struct TmslStoreConfigFFI {
     pub retention_check_hour: u8,
     pub enable_background_thread: u8,
     pub enable_journal: u8,
+    pub read_only_mode: u8,
 }
 
 impl Default for TmslStoreConfigFFI {
@@ -250,6 +254,11 @@ fn store_config_to_ffi(config: &StoreConfig) -> TmslStoreConfigFFI {
         retention_check_hour: config.retention_check_hour,
         enable_background_thread: u8::from(config.enable_background_thread),
         enable_journal: u8::from(config.enable_journal),
+        read_only_mode: match config.read_only {
+            None => TMSL_STORE_READ_ONLY_AUTO,
+            Some(false) => TMSL_STORE_READ_ONLY_FALSE,
+            Some(true) => TMSL_STORE_READ_ONLY_TRUE,
+        },
     }
 }
 
@@ -269,6 +278,16 @@ fn store_config_from_ffi(
     let cache_max_memory = usize::try_from(raw.cache_max_memory)
         .map_err(|_| TmslError::InvalidData("cache_max_memory is too large".into()))?;
     validate_compress_type(raw.compress_type)?;
+    let read_only = match raw.read_only_mode {
+        TMSL_STORE_READ_ONLY_AUTO => None,
+        TMSL_STORE_READ_ONLY_FALSE => Some(false),
+        TMSL_STORE_READ_ONLY_TRUE => Some(true),
+        other => {
+            return Err(TmslError::InvalidData(format!(
+                "unsupported store read_only_mode {other}"
+            )));
+        }
+    };
     Ok(StoreConfig::builder()
         .flush_interval(Duration::from_millis(raw.flush_interval_ms))
         .idle_timeout(Duration::from_millis(raw.idle_timeout_ms))
@@ -283,6 +302,7 @@ fn store_config_from_ffi(
         .retention_check_hour(raw.retention_check_hour)
         .enable_background_thread(raw.enable_background_thread != 0)
         .enable_journal(raw.enable_journal != 0)
+        .read_only(read_only)
         .build())
 }
 
@@ -2496,6 +2516,29 @@ mod tests {
     fn tmsl_length_entry_layout_matches_c_abi() {
         assert_eq!(std::mem::size_of::<TmslLengthEntry>(), 16);
         assert_eq!(std::mem::align_of::<TmslLengthEntry>(), 8);
+    }
+
+    #[test]
+    fn test_store_config_ffi_read_only_modes() {
+        let (mut err, err_len) = err_buf();
+        let mut config = TmslStoreConfigFFI::default();
+        assert_eq!(
+            tmsl_store_config_default(&mut config, err.as_mut_ptr(), err_len),
+            0
+        );
+        assert_eq!(config.read_only_mode, TMSL_STORE_READ_ONLY_AUTO);
+
+        config.read_only_mode = TMSL_STORE_READ_ONLY_TRUE;
+        assert_eq!(
+            store_config_from_ffi(&config).unwrap().read_only(),
+            Some(true)
+        );
+
+        config.read_only_mode = TMSL_STORE_READ_ONLY_FALSE;
+        assert_eq!(
+            store_config_from_ffi(&config).unwrap().read_only(),
+            Some(false)
+        );
     }
 
     #[test]

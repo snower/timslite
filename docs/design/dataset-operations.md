@@ -10,6 +10,8 @@
 
 The safe public `DataSet` methods always enter through the outer `DataSet` wrapper. They call `ensure_open`, honor read-only runtime context, use the Store-injected cache/journal/dirty-flush/lifecycle hooks, and keep mutation/read synchronization inside the dataset mutex. `Store::get_dataset` may therefore be used by normal Rust callers without exposing the inner mutex guard.
 
+When a `Store` is opened in read-only mode, ordinary datasets are opened with a read-only runtime context. That context does not install a journal sink or dirty flush queue, and dataset state files are read if present but are not created or written. The view only needs to include data already persisted when the read-only Store opens; it is not a live reader over another writer's in-memory state.
+
 > **核心原则**: 创建和打开分离。参数仅在创建时传入, 打开时从 meta 文件读取, 不可修改。
 
 ```rust

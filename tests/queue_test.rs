@@ -754,7 +754,6 @@ fn t27_5_1_producer_consumer_threads() {
     let barrier = Arc::new(Barrier::new(2));
     let b_prod = barrier.clone();
     let b_cons = barrier.clone();
-    let dir2 = dir.clone();
 
     let producer = thread::spawn(move || {
         b_prod.wait();
@@ -765,20 +764,17 @@ fn t27_5_1_producer_consumer_threads() {
     });
 
     let consumer = thread::spawn(move || {
-        let mut store2 = Store::open(&dir2, StoreConfig::default()).unwrap();
-        let _h2 = store2.open_dataset("t27q", "events").unwrap();
-        let c = store2.open_consumer(&q_cons, "workers").unwrap();
+        let c = q_cons.open_consumer("workers").unwrap();
         b_cons.wait();
 
         let mut count = 0;
         for _ in 0..10 {
-            if let Some((ts, _)) = store2.queue_poll(&c, Duration::from_secs(5)).unwrap() {
-                store2.queue_ack(&c, ts).unwrap();
+            if let Some((ts, _)) = c.poll(Duration::from_secs(5)).unwrap() {
+                c.ack(ts).unwrap();
                 count += 1;
             }
         }
         assert_eq!(count, 10);
-        store2.close().unwrap();
     });
 
     producer.join().unwrap();

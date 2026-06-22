@@ -441,8 +441,11 @@ pub struct StoreConfig {
     retention_check_hour: u8,          // UTC hour 0..=23, default 0
     enable_background_thread: bool,    // default true
     enable_journal: bool,              // default true
+    read_only: Option<bool>,           // default None: auto-fallback to read-only when store lock is held
 }
 ```
+
+`StoreConfig.read_only` is a tri-state open-mode setting. `None` is the default auto mode: `Store::open` attempts the Store `.lock` OS lock and falls back to read-only if another writer holds it. `Some(false)` requires writable mode and fails when the OS lock cannot be acquired. `Some(true)` forces read-only mode and does not create, inspect, or acquire the `.lock` file. The presence of a stale `.lock` file is not meaningful by itself.
 
 `DataSetConfig` contains dataset creation/open configuration. Fields are crate-private in implementation; callers use `DataSetConfig::builder()`, `DataSetConfigBuilder::from_store()`, and getters. Values persisted in dataset meta must be read from meta on reopen, not compared against Store defaults:
 

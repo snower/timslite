@@ -92,6 +92,7 @@ pub(crate) fn validate_dataset_config_values(
 /// - `retention_check_hour`: 0 (daily at UTC 00:00)
 /// - `enable_background_thread`: true
 /// - `enable_journal`: true
+/// - `read_only`: None (auto: writable if the Store lock can be acquired)
 #[derive(Clone, Debug)]
 pub struct StoreConfig {
     /// Interval between background flush cycles (mmap sync only).
@@ -121,6 +122,9 @@ pub struct StoreConfig {
     pub(crate) enable_background_thread: bool,
     /// Whether to enable the built-in `.journal/logs` change log.
     pub(crate) enable_journal: bool,
+    /// Store open mode. None = auto, Some(false) = require writable,
+    /// Some(true) = force read-only.
+    pub(crate) read_only: Option<bool>,
 }
 
 impl Default for StoreConfig {
@@ -139,6 +143,7 @@ impl Default for StoreConfig {
             retention_check_hour: 0,             // UTC 00:00
             enable_background_thread: true,      // default: auto thread
             enable_journal: true,                // default: change log enabled
+            read_only: None,                     // default: auto lock detection
         }
     }
 }
@@ -201,6 +206,10 @@ impl StoreConfig {
         self.enable_journal
     }
 
+    pub fn read_only(&self) -> Option<bool> {
+        self.read_only
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         validate_dataset_config_values(
             self.data_segment_size,
@@ -238,6 +247,7 @@ pub struct StoreConfigBuilder {
     retention_check_hour: Option<u8>,
     enable_background_thread: Option<bool>,
     enable_journal: Option<bool>,
+    read_only: Option<Option<bool>>,
 }
 
 impl StoreConfigBuilder {
@@ -322,6 +332,17 @@ impl StoreConfigBuilder {
         self
     }
 
+    /// Set the Store read-only mode.
+    ///
+    /// - `None`: auto-detect. Open writable when the Store lock is free,
+    ///   otherwise open read-only.
+    /// - `Some(false)`: require writable Store lock.
+    /// - `Some(true)`: force read-only without checking or taking the Store lock.
+    pub fn read_only(mut self, read_only: Option<bool>) -> Self {
+        self.read_only = Some(read_only);
+        self
+    }
+
     /// Build the `StoreConfig`.
     pub fn build(self) -> StoreConfig {
         let defaults = StoreConfig::default();
@@ -351,6 +372,7 @@ impl StoreConfigBuilder {
                 .enable_background_thread
                 .unwrap_or(defaults.enable_background_thread),
             enable_journal: self.enable_journal.unwrap_or(defaults.enable_journal),
+            read_only: self.read_only.unwrap_or(defaults.read_only),
         }
     }
 }

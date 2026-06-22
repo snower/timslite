@@ -18,9 +18,13 @@
 extern "C" {
 #endif
 
-#define TMSL_STORE_CONFIG_FFI_VERSION 4u
+#define TMSL_STORE_CONFIG_FFI_VERSION 5u
 #define TMSL_DATASET_CONFIG_FFI_VERSION 3u
 #define TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION 1u
+
+#define TMSL_STORE_READ_ONLY_AUTO 0u  /**< Auto: writable if .lock can be locked, otherwise read-only */
+#define TMSL_STORE_READ_ONLY_FALSE 1u /**< Require writable .lock, fail if already locked */
+#define TMSL_STORE_READ_ONLY_TRUE 2u  /**< Force read-only, do not check or take .lock */
 
 typedef struct TmslStoreConfigFFI {
     uint32_t version;
@@ -37,6 +41,7 @@ typedef struct TmslStoreConfigFFI {
     uint8_t retention_check_hour; /* UTC hour, 0-23 */
     uint8_t enable_background_thread;
     uint8_t enable_journal; /* 0=false, non-zero=true; default true */
+    uint8_t read_only_mode; /* TMSL_STORE_READ_ONLY_*; default AUTO */
 } TmslStoreConfigFFI;
 
 typedef struct TmslDatasetConfigFFI {

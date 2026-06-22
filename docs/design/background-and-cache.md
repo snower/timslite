@@ -13,6 +13,8 @@
 | Cache Eviction | 60s | 扫描缓存池, last_access_at ≥30min → 回收 + 释放内存 → LRU 检查 |
 | Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_window > 0 的 dataset, 回收过期分段 |
 
+Read-only Store mode does not create `BackgroundTasks` at all, even when `StoreConfig.enable_background_thread=true`. Manual background APIs are unavailable for that Store, and retention reclaim is rejected through the read-only dataset/runtime context.
+
 **线程模型**:
 ```
 后台单线程:
