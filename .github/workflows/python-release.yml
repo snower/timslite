@@ -1,0 +1,186 @@
+name: Release Python Package
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build distributions without publishing"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  CARGO_TERM_COLOR: always
+  MATURIN_VERSION: v1.13.3
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-python-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate package metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify package versions
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          root = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+          wrapper = tomllib.loads(Path("wrapper/python/Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+          project = tomllib.loads(Path("wrapper/python/pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+
+          if len({root, wrapper, project}) != 1:
+              raise SystemExit(f"Version mismatch: Cargo.toml={root}, wrapper Cargo.toml={wrapper}, pyproject.toml={project}")
+
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
+          if os.environ.get("GITHUB_REF_TYPE") == "tag":
+              tag_version = ref_name.removeprefix("v")
+              if tag_version != project:
+                  raise SystemExit(f"Tag version {tag_version} does not match package version {project}")
+          PY
+
+      - name: Check wrapper crate
+        run: cargo check --manifest-path wrapper/python/Cargo.toml --locked
+
+  build-wheels:
+    name: Build wheels (${{ matrix.platform.name }}, Python ${{ matrix.python-version }})
+    needs: validate
+    runs-on: ${{ matrix.platform.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        platform:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: windows-x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: macos-x86_64
+            os: macos-13
+            target: x86_64-apple-darwin
+          - name: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            wrapper/python/target
+          key: ${{ runner.os }}-cargo-py-release-${{ matrix.platform.name }}-${{ matrix.python-version }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-py-release-${{ matrix.platform.name }}-${{ matrix.python-version }}-
+            ${{ runner.os }}-cargo-py-release-
+
+      - name: Select maturin interpreter
+        id: maturin_args
+        shell: pwsh
+        run: |
+          $extra = ""
+          if ($env:RUNNER_OS -eq "Linux") {
+            $extra = "-i python${{ matrix.python-version }}"
+          }
+          "extra_args=$extra" >> $env:GITHUB_OUTPUT
+
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          working-directory: wrapper/python
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          target: ${{ matrix.platform.target }}
+          manylinux: "2_28"
+          args: --release --locked --out dist --compatibility pypi ${{ steps.maturin_args.outputs.extra_args }}
+          sccache: true
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform.name }}-py${{ matrix.python-version }}
+          path: wrapper/python/dist/*.whl
+          if-no-files-found: error
+
+  build-sdist:
+    name: Build source distribution
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install maturin
+        run: python -m pip install "maturin==${MATURIN_VERSION#v}"
+
+      - name: Build sdist
+        working-directory: wrapper/python
+        run: maturin sdist --out dist
+
+      - name: Upload sdist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: wrapper/python/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: [build-wheels, build-sdist]
+    if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/timslite
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List distributions
+        run: ls -l dist
+
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

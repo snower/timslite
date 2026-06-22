@@ -2,6 +2,20 @@
 name = "timslite-python"
 version = "0.1.0"
 edition = "2021"
+publish = false
+description = "Python bindings for the timslite time-series storage engine."
+license = "MIT"
+repository = "https://github.com/snower/timslite"
+readme = "README.md"
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "pyproject.toml",
+    "python/**",
+    "src/**",
+    "tests/**",
+]
 
 [lib]
 name = "timslite"
@@ -9,4 +23,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
-timslite = { path = "../.." }
+timslite = { path = "../..", version = "0.1.0" }
