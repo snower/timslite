@@ -31,7 +31,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/snower/timslite"
+    "url": "git+https://github.com/snower/timslite.git"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3",
