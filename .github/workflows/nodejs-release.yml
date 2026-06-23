@@ -75,6 +75,7 @@ jobs:
       contents: read
     env:
       NPM_CONFIG_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -87,27 +88,33 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts
+          path: wrapper/nodejs/artifacts
           merge-multiple: true
-
-      - name: Move artifacts to wrapper/nodejs
-        run: |
-          mv artifacts/*.node wrapper/nodejs/
 
       - name: Install dependencies
         working-directory: wrapper/nodejs
         run: npm ci
 
+      - name: Prepare npm platform packages
+        working-directory: wrapper/nodejs
+        run: |
+          npm exec -- napi create-npm-dirs
+          npm exec -- napi artifacts --output-dir artifacts
+
       - name: Verify package contents
         working-directory: wrapper/nodejs
         shell: bash
         run: |
-          test -n "$(find . -maxdepth 1 -name '*.node' -print -quit)"
+          expected="$(node -p "require('./package.json').napi.targets.length")"
+          actual="$(find npm -mindepth 2 -maxdepth 2 -name '*.node' | wc -l | tr -d ' ')"
+          test "$actual" = "$expected"
           npm pack --dry-run --json > pack.json
           node -e "const fs = require('fs'); const pack = JSON.parse(fs.readFileSync('pack.json', 'utf8'))[0]; if (!pack.files.some((f) => f.path.endsWith('.node'))) { throw new Error('npm pack would not include native .node artifacts'); }"
 
-      - name: Publish
+      - name: Publish platform packages
         working-directory: wrapper/nodejs
         run: npm exec -- napi pre-publish --no-gh-release
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish root package
+        working-directory: wrapper/nodejs
+        run: npm publish
