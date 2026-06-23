@@ -874,7 +874,6 @@ pytest tests/ -v
 | Platform | Target | Status |
 |----------|--------|--------|
 | Linux x86_64 | `x86_64-unknown-linux-gnu` | Primary |
-| macOS x86_64 | `x86_64-apple-darwin` | Primary |
 | macOS ARM64 | `aarch64-apple-darwin` | Primary |
 | Windows x86_64 | `x86_64-pc-windows-msvc` | Primary |
 | Linux ARM64 | `aarch64-unknown-linux-gnu` | Stretch |
