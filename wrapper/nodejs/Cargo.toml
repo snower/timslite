@@ -1,0 +1,18 @@
+[package]
+name = "timslite-node"
+version = "0.1.0"
+edition = "2021"
+description = "Node.js native addon for the timslite time-series storage library."
+license = "MIT"
+repository = "https://github.com/snower/timslite"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+timslite = { path = "../.." }
+napi = { version = "3", features = ["async", "napi8", "napi6"] }
+napi-derive = "3"
+
+[build-dependencies]
+napi-build = "2"
