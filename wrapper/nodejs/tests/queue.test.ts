@@ -241,19 +241,23 @@ describe("queue", () => {
         const q = store.openQueue(ds);
         const c = q.openConsumer("worker");
 
-        let called = false;
-        c.pollCallback(() => {
-          called = true;
-        });
+        try {
+          let called = false;
+          c.pollCallback(() => {
+            called = true;
+          });
 
-        q.push(Buffer.from("data"));
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        c.pollSync(100);
+          q.push(Buffer.from("data"));
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          c.pollSync(100);
 
-        assert.equal(called, true);
-        q.close();
-        ds.close();
-        store.close();
+          assert.equal(called, true);
+        } finally {
+          c.pollCallback(null);
+          q.close();
+          ds.close();
+          store.close();
+        }
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -269,6 +273,7 @@ describe("queue", () => {
         c.pollCallback(() => {});
         c.pollCallback(null);
         c.pollCallback(() => {});
+        c.pollCallback(null);
 
         q.close();
         ds.close();

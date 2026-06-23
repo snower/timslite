@@ -136,21 +136,24 @@ describe("journal", () => {
         const jq = store.openJournalQueue();
         const jc = jq.openConsumer("journal-worker");
 
-        let called = false;
-        jc.pollCallback(() => {
-          called = true;
-        });
+        try {
+          let called = false;
+          jc.pollCallback(() => {
+            called = true;
+          });
 
-        const ds = store.openDataset("test", "data");
-        ds.write(10n, Buffer.from("data"));
-        ds.close();
+          const ds = store.openDataset("test", "data");
+          ds.write(10n, Buffer.from("data"));
+          ds.close();
 
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        jc.pollSync(200);
-        assert.equal(called, true);
-
-        jq.close();
-        store.close();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          jc.pollSync(200);
+          assert.equal(called, true);
+        } finally {
+          jc.pollCallback(null);
+          jq.close();
+          store.close();
+        }
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
