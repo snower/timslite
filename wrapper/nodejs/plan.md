@@ -9,18 +9,18 @@
 
 | Phase | 描述 | 状态 | 产物 |
 |-------|------|------|------|
-| NODE-0 | 版本与工具链确认 | 待开始 | Node supported line、Node-API/napi-rs 版本、npm 包名 |
-| NODE-1 | 项目骨架与构建系统 | 待开始 | `Cargo.toml`, `package.json`, build scripts |
-| NODE-2 | 类型转换与错误映射 | 待开始 | bigint/Buffer helpers, `TmslError` mapping |
-| NODE-3 | Store 与配置包装 | 待开始 | `Store`, `StoreConfig`, lifecycle tests |
-| NODE-4 | Dataset 与查询包装 | 待开始 | `Dataset`, iterators, read/query tests |
-| NODE-5 | Queue 与异步 poll | 待开始 | `DatasetQueue`, async poll, callback tests |
-| NODE-6 | Journal API 与 journal queue | 待开始 | journal latest/read/query/queue tests |
-| NODE-7 | TypeScript 声明与 README | 待开始 | `index.d.ts`, usage docs |
-| NODE-8 | 跨层文档同步 | 初始索引完成, 待实现后更新 | root `design.md`/`plan.md`/README 状态同步 |
+| NODE-0 | 版本与工具链确认 | ✅ 完成 | Node 16+, napi-rs v3, timslite-node |
+| NODE-1 | 项目骨架与构建系统 | ✅ 完成 | `Cargo.toml`, `package.json`, build scripts |
+| NODE-2 | 类型转换与错误映射 | ✅ 完成 | bigint/Buffer helpers, `TmslError` mapping |
+| NODE-3 | Store 与配置包装 | ✅ 完成 | `Store`, `StoreConfig` |
+| NODE-4 | Dataset 与查询包装 | ✅ 完成 | `Dataset`, iterators |
+| NODE-5 | Queue 与异步 poll | ✅ 完成 | `Queue`, async poll, callback |
+| NODE-6 | Journal API 与 journal queue | ✅ 完成 | journal read/query/queue |
+| NODE-7 | TypeScript 声明 | ✅ 完成 | `index.d.ts` |
+| NODE-8 | 跨层文档同步 | ✅ 完成 | root README/plan.md 状态同步 |
 | NODE-9 | CI/prebuild 发布准备 | 待开始 | 多平台 npm build plan |
 
-当前阶段只完成 `wrapper/nodejs/design.md` 和 `wrapper/nodejs/plan.md`; 不创建实现代码。
+实现完成, 集成测试待补充。
 
 ---
 
