@@ -55,6 +55,7 @@
 | 44 | Queue Poll Callback | ✅ 完成 | [phase-44-queue-poll-callback.md](docs/plan/phase-44-queue-poll-callback.md) |
 | 45 | Store Read-only Lock | ✅ 完成 | [phase-45-store-read-only-lock.md](docs/plan/phase-45-store-read-only-lock.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
+| NODE | Node.js Package (Node-API) | 🔲 计划完成, 待实现 | [wrapper/nodejs/plan.md](wrapper/nodejs/plan.md) |
 
 ---
 
@@ -123,7 +124,8 @@ docs/plan/
 ├── phase-42-rust-public-api-boundary.md ← Phase 42: Rust Public API Boundary
 ├── phase-43-index-entry-delta.md ← Phase 43: Index Entry Timestamp Delta
 ├── phase-44-queue-poll-callback.md ← Phase 44: Queue Poll Callback
-└── phase-45-store-read-only-lock.md ← Phase 45: Store Read-only Lock
+├── phase-45-store-read-only-lock.md ← Phase 45: Store Read-only Lock
+└── wrapper/nodejs/plan.md ← NODE: Node.js Package (Node-API)
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:
