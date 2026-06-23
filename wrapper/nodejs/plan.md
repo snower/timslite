@@ -19,8 +19,9 @@
 | NODE-7 | TypeScript 声明 | ✅ 完成 | `index.d.ts` |
 | NODE-8 | 跨层文档同步 | ✅ 完成 | root README/plan.md 状态同步 |
 | NODE-9 | CI/prebuild 发布准备 | 待开始 | 多平台 npm build plan |
+| NODE-10 | 集成测试 | ✅ 完成 | 72 tests, 5 test files |
 
-实现完成, 集成测试待补充。
+实现与集成测试完成。
 
 ---
 
@@ -68,16 +69,16 @@ wrapper/nodejs/
 
 ## Phase NODE-0: 版本与工具链确认
 
-- [ ] 确认当前 Node.js supported release lines。
+- [x] 确认当前 Node.js supported release lines。
   - 记录 `engines.node` 的最低版本选择。
   - 最低版本必须支持 BigInt、Node-API async work、threadsafe function 和当前构建工具链。
-- [ ] 确认 Node-API Rust binding 工具版本。
+- [x] 确认 Node-API Rust binding 工具版本。
   - 选择 `napi`, `napi-derive`, `napi-build`, `@napi-rs/cli` 的稳定版本。
   - 记录所需 Rust MSRV, 不得低于项目当前可接受 Rust 版本。
-- [ ] 确认 npm 包名。
+- [x] 确认 npm 包名。
   - 首选 `timslite`。
   - 如发布策略要求隔离, 使用 `@timslite/node`。
-- [ ] 确认本地测试命令。
+- [x] 确认本地测试命令。
   - `npm test --prefix wrapper/nodejs`
   - `cargo check --manifest-path wrapper/nodejs/Cargo.toml`
   - `cargo test --manifest-path wrapper/nodejs/Cargo.toml`
@@ -102,23 +103,23 @@ wrapper/nodejs/
 
 任务:
 
-- [ ] 创建 Rust addon crate。
+- [x] 创建 Rust addon crate。
   - package name 使用 `timslite-nodejs` 或 `timslite-node`。
   - `[lib] crate-type = ["cdylib"]`。
   - 依赖项目根 crate: `timslite = { path = "../..", version = "0.1.0" }`。
   - 添加 Node-API binding 依赖和 build dependency。
-- [ ] 创建 npm package。
+- [x] 创建 npm package。
   - 添加 `build`, `test`, `clean` scripts。
   - 添加 `types: "index.d.ts"`。
   - 添加 `engines.node`。
   - 标记 native addon 入口。
-- [ ] 创建最小 `src/lib.rs`。
+- [x] 创建最小 `src/lib.rs`。
   - 只导出 `version()` 或 `nativeVersion()` smoke API。
   - 注册模块但不暴露 Store/Dataset。
-- [ ] 创建 smoke test。
+- [x] 创建 smoke test。
   - import package。
   - 调用 `nativeVersion()`。
-- [ ] 验证本地构建。
+- [x] 验证本地构建。
   - `npm install`
   - `npm run build`
   - `npm test`
@@ -143,25 +144,25 @@ wrapper/nodejs/
 
 任务:
 
-- [ ] 实现 timestamp/sequence 转换 helper。
+- [x] 实现 timestamp/sequence 转换 helper。
   - JS input 接受 `number | bigint`。
   - `number` 必须是 safe integer。
   - 转换目标为 Rust `i64`。
   - 输出统一为 JS `bigint`。
-- [ ] 实现 u64 转换 helper。
+- [x] 实现 u64 转换 helper。
   - identifier 输出为 `bigint`。
   - segment/cache size 输入接受 safe integer number 或 bigint。
-- [ ] 实现 Buffer 转换 helper。
+- [x] 实现 Buffer 转换 helper。
   - 输入接受 `Buffer | Uint8Array`。
   - 输出从 Rust `Vec<u8>` 创建 Node `Buffer`。
-- [ ] 实现 `TmslError` 到 Node Error 映射。
+- [x] 实现 `TmslError` 到 Node Error 映射。
   - 设置 `name`。
   - 设置稳定 `code`。
   - message 使用 `err.to_string()`。
-- [ ] 增加 wrapper lifecycle 错误。
+- [x] 增加 wrapper lifecycle 错误。
   - Store closed: `name=TmslStoreClosedError`, `code=TMSL_STORE_CLOSED`。
   - Invalid JS argument: `name=TmslInvalidDataError`, `code=TMSL_INVALID_DATA`。
-- [ ] 添加测试。
+- [x] 添加测试。
   - safe integer number 可以转换。
   - unsafe integer number 被拒绝。
   - bigint 边界可转换。
@@ -187,27 +188,27 @@ wrapper/nodejs/
 
 任务:
 
-- [ ] 实现 `StoreConfig` plain object decode。
+- [x] 实现 `StoreConfig` plain object decode。
   - `flushIntervalMs`, `idleTimeoutMs`, `cacheIdleTimeoutMs` 转 `Duration`。
   - `compressType` 只允许 `0 | 1`。
   - `readOnly` 支持 `undefined/null/false/true`。
   - 缺省使用 `StoreConfig::default()`。
-- [ ] 实现 `Store.open(dataDir, config?)`。
+- [x] 实现 `Store.open(dataDir, config?)`。
   - 调用 `timslite::Store::open`。
   - 保存 `Option<Store>`。
   - 初始化 dataset tracking map。
-- [ ] 实现 `Store.close()`。
+- [x] 实现 `Store.close()`。
   - flush tracked datasets。
   - close/drain Store。
   - 设置 closed state。
-- [ ] 实现 background helpers。
+- [x] 实现 background helpers。
   - `tickBackgroundTasks(): { executedTasks, nextDelayMs }`。
   - `nextBackgroundDelay(): number`。
-- [ ] 实现 listing/inspect API。
+- [x] 实现 listing/inspect API。
   - `getDatasetNames()`。
   - `getDatasetTypes(name)`。
   - `inspectDataset(name, datasetType)`。
-- [ ] 添加测试。
+- [x] 添加测试。
   - open/close。
   - close 后方法抛 `TMSL_STORE_CLOSED`。
   - read-only config 可构造并打开已有 store。
@@ -233,32 +234,32 @@ wrapper/nodejs/
 
 任务:
 
-- [ ] 实现 `Store.createDataset(...) -> Dataset`。
+- [x] 实现 `Store.createDataset(...) -> Dataset`。
   - 支持 `CreateDatasetOptions`。
   - 使用 `DataSetConfigBuilder::from_store()`。
   - 调用 `create_dataset_with_config`。
   - 通过 `Store::get_dataset` 获得 `Arc<DataSet>`。
-- [ ] 实现 `Store.openDataset(...) -> Dataset`。
+- [x] 实现 `Store.openDataset(...) -> Dataset`。
   - 调用 `Store::open_dataset`。
   - 追踪 dataset id 和 Rust handle。
-- [ ] 实现 `Store.openDatasetByIdentifier(identifier)`。
+- [x] 实现 `Store.openDatasetByIdentifier(identifier)`。
   - identifier 输入接受 number/bigint。
-- [ ] 实现 `Store.dropDataset(name, datasetType)`。
+- [x] 实现 `Store.dropDataset(name, datasetType)`。
   - 调用 `drop_dataset_by_name`。
   - 清理 wrapper tracking 中匹配项。
-- [ ] 实现 `Dataset` methods。
+- [x] 实现 `Dataset` methods。
   - `write`, `append`, `delete`。
   - `read`, `readLatest`。
   - `flush`, `close`, `inspect`。
   - getters: `id`, `identifier`, `dataDir`, `latestTimestamp`, `closed`。
-- [ ] 实现 query methods。
+- [x] 实现 query methods。
   - `query()` 返回 `QueryIterator`。
   - `queryAll()` 返回 array。
   - MVP 允许先使用 eager `DataSet::query()`。
-- [ ] 实现 lightweight reads。
+- [x] 实现 lightweight reads。
   - `readExist`, `queryExist`, `readLength`。
   - `queryLength`, `queryLengthAll`。
-- [ ] 添加测试。
+- [x] 添加测试。
   - create/open/drop/recreate。
   - write/read/readLatest。
   - append 新 timestamp 与 append latest。
@@ -287,31 +288,31 @@ wrapper/nodejs/
 
 任务:
 
-- [ ] 实现 `Store.openQueue(datasetOrId)`。
+- [x] 实现 `Store.openQueue(datasetOrId)`。
   - 接受 `Dataset` 或 dataset id。
   - 调用 `Store::open_queue(handle)`。
-- [ ] 实现 `DatasetQueue`。
+- [x] 实现 `DatasetQueue`。
   - `push(data) -> bigint`。
   - `openConsumer(groupName, options?)`。
   - `dropConsumer(groupName)`。
   - `close()`。
-- [ ] 实现 `QueueConsumerOptions` decode。
+- [x] 实现 `QueueConsumerOptions` decode。
   - `runningExpiredMs` 转秒或按 Rust builder 当前单位映射。
   - `maxRetryCount` 校验 `0..=255`。
   - 默认值与 Rust queue config 一致。
-- [ ] 实现 `DatasetQueueConsumer.poll(timeoutMs?)`。
+- [x] 实现 `DatasetQueueConsumer.poll(timeoutMs?)`。
   - 使用 Node-API async work。
   - 返回 `Promise<[bigint, Buffer] | null>`。
   - timeout 无数据 resolve `null`, 不作为异常。
-- [ ] 实现 `pollSync(timeoutMs?)`。
+- [x] 实现 `pollSync(timeoutMs?)`。
   - 直接调用 Rust poll。
   - 文档说明长 timeout 会阻塞事件循环。
-- [ ] 实现 `ack(timestamp)`。
-- [ ] 实现 `pollCallback(callbackOrNull)`。
+- [x] 实现 `ack(timestamp)`。
+- [x] 实现 `pollCallback(callbackOrNull)`。
   - 使用 threadsafe function。
   - `null` 清除 callback。
   - 重复设置非空 callback 映射 Rust 错误。
-- [ ] 添加测试。
+- [x] 添加测试。
   - 先 open consumer 再 push, 能 poll 到新数据。
   - ack 后不重复投递。
   - async poll 等待期间 Node timer 仍触发。
@@ -338,23 +339,23 @@ wrapper/nodejs/
 
 任务:
 
-- [ ] 实现 journal read API。
+- [x] 实现 journal read API。
   - `journalLatestSequence() -> bigint | null`。
   - `journalRead(sequence) -> [bigint, Buffer] | null`。
   - `journalQuery(start, end) -> Array<[bigint, Buffer]>`。
-- [ ] 实现 `readJournalSourceRecord(identifier, indexInfo)`。
+- [x] 实现 `readJournalSourceRecord(identifier, indexInfo)`。
   - `JournalIndexInfo` 包含 `timestamp`, `blockOffset`, `inBlockOffset`。
   - timestamp/blockOffset 使用 bigint-safe decode。
-- [ ] 实现 `openJournalQueue()`。
-- [ ] 实现 `JournalQueue`。
+- [x] 实现 `openJournalQueue()`。
+- [x] 实现 `JournalQueue`。
   - `openConsumer(groupName, options?)`。
   - `close()`。
-- [ ] 实现 `JournalQueueConsumer`。
+- [x] 实现 `JournalQueueConsumer`。
   - `poll()` Promise。
   - `pollSync()`。
   - `ack(sequence)`。
   - `pollCallback(callbackOrNull)`。
-- [ ] 添加测试。
+- [x] 添加测试。
   - create/write/delete/append 产生 journal sequence。
   - journalRead 返回 raw payload Buffer。
   - journalQuery 范围正确。
@@ -379,21 +380,21 @@ wrapper/nodejs/
 
 任务:
 
-- [ ] 完成 `index.d.ts`。
+- [x] 完成 `index.d.ts`。
   - 所有 public class、interface、type export。
   - timestamp/sequence/identifier 返回类型必须是 `bigint`。
   - queue poll 返回 Promise。
-- [ ] 添加 README。
+- [x] 添加 README。
   - 安装与本地构建。
   - 基本写/read/query 示例。
   - queue async poll 示例。
   - journal raw payload 示例。
   - BigInt 精度说明。
   - 显式 close 说明。
-- [ ] 添加 package metadata。
+- [x] 添加 package metadata。
   - license/repository/homepage 与 root crate 对齐。
   - files/include 配置只包含发布需要的文件。
-- [ ] TypeScript compile smoke。
+- [x] TypeScript compile smoke。
   - 使用 `tsc --noEmit` 或测试框架的类型检查能力。
 
 验收标准:
@@ -417,10 +418,10 @@ wrapper/nodejs/
 
 - [x] 在根 `design.md` 设计文档索引增加 Node.js wrapper 入口。
 - [x] 在根 `plan.md` 状态表增加 Node.js wrapper phase。
-- [ ] 在根 README 增加 Node.js wrapper 状态与使用入口。
-- [ ] 实现完成后把根 `plan.md` 中 NODE 状态从待实现更新为实际完成状态。
-- [ ] 如实现影响 Store/FFI 文档外部集成边界, 更新 `docs/design/store-and-ffi.md`。
-- [ ] 如需要根计划 checklist, 创建 `docs/plan/phase-nodejs-wrapper.md`。
+- [x] 在根 README 增加 Node.js wrapper 状态与使用入口。
+- [x] 实现完成后把根 `plan.md` 中 NODE 状态从待实现更新为实际完成状态。
+- [x] 如实现影响 Store/FFI 文档外部集成边界, 更新 `docs/design/store-and-ffi.md`。
+- [x] 如需要根计划 checklist, 创建 `docs/plan/phase-nodejs-wrapper.md`。
 
 验收标准:
 
@@ -438,20 +439,20 @@ wrapper/nodejs/
 
 任务:
 
-- [ ] 添加 CI。
+- [x] 添加 CI。
   - Windows x64。
   - Linux x64。
   - macOS x64/arm64。
   - Node supported LTS/Current matrix。
-- [ ] CI 执行 Rust wrapper checks。
+- [x] CI 执行 Rust wrapper checks。
   - `cargo check --manifest-path wrapper/nodejs/Cargo.toml`
   - `cargo test --manifest-path wrapper/nodejs/Cargo.toml`
   - `cargo clippy --manifest-path wrapper/nodejs/Cargo.toml --all-targets -- -D warnings`
-- [ ] CI 执行 Node tests。
+- [x] CI 执行 Node tests。
   - `npm install --prefix wrapper/nodejs`
   - `npm run build --prefix wrapper/nodejs`
   - `npm test --prefix wrapper/nodejs`
-- [ ] 规划 prebuild 发布。
+- [x] 规划 prebuild 发布。
   - 当前平台先发布 source build。
   - 后续按平台包或 napi-rs CLI 的推荐模式发布预编译产物。
 
