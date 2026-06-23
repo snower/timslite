@@ -108,6 +108,6 @@ jobs:
 
       - name: Publish
         working-directory: wrapper/nodejs
-        run: npm exec -- napi prepublish --skip-gh-release
+        run: npm exec -- napi pre-publish --no-gh-release
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
