@@ -1,5 +1,5 @@
 {
-  "name": "timslite-node",
+  "name": "timslite",
   "version": "0.1.0",
   "description": "Node.js native addon for the timslite time-series storage library.",
   "main": "index.js",
@@ -10,7 +10,7 @@
     "test": "echo \"Tests not yet implemented\""
   },
   "napi": {
-    "binaryName": "timslite-node",
+    "binaryName": "timslite",
     "targets": [
       "x86_64-apple-darwin",
       "aarch64-apple-darwin",
