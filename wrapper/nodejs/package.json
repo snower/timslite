@@ -7,7 +7,7 @@
   "scripts": {
     "build": "napi build --platform --dts auto-generated.d.ts",
     "build:debug": "napi build --platform --mode=debug --dts auto-generated.d.ts",
-    "test": "echo \"Tests not yet implemented\""
+    "test": "node --import tsx --test tests/*.test.ts"
   },
   "napi": {
     "binaryName": "timslite",
@@ -27,6 +27,7 @@
     "url": "https://github.com/snower/timslite"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3"
+    "@napi-rs/cli": "^3",
+    "tsx": "^4.22.4"
   }
 }
