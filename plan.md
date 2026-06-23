@@ -55,7 +55,7 @@
 | 44 | Queue Poll Callback | ✅ 完成 | [phase-44-queue-poll-callback.md](docs/plan/phase-44-queue-poll-callback.md) |
 | 45 | Store Read-only Lock | ✅ 完成 | [phase-45-store-read-only-lock.md](docs/plan/phase-45-store-read-only-lock.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
-| NODE | Node.js Package (Node-API) | 🔶 实现完成, 待集成测试 | [wrapper/nodejs/plan.md](wrapper/nodejs/plan.md) |
+| NODE | Node.js Package (Node-API) | ✅ 完成 | [wrapper/nodejs/plan.md](wrapper/nodejs/plan.md) |
 
 ---
 
