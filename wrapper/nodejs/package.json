@@ -4,6 +4,12 @@
   "description": "Node.js native addon for the timslite time-series storage library.",
   "main": "index.js",
   "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "auto-generated.d.ts",
+    "*.node"
+  ],
   "scripts": {
     "build": "napi build --platform --dts auto-generated.d.ts",
     "build:debug": "napi build --platform --mode=debug --dts auto-generated.d.ts",
@@ -21,7 +27,7 @@
     ]
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=22.0.0"
   },
   "license": "MIT",
   "repository": {
