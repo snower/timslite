@@ -1,9 +1,8 @@
 name: Release Python Package
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -20,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-python-${{ github.ref }}
+  group: release-python-${{ github.event.release.tag_name || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -52,7 +51,7 @@ jobs:
               raise SystemExit(f"Version mismatch: Cargo.toml={root}, wrapper Cargo.toml={wrapper}, pyproject.toml={project}")
 
           ref_name = os.environ.get("GITHUB_REF_NAME", "")
-          if os.environ.get("GITHUB_REF_TYPE") == "tag":
+          if os.environ.get("GITHUB_REF_TYPE") == "tag" or os.environ.get("GITHUB_EVENT_NAME") == "release":
               tag_version = ref_name.removeprefix("v")
               if tag_version != project:
                   raise SystemExit(f"Tag version {tag_version} does not match package version {project}")
@@ -171,7 +170,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: [build-wheels, build-sdist]
-    if: ${{ github.event_name == 'push' || inputs.dry_run == false }}
+    if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: ubuntu-latest
     environment:
       name: pypi
