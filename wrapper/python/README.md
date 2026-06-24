@@ -5,7 +5,19 @@ Python bindings for the timslite high-performance time-series data storage libra
 ## Installation
 
 ```bash
-maturin develop          # Development
+pip install timslite
+```
+
+Prebuilt wheels are published for the supported release platforms. If pip cannot
+find a compatible wheel, it falls back to building the source distribution with
+maturin. Source builds require a Rust toolchain and native compiler toolchain.
+The PyPI source distribution depends on the matching `timslite` crate version
+from crates.io.
+
+For repository development:
+
+```bash
+maturin develop            # Development
 maturin develop --release  # Release build
 ```
 

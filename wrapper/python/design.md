@@ -545,8 +545,18 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.23", features = ["extension-module"] }
-timslite = { path = "../.." }
+timslite = { path = "../..", version = "=0.1.1" }
 ```
+
+The wrapper uses the repository root as a path dependency during development,
+with an exact `version = "=x.y.z"` guard. This keeps local iteration fast while
+failing early if the Rust crate, wrapper crate, and Python package versions drift.
+
+For PyPI source distributions, the release workflow runs
+`wrapper/python/scripts/prepare_publish.py` before `maturin sdist`. That script
+rewrites the dependency to `timslite = { version = "=x.y.z" }`, so a user who
+installs from source pulls the same-version Rust crate from crates.io instead
+of relying on repository-relative paths.
 
 ### 5.2 pyproject.toml
 
@@ -727,7 +737,18 @@ with timslite.Store.open("/data/timslite") as store:
 
 ## 7. Build & Distribution
 
-### 7.1 Local Development
+### 7.1 Installation
+
+```bash
+pip install timslite
+```
+
+Release publishes prebuilt wheels for the supported platforms. If pip cannot
+find a compatible wheel for the current platform or Python version, it can fall
+back to the PyPI source distribution. Source builds require Rust, Cargo, and the
+platform's native compiler toolchain.
+
+### 7.2 Local Development
 
 ```bash
 cd wrapper/python
@@ -735,7 +756,7 @@ maturin develop          # Build + install into current venv
 maturin develop --release  # Release build
 ```
 
-### 7.2 Wheel Building
+### 7.3 Wheel Building
 
 ```bash
 # Build wheels for current platform
@@ -747,25 +768,50 @@ maturin build --release --target aarch64-apple-darwin
 maturin build --release --target x86_64-pc-windows-msvc
 ```
 
-### 7.3 PyPI Publishing
+### 7.4 Source Distribution Fallback
+
+The source distribution is built from `wrapper/python`, but the published sdist
+must not contain a `timslite = { path = "../.." }` dependency. During release,
+CI rewrites the dependency to the exact crates.io version and generates a lock
+file for that publish-time manifest:
+
+```bash
+cd wrapper/python
+python scripts/prepare_publish.py
+cargo generate-lockfile --manifest-path Cargo.toml
+cargo fetch --locked --manifest-path Cargo.toml
+maturin sdist --out dist
+```
+
+Because crates.io indexing can lag briefly after the Rust crate publish, the
+release workflow retries lockfile generation/fetch before building the sdist.
+
+### 7.5 PyPI Publishing
 
 ```bash
 maturin publish --username __token__ --password $PYPI_TOKEN
 ```
 
-### 7.4 CI/CD (GitHub Actions) — Outline
+### 7.6 CI/CD (GitHub Actions) — Outline
 
 ```yaml
 # .github/workflows/python-release.yml
 name: Python Release
 on:
-  push:
-    tags: ['python-v*']
+  release:
+    types: [published]
 jobs:
+  validate:
+    steps:
+      - run: cargo check --manifest-path wrapper/python/Cargo.toml --locked
   build:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -775,6 +821,12 @@ jobs:
           args: --release --out dist
           target: ${{ matrix.os == 'ubuntu-latest' && 'x86_64-unknown-linux-gnu' || '' }}
       - upload: dist/*.whl
+  build-sdist:
+    steps:
+      - run: python scripts/prepare_publish.py
+        working-directory: wrapper/python
+      - run: maturin sdist --out dist
+        working-directory: wrapper/python
   publish:
     needs: build
     runs-on: ubuntu-latest

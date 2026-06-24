@@ -152,6 +152,21 @@ jobs:
       - name: Install maturin
         run: python -m pip install "maturin==${MATURIN_VERSION#v}"
 
+      - name: Prepare sdist source build fallback
+        working-directory: wrapper/python
+        shell: bash
+        run: |
+          python scripts/prepare_publish.py
+          for attempt in {1..60}; do
+            if cargo generate-lockfile --manifest-path Cargo.toml && cargo fetch --locked --manifest-path Cargo.toml; then
+              exit 0
+            fi
+            echo "timslite crate version is not available on crates.io yet; retrying in 10 seconds ($attempt/60)"
+            sleep 10
+          done
+          echo "Timed out waiting for timslite crate to become available on crates.io" >&2
+          exit 1
+
       - name: Build sdist
         working-directory: wrapper/python
         run: maturin sdist --out dist
