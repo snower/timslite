@@ -58,7 +58,7 @@ jobs:
 
       - name: Build native addon
         working-directory: wrapper/nodejs
-        run: npm exec -- napi build --platform --release --target ${{ matrix.target }} --dts auto-generated.d.ts
+        run: npm exec -- napi build --platform --no-js --release --target ${{ matrix.target }} --dts auto-generated.d.ts
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -78,6 +78,8 @@ jobs:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/setup-node@v4
         with:
@@ -100,6 +102,22 @@ jobs:
         run: |
           mv artifacts/*.node .
 
+      - name: Prepare source build fallback
+        working-directory: wrapper/nodejs
+        shell: bash
+        run: |
+          node scripts/prepare-publish.js
+          for attempt in {1..60}; do
+            if cargo generate-lockfile --manifest-path Cargo.toml; then
+              cargo fetch --locked --manifest-path Cargo.toml
+              exit 0
+            fi
+            echo "timslite crate version is not available on crates.io yet; retrying in 10 seconds ($attempt/60)"
+            sleep 10
+          done
+          echo "Timed out waiting for timslite crate to become available on crates.io" >&2
+          exit 1
+
       - name: Verify package contents
         working-directory: wrapper/nodejs
         shell: bash
@@ -108,7 +126,7 @@ jobs:
           actual="$(find . -maxdepth 1 -name '*.node' | wc -l | tr -d ' ')"
           test "$actual" = "$expected"
           npm pack --dry-run --json > pack.json
-          node -e "const fs = require('fs'); const pkg = require('./package.json'); const pack = JSON.parse(fs.readFileSync('pack.json', 'utf8'))[0]; const nodes = pack.files.filter((f) => f.path.endsWith('.node')); if (nodes.length !== pkg.napi.targets.length) { throw new Error(`npm pack would include ${nodes.length} native artifacts, expected ${pkg.napi.targets.length}`); }"
+          node -e "const fs = require('fs'); const pkg = require('./package.json'); const pack = JSON.parse(fs.readFileSync('pack.json', 'utf8'))[0]; const paths = new Set(pack.files.map((f) => f.path)); const nodes = pack.files.filter((f) => f.path.endsWith('.node')); if (nodes.length !== pkg.napi.targets.length) { throw new Error(`npm pack would include ${nodes.length} native artifacts, expected ${pkg.napi.targets.length}`); } for (const required of ['README.md', 'Cargo.toml', 'Cargo.lock', 'build.rs', 'binding-target.js', 'scripts/install.js', 'scripts/prepare-publish.js', 'src/lib.rs']) { if (!paths.has(required)) { throw new Error(`npm pack is missing ${required}`); } }"
 
       - name: Publish root package
         working-directory: wrapper/nodejs
