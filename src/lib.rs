@@ -24,7 +24,7 @@
 //! // Create a new dataset (specify segment sizes and compression)
 //! store.create_dataset("my_data", "events",
 //!     64 * 1024 * 1024,   // data_segment_size = 64MB
-//!     4 * 1024 * 1024,    // index_segment_size = 4MB
+//!     16 * 1024 * 1024,   // index_segment_size = 16MB
 //!     6,                  // compress_level
 //!     0,                  // index_continuous
 //!     0,                  // retention in timestamp units (0 = no limit)

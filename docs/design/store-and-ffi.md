@@ -601,7 +601,7 @@ void* store = tmsl_store_open("/data/timslite", err_buf, sizeof(err_buf));
 // 2. 创建数据集 (首次使用, 需指定分段大小、压缩等级、数据有效期)
 void* ds = tmsl_dataset_create(store, "patient_001", "waveform",
     64ULL * 1024 * 1024,   // data_segment_size = 64MB
-    4ULL * 1024 * 1024,    // index_segment_size = 4MB
+    16ULL * 1024 * 1024,   // index_segment_size = 16MB
     6,                     // compress_level
     0,                     // index_continuous (non-continuous)
     30ULL * 86400,         // retention_window = 30 days in timestamp units (seconds in this example)

@@ -431,9 +431,9 @@ pub struct StoreConfig {
     flush_interval: Duration,          // default 15s
     idle_timeout: Duration,            // default 30min
     data_segment_size: u64,            // default 64MiB
-    index_segment_size: u64,           // default 4MiB
+    index_segment_size: u64,           // default 16MiB
     initial_data_segment_size: u64,    // default 256KiB
-    initial_index_segment_size: u64,   // default 4KiB
+    initial_index_segment_size: u64,   // default 16KiB
     compress_level: u8,                // default 6
     compress_type: u8,                 // default 0=zstd, 1=deflate
     cache_max_memory: usize,           // default 256MiB, 0=disabled

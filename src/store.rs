@@ -534,6 +534,16 @@ impl Store {
                 DataSetConfigBuilder::from_store(&self.config)
                     .data_segment_size(data_segment_size)
                     .index_segment_size(index_segment_size)
+                    .initial_data_segment_size(
+                        self.config
+                            .initial_data_segment_size()
+                            .min(data_segment_size),
+                    )
+                    .initial_index_segment_size(
+                        self.config
+                            .initial_index_segment_size()
+                            .min(index_segment_size),
+                    )
                     .compress_level(compress_level)
                     .index_continuous(index_continuous)
                     .retention_window(retention_window),

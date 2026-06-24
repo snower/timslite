@@ -82,9 +82,9 @@ pub(crate) fn validate_dataset_config_values(
 /// - `flush_interval`: 15 seconds
 /// - `idle_timeout`: 30 minutes (1800s)
 /// - `data_segment_size`: 64 MiB
-/// - `index_segment_size`: 4 MiB
+/// - `index_segment_size`: 16 MiB
 /// - `initial_data_segment_size`: 256 KiB
-/// - `initial_index_segment_size`: 4 KiB
+/// - `initial_index_segment_size`: 16 KiB
 /// - `compress_level`: 6
 /// - `compress_type`: 0 (zstd)
 /// - `cache_max_memory`: 256 MiB (0 = disabled)
@@ -133,9 +133,9 @@ impl Default for StoreConfig {
             flush_interval: Duration::from_secs(15),
             idle_timeout: Duration::from_secs(1800), // 30 min
             data_segment_size: 64 * 1024 * 1024,     // 64 MiB
-            index_segment_size: 4 * 1024 * 1024,     // 4 MiB
+            index_segment_size: 16 * 1024 * 1024,    // 16 MiB
             initial_data_segment_size: 256 * 1024,   // 256 KiB
-            initial_index_segment_size: 4 * 1024,    // 4 KiB
+            initial_index_segment_size: 16 * 1024,   // 16 KiB
             compress_level: 6,
             compress_type: COMPRESS_TYPE_ZSTD,
             cache_max_memory: 256 * 1024 * 1024, // 256 MiB
@@ -613,9 +613,9 @@ mod tests {
         assert_eq!(cfg.flush_interval, Duration::from_secs(15));
         assert_eq!(cfg.idle_timeout, Duration::from_secs(1800));
         assert_eq!(cfg.data_segment_size, 64 * 1024 * 1024);
-        assert_eq!(cfg.index_segment_size, 4 * 1024 * 1024);
+        assert_eq!(cfg.index_segment_size, 16 * 1024 * 1024);
         assert_eq!(cfg.initial_data_segment_size, 256 * 1024);
-        assert_eq!(cfg.initial_index_segment_size, 4 * 1024);
+        assert_eq!(cfg.initial_index_segment_size, 16 * 1024);
         assert_eq!(cfg.compress_level, 6);
         assert_eq!(cfg.compress_type, crate::compress::COMPRESS_TYPE_ZSTD);
         assert_eq!(cfg.cache_max_memory, 256 * 1024 * 1024);

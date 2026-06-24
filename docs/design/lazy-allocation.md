@@ -5,7 +5,7 @@
 
 ## 24.1 设计动机
 
-全量预分配会让少量数据也占用完整 data/index segment 大小。例如只写入少量记录时, 仍可能占用 64MiB data segment + 4MiB index segment。
+全量预分配会让少量数据也占用完整 data/index segment 大小。例如只写入少量记录时, 仍可能占用 64MiB data segment + 16MiB index segment。
 
 懒分配方案:
 
@@ -19,7 +19,7 @@
 | 参数 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `initial_data_segment_size` | `u64` | `256 * 1024` | data segment 初始物理文件大小 |
-| `initial_index_segment_size` | `u64` | `4 * 1024` | index segment 初始物理文件大小 |
+| `initial_index_segment_size` | `u64` | `16 * 1024` | index segment 初始物理文件大小 |
 
 约束:
 

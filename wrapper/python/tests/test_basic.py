@@ -44,7 +44,7 @@ class TestBasic:
         assert config.flush_interval == 15
         assert config.idle_timeout == 1800
         assert config.data_segment_size == 67108864
-        assert config.index_segment_size == 4194304
+        assert config.index_segment_size == 16777216
         assert config.compress_level == 6
         assert config.cache_max_memory == 268435456
         assert config.enable_journal is True

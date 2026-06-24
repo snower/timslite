@@ -208,9 +208,9 @@ class StoreConfig:
         flush_interval: int = 15,           # seconds
         idle_timeout: int = 1800,            # seconds
         data_segment_size: int = 67108864,   # 64 MiB
-        index_segment_size: int = 4194304,   # 4 MiB
+        index_segment_size: int = 16777216,  # 16 MiB
         initial_data_segment_size: int = 262144,   # 256 KiB
-        initial_index_segment_size: int = 4096,    # 4 KiB
+        initial_index_segment_size: int = 16384,   # 16 KiB
         block_max_size: int = 65536,         # 64 KiB
         compress_level: int = 6,             # 0-9
         cache_max_memory: int = 268435456,   # 256 MiB (0 = disabled)

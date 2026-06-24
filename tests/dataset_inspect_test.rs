@@ -56,11 +56,11 @@ fn test_inspect_basic() {
         "sensor",
         "temperature",
         64 * 1024 * 1024,
-        4 * 1024 * 1024,
+        16 * 1024 * 1024,
         6,
         0,
         256 * 1024,
-        4 * 1024,
+        16 * 1024,
         0,
     );
 
@@ -70,9 +70,9 @@ fn test_inspect_basic() {
     assert_eq!(result.info.name, "sensor");
     assert_eq!(result.info.dataset_type, "temperature");
     assert_eq!(result.info.data_segment_size, 64 * 1024 * 1024);
-    assert_eq!(result.info.index_segment_size, 4 * 1024 * 1024);
+    assert_eq!(result.info.index_segment_size, 16 * 1024 * 1024);
     assert_eq!(result.info.initial_data_segment_size, 256 * 1024);
-    assert_eq!(result.info.initial_index_segment_size, 4 * 1024);
+    assert_eq!(result.info.initial_index_segment_size, 16 * 1024);
     assert_eq!(result.info.compress_level, 6);
     assert_eq!(result.info.index_continuous, 0);
     assert_eq!(result.info.retention_window, 0);

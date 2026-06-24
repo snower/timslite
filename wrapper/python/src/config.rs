@@ -11,7 +11,7 @@ pub struct PyStoreConfig {
 #[pymethods]
 impl PyStoreConfig {
     #[new]
-    #[pyo3(signature = (*, flush_interval=15, idle_timeout=1800, data_segment_size=67108864, index_segment_size=4194304, initial_data_segment_size=262144, initial_index_segment_size=4096, compress_level=6, cache_max_memory=268435456, cache_idle_timeout=1800, retention_check_hour=0, enable_background_thread=true, enable_journal=true, read_only=None))]
+    #[pyo3(signature = (*, flush_interval=15, idle_timeout=1800, data_segment_size=67108864, index_segment_size=16777216, initial_data_segment_size=262144, initial_index_segment_size=16384, compress_level=6, cache_max_memory=268435456, cache_idle_timeout=1800, retention_check_hour=0, enable_background_thread=true, enable_journal=true, read_only=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         flush_interval: u64,

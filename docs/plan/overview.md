@@ -238,7 +238,7 @@ Phase 45 (Store Read-only Lock: OS .lock writer exclusion + read-only fallback)
 | 连续模式逆序写入 | 目标可能是真实 entry、filler 或逻辑空洞 | 数据段追加; filler/real 覆盖索引; 逻辑空洞按需创建目标 segment |
 | 连续/非连续切换 | 已有数据不兼容 | `index_continuous` 创建后不可变 |
 | 扩容 crash | 无 header 损坏风险 | header file_size 不更新, 打开时以磁盘实际大小为准 |
-| initial_size 过小 | 频繁扩容降低性能 | 默认 256KB/4KB, 64MB 仅需 9 次扩容 |
+| initial_size 过小 | 频繁扩容降低性能 | 默认 data/index 初始大小为 256KB/16KB, 减少小数据集预分配同时控制扩容次数 |
 | timestamp=0 冲突 | index segment 命名歧义 | timestamp=0 保留为空位标记, 写入时拒绝 |
 | 超大 record 长度截断 | `u16 data_len` 无法表达 >64KB 数据 | Record header 升级为 `u32 data_len`, 普通聚合 Block 保持 64KB 上限 |
 | Header 扩展读歪数据区 | TLV/state 增长但数据/索引区仍按 116/52 固定起点访问 | Phase 25 改为运行时计算 `header_len`, 所有 Block/Entry 物理定位基于动态 header |

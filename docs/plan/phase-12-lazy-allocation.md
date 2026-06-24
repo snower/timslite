@@ -21,7 +21,7 @@ const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 - `StoreConfig` 新增:
   ```rust
   pub initial_data_segment_size: u64,    // 默认 256KB
-  pub initial_index_segment_size: u64,    // 默认 4KB
+  pub initial_index_segment_size: u64,    // 默认 16KB
   ```
 - `StoreConfigBuilder`: 新增 `.initial_data_segment_size()`, `.initial_index_segment_size()`
 - `DataSetConfig` 新增对应字段 + builder methods
@@ -97,7 +97,7 @@ const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 ## 12.9 config.rs / store.rs — StoreConfig 集成
 
 - `Store::create_dataset()` FFI/Rust API 新增 `initial_data_segment_size`, `initial_index_segment_size` 参数
-- Builder 模式支持, 默认值: 256KB data, 4KB index
+- Builder 模式支持, 默认值: 256KB data, 16KB index
 
 ## 12.10 ffi.rs — FFI API 更新
 
@@ -111,7 +111,7 @@ const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 - [x] test_data_segment_expand: 256KB → 512KB → 1MB → ... → 64MB (header file_size 始终不变)
 - [x] test_data_segment_expand_max_reached: 达到 64MB 后 expand 返回错误
 - [x] test_index_segment_create_initial_size: 创建时文件为 initial_size, header file_size = max
-- [x] test_index_segment_expand: 4KB → 8KB → 16KB → ... → 4MB
+- [x] test_index_segment_expand: 16KB → 32KB → 64KB → ... → 16MB
 - [x] test_index_segment_expand_recalculate_capacity: 扩容后 entries_capacity 正确增长
 - [x] test_data_segment_append_triggers_expand: 写入数据 → 自动扩容
 - [x] test_index_segment_append_triggers_expand: 写入条目 → 自动扩容
