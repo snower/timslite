@@ -17,7 +17,7 @@
 | PY-5 | 查询迭代器 (`Arc<DataSet>` 模式) | ✅ 完成 | `src/query.rs` — 预收集 IndexEntry + 懒加载数据 |
 | PY-6 | Python 模块导出 + `__init__.py` | ✅ 完成 | `src/lib.rs`, `python/timslite/__init__.py` |
 | PY-7 | 集成测试 (8 个测试文件, 39 用例) | ✅ 完成 | `tests/` — 全部通过 |
-| PY-8 | CI/CD + 多平台 Wheel 构建 | 🔲 待开始 | GitHub Actions workflow |
+| PY-8 | CI/CD + 多平台 Wheel 构建 | ✅ 完成 | GitHub Actions: ci.yml (python-tests), python-release.yml (5 platforms × 5 Python versions) |
 | PY-9 | Queue 模块 Python 包装 | ✅ 完成 | `src/queue.rs` — DatasetQueue + Consumer |
 | PY-10 | Queue poll callback 包装 | ✅ 完成 | `DatasetQueueConsumer.poll_callback`, `JournalQueueConsumer.poll_callback` |
 
@@ -27,6 +27,8 @@
 - ✅ `pytest tests/ -v` — **56 tests passed** (42 existing + 14 queue), 0 failed
 - ✅ `cargo test -- --test-threads=1` — 主 crate 244 tests passed (200 lib + 44 integration)
 - ✅ `maturin develop --release` — 编译并安装成功 (CPython 3.13)
+- ✅ `ci.yml` python-tests — Python 3.9-3.13 CI 自动测试
+- ✅ `python-release.yml` — 多平台 Wheel 发布 (5 platforms × 5 Python versions)
 
 ---
 
