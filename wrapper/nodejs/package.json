@@ -5,14 +5,22 @@
   "main": "index.js",
   "types": "index.d.ts",
   "files": [
+    "README.md",
     "index.js",
     "index.d.ts",
     "auto-generated.d.ts",
+    "binding-target.js",
+    "scripts/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "build.rs",
+    "src/**",
     "*.node"
   ],
   "scripts": {
-    "build": "napi build --platform --dts auto-generated.d.ts",
-    "build:debug": "napi build --platform --mode=debug --dts auto-generated.d.ts",
+    "build": "napi build --platform --no-js --dts auto-generated.d.ts",
+    "build:debug": "napi build --platform --no-js --mode=debug --dts auto-generated.d.ts",
+    "postinstall": "node scripts/install.js",
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "napi": {
