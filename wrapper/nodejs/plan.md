@@ -18,8 +18,8 @@
 | NODE-6 | Journal API 与 journal queue | ✅ 完成 | journal read/query/queue |
 | NODE-7 | TypeScript 声明 | ✅ 完成 | `index.d.ts` |
 | NODE-8 | 跨层文档同步 | ✅ 完成 | root README/plan.md 状态同步 |
-| NODE-9 | CI/prebuild 发布准备 | 待开始 | 多平台 npm build plan |
-| NODE-10 | 集成测试 | ✅ 完成 | 72 tests, 5 test files |
+| NODE-9 | CI/prebuild 发布准备 | ✅ 完成 | root npm package, prebuilt artifacts, source fallback |
+| NODE-10 | 集成测试 | ✅ 完成 | 77 tests, 6 test files |
 
 实现与集成测试完成。
 
@@ -434,8 +434,15 @@ wrapper/nodejs/
 
 文件:
 
-- Create/Modify: `.github/workflows/nodejs-wrapper.yml`
+- Create/Modify: `.github/workflows/nodejs-release.yml`
 - Modify: `wrapper/nodejs/package.json`
+- Modify: `wrapper/nodejs/Cargo.toml`
+- Modify: `wrapper/nodejs/index.js`
+- Create/Modify: `wrapper/nodejs/README.md`
+- Create: `wrapper/nodejs/binding-target.js`
+- Create: `wrapper/nodejs/scripts/install.js`
+- Create: `wrapper/nodejs/scripts/prepare-publish.js`
+- Create: `wrapper/nodejs/tests/package.test.ts`
 
 任务:
 
@@ -453,13 +460,23 @@ wrapper/nodejs/
   - `npm run build --prefix wrapper/nodejs`
   - `npm test --prefix wrapper/nodejs`
 - [x] 规划 prebuild 发布。
-  - 当前平台先发布 source build。
-  - 后续按平台包或 napi-rs CLI 的推荐模式发布预编译产物。
+  - 单一 root npm package 携带支持平台的 `.node` 文件。
+  - 支持平台: macOS ARM64、Linux x64 GNU、Linux ARM64 GNU、Windows x64 MSVC、Windows ARM64 MSVC。
+  - 不发布 `timslite-<platform>` optional packages。
+- [x] 添加未预编译平台源码 fallback。
+  - `postinstall` 在缺少当前平台 `.node` 时运行 `cargo build --release --locked`。
+  - 开发 checkout 保持 path dependency: `timslite = { path = "../..", version = "=x.y.z" }`。
+  - npm 发布前改写为 crates.io 精确版本依赖: `timslite = { version = "=x.y.z" }`。
+- [x] 添加 npm 包内容校验。
+  - `npm pack --dry-run --json` 校验 `.node` 数量。
+  - 校验 README、Cargo manifest、lockfile、build.rs、source 和 install scripts 被打包。
 
 验收标准:
 
 - PR 能自动验证 Node wrapper。
 - 发布前有明确 prebuild 策略。
+- npm 包可在支持平台直接加载预编译 binding。
+- 未预编译平台可在 Rust toolchain 可用时从 crates.io 同版本源码构建。
 
 ---
 

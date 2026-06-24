@@ -82,6 +82,10 @@ wrapper/nodejs/
 ├── build.rs                       # napi build hook
 ├── package.json                   # npm package metadata and scripts
 ├── README.md                      # Node 使用说明
+├── binding-target.js              # runtime platform -> native binding filename mapping
+├── scripts/
+│   ├── install.js                  # npm postinstall source-build fallback
+│   └── prepare-publish.js          # release-time crates.io dependency rewrite
 ├── index.d.ts                     # TypeScript public types
 ├── src/
 │   ├── lib.rs                     # Node-API module root
@@ -97,7 +101,8 @@ wrapper/nodejs/
     ├── config.test.ts             # config defaults and validation
     ├── dataset.test.ts            # lifecycle, write/read/query
     ├── queue.test.ts              # queue push/poll/ack/callback
-    └── journal.test.ts            # journal read/query/queue
+    ├── journal.test.ts            # journal read/query/queue
+    └── package.test.ts            # npm package layout, loader, install fallback
 ```
 
 `Cargo.toml`, `package.json`, `src/`, `tests/` 等文件只在实现阶段创建。本设计阶段不创建代码骨架。
@@ -405,12 +410,16 @@ timslite
 预编译产物至少覆盖:
 
 - Windows x64 MSVC
+- Windows ARM64 MSVC
 - Linux x64 GNU
 - Linux ARM64 GNU
-- macOS x64
 - macOS ARM64
 
-多平台预构建是发布阶段目标, MVP 本地开发可先只支持当前平台。
+发布包采用单一 root package, 将支持平台的 `.node` 文件直接放在根包中, 不发布 `timslite-<platform>` optional packages。runtime loader 只加载根包内的 `timslite.<target>.node`, 不再读取平台子包的 `package.json` 做 `bindingPackageVersion` 检查。
+
+开发 checkout 中 `wrapper/nodejs/Cargo.toml` 使用 `timslite = { path = "../..", version = "=x.y.z" }`, 以便本地开发复用当前源码并校验版本一致。npm 发布前, release workflow 将该依赖改写为 crates.io 上同版本的 `timslite = { version = "=x.y.z" }`, 生成发布包内的 `Cargo.lock`, 并把 `Cargo.toml`、`Cargo.lock`、`build.rs`、`src/**`、`scripts/**`、README 和预编译 `.node` 一起放入 npm 包。
+
+如果当前平台没有预编译 `.node`, `postinstall` 会尝试使用本机 Rust toolchain 从 crates.io 依赖构建源码 fallback。`TIMSLITE_SKIP_SOURCE_BUILD=1` 可跳过源码构建, `TIMSLITE_BUILD_FROM_SOURCE=1` 可强制源码构建。
 
 ## 10. 测试策略
 
@@ -448,11 +457,11 @@ cargo clippy --manifest-path wrapper/nodejs/Cargo.toml --all-targets -- -D warni
 | JS callback 从 Rust 通知线程触发 | 未定义行为或崩溃 | 只使用 threadsafe function 调度回 JS 线程 |
 | Store close 后仍有 Dataset 引用 | use-after-close 或语义漂移 | wrapper 跟踪 closed state, 子对象检查状态 |
 | C ABI 与 Rust public API 语义分叉 | wrapper 行为不一致 | Node wrapper 不走 C ABI, 直接复用 Rust public API |
-| npm 预构建矩阵维护成本 | 发布复杂 | MVP 先本地构建, 发布阶段再加入 CI prebuild |
+| npm 预构建矩阵维护成本 | 发布复杂 | 单 root package 携带预编译 `.node`; 未覆盖平台通过 postinstall 源码 fallback |
+| npm 与 crates.io 版本不同步 | 源码 fallback 无法解析同版本 crate | release workflow 校验 package/root/wrapper 版本一致, 并在 npm 发布前等待 crates.io 同版本可解析 |
 
 ## 12. 与现有 wrapper 的关系
 
 - Python wrapper 是行为参考, 但 Node API 使用 Node/TypeScript 习惯命名: `readLatest`, `queryAll`, `openDatasetByIdentifier`。
 - Node wrapper 仍以 Store-managed public boundary 为准, 不暴露内部 `DataSetInner`、`IndexEntry`、`QuerySource` 或 C ABI handle。
 - C ABI header 仍用于 C/C++/Go 等宿主; Node wrapper 不复用其裸指针接口。
-
