@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "timslite"
-version = "0.1.0"
+version = "0.1.1"
 description = "High-performance mmap-backed time-series storage for Python."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -1,6 +1,6 @@
 [package]
 name = "timslite"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "High-performance mmap-backed time-series storage engine with queues, journal, C ABI, and Python bindings."
 license = "MIT"

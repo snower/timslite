@@ -536,7 +536,7 @@ class DatasetQueueConsumer:
 ```toml
 [package]
 name = "timslite-python"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [lib]
@@ -557,7 +557,7 @@ build-backend = "maturin"
 
 [project]
 name = "timslite"
-version = "0.1.0"
+version = "0.1.1"
 description = "High-performance time-series data storage"
 requires-python = ">=3.9"
 license = { text = "MIT" }

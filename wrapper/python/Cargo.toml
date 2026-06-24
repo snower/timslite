@@ -1,6 +1,6 @@
 [package]
 name = "timslite-python"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 publish = false
 description = "Python bindings for the timslite time-series storage engine."
@@ -23,4 +23,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
-timslite = { path = "../..", version = "0.1.0" }
+timslite = { path = "../..", version = "0.1.1" }

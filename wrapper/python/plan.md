@@ -96,7 +96,7 @@ wrapper/python/
   - `[dependencies] timslite = { path = "../.." }`
 - [ ] `wrapper/python/pyproject.toml` — PEP 517 构建配置
   - `build-system: requires = ["maturin>=1.0,<2.0"]`, `build-backend = "maturin"`
-  - `[project]` name = "timslite", version = "0.1.0", requires-python = ">=3.9"
+  - `[project]` name = "timslite", version = "0.1.1", requires-python = ">=3.9"
   - `[tool.maturin]` features = `["pyo3/extension-module"]`
 - [ ] `wrapper/python/src/lib.rs` — PyO3 模块入口
   - `use pyo3::prelude::*`

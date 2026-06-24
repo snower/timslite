@@ -106,7 +106,7 @@ wrapper/nodejs/
 - [x] 创建 Rust addon crate。
   - package name 使用 `timslite-nodejs` 或 `timslite-node`。
   - `[lib] crate-type = ["cdylib"]`。
-  - 依赖项目根 crate: `timslite = { path = "../..", version = "0.1.0" }`。
+  - 依赖项目根 crate: `timslite = { path = "../..", version = "0.1.1" }`。
   - 添加 Node-API binding 依赖和 build dependency。
 - [x] 创建 npm package。
   - 添加 `build`, `test`, `clean` scripts。

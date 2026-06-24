@@ -7,7 +7,7 @@
 ```toml
 [package]
 name = "timslite"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 
 [lib]
