@@ -59,6 +59,38 @@ Store (facade, data_dir level)
     └── queue/{group_name}
 ```
 
+## Installation
+
+### Rust (crates.io)
+
+```toml
+# Cargo.toml
+[dependencies]
+timslite = "0.1"
+```
+
+Or use: `cargo add timslite`
+
+### Python (PyPI)
+
+```bash
+pip install timslite
+```
+
+Prebuilt wheels for Python 3.9–3.13 on macOS/Linux/Windows (x86_64 + aarch64). Falls back to source build if no prebuilt matches (requires Rust toolchain).
+
+### Node.js (npm)
+
+```bash
+npm install timslite
+```
+
+Prebuilt native binaries for macOS/Linux/Windows (x86_64 + aarch64). Falls back to source build if no prebuilt matches (requires Rust toolchain).
+
+### C / C++
+
+Download prebuilt `libtimslite` from [GitHub Releases](https://github.com/user/timslite/releases), or build from source: `cargo build --release`. Link against `libtimslite.so/.dylib/.dll` and include `include/timslite.h`.
+
 ## Quick Start
 
 ### Rust
