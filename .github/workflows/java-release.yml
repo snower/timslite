@@ -1,9 +1,15 @@
 name: Java Release
 
 on:
-  push:
-    branches: [main, master]
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build distributions without publishing"
+        required: false
+        default: true
+        type: boolean
 
 env:
   JAVA_VERSION: '8'
