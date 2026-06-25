@@ -1,8 +1,9 @@
 name: Java Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -81,10 +82,11 @@ jobs:
           name: ${{ matrix.artifact }}
           path: native-upload/
 
-  build-jar:
-    name: Build JAR artifacts
+  publish:
+    name: Publish to Maven Central
     needs: build-native
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
     steps:
       - uses: actions/checkout@v4
 
@@ -118,15 +120,43 @@ jobs:
           mkdir -p wrapper/java/target/release
           cp native-download/* wrapper/java/target/release/
 
-      - name: Build main JAR and classifier JARs
+      - name: Import GPG key
         run: |
-          mvn -f wrapper/java/pom.xml package -DskipTests \
-            -Pmacos-x86_64 \
-            -Pmacos-aarch64 \
-            -Plinux-x86_64 \
-            -Pwindows-x86_64
+          echo "${{ secrets.GPG_PRIVATE_KEY }}" | base64 -d | gpg --batch --import
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
 
-      - name: Upload JAR artifacts
+      - name: Configure Maven settings
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml << 'EOF'
+          <settings>
+            <servers>
+              <server>
+                <id>central</id>
+                <username>${env.SONATYPE_USERNAME}</username>
+                <password>${env.SONATYPE_PASSWORD}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      - name: Publish to Maven Central
+        run: |
+          mvn -f wrapper/java/pom.xml clean deploy \
+            -P release \
+            -P macos-x86_64 \
+            -P macos-aarch64 \
+            -P linux-x86_64 \
+            -P windows-x86_64 \
+            -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}"
+        env:
+          SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Upload JAR artifacts (dry-run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         uses: actions/upload-artifact@v4
         with:
           name: java-jars

@@ -20,6 +20,32 @@
         </license>
     </licenses>
 
+    <developers>
+        <developer>
+            <name>snower</name>
+            <email>sujian199@gmail.com</email>
+        </developer>
+    </developers>
+
+    <scm>
+        <tag>HEAD</tag>
+        <url>https://github.com/snower/timslite</url>
+        <connection>scm:git:https://github.com/snower/timslite.git</connection>
+        <developerConnection>scm:git:ssh://github.com:snower/timslite.git</developerConnection>
+    </scm>
+
+    <distributionManagement>
+        <snapshotRepository>
+            <id>central</id>
+            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
+        </snapshotRepository>
+        <repository>
+            <id>central</id>
+            <name>Central Portal</name>
+            <url>https://central.sonatype.com/api/v1/publisher</url>
+        </repository>
+    </distributionManagement>
+
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>1.8</maven.compiler.source>
@@ -443,6 +469,49 @@
                                 </configuration>
                             </execution>
                         </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Release profile: GPG signing + Sonatype Central publishing -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <!-- GPG signing -->
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <executions>
+                            <execution>
+                                <id>sign-artifacts</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>sign</goal>
+                                </goals>
+                                <configuration>
+                                    <gpgArguments>
+                                        <arg>--pinentry-mode</arg>
+                                        <arg>loopback</arg>
+                                    </gpgArguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+
+                    <!-- Sonatype Central publishing -->
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.8.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
+                        </configuration>
                     </plugin>
                 </plugins>
             </build>
