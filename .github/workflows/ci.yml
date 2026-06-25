@@ -185,7 +185,7 @@ jobs:
             ${{ runner.os }}-cargo-java-
 
       - name: Build Rust cdylib
-        run: cargo build --manifest-path wrapper/java/Cargo.toml
+        run: cargo build --manifest-path wrapper/java/native/Cargo.toml
 
       - name: Run Maven tests
         run: mvn -f wrapper/java/pom.xml clean test
