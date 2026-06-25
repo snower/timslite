@@ -274,56 +274,6 @@
     </build>
 
     <profiles>
-        <!-- macOS x86_64 native library profile -->
-        <profile>
-            <id>macos-x86_64</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-resources-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>copy-native-macos-x86_64</id>
-                                <phase>prepare-package</phase>
-                                <goals>
-                                    <goal>copy-resources</goal>
-                                </goals>
-                                <configuration>
-                                    <outputDirectory>${project.build.directory}/native-jar</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>${native.build.dir}/release</directory>
-                                            <includes>
-                                                <include>libtimslite_java.dylib</include>
-                                            </includes>
-                                        </resource>
-                                    </resources>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-jar-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>package-native-macos-x86_64</id>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                                <configuration>
-                                    <classifier>macos-x86_64</classifier>
-                                    <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-
         <!-- macOS aarch64 (Apple Silicon) native library profile -->
         <profile>
             <id>macos-aarch64</id>
@@ -424,6 +374,56 @@
             </build>
         </profile>
 
+        <!-- Linux aarch64 native library profile -->
+        <profile>
+            <id>linux-aarch64</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-resources-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>copy-native-linux-aarch64</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/native-jar</outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>${native.build.dir}/release</directory>
+                                            <includes>
+                                                <include>libtimslite_java.so</include>
+                                            </includes>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>package-native-linux-aarch64</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                                <configuration>
+                                    <classifier>linux-aarch64</classifier>
+                                    <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <!-- Windows x86_64 native library profile -->
         <profile>
             <id>windows-x86_64</id>
@@ -465,6 +465,56 @@
                                 </goals>
                                 <configuration>
                                     <classifier>windows-x86_64</classifier>
+                                    <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!-- Windows aarch64 native library profile -->
+        <profile>
+            <id>windows-aarch64</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-resources-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>copy-native-windows-aarch64</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/native-jar</outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>${native.build.dir}/release</directory>
+                                            <includes>
+                                                <include>timslite_java.dll</include>
+                                            </includes>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-jar-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>package-native-windows-aarch64</id>
+                                <phase>package</phase>
+                                <goals>
+                                    <goal>jar</goal>
+                                </goals>
+                                <configuration>
+                                    <classifier>windows-aarch64</classifier>
                                     <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
                                 </configuration>
                             </execution>

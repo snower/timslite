@@ -24,10 +24,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
-            label: macos-x86_64
-            artifact: native-macos-x86_64
-            native-lib: libtimslite_java.dylib
           - os: macos-latest
             label: macos-aarch64
             artifact: native-macos-aarch64
@@ -36,9 +32,17 @@ jobs:
             label: linux-x86_64
             artifact: native-linux-x86_64
             native-lib: libtimslite_java.so
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+            artifact: native-linux-aarch64
+            native-lib: libtimslite_java.so
           - os: windows-latest
             label: windows-x86_64
             artifact: native-windows-x86_64
+            native-lib: timslite_java.dll
+          - os: windows-11-arm
+            label: windows-aarch64
+            artifact: native-windows-aarch64
             native-lib: timslite_java.dll
     runs-on: ${{ matrix.os }}
     steps:
@@ -145,10 +149,11 @@ jobs:
         run: |
           mvn -f wrapper/java/pom.xml clean deploy \
             -P release \
-            -P macos-x86_64 \
             -P macos-aarch64 \
             -P linux-x86_64 \
+            -P linux-aarch64 \
             -P windows-x86_64 \
+            -P windows-aarch64 \
             -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}"
         env:
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
