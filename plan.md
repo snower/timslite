@@ -56,6 +56,7 @@
 | 45 | Store Read-only Lock | ✅ 完成 | [phase-45-store-read-only-lock.md](docs/plan/phase-45-store-read-only-lock.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 | NODE | Node.js Package (Node-API) | ✅ 完成 | [wrapper/nodejs/plan.md](wrapper/nodejs/plan.md) |
+| JAVA | Java Package (UniFFI) | ✅ 完成 | [wrapper/java/plan.md](wrapper/java/plan.md) |
 
 ---
 
@@ -125,7 +126,8 @@ docs/plan/
 ├── phase-43-index-entry-delta.md ← Phase 43: Index Entry Timestamp Delta
 ├── phase-44-queue-poll-callback.md ← Phase 44: Queue Poll Callback
 ├── phase-45-store-read-only-lock.md ← Phase 45: Store Read-only Lock
-└── wrapper/nodejs/plan.md ← NODE: Node.js Package (Node-API)
+├── wrapper/nodejs/plan.md ← NODE: Node.js Package (Node-API)
+└── wrapper/java/plan.md   ← JAVA: Java Package (UniFFI)
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

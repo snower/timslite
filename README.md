@@ -1,6 +1,6 @@
 # timslite
 
-> 高性能 Rust 时序数据存储库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、C ABI FFI、Python wrapper 和 Node.js wrapper。
+> 高性能 Rust 时序数据存储库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、C ABI FFI、Python wrapper、Node.js wrapper 和 Java wrapper。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
@@ -8,11 +8,11 @@
 
 timslite 是一个可嵌入到其它项目中的本地时序数据存储引擎。它面向需要高性能本地写入、精确时间戳读取、范围查询、持久化消费队列和轻量变更日志的应用，不需要单独部署数据库服务。
 
-你可以把它作为 Rust library 使用，也可以编译为 `cdylib` 后通过 C ABI 接入 C/C++/Go 等宿主，还可以通过 `wrapper/python` 在 Python 项目中或通过 `wrapper/nodejs` 在 Node.js 项目中使用。
+你可以把它作为 Rust library 使用，也可以编译为 `cdylib` 后通过 C ABI 接入 C/C++/Go 等宿主，还可以通过 `wrapper/python` 在 Python 项目中、通过 `wrapper/nodejs` 在 Node.js 项目中、或通过 `wrapper/java` 在 Java/Kotlin 项目中使用。
 
 ## 当前状态
 
-timslite 仍处于首次正式发布前的开发阶段。Rust API、C ABI、Python wrapper 和磁盘格式仍可能调整，因此更适合评估、内部集成实验和受控场景使用。
+timslite 仍处于首次正式发布前的开发阶段。Rust API、C ABI、Python wrapper、Node.js wrapper、Java wrapper 和磁盘格式仍可能调整，因此更适合评估、内部集成实验和受控场景使用。
 
 当前可用能力:
 
@@ -20,6 +20,7 @@ timslite 仍处于首次正式发布前的开发阶段。Rust API、C ABI、Pyth
 - C ABI 头文件维护在 [include/timslite.h](include/timslite.h)。
 - Python wrapper 位于 [wrapper/python](wrapper/python)。
 - Node.js wrapper 位于 [wrapper/nodejs](wrapper/nodejs)。
+- Java wrapper 位于 [wrapper/java](wrapper/java)。
 - CI 已覆盖 Rust format、clippy、unit/integration tests 和 Python wrapper tests。
 - 性能基准仍在后续完善中；`benches/` 目录已存在，但 benchmark target 还不是必过验证项。
 
@@ -325,6 +326,24 @@ node -e "const t = require('.'); console.log('version:', t.version())"
 ```
 
 Node.js wrapper 使用 BigInt 表示 timestamp 和 identifier，避免精度丢失。
+
+## Java Wrapper
+
+Java wrapper 位于 [wrapper/java](wrapper/java)，基于 UniFFI 生成 C ABI 绑定并通过 Kotlin/JVM 后端暴露 Java API。支持 Java 8+，提供 Store、Dataset、Queue、Journal 等完整功能。
+
+Maven 坐标:
+
+```xml
+<dependency>
+  <groupId>io.github.snower</groupId>
+  <artifactId>timslite</artifactId>
+  <version>0.1.1</version>
+</dependency>
+```
+
+当前状态: 88 个测试全部通过。
+
+Java wrapper 详情见 [wrapper/java/README.md](wrapper/java/README.md)，设计文档见 [wrapper/java/design.md](wrapper/java/design.md)。
 
 ## 使用注意事项
 

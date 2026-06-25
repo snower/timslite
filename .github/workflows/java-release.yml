@@ -1,0 +1,127 @@
+name: Java Release
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  JAVA_VERSION: '8'
+  RUST_TOOLCHAIN: 'stable'
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build-native:
+    name: Build native (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-13
+            label: macos-x86_64
+            artifact: native-macos-x86_64
+            native-lib: libtimslite_java.dylib
+          - os: macos-latest
+            label: macos-aarch64
+            artifact: native-macos-aarch64
+            native-lib: libtimslite_java.dylib
+          - os: ubuntu-latest
+            label: linux-x86_64
+            artifact: native-linux-x86_64
+            native-lib: libtimslite_java.so
+          - os: windows-latest
+            label: windows-x86_64
+            artifact: native-windows-x86_64
+            native-lib: timslite_java.dll
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            wrapper/java/target
+          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-java-
+
+      - name: Build Rust cdylib (debug for tests)
+        run: cargo build --manifest-path wrapper/java/Cargo.toml
+
+      - name: Run Maven tests
+        run: mvn -f wrapper/java/pom.xml clean test
+
+      - name: Build Rust cdylib (release for publication)
+        run: cargo build --manifest-path wrapper/java/Cargo.toml --release
+
+      - name: Prepare native artifact
+        run: |
+          mkdir -p native-upload
+          cp wrapper/java/target/release/${{ matrix.native-lib }} native-upload/
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: native-upload/
+
+  build-jar:
+    name: Build JAR artifacts
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            wrapper/java/target
+          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-java-
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-download
+          merge-multiple: true
+
+      - name: Place native libraries for classifier jars
+        run: |
+          mkdir -p wrapper/java/target/release
+          cp native-download/* wrapper/java/target/release/
+
+      - name: Build main JAR and classifier JARs
+        run: |
+          mvn -f wrapper/java/pom.xml package -DskipTests \
+            -Pmacos-x86_64 \
+            -Pmacos-aarch64 \
+            -Plinux-x86_64 \
+            -Pwindows-x86_64
+
+      - name: Upload JAR artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-jars
+          path: wrapper/java/target/*.jar

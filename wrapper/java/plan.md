@@ -77,14 +77,14 @@ wrapper/java/
 
 任务:
 
-- [ ] 确认当前 UniFFI stable 版本和 Kotlin/JVM backend 配置项。
+- [x] 确认当前 UniFFI stable 版本和 Kotlin/JVM backend 配置项。
   - 记录 `uniffi`, `uniffi_bindgen` 或 Maven plugin 的精确版本。
   - 验证该版本支持 Java 8 目标字节码和禁用 Java 9 cleaner path。
-- [ ] 确认 Maven/Kotlin/JDK 组合。
+- [x] 确认 Maven/Kotlin/JDK 组合。
   - Maven compiler source/target 使用 1.8。
   - Kotlin Maven plugin `jvmTarget` 使用 1.8。
   - 测试运行至少覆盖 Java 8 或等效 Java 8 toolchain。
-- [ ] 确认 Maven coordinates。
+- [x] 确认 Maven coordinates。
   - 固定使用 `groupId=io.github.snower`, `artifactId=timslite`。
   - Java package 固定使用 `io.github.snower.timslite`。
 - [ ] 确认 local verification 命令。

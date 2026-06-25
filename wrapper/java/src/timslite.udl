@@ -1,0 +1,236 @@
+namespace timslite {
+    string version();
+};
+
+[Error]
+enum TmslError {
+    "Io",
+    "InvalidMagic",
+    "InvalidVersion",
+    "MmapError",
+    "CompressionError",
+    "DecompressionError",
+    "InvalidData",
+    "NotFound",
+    "Expired",
+    "AlreadyExists",
+    "SegmentFull",
+    "QueueAlreadyOpen",
+    "QueueNotOpen",
+    "ConsumerGroupNotFound",
+    "ConsumerGroupExists",
+    "QueueClosed",
+    "PendingFull",
+    "StoreClosed",
+    "DatasetClosed",
+    "QueueBridgeClosed",
+    "IteratorExhausted",
+};
+
+dictionary StoreConfig {
+    u64? flush_interval_secs;
+    u64? idle_timeout_secs;
+    u64? data_segment_size;
+    u64? index_segment_size;
+    u64? initial_data_segment_size;
+    u64? initial_index_segment_size;
+    u8? compress_level;
+    u64? cache_max_memory;
+    u64? cache_idle_timeout_secs;
+    u8? retention_check_hour;
+    boolean? enable_background_thread;
+    boolean? enable_journal;
+    boolean? read_only;
+};
+
+dictionary DatasetConfig {
+    u64? data_segment_size;
+    u64? index_segment_size;
+    u64? initial_data_segment_size;
+    u64? initial_index_segment_size;
+    u8? compress_level;
+    u8? compress_type;
+    u8? index_continuous;
+    u64? retention_window;
+    boolean? enable_journal;
+};
+
+dictionary CreateDatasetOptions {
+    DatasetConfig? config;
+};
+
+dictionary QueueConsumerConfig {
+    u64? running_expired_seconds;
+    u16? max_retry_count;
+};
+
+dictionary QueueConsumerOptions {
+    QueueConsumerConfig? config;
+};
+
+dictionary DataSetInfo {
+    string name;
+    string dataset_type;
+    string base_dir;
+    u64 identifier;
+    u64 data_segment_size;
+    u64 index_segment_size;
+    u64 initial_data_segment_size;
+    u64 initial_index_segment_size;
+    u8 compress_type;
+    u8 compress_level;
+    u8 index_continuous;
+    u64 retention_window;
+    boolean enable_journal;
+    i64 create_time;
+};
+
+dictionary DataSetState {
+    i64? latest_written_timestamp;
+    u32 open_data_segments;
+    u32 data_segments;
+    u64 total_record_count;
+    u64 total_data_size;
+    u64 total_uncompressed_size;
+    u64 total_invalid_record_count;
+    i64? min_timestamp;
+    i64? max_timestamp;
+    u32 open_index_segments;
+    u32 index_segments;
+    u32 pending_index_entries;
+    i64? base_timestamp;
+    boolean read_only;
+    boolean has_block_cache;
+    boolean has_journal;
+    boolean has_queue;
+    u32 queue_consumer_groups;
+};
+
+dictionary DataSetInspectResult {
+    DataSetInfo info;
+    DataSetState state;
+};
+
+dictionary TickResult {
+    u64 executed_tasks;
+    u64 next_delay_ms;
+};
+
+dictionary JournalRecord {
+    i64 sequence;
+    sequence<u8> data;
+};
+
+dictionary Record {
+    i64 timestamp;
+    sequence<u8> data;
+};
+
+dictionary LengthEntry {
+    i64 timestamp;
+    u32 length;
+};
+
+interface StoreBridge {
+    [Throws=TmslError, Name=open]
+    constructor(string path, StoreConfig config);
+    boolean is_closed();
+    [Throws=TmslError]
+    boolean is_read_only();
+    [Throws=TmslError]
+    void create_dataset(string name, string dataset_type, CreateDatasetOptions options);
+    [Throws=TmslError]
+    DatasetBridge open_dataset(string name, string dataset_type);
+    [Throws=TmslError]
+    DatasetBridge open_dataset_by_identifier(u64 identifier);
+    [Throws=TmslError]
+    void drop_dataset(string name, string dataset_type);
+    [Throws=TmslError]
+    sequence<string> get_dataset_names();
+    [Throws=TmslError]
+    sequence<string> get_dataset_types(string name);
+    [Throws=TmslError]
+    DataSetInspectResult inspect_dataset(string name, string dataset_type);
+    [Throws=TmslError]
+    TickResult tick_background_tasks();
+    [Throws=TmslError]
+    u64 next_background_delay_ms();
+    [Throws=TmslError]
+    QueueBridge open_queue(DatasetBridge dataset);
+    [Throws=TmslError]
+    JournalQueueBridge open_journal_queue();
+    [Throws=TmslError]
+    i64? journal_latest_sequence();
+    [Throws=TmslError]
+    JournalRecord? journal_read(i64 sequence);
+    [Throws=TmslError]
+    sequence<JournalRecord> journal_query(i64 start_sequence, i64 end_sequence);
+};
+
+interface DatasetBridge {
+    boolean is_closed();
+    [Throws=TmslError]
+    void write(i64 timestamp, sequence<u8> data);
+    [Throws=TmslError]
+    void append(i64 timestamp, sequence<u8> data);
+    [Throws=TmslError]
+    void delete(i64 timestamp);
+    [Throws=TmslError]
+    Record? read(i64 timestamp);
+    [Throws=TmslError]
+    Record? read_latest();
+    [Throws=TmslError]
+    boolean read_exist(i64 timestamp);
+    [Throws=TmslError]
+    u32? read_length(i64 timestamp);
+    [Throws=TmslError]
+    sequence<Record> query(i64 start_ts, i64 end_ts);
+    [Throws=TmslError]
+    sequence<u8> query_exist(i64 start_ts, i64 end_ts);
+    [Throws=TmslError]
+    sequence<LengthEntry> query_length(i64 start_ts, i64 end_ts);
+    [Throws=TmslError]
+    QueryIteratorBridge query_iter(i64 start_ts, i64 end_ts);
+    [Throws=TmslError]
+    QueryLengthIteratorBridge query_length_iter(i64 start_ts, i64 end_ts);
+    [Throws=TmslError]
+    void flush();
+};
+
+interface QueryIteratorBridge {
+    [Throws=TmslError]
+    Record? next();
+};
+
+interface QueryLengthIteratorBridge {
+    [Throws=TmslError]
+    LengthEntry? next();
+};
+
+interface QueueBridge {
+    [Throws=TmslError]
+    i64 push(sequence<u8> data);
+    [Throws=TmslError]
+    QueueConsumerBridge open_consumer(string group_name, QueueConsumerOptions options);
+    [Throws=TmslError]
+    void drop_consumer(string group_name);
+};
+
+interface QueueConsumerBridge {
+    [Throws=TmslError]
+    Record? poll(u64 timeout_ms);
+    [Throws=TmslError]
+    void ack(i64 timestamp);
+};
+
+interface JournalQueueBridge {
+    [Throws=TmslError]
+    JournalQueueConsumerBridge open_consumer(string group_name, QueueConsumerOptions options);
+};
+
+interface JournalQueueConsumerBridge {
+    [Throws=TmslError]
+    JournalRecord? poll(u64 timeout_ms);
+    [Throws=TmslError]
+    void ack(i64 sequence);
+};

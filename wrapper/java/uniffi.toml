@@ -1,0 +1,9 @@
+[bindings.kotlin]
+package_name = "io.github.snower.timslite.uniffi"
+cdylib_name = "timslite_java"
+
+# Java 8 compatibility: disable Java 9 Cleaner, rely on explicit close()
+cleanup = "leak"
+
+[bindings.kotlin.custom_types]
+# Custom type mappings can be added here if needed

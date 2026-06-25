@@ -74,6 +74,7 @@
 | `ConsumerStateFile` + `PendingEntry` | [Queue 状态文件](docs/design/queue-state-file.md) |
 | `JournalManager` + `JournalLog` + `JournalQueue` | [Journal 变更日志](docs/design/journal.md) / [Journal 专用存储](docs/design/journal-storage.md) |
 | `wrapper/nodejs` | [Node.js Wrapper](wrapper/nodejs/design.md) |
+| `wrapper/java` | [Java Wrapper](wrapper/java/design.md) |
 
 ---
 
