@@ -430,9 +430,10 @@ MVP can start with local build and Maven-local validation. Release packaging sho
 - Windows aarch64 MSVC
 - Linux x86_64 GNU
 - Linux aarch64 GNU
+- macOS x86_64
 - macOS aarch64 (Apple Silicon)
 
-The preferred Maven layout is a single JAR containing all platform native libraries with architecture-specific names. JNA automatically loads the correct library for the current OS/architecture:
+The preferred Maven layout is a single JAR containing all platform native libraries under platform-specific resource directories. Dynamic library filenames keep the standard OS convention:
 
 ```xml
 <dependency>
@@ -442,12 +443,14 @@ The preferred Maven layout is a single JAR containing all platform native librar
 </dependency>
 ```
 
-The JAR includes native libraries with architecture-specific names at the root level:
-- `libtimslite_java-macos-aarch64.dylib` (macOS aarch64)
-- `libtimslite_java-linux-x86_64.so` (Linux x86_64)
-- `libtimslite_java-linux-aarch64.so` (Linux aarch64)
-- `timslite_java-windows-x86_64.dll` (Windows x86_64)
-- `timslite_java-windows-aarch64.dll` (Windows aarch64)
+The JAR includes native libraries at:
+
+- `META-INF/native/macos-x86_64/libtimslite_java.dylib`
+- `META-INF/native/macos-aarch64/libtimslite_java.dylib`
+- `META-INF/native/linux-x86_64/libtimslite_java.so`
+- `META-INF/native/linux-aarch64/libtimslite_java.so`
+- `META-INF/native/windows-x86_64/timslite_java.dll`
+- `META-INF/native/windows-aarch64/timslite_java.dll`
 
 The `NativeLibraryLoader` detects the current OS/architecture and loads the correct library.
 

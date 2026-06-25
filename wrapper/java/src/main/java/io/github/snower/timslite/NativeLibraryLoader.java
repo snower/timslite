@@ -2,11 +2,16 @@ package io.github.snower.timslite;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 public final class NativeLibraryLoader {
+
+    private static final String BASE_LIBRARY_NAME = "timslite_java";
+    private static final String LIBRARY_OVERRIDE_PROPERTY = "uniffi.component.timslite.libraryOverride";
+    private static final String NATIVE_RESOURCE_ROOT = "META-INF/native";
 
     private static volatile boolean loaded = false;
 
@@ -18,69 +23,69 @@ public final class NativeLibraryLoader {
             return;
         }
 
-        String libraryName = resolveLibraryName();
-
-        if (loadFromLibraryPath(libraryName)) {
+        if (loadFromLibraryPath()) {
             loaded = true;
             return;
         }
 
-        if (loadFromJnaLibraryPath(libraryName)) {
+        if (loadFromConfiguredLibraryPath()) {
             loaded = true;
             return;
         }
 
         try {
-            extractAndLoad(libraryName);
+            extractAndLoad(resolveResourcePath());
             loaded = true;
         } catch (IOException e) {
-            String fallbackName = getFallbackLibraryName();
-            if (fallbackName != null && !fallbackName.equals(libraryName)) {
-                try {
-                    extractAndLoad(fallbackName);
-                    loaded = true;
-                    return;
-                } catch (IOException ignored) {
-                }
-            }
             throw new UnsatisfiedLinkError("Failed to load native library: " + e.getMessage());
         }
     }
 
-    private static boolean loadFromLibraryPath(String libraryName) {
+    private static boolean loadFromLibraryPath() {
         try {
-            System.loadLibrary(libraryName);
+            System.loadLibrary(BASE_LIBRARY_NAME);
             return true;
         } catch (UnsatisfiedLinkError e) {
             return false;
         }
     }
 
-    private static boolean loadFromJnaLibraryPath(String libraryName) {
-        String jnaPath = System.getProperty("jna.library.path");
-        if (jnaPath == null || jnaPath.isEmpty()) {
+    private static boolean loadFromConfiguredLibraryPath() {
+        String configuredPath = System.getProperty("timslite.native.library.path");
+        if (configuredPath == null || configuredPath.isEmpty()) {
+            configuredPath = System.getProperty("jna.library.path");
+        }
+        if (configuredPath == null || configuredPath.isEmpty()) {
             return false;
         }
 
-        java.io.File libFile = new java.io.File(jnaPath, libraryName);
-        if (libFile.exists()) {
-            try {
-                System.load(libFile.getAbsolutePath());
-                return true;
-            } catch (UnsatisfiedLinkError e) {
-                return false;
-            }
-        }
+        String platform = platformClassifier(
+            System.getProperty("os.name", ""),
+            System.getProperty("os.arch", "")
+        );
+        String mappedName = mappedLibraryName();
 
-        String fallbackName = getFallbackLibraryName();
-        if (fallbackName != null && !fallbackName.equals(libraryName)) {
-            java.io.File fallbackFile = new java.io.File(jnaPath, fallbackName);
-            if (fallbackFile.exists()) {
-                try {
-                    System.load(fallbackFile.getAbsolutePath());
-                    return true;
-                } catch (UnsatisfiedLinkError e) {
-                    return false;
+        for (String entry : configuredPath.split(File.pathSeparator)) {
+            if (entry == null || entry.isEmpty()) {
+                continue;
+            }
+
+            File root = new File(entry);
+            File[] candidates = {
+                new File(root, mappedName),
+                new File(new File(root, platform), mappedName),
+                new File(new File(new File(new File(root, "META-INF"), "native"), platform), mappedName)
+            };
+
+            for (File candidate : candidates) {
+                if (candidate.exists()) {
+                    try {
+                        System.load(candidate.getAbsolutePath());
+                        System.setProperty(LIBRARY_OVERRIDE_PROPERTY, candidate.getAbsolutePath());
+                        return true;
+                    } catch (UnsatisfiedLinkError e) {
+                        return false;
+                    }
                 }
             }
         }
@@ -88,13 +93,17 @@ public final class NativeLibraryLoader {
         return false;
     }
 
-    private static void extractAndLoad(String libraryName) throws IOException {
-        String resourcePath = "/" + libraryName;
+    private static void extractAndLoad(String resourcePath) throws IOException {
+        String classpathResource = "/" + resourcePath;
         InputStream is = NativeLibraryLoader.class.getResourceAsStream(resourcePath);
         if (is == null) {
-            throw new IOException("Native library not found in classpath: " + resourcePath);
+            is = NativeLibraryLoader.class.getResourceAsStream(classpathResource);
+        }
+        if (is == null) {
+            throw new IOException("Native library not found in classpath: " + classpathResource);
         }
 
+        String libraryName = resourcePath.substring(resourcePath.lastIndexOf('/') + 1);
         String suffix = libraryName.substring(libraryName.lastIndexOf('.'));
         Path tempFile = Files.createTempFile("timslite_native", suffix);
         tempFile.toFile().deleteOnExit();
@@ -106,12 +115,23 @@ public final class NativeLibraryLoader {
         }
 
         System.load(tempFile.toAbsolutePath().toString());
-        System.setProperty("uniffi.component.timslite.libraryOverride", tempFile.toAbsolutePath().toString());
+        System.setProperty(LIBRARY_OVERRIDE_PROPERTY, tempFile.toAbsolutePath().toString());
     }
 
-    private static String resolveLibraryName() {
-        String os = System.getProperty("os.name", "").toLowerCase();
-        String arch = System.getProperty("os.arch", "").toLowerCase();
+    static String resolveResourcePath(String osName, String archName) {
+        return NATIVE_RESOURCE_ROOT + "/" + platformClassifier(osName, archName) + "/" + mappedLibraryName(osName);
+    }
+
+    private static String resolveResourcePath() {
+        return resolveResourcePath(
+            System.getProperty("os.name", ""),
+            System.getProperty("os.arch", "")
+        );
+    }
+
+    static String platformClassifier(String osName, String archName) {
+        String os = osName.toLowerCase();
+        String arch = archName.toLowerCase();
 
         boolean isMac = os.contains("mac") || os.contains("darwin");
         boolean isLinux = os.contains("linux");
@@ -119,34 +139,40 @@ public final class NativeLibraryLoader {
         boolean isArm = arch.equals("aarch64") || arch.equals("arm64");
         boolean isX86 = arch.equals("x86_64") || arch.equals("amd64");
 
-        if (isMac && isArm) {
-            return "libtimslite_java-macos-aarch64.dylib";
+        if (isMac && isX86) {
+            return "macos-x86_64";
+        } else if (isMac && isArm) {
+            return "macos-aarch64";
         } else if (isLinux && isX86) {
-            return "libtimslite_java-linux-x86_64.so";
+            return "linux-x86_64";
         } else if (isLinux && isArm) {
-            return "libtimslite_java-linux-aarch64.so";
+            return "linux-aarch64";
         } else if (isWindows && isX86) {
-            return "timslite_java-windows-x86_64.dll";
+            return "windows-x86_64";
         } else if (isWindows && isArm) {
-            return "timslite_java-windows-aarch64.dll";
+            return "windows-aarch64";
         }
 
         throw new UnsatisfiedLinkError("Unsupported platform: " + os + "-" + arch);
     }
 
-    private static String getFallbackLibraryName() {
-        String os = System.getProperty("os.name", "").toLowerCase();
+    private static String mappedLibraryName() {
+        return mappedLibraryName(System.getProperty("os.name", ""));
+    }
+
+    private static String mappedLibraryName(String osName) {
+        String os = osName.toLowerCase();
         boolean isMac = os.contains("mac") || os.contains("darwin");
         boolean isLinux = os.contains("linux");
         boolean isWindows = os.contains("windows");
 
         if (isMac) {
-            return "libtimslite_java.dylib";
+            return "lib" + BASE_LIBRARY_NAME + ".dylib";
         } else if (isLinux) {
-            return "libtimslite_java.so";
+            return "lib" + BASE_LIBRARY_NAME + ".so";
         } else if (isWindows) {
-            return "timslite_java.dll";
+            return BASE_LIBRARY_NAME + ".dll";
         }
-        return null;
+        return System.mapLibraryName(BASE_LIBRARY_NAME);
     }
 }

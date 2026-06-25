@@ -16,13 +16,14 @@ Java/Kotlin UniFFI bindings for the [timslite](https://github.com/snower/timslit
 
 ### Native Library
 
-The wrapper uses UniFFI 0.31 with a Kotlin/JVM backend and JNA for native library loading. The JAR includes native libraries for all supported platforms with architecture-specific names:
+The wrapper uses UniFFI 0.31 with a Kotlin/JVM backend and JNA for native library loading. The JAR includes native libraries for all supported platforms under `META-INF/native/<platform>/` with standard OS library names:
 
-- `libtimslite_java-macos-aarch64.dylib` (macOS aarch64)
-- `libtimslite_java-linux-x86_64.so` (Linux x86_64)
-- `libtimslite_java-linux-aarch64.so` (Linux aarch64)
-- `timslite_java-windows-x86_64.dll` (Windows x86_64)
-- `timslite_java-windows-aarch64.dll` (Windows aarch64)
+- `META-INF/native/macos-x86_64/libtimslite_java.dylib`
+- `META-INF/native/macos-aarch64/libtimslite_java.dylib`
+- `META-INF/native/linux-x86_64/libtimslite_java.so`
+- `META-INF/native/linux-aarch64/libtimslite_java.so`
+- `META-INF/native/windows-x86_64/timslite_java.dll`
+- `META-INF/native/windows-aarch64/timslite_java.dll`
 
 The `NativeLibraryLoader` automatically detects the current OS/architecture and loads the correct library. No additional configuration is needed.
 

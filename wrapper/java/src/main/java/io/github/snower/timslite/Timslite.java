@@ -6,9 +6,10 @@ import io.github.snower.timslite.uniffi.TimsliteKt;
  * Entry point for the timslite Java wrapper.
  * <p>
  * This facade class delegates to the UniFFI-generated Kotlin/JVM bindings.
- * The native library is loaded automatically by JNA when the first
- * UniFFI binding call is made. Ensure the native library directory is
- * on {@code jna.library.path} or {@code java.library.path}.
+ * The native library is loaded automatically from {@code META-INF/native}
+ * resources when present. Development builds may also place the native
+ * library directory on {@code timslite.native.library.path},
+ * {@code jna.library.path}, or {@code java.library.path}.
  */
 public final class Timslite {
 

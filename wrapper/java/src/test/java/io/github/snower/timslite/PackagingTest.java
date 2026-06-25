@@ -2,7 +2,12 @@ package io.github.snower.timslite;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import javax.xml.parsers.DocumentBuilderFactory;
 import org.junit.jupiter.api.Test;
+import org.w3c.dom.Document;
+import org.w3c.dom.NodeList;
 
 /**
  * Packaging tests for Maven Central publication readiness.
@@ -43,5 +48,42 @@ class PackagingTest {
             assertFalse(jnaPath.isEmpty(),
                 "jna.library.path should be non-empty if set by surefire");
         }
+    }
+
+    @Test
+    void nativeResourcePathsUsePlatformDirectoriesAndStandardLibraryNames() {
+        assertEquals("META-INF/native/linux-x86_64/libtimslite_java.so",
+            NativeLibraryLoader.resolveResourcePath("Linux", "amd64"));
+        assertEquals("META-INF/native/linux-aarch64/libtimslite_java.so",
+            NativeLibraryLoader.resolveResourcePath("Linux", "aarch64"));
+        assertEquals("META-INF/native/macos-x86_64/libtimslite_java.dylib",
+            NativeLibraryLoader.resolveResourcePath("Mac OS X", "x86_64"));
+        assertEquals("META-INF/native/macos-aarch64/libtimslite_java.dylib",
+            NativeLibraryLoader.resolveResourcePath("Mac OS X", "aarch64"));
+        assertEquals("META-INF/native/windows-x86_64/timslite_java.dll",
+            NativeLibraryLoader.resolveResourcePath("Windows 11", "amd64"));
+        assertEquals("META-INF/native/windows-aarch64/timslite_java.dll",
+            NativeLibraryLoader.resolveResourcePath("Windows 11", "arm64"));
+    }
+
+    @Test
+    void pomUsesCentralPortalPluginWithoutLegacyDistributionManagement() throws Exception {
+        assertFalse(Files.readAllLines(Paths.get("pom.xml")).stream()
+            .anyMatch(line -> line.contains("<distributionManagement>")),
+            "Central Portal plugin should own release upload instead of legacy distributionManagement");
+
+        Document document = DocumentBuilderFactory.newInstance()
+            .newDocumentBuilder()
+            .parse(Paths.get("pom.xml").toFile());
+
+        NodeList artifactIds = document.getElementsByTagName("artifactId");
+        boolean foundCentralPlugin = false;
+        for (int i = 0; i < artifactIds.getLength(); i++) {
+            if ("central-publishing-maven-plugin".equals(artifactIds.item(i).getTextContent())) {
+                foundCentralPlugin = true;
+                break;
+            }
+        }
+        assertTrue(foundCentralPlugin, "pom.xml should configure central-publishing-maven-plugin");
     }
 }

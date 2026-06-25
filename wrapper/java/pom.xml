@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>io.github.snower</groupId>
@@ -9,7 +9,7 @@
     <version>0.1.1</version>
     <packaging>jar</packaging>
 
-    <name>timslite Java Wrapper</name>
+    <name>timslite</name>
     <description>Java/Kotlin UniFFI bindings for the timslite time-series storage engine.</description>
     <url>https://github.com/snower/timslite</url>
 
@@ -17,11 +17,13 @@
         <license>
             <name>MIT License</name>
             <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
         </license>
     </licenses>
 
     <developers>
         <developer>
+            <id>snower</id>
             <name>snower</name>
             <email>sujian199@gmail.com</email>
         </developer>
@@ -31,20 +33,8 @@
         <tag>HEAD</tag>
         <url>https://github.com/snower/timslite</url>
         <connection>scm:git:https://github.com/snower/timslite.git</connection>
-        <developerConnection>scm:git:ssh://github.com:snower/timslite.git</developerConnection>
+        <developerConnection>scm:git:ssh://git@github.com/snower/timslite.git</developerConnection>
     </scm>
-
-    <distributionManagement>
-        <snapshotRepository>
-            <id>central</id>
-            <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-        </snapshotRepository>
-        <repository>
-            <id>central</id>
-            <name>Central Portal</name>
-            <url>https://central.sonatype.com/api/v1/publisher</url>
-        </repository>
-    </distributionManagement>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -56,33 +46,25 @@
         <generated.kotlin.dir>${project.basedir}/generated/uniffi</generated.kotlin.dir>
         <native.build.dir>${project.basedir}/native/target</native.build.dir>
         <native.lib.dir>${project.build.directory}/native</native.lib.dir>
+        <native.platform>unsupported</native.platform>
+        <skip.debug.native.build>false</skip.debug.native.build>
+        <skip.debug.native.copy>false</skip.debug.native.copy>
     </properties>
 
     <dependencies>
-        <!-- Kotlin stdlib for generated UniFFI Kotlin bindings -->
         <dependency>
             <groupId>org.jetbrains.kotlin</groupId>
             <artifactId>kotlin-stdlib</artifactId>
             <version>${kotlin.version}</version>
         </dependency>
-
-        <!-- JNA for native library loading (used by generated UniFFI bindings) -->
         <dependency>
             <groupId>net.java.dev.jna</groupId>
             <artifactId>jna</artifactId>
             <version>${jna.version}</version>
         </dependency>
-
-        <!-- JUnit 5 for tests -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-            <version>${junit.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
+            <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
@@ -90,13 +72,11 @@
 
     <build>
         <plugins>
-            <!-- Build Rust cdylib and generate Kotlin bindings before compilation -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.3.0</version>
                 <executions>
-                    <!-- Build the Rust cdylib -->
                     <execution>
                         <id>build-rust-cdylib</id>
                         <phase>generate-sources</phase>
@@ -104,6 +84,7 @@
                             <goal>exec</goal>
                         </goals>
                         <configuration>
+                            <skip>${skip.debug.native.build}</skip>
                             <executable>cargo</executable>
                             <workingDirectory>${project.basedir}/native</workingDirectory>
                             <arguments>
@@ -111,7 +92,6 @@
                             </arguments>
                         </configuration>
                     </execution>
-                    <!-- Generate Kotlin bindings from UDL -->
                     <execution>
                         <id>generate-kotlin-bindings</id>
                         <phase>generate-sources</phase>
@@ -138,21 +118,20 @@
                 </executions>
             </plugin>
 
-            <!-- Copy native cdylib to target/native for test runtime -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>3.3.1</version>
                 <executions>
-                    <!-- Copy current platform's native lib for testing -->
                     <execution>
-                        <id>copy-native-lib</id>
+                        <id>copy-current-platform-native-lib</id>
                         <phase>process-resources</phase>
                         <goals>
                             <goal>copy-resources</goal>
                         </goals>
                         <configuration>
-                            <outputDirectory>${native.lib.dir}</outputDirectory>
+                            <skip>${skip.debug.native.copy}</skip>
+                            <outputDirectory>${native.lib.dir}/${native.platform}</outputDirectory>
                             <resources>
                                 <resource>
                                     <directory>${native.build.dir}/debug</directory>
@@ -165,20 +144,21 @@
                             </resources>
                         </configuration>
                     </execution>
-                    <!-- Copy macOS aarch64 native lib with arch suffix -->
                     <execution>
-                        <id>copy-native-macos-aarch64</id>
+                        <id>copy-native-libs-to-jar-resources</id>
                         <phase>prepare-package</phase>
                         <goals>
                             <goal>copy-resources</goal>
                         </goals>
                         <configuration>
-                            <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                            <outputDirectory>${project.build.outputDirectory}/META-INF/native</outputDirectory>
                             <resources>
                                 <resource>
                                     <directory>${native.lib.dir}</directory>
                                     <includes>
-                                        <include>libtimslite_java.dylib</include>
+                                        <include>**/*.dylib</include>
+                                        <include>**/*.so</include>
+                                        <include>**/*.dll</include>
                                     </includes>
                                 </resource>
                             </resources>
@@ -187,8 +167,6 @@
                 </executions>
             </plugin>
 
-            <!-- Compile generated Kotlin sources (UniFFI bindings) -->
-            <!-- Must run before maven-compiler-plugin in the compile phase -->
             <plugin>
                 <groupId>org.jetbrains.kotlin</groupId>
                 <artifactId>kotlin-maven-plugin</artifactId>
@@ -224,7 +202,6 @@
                 </executions>
             </plugin>
 
-            <!-- Compile Java sources -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -235,35 +212,37 @@
                 </configuration>
             </plugin>
 
-            <!-- Run tests with native library path -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
                 <configuration>
                     <systemPropertyVariables>
-                        <jna.library.path>${native.lib.dir}</jna.library.path>
+                        <jna.library.path>${native.lib.dir}${path.separator}${native.lib.dir}/${native.platform}</jna.library.path>
+                        <timslite.native.library.path>${native.lib.dir}${path.separator}${native.lib.dir}/${native.platform}</timslite.native.library.path>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
 
-            <!-- Generate Javadoc with Kotlin classes on classpath -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
                 <version>3.6.3</version>
                 <configuration>
                     <source>8</source>
-                    <additionalClasspathElements>
-                        <additionalClasspathElement>${project.build.outputDirectory}</additionalClasspathElement>
-                    </additionalClasspathElements>
-                    <useStandardDocletOptions>true</useStandardDocletOptions>
                     <doclint>none</doclint>
                     <failOnError>false</failOnError>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
 
-            <!-- Generate sources jar for Maven Central publication -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-source-plugin</artifactId>
@@ -278,7 +257,6 @@
                 </executions>
             </plugin>
 
-            <!-- Main jar plugin: include native libraries in JAR root for auto-loading -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
@@ -292,19 +270,27 @@
                 </configuration>
             </plugin>
 
-            <!-- Install plugin for local Maven repository -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-install-plugin</artifactId>
                 <version>3.1.2</version>
             </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-deploy-plugin</artifactId>
+                <version>3.1.3</version>
+            </plugin>
         </plugins>
     </build>
 
     <profiles>
-        <!-- Release profile: build with release optimizations -->
         <profile>
             <id>release</id>
+            <properties>
+                <skip.debug.native.build>true</skip.debug.native.build>
+                <skip.debug.native.copy>true</skip.debug.native.copy>
+            </properties>
             <build>
                 <plugins>
                     <plugin>
@@ -328,19 +314,18 @@
                             </execution>
                         </executions>
                     </plugin>
-                    <!-- Copy release native lib -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-resources-plugin</artifactId>
                         <executions>
                             <execution>
-                                <id>copy-native-lib-release</id>
+                                <id>copy-current-platform-native-lib-release</id>
                                 <phase>process-resources</phase>
                                 <goals>
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${native.lib.dir}</outputDirectory>
+                                    <outputDirectory>${native.lib.dir}/${native.platform}</outputDirectory>
                                     <resources>
                                         <resource>
                                             <directory>${native.build.dir}/release</directory>
@@ -355,11 +340,10 @@
                             </execution>
                         </executions>
                     </plugin>
-                    <!-- GPG signing for Maven Central -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
-                        <version>3.1.0</version>
+                        <version>3.2.7</version>
                         <executions>
                             <execution>
                                 <id>sign-artifacts</id>
@@ -376,19 +360,168 @@
                             </execution>
                         </executions>
                     </plugin>
-                    <!-- Publish to Maven Central via Sonatype Central Portal -->
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.4.0</version>
+                        <version>0.11.0</version>
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
-                            <tokenAuth>true</tokenAuth>
+                            <autoPublish>true</autoPublish>
+                            <waitUntil>published</waitUntil>
                         </configuration>
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+
+        <profile>
+            <id>native-windows-x86_64-amd64</id>
+            <activation>
+                <os>
+                    <family>Windows</family>
+                    <arch>amd64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>windows-x86_64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-windows-x86_64</id>
+            <activation>
+                <os>
+                    <family>Windows</family>
+                    <arch>x86_64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>windows-x86_64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-windows-aarch64</id>
+            <activation>
+                <os>
+                    <family>Windows</family>
+                    <arch>aarch64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>windows-aarch64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-windows-arm64</id>
+            <activation>
+                <os>
+                    <family>Windows</family>
+                    <arch>arm64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>windows-aarch64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-linux-x86_64-amd64</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                    <name>Linux</name>
+                    <arch>amd64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>linux-x86_64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-linux-x86_64</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                    <name>Linux</name>
+                    <arch>x86_64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>linux-x86_64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-linux-aarch64</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                    <name>Linux</name>
+                    <arch>aarch64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>linux-aarch64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-linux-arm64</id>
+            <activation>
+                <os>
+                    <family>unix</family>
+                    <name>Linux</name>
+                    <arch>arm64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>linux-aarch64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-macos-x86_64</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                    <arch>x86_64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>macos-x86_64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-macos-x86_64-amd64</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                    <arch>amd64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>macos-x86_64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-macos-aarch64</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                    <arch>aarch64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>macos-aarch64</native.platform>
+            </properties>
+        </profile>
+        <profile>
+            <id>native-macos-arm64</id>
+            <activation>
+                <os>
+                    <family>mac</family>
+                    <arch>arm64</arch>
+                </os>
+            </activation>
+            <properties>
+                <native.platform>macos-aarch64</native.platform>
+            </properties>
         </profile>
     </profiles>
 </project>
