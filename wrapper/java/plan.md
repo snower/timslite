@@ -18,7 +18,7 @@
 | JAVA-6 | Queue 与 Journal API | ✅ 完成 | queue poll/ack, journal read/query/queue, 85 tests |
 | JAVA-7 | Java facade、README 与 Javadoc | ✅ 完成 | Java public API, usage docs |
 | JAVA-8 | 集成测试与回归验证 | ✅ 完成 | 88 tests, all verification checks pass |
-| JAVA-9 | Maven/CI/native 发布准备 | ✅ 完成 | Maven Central config, CI workflows, native classifiers |
+| JAVA-9 | Maven/CI/native 发布准备 | ✅ 完成 | Maven Central config, CI workflows, all-platform JAR |
 | JAVA-10 | 跨层文档同步 | ✅ 完成 | root README/design/plan, wrapper design/plan updates |
 
 当前所有阶段已完成。88 Java tests pass，所有验证检查通过。
@@ -498,7 +498,7 @@ wrapper/java/
   - Main Java facade jar。
   - Sources jar。
   - Javadoc jar。
-  - Native classifier artifacts。
+  - All native libraries included in single JAR。
 - [x] Add native artifact loader tests。
   - Current OS/arch selects one library。
   - Missing library produces actionable error。

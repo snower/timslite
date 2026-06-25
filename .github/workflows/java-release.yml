@@ -78,7 +78,18 @@ jobs:
       - name: Prepare native artifact
         run: |
           mkdir -p native-upload
-          cp wrapper/java/native/target/release/${{ matrix.native-lib }} native-upload/
+          # Rename library with architecture suffix
+          if [ "${{ matrix.label }}" = "macos-aarch64" ]; then
+            cp wrapper/java/native/target/release/${{ matrix.native-lib }} native-upload/libtimslite_java-macos-aarch64.dylib
+          elif [ "${{ matrix.label }}" = "linux-x86_64" ]; then
+            cp wrapper/java/native/target/release/${{ matrix.native-lib }} native-upload/libtimslite_java-linux-x86_64.so
+          elif [ "${{ matrix.label }}" = "linux-aarch64" ]; then
+            cp wrapper/java/native/target/release/${{ matrix.native-lib }} native-upload/libtimslite_java-linux-aarch64.so
+          elif [ "${{ matrix.label }}" = "windows-x86_64" ]; then
+            cp wrapper/java/native/target/release/${{ matrix.native-lib }} native-upload/timslite_java-windows-x86_64.dll
+          elif [ "${{ matrix.label }}" = "windows-aarch64" ]; then
+            cp wrapper/java/native/target/release/${{ matrix.native-lib }} native-upload/timslite_java-windows-aarch64.dll
+          fi
 
       - name: Upload native library
         uses: actions/upload-artifact@v4
@@ -119,10 +130,18 @@ jobs:
           path: native-download
           merge-multiple: true
 
-      - name: Place native libraries for classifier jars
+      - name: Place native libraries for packaging
         run: |
-          mkdir -p wrapper/java/native/target/release
-          cp native-download/* wrapper/java/native/target/release/
+          # Create directory for native libraries that will be included in JAR
+          mkdir -p wrapper/java/target/native
+          # Copy all platform native libraries with architecture-specific names
+          cp native-download/libtimslite_java-macos-aarch64.dylib wrapper/java/target/native/ 2>/dev/null || true
+          cp native-download/libtimslite_java-linux-x86_64.so wrapper/java/target/native/ 2>/dev/null || true
+          cp native-download/libtimslite_java-linux-aarch64.so wrapper/java/target/native/ 2>/dev/null || true
+          cp native-download/timslite_java-windows-x86_64.dll wrapper/java/target/native/ 2>/dev/null || true
+          cp native-download/timslite_java-windows-aarch64.dll wrapper/java/target/native/ 2>/dev/null || true
+          # List what we have
+          ls -la wrapper/java/target/native/
 
       - name: Import GPG key
         run: |
@@ -147,13 +166,10 @@ jobs:
 
       - name: Publish to Maven Central
         run: |
+          # Override native.lib.dir to point to our downloaded artifacts
           mvn -f wrapper/java/pom.xml clean deploy \
             -P release \
-            -P macos-aarch64 \
-            -P linux-x86_64 \
-            -P linux-aarch64 \
-            -P windows-x86_64 \
-            -P windows-aarch64 \
+            -Dnative.lib.dir=wrapper/java/target/native \
             -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}"
         env:
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
@@ -164,5 +180,70 @@ jobs:
         if: github.event_name == 'workflow_dispatch' && inputs.dry_run
         uses: actions/upload-artifact@v4
         with:
-          name: java-jars
-          path: wrapper/java/target/*.jar
+          name: maven-artifacts
+          path: |
+            wrapper/java/target/*.jar
+            wrapper/java/target/*.pom
+
+  dry-run:
+    name: Build Dry-Run
+    needs: build-native
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'temurin'
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            wrapper/java/native/target
+          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-java-
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-download
+          merge-multiple: true
+
+      - name: Place native libraries for packaging
+        run: |
+          mkdir -p wrapper/java/target/native
+          cp native-download/libtimslite_java-macos-aarch64.dylib wrapper/java/target/native/ 2>/dev/null || true
+          cp native-download/libtimslite_java-linux-x86_64.so wrapper/java/target/native/ 2>/dev/null || true
+          cp native-download/libtimslite_java-linux-aarch64.so wrapper/java/target/native/ 2>/dev/null || true
+          cp native-download/timslite_java-windows-x86_64.dll wrapper/java/target/native/ 2>/dev/null || true
+          cp native-download/timslite_java-windows-aarch64.dll wrapper/java/target/native/ 2>/dev/null || true
+          ls -la wrapper/java/target/native/
+
+      - name: Build JAR with all native libraries
+        run: |
+          mvn -f wrapper/java/pom.xml clean package \
+            -Dnative.lib.dir=wrapper/java/target/native
+
+      - name: Verify JAR contents
+        run: |
+          echo "=== JAR contents ==="
+          jar tf wrapper/java/target/timslite-*.jar | grep -E "\.(dylib|so|dll)$" || echo "No native libraries found in JAR"
+          echo ""
+          echo "=== JAR size ==="
+          ls -lh wrapper/java/target/timslite-*.jar
+
+      - name: Upload JAR artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: maven-artifacts
+          path: |
+            wrapper/java/target/*.jar

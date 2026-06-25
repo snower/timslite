@@ -432,7 +432,24 @@ MVP can start with local build and Maven-local validation. Release packaging sho
 - Linux aarch64 GNU
 - macOS aarch64 (Apple Silicon)
 
-The preferred Maven layout is a Java facade jar plus platform native classifier jars. The loader must choose exactly one native library for the current OS/architecture and fail with a clear error when no matching native artifact is present.
+The preferred Maven layout is a single JAR containing all platform native libraries with architecture-specific names. JNA automatically loads the correct library for the current OS/architecture:
+
+```xml
+<dependency>
+    <groupId>io.github.snower</groupId>
+    <artifactId>timslite</artifactId>
+    <version>0.1.1</version>
+</dependency>
+```
+
+The JAR includes native libraries with architecture-specific names at the root level:
+- `libtimslite_java-macos-aarch64.dylib` (macOS aarch64)
+- `libtimslite_java-linux-x86_64.so` (Linux x86_64)
+- `libtimslite_java-linux-aarch64.so` (Linux aarch64)
+- `timslite_java-windows-x86_64.dll` (Windows x86_64)
+- `timslite_java-windows-aarch64.dll` (Windows aarch64)
+
+The `NativeLibraryLoader` detects the current OS/architecture and loads the correct library.
 
 ### 9.4 Release dependency strategy
 
@@ -481,7 +498,7 @@ Full implementation verification must include root crate checks because the brid
 | `u64` values exceed Java `long` | Silent overflow or negative values | Validate all non-negative values fit `Long.MAX_VALUE` |
 | Blocking queue poll | Application request threads can stall | Provide `pollAsync` facade and document blocking behavior |
 | Callback from Rust notification thread | JVM attach/cleanup bugs | Gate `pollCallback` behind dedicated callback tests |
-| Native artifact matrix | Release complexity | Start with local build, then add classifier artifacts and loader tests |
+| Native artifact matrix | Release complexity | Build native libraries on all platforms, collect into single JAR |
 | Wrapper API drift from Python/Node | User-facing behavior differs by language | Keep Store-managed public boundary and shared regression scenarios |
 
 ## 12. External references

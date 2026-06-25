@@ -15,12 +15,8 @@ public final class Timslite {
     private Timslite() {
     }
 
-    /**
-     * Returns the timslite Rust crate version string.
-     *
-     * @return version string, never {@code null}
-     */
     public static String version() {
+        NativeLibraryLoader.load();
         return TimsliteKt.version();
     }
 }

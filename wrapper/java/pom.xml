@@ -76,7 +76,13 @@
         <!-- JUnit 5 for tests -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter</artifactId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
             <version>${junit.version}</version>
             <scope>test</scope>
         </dependency>
@@ -138,6 +144,7 @@
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>3.3.1</version>
                 <executions>
+                    <!-- Copy current platform's native lib for testing -->
                     <execution>
                         <id>copy-native-lib</id>
                         <phase>process-resources</phase>
@@ -150,12 +157,28 @@
                                 <resource>
                                     <directory>${native.build.dir}/debug</directory>
                                     <includes>
-                                        <!-- macOS -->
                                         <include>libtimslite_java.dylib</include>
-                                        <!-- Linux -->
                                         <include>libtimslite_java.so</include>
-                                        <!-- Windows -->
                                         <include>timslite_java.dll</include>
+                                    </includes>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                    <!-- Copy macOS aarch64 native lib with arch suffix -->
+                    <execution>
+                        <id>copy-native-macos-aarch64</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.outputDirectory}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${native.lib.dir}</directory>
+                                    <includes>
+                                        <include>libtimslite_java.dylib</include>
                                     </includes>
                                 </resource>
                             </resources>
@@ -188,10 +211,15 @@
                     </execution>
                     <execution>
                         <id>test-compile-kotlin</id>
-                        <phase>test-compile</phase>
+                        <phase>test-process-sources</phase>
                         <goals>
                             <goal>test-compile</goal>
                         </goals>
+                        <configuration>
+                            <sourceDirs>
+                                <sourceDir>${project.basedir}/src/test/kotlin</sourceDir>
+                            </sourceDirs>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>
@@ -250,7 +278,7 @@
                 </executions>
             </plugin>
 
-            <!-- Main jar plugin with manifest entries -->
+            <!-- Main jar plugin: include native libraries in JAR root for auto-loading -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jar-plugin</artifactId>
@@ -264,7 +292,7 @@
                 </configuration>
             </plugin>
 
-            <!-- Install plugin to register additional artifacts -->
+            <!-- Install plugin for local Maven repository -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-install-plugin</artifactId>
@@ -274,177 +302,51 @@
     </build>
 
     <profiles>
-        <!-- macOS aarch64 (Apple Silicon) native library profile -->
+        <!-- Release profile: build with release optimizations -->
         <profile>
-            <id>macos-aarch64</id>
+            <id>release</id>
             <build>
                 <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>build-rust-cdylib-release</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>cargo</executable>
+                                    <workingDirectory>${project.basedir}/native</workingDirectory>
+                                    <arguments>
+                                        <argument>build</argument>
+                                        <argument>--release</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <!-- Copy release native lib -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-resources-plugin</artifactId>
                         <executions>
                             <execution>
-                                <id>copy-native-macos-aarch64</id>
-                                <phase>prepare-package</phase>
+                                <id>copy-native-lib-release</id>
+                                <phase>process-resources</phase>
                                 <goals>
                                     <goal>copy-resources</goal>
                                 </goals>
                                 <configuration>
-                                    <outputDirectory>${project.build.directory}/native-jar</outputDirectory>
+                                    <outputDirectory>${native.lib.dir}</outputDirectory>
                                     <resources>
                                         <resource>
                                             <directory>${native.build.dir}/release</directory>
                                             <includes>
                                                 <include>libtimslite_java.dylib</include>
-                                            </includes>
-                                        </resource>
-                                    </resources>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-jar-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>package-native-macos-aarch64</id>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                                <configuration>
-                                    <classifier>macos-aarch64</classifier>
-                                    <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-
-        <!-- Linux x86_64 native library profile -->
-        <profile>
-            <id>linux-x86_64</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-resources-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>copy-native-linux-x86_64</id>
-                                <phase>prepare-package</phase>
-                                <goals>
-                                    <goal>copy-resources</goal>
-                                </goals>
-                                <configuration>
-                                    <outputDirectory>${project.build.directory}/native-jar</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>${native.build.dir}/release</directory>
-                                            <includes>
                                                 <include>libtimslite_java.so</include>
-                                            </includes>
-                                        </resource>
-                                    </resources>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-jar-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>package-native-linux-x86_64</id>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                                <configuration>
-                                    <classifier>linux-x86_64</classifier>
-                                    <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-
-        <!-- Linux aarch64 native library profile -->
-        <profile>
-            <id>linux-aarch64</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-resources-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>copy-native-linux-aarch64</id>
-                                <phase>prepare-package</phase>
-                                <goals>
-                                    <goal>copy-resources</goal>
-                                </goals>
-                                <configuration>
-                                    <outputDirectory>${project.build.directory}/native-jar</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>${native.build.dir}/release</directory>
-                                            <includes>
-                                                <include>libtimslite_java.so</include>
-                                            </includes>
-                                        </resource>
-                                    </resources>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-jar-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>package-native-linux-aarch64</id>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                                <configuration>
-                                    <classifier>linux-aarch64</classifier>
-                                    <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-
-        <!-- Windows x86_64 native library profile -->
-        <profile>
-            <id>windows-x86_64</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-resources-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>copy-native-windows-x86_64</id>
-                                <phase>prepare-package</phase>
-                                <goals>
-                                    <goal>copy-resources</goal>
-                                </goals>
-                                <configuration>
-                                    <outputDirectory>${project.build.directory}/native-jar</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>${native.build.dir}/release</directory>
-                                            <includes>
                                                 <include>timslite_java.dll</include>
                                             </includes>
                                         </resource>
@@ -453,83 +355,7 @@
                             </execution>
                         </executions>
                     </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-jar-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>package-native-windows-x86_64</id>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                                <configuration>
-                                    <classifier>windows-x86_64</classifier>
-                                    <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-
-        <!-- Windows aarch64 native library profile -->
-        <profile>
-            <id>windows-aarch64</id>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-resources-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>copy-native-windows-aarch64</id>
-                                <phase>prepare-package</phase>
-                                <goals>
-                                    <goal>copy-resources</goal>
-                                </goals>
-                                <configuration>
-                                    <outputDirectory>${project.build.directory}/native-jar</outputDirectory>
-                                    <resources>
-                                        <resource>
-                                            <directory>${native.build.dir}/release</directory>
-                                            <includes>
-                                                <include>timslite_java.dll</include>
-                                            </includes>
-                                        </resource>
-                                    </resources>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-jar-plugin</artifactId>
-                        <executions>
-                            <execution>
-                                <id>package-native-windows-aarch64</id>
-                                <phase>package</phase>
-                                <goals>
-                                    <goal>jar</goal>
-                                </goals>
-                                <configuration>
-                                    <classifier>windows-aarch64</classifier>
-                                    <classesDirectory>${project.build.directory}/native-jar</classesDirectory>
-                                </configuration>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-
-        <!-- Release profile: GPG signing + Sonatype Central publishing -->
-        <profile>
-            <id>release</id>
-            <build>
-                <plugins>
-                    <!-- GPG signing -->
+                    <!-- GPG signing for Maven Central -->
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
@@ -550,17 +376,15 @@
                             </execution>
                         </executions>
                     </plugin>
-
-                    <!-- Sonatype Central publishing -->
+                    <!-- Publish to Maven Central via Sonatype Central Portal -->
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.8.0</version>
+                        <version>0.4.0</version>
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>central</publishingServerId>
-                            <autoPublish>true</autoPublish>
-                            <waitUntil>published</waitUntil>
+                            <tokenAuth>true</tokenAuth>
                         </configuration>
                     </plugin>
                 </plugins>

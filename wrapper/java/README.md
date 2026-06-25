@@ -16,10 +16,15 @@ Java/Kotlin UniFFI bindings for the [timslite](https://github.com/snower/timslit
 
 ### Native Library
 
-The wrapper uses UniFFI 0.31 with a Kotlin/JVM backend and JNA for native library loading. The native `cdylib` must be built separately and placed where JNA can find it:
+The wrapper uses UniFFI 0.31 with a Kotlin/JVM backend and JNA for native library loading. The JAR includes native libraries for all supported platforms with architecture-specific names:
 
-- Set `jna.library.path` or `java.library.path` to the directory containing `libtimslite_java.dylib` (macOS), `libtimslite_java.so` (Linux), or `timslite_java.dll` (Windows).
-- The Maven build compiles the Rust cdylib automatically during `generate-sources` and copies it to `target/native`.
+- `libtimslite_java-macos-aarch64.dylib` (macOS aarch64)
+- `libtimslite_java-linux-x86_64.so` (Linux x86_64)
+- `libtimslite_java-linux-aarch64.so` (Linux aarch64)
+- `timslite_java-windows-x86_64.dll` (Windows x86_64)
+- `timslite_java-windows-aarch64.dll` (Windows aarch64)
+
+The `NativeLibraryLoader` automatically detects the current OS/architecture and loads the correct library. No additional configuration is needed.
 
 ### Building from Source
 
