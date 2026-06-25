@@ -25,9 +25,9 @@ Java wrapper 应当是 timslite 的薄包装层, 不重新实现存储、索引�
 
 | 组件 | 版本 | 说明 |
 |------|------|------|
-| `uniffi` (Rust crate) | `0.28` | Rust-side scaffolding 和 runtime |
-| `uniffi_bindgen` (CLI) | `0.28` | Kotlin/JVM binding 生成 |
-| `uniffi_build` (build dep) | `0.28` | Cargo build script 集成 |
+| `uniffi` (Rust crate) | `0.31` | Rust-side scaffolding 和 runtime |
+| `uniffi_bindgen` (CLI) | `0.31` | Kotlin/JVM binding 生成 |
+| `uniffi_build` (build dep) | `0.31` | Cargo build script 集成 |
 
 **Java 8 兼容性配置:**
 
@@ -44,8 +44,8 @@ Java wrapper 应当是 timslite 的薄包装层, 不重新实现存储、索引�
 
 **运行依赖:**
 
-- `org.jetbrains.kotlin:kotlin-stdlib:1.9.x`
-- `net.java.dev.jna:jna:5.x`
+- `org.jetbrains.kotlin:kotlin-stdlib:2.2.0`
+- `net.java.dev.jna:jna:5.14.0`
 
 ### 2.1 推荐方案: UniFFI Kotlin/JVM 绑定 + Java facade
 
@@ -61,7 +61,7 @@ io.github.snower.timslite Java facade classes
 io.github.snower.timslite.uniffi generated Kotlin/JVM bindings
         |
         v
-wrapper/java Rust UniFFI bridge cdylib
+wrapper/java/native Rust UniFFI bridge cdylib
         |
         v
 timslite Rust public API
@@ -114,18 +114,21 @@ Java 用户只依赖 `io.github.snower.timslite.*` facade。UniFFI 生成的 Kot
 wrapper/java/
 ├── design.md                         # 本文件
 ├── plan.md                           # 开发计划
-├── Cargo.toml                        # UniFFI bridge crate
-├── uniffi.toml                       # UniFFI Kotlin/JVM package and Java 8 config
-├── src/
-│   ├── lib.rs                        # UniFFI scaffolding root
-│   ├── timslite.udl                  # Java-facing UniFFI interface
-│   ├── bridge.rs                     # Store/Dataset/Queue wrapper objects
-│   ├── config.rs                     # Java-facing config records
-│   ├── errors.rs                     # TmslError -> UniFFI error conversion
-│   ├── query.rs                      # Query iterator bridge objects
-│   └── queue.rs                      # Dataset/journal queue bridge objects
 ├── pom.xml                           # Maven build, binding generation, tests
 ├── README.md                         # Java usage and packaging notes
+├── native/                           # Rust UniFFI bridge crate
+│   ├── Cargo.toml
+│   ├── uniffi.toml                   # UniFFI Kotlin/JVM package and Java 8 config
+│   ├── src/
+│   │   ├── lib.rs                    # UniFFI scaffolding root
+│   │   ├── timslite.udl              # Java-facing UniFFI interface
+│   │   ├── bridge.rs                 # Store/Dataset/Queue wrapper objects
+│   │   ├── config.rs                 # Java-facing config records
+│   │   ├── errors.rs                 # TmslError -> UniFFI error conversion
+│   │   ├── query.rs                  # Query iterator bridge objects
+│   │   ├── queue.rs                  # Dataset/journal queue bridge objects
+│   │   └── bin/uniffi_bindgen.rs     # UniFFI bindgen CLI
+│   └── target/                       # Rust build output
 ├── src/main/java/io/github/snower/timslite/
 │   ├── Timslite.java                 # version and loader helpers
 │   ├── Store.java
@@ -145,6 +148,8 @@ wrapper/java/
 │       └── *.java
 ├── src/test/java/io/github/snower/timslite/
 │   └── *.java
+├── scripts/
+│   └── prepare-publish.sh            # Maven Central release prep
 └── generated/
     └── uniffi/                       # generated Kotlin sources, build artifact only
 ```
@@ -395,7 +400,7 @@ Exceptions should be unchecked (`RuntimeException`) unless implementation testin
 Implementation should support:
 
 ```bash
-cargo check --manifest-path wrapper/java/Cargo.toml
+cargo check --manifest-path wrapper/java/native/Cargo.toml
 mvn -f wrapper/java/pom.xml test
 mvn -f wrapper/java/pom.xml install
 ```
@@ -403,7 +408,7 @@ mvn -f wrapper/java/pom.xml install
 On Windows:
 
 ```powershell
-cargo check --manifest-path wrapper/java/Cargo.toml
+cargo check --manifest-path wrapper/java/native/Cargo.toml
 mvn -f wrapper/java/pom.xml test
 mvn -f wrapper/java/pom.xml install
 ```
@@ -422,10 +427,10 @@ artifactId: timslite
 MVP can start with local build and Maven-local validation. Release packaging should then add native artifacts for:
 
 - Windows x86_64 MSVC
+- Windows aarch64 MSVC
 - Linux x86_64 GNU
 - Linux aarch64 GNU
-- macOS x86_64
-- macOS aarch64
+- macOS aarch64 (Apple Silicon)
 
 The preferred Maven layout is a Java facade jar plus platform native classifier jars. The loader must choose exactly one native library for the current OS/architecture and fail with a clear error when no matching native artifact is present.
 
@@ -434,7 +439,7 @@ The preferred Maven layout is a Java facade jar plus platform native classifier 
 Development checkout should use:
 
 ```toml
-timslite = { path = "../..", version = "=0.1.1" }
+timslite = { path = "../../..", version = "=0.1.1" }
 ```
 
 Before publishing source/native artifacts, release automation should rewrite the dependency to the exact crates.io version:

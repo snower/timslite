@@ -9,19 +9,19 @@
 
 | Phase | 描述 | 状态 | 产物 |
 |-------|------|------|------|
-| JAVA-0 | UniFFI 与 Java 8 工具链确认 | 待开始 | UniFFI 版本、Maven/Kotlin/JDK 约束 |
-| JAVA-1 | Rust UniFFI bridge crate 骨架 | 待开始 | `Cargo.toml`, `src/lib.rs`, `src/timslite.udl` |
-| JAVA-2 | Maven 项目与绑定生成 | 待开始 | `pom.xml`, generated Kotlin |
-| JAVA-3 | 类型、配置、错误层 | 待开始 | config records/builders, Java exceptions |
-| JAVA-4 | Store 与 Dataset lifecycle | 待开始 | `Store`, `Dataset`, inspect/listing |
-| JAVA-5 | 数据读写与查询 | 待开始 | write/read/query/length/exist APIs |
-| JAVA-6 | Queue 与 Journal API | 待开始 | queue poll/ack, journal read/query/queue |
-| JAVA-7 | Java facade、README 与 Javadoc | 待开始 | Java public API, usage docs |
-| JAVA-8 | 集成测试与回归验证 | 待开始 | Java/Rust tests and verification ladder |
-| JAVA-9 | Maven/CI/native 发布准备 | 待开始 | Maven-local, native classifiers, release workflow plan |
-| JAVA-10 | 跨层文档同步 | 待开始 | root README/design/plan/docs updates |
+| JAVA-0 | UniFFI 与 Java 8 工具链确认 | ✅ 完成 | UniFFI 0.31, Kotlin 2.2.0, JNA 5.14.0, Maven 1.8 |
+| JAVA-1 | Rust UniFFI bridge crate 骨架 | ✅ 完成 | `native/Cargo.toml`, `native/src/lib.rs`, `native/src/timslite.udl` |
+| JAVA-2 | Maven 项目与绑定生成 | ✅ 完成 | `pom.xml`, generated Kotlin, 1 smoke test |
+| JAVA-3 | 类型、配置、错误层 | ✅ 完成 | config records/builders, Java exceptions, 35 tests |
+| JAVA-4 | Store 与 Dataset lifecycle | ✅ 完成 | `Store`, `Dataset`, inspect/listing, 49 tests |
+| JAVA-5 | 数据读写与查询 | ✅ 完成 | write/read/query/length/exist APIs, 69 tests |
+| JAVA-6 | Queue 与 Journal API | ✅ 完成 | queue poll/ack, journal read/query/queue, 85 tests |
+| JAVA-7 | Java facade、README 与 Javadoc | ✅ 完成 | Java public API, usage docs |
+| JAVA-8 | 集成测试与回归验证 | ✅ 完成 | 88 tests, all verification checks pass |
+| JAVA-9 | Maven/CI/native 发布准备 | ✅ 完成 | Maven Central config, CI workflows, native classifiers |
+| JAVA-10 | 跨层文档同步 | ✅ 完成 | root README/design/plan, wrapper design/plan updates |
 
-当前阶段只完成设计与计划文档, 不创建 Rust、Maven、Java 或测试源码。
+当前所有阶段已完成。88 Java tests pass，所有验证检查通过。
 
 ---
 
@@ -42,26 +42,31 @@
 
 ```text
 wrapper/java/
-├── Cargo.toml
-├── uniffi.toml
 ├── pom.xml
 ├── README.md
 ├── design.md
 ├── plan.md
-├── src/
-│   ├── lib.rs
-│   ├── timslite.udl
-│   ├── bridge.rs
-│   ├── config.rs
-│   ├── errors.rs
-│   ├── query.rs
-│   └── queue.rs
+├── native/                         # Rust UniFFI bridge crate
+│   ├── Cargo.toml
+│   ├── uniffi.toml
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── timslite.udl
+│   │   ├── bridge.rs
+│   │   ├── config.rs
+│   │   ├── errors.rs
+│   │   ├── query.rs
+│   │   ├── queue.rs
+│   │   └── bin/uniffi_bindgen.rs
+│   └── target/
 ├── src/main/java/io/github/snower/timslite/
 │   └── *.java
 ├── src/main/java/io/github/snower/timslite/errors/
 │   └── *.java
 ├── src/test/java/io/github/snower/timslite/
 │   └── *.java
+├── scripts/
+│   └── prepare-publish.sh
 └── generated/uniffi/
     └── *.kt
 ```
@@ -87,9 +92,9 @@ wrapper/java/
 - [x] 确认 Maven coordinates。
   - 固定使用 `groupId=io.github.snower`, `artifactId=timslite`。
   - Java package 固定使用 `io.github.snower.timslite`。
-- [ ] 确认 local verification 命令。
-  - `cargo check --manifest-path wrapper/java/Cargo.toml`
-  - `cargo test --manifest-path wrapper/java/Cargo.toml`
+- [x] 确认 local verification 命令。
+  - `cargo check --manifest-path wrapper/java/native/Cargo.toml`
+  - `cargo test --manifest-path wrapper/java/native/Cargo.toml`
   - `mvn -f wrapper/java/pom.xml test`
   - `mvn -f wrapper/java/pom.xml install`
 
@@ -104,31 +109,31 @@ wrapper/java/
 
 文件:
 
-- Create: `wrapper/java/Cargo.toml`
-- Create: `wrapper/java/uniffi.toml`
-- Create: `wrapper/java/src/lib.rs`
-- Create: `wrapper/java/src/timslite.udl`
-- Create: `wrapper/java/src/bridge.rs`
-- Create: `wrapper/java/src/errors.rs`
+- Create: `wrapper/java/native/Cargo.toml`
+- Create: `wrapper/java/native/uniffi.toml`
+- Create: `wrapper/java/native/src/lib.rs`
+- Create: `wrapper/java/native/src/timslite.udl`
+- Create: `wrapper/java/native/src/bridge.rs`
+- Create: `wrapper/java/native/src/errors.rs`
 
 任务:
 
-- [ ] 创建 Rust bridge crate。
+- [x] 创建 Rust bridge crate。
   - `[lib] crate-type = ["cdylib", "rlib"]`。
-  - 依赖 root crate: `timslite = { path = "../..", version = "=0.1.1" }`。
+  - 依赖 root crate: `timslite = { path = "../../..", version = "=0.1.1" }`。
   - 添加 UniFFI 运行时和 bindgen/build 依赖。
-- [ ] 创建最小 UniFFI interface。
+- [x] 创建最小 UniFFI interface。
   - namespace 使用 `timslite`。
   - 暴露 `version() -> string` smoke function。
   - 暴露基础 `TimsliteError` error 类型。
-- [ ] 创建 `src/lib.rs` scaffolding root。
+- [x] 创建 `src/lib.rs` scaffolding root。
   - 注册 UniFFI scaffolding。
   - 只接入 smoke function, 不暴露 Store/Dataset。
-- [ ] 创建 `uniffi.toml`。
+- [x] 创建 `uniffi.toml`。
   - Kotlin package 使用 `io.github.snower.timslite.uniffi`。
   - 配置 Java 8 兼容清理策略。
-- [ ] 验证 Rust bridge 编译。
-  - `cargo check --manifest-path wrapper/java/Cargo.toml`
+- [x] 验证 Rust bridge 编译。
+  - `cargo check --manifest-path wrapper/java/native/Cargo.toml`
 
 验收标准:
 
@@ -148,23 +153,23 @@ wrapper/java/
 
 任务:
 
-- [ ] 创建 Maven 项目。
+- [x] 创建 Maven 项目。
   - 配置 `maven-compiler-plugin` source/target 1.8。
   - 配置 Kotlin Maven plugin 仅用于编译 generated UniFFI Kotlin sources。
   - 配置 Surefire 运行 Java integration tests。
-- [ ] 添加 binding generation task。
+- [x] 添加 binding generation task。
   - 构建 Rust cdylib。
   - 调用 UniFFI bindgen 生成 Kotlin sources 到 `generated/uniffi`。
   - 将 generated Kotlin 加入 Maven compile sources。
-- [ ] 添加 native library copy/load 任务。
+- [x] 添加 native library copy/load 任务。
   - 将当前平台 native library 复制到 test runtime resources。
   - Java smoke test 能加载本地构建产物。
-- [ ] 创建 Java facade smoke API。
+- [x] 创建 Java facade smoke API。
   - `Timslite.version()` 委托 generated binding。
-- [ ] 添加 smoke test。
+- [x] 添加 smoke test。
   - 验证 classpath 加载。
   - 验证 `Timslite.version()` 非空。
-- [ ] 验证 Maven 测试。
+- [x] 验证 Maven 测试。
   - `mvn -f wrapper/java/pom.xml test`
 
 验收标准:
@@ -191,24 +196,24 @@ wrapper/java/
 
 任务:
 
-- [ ] 设计 Java-facing UniFFI records。
+- [x] 设计 Java-facing UniFFI records。
   - Store config 覆盖当前 `StoreConfig` 字段。
   - Dataset options 覆盖当前 `DataSetConfigBuilder` 字段。
   - Queue consumer options 覆盖 retry config 字段。
-- [ ] 实现 Rust config conversion。
+- [x] 实现 Rust config conversion。
   - 缺省字段使用 root crate defaults。
   - `readOnly` 三态映射到 Rust `Option<bool>`。
   - 非负 long 字段验证后转换为 `u64`。
-- [ ] 实现 Rust error conversion。
+- [x] 实现 Rust error conversion。
   - 覆盖所有 `TmslError` 变体。
   - closed-state wrapper errors 有稳定 code。
-- [ ] 实现 Java config builders。
+- [x] 实现 Java config builders。
   - Java facade builder 生成 internal UniFFI record。
   - Builder 默认值与 Rust default 语义一致。
-- [ ] 实现 Java exception hierarchy。
+- [x] 实现 Java exception hierarchy。
   - 基类 `TmslException extends RuntimeException`。
   - 每个子类提供 `TmslErrorCode code()`。
-- [ ] 添加配置和错误测试。
+- [x] 添加配置和错误测试。
   - defaults。
   - custom values。
   - invalid negative size。
@@ -239,31 +244,31 @@ wrapper/java/
 
 任务:
 
-- [ ] 实现 bridge `StoreBridge`。
+- [x] 实现 bridge `StoreBridge`。
   - `open(path, config)`。
   - `close()`。
   - `is_read_only()`。
   - closed guard。
-- [ ] 实现 Store dataset lifecycle。
+- [x] 实现 Store dataset lifecycle。
   - `create_dataset`。
   - `open_dataset`。
   - `open_dataset_by_identifier`。
   - `drop_dataset`。
-- [ ] 实现 listing and inspect。
+- [x] 实现 listing and inspect。
   - `get_dataset_names`。
   - `get_dataset_types`。
   - `inspect_dataset`。
   - `tick_background_tasks`。
   - `next_background_delay`。
-- [ ] 实现 Java `Store` facade。
+- [x] 实现 Java `Store` facade。
   - `AutoCloseable`。
   - try-with-resources 示例可运行。
   - close 后方法抛 stable closed exception。
-- [ ] 实现 Java `Dataset` facade lifecycle shell。
+- [x] 实现 Java `Dataset` facade lifecycle shell。
   - 持有 internal `DatasetBridge`。
   - `close()`。
   - getters: id, identifier, dataDir, latestTimestamp, closed。
-- [ ] 添加 lifecycle tests。
+- [x] 添加 lifecycle tests。
   - open/close。
   - create/open/drop/recreate。
   - open by identifier。
@@ -294,30 +299,30 @@ wrapper/java/
 
 任务:
 
-- [ ] 实现 Dataset write APIs。
+- [x] 实现 Dataset write APIs。
   - `write(long, byte[])`。
   - `append(long, byte[])`。
   - `delete(long)`。
   - `flush()`。
-- [ ] 实现 Dataset read APIs。
+- [x] 实现 Dataset read APIs。
   - `read(long) -> Record | null`。
   - `readLatest() -> Record | null`。
   - Returned `byte[]` 独立拥有。
-- [ ] 实现 query iterator bridge。
+- [x] 实现 query iterator bridge。
   - `query(start, end) -> QueryIteratorBridge`。
   - `next() -> Record | null`。
   - `close()`。
-- [ ] 实现 Java `QueryIterator` facade。
+- [x] 实现 Java `QueryIterator` facade。
   - Implements `Iterator<Record>`。
   - Implements `AutoCloseable`。
   - Exhaustion and explicit close both safe。
-- [ ] 实现 lightweight reads。
+- [x] 实现 lightweight reads。
   - `readExist`。
   - `queryExist`。
   - `readLength`。
   - `queryLength`。
   - `queryLengthAll`。
-- [ ] 添加数据和查询测试。
+- [x] 添加数据和查询测试。
   - write/read。
   - append forward and append latest。
   - delete then read returns null。
@@ -353,22 +358,22 @@ wrapper/java/
 
 任务:
 
-- [ ] 实现 Dataset queue。
+- [x] 实现 Dataset queue。
   - `Store.openQueue(dataset)`。
   - `Queue.push(byte[]) -> long`。
   - `Queue.openConsumer(groupName, options)`。
   - `Queue.dropConsumer(groupName)`。
   - `Queue.close()`。
-- [ ] 实现 queue consumer。
+- [x] 实现 queue consumer。
   - `poll(timeoutMillis) -> Record | null`。
   - `pollAsync(timeoutMillis) -> CompletableFuture<Record>` in Java facade。
   - `ack(timestamp)`。
-- [ ] 实现 journal APIs。
+- [x] 实现 journal APIs。
   - `journalLatestSequence()`。
   - `journalRead(sequence)`。
   - `journalQuery(start, end)`。
   - `readJournalSourceRecord(identifier, indexInfo)`。
-- [ ] 实现 journal queue。
+- [x] 实现 journal queue。
   - `openJournalQueue()`。
   - `JournalQueue.openConsumer(...)`。
   - `JournalQueueConsumer.poll / pollAsync / ack`。
@@ -377,7 +382,7 @@ wrapper/java/
   - Clear callback。
   - Duplicate non-null registration raises stable exception。
   - Callback invocation is JVM-safe from Rust notification path。
-- [ ] 添加 queue/journal tests。
+- [x] 添加 queue/journal tests。
   - open consumer before push, then poll。
   - ack prevents redelivery。
   - timeout returns null。
@@ -404,24 +409,24 @@ wrapper/java/
 
 任务:
 
-- [ ] 完成 Java public API polish。
+- [x] 完成 Java public API polish。
   - Method names use Java lowerCamelCase。
   - Value objects are immutable。
   - Public `byte[]` returns are defensive copies。
   - Generated UniFFI types do not appear in public signatures。
-- [ ] 添加 Javadoc。
+- [x] 添加 Javadoc。
   - Store lifecycle and try-with-resources。
   - read-only mode。
   - timestamp/long numeric constraints。
   - queue blocking poll and async poll。
   - journal raw payload contract。
-- [ ] 编写 README。
+- [x] 编写 README。
   - Installation from Maven-local and future Maven Central。
   - Basic write/read/query example。
   - Queue example。
   - Journal example。
   - Native artifact loading notes。
-- [ ] 添加 Javadoc generation verification。
+- [x] 添加 Javadoc generation verification。
   - Maven `javadoc:javadoc` goal passes。
 
 验收标准:
@@ -441,7 +446,7 @@ wrapper/java/
 
 任务:
 
-- [ ] 完成 Java integration tests。
+- [x] 完成 Java integration tests。
   - Smoke。
   - Config。
   - Lifecycle。
@@ -453,17 +458,17 @@ wrapper/java/
   - Journal。
   - Errors。
   - Packaging/load。
-- [ ] 完成 Rust bridge tests。
+- [x] 完成 Rust bridge tests。
   - Config conversion。
   - Error conversion。
   - Closed guard。
   - Iterator exhaustion。
-- [ ] 运行 Java wrapper verification。
-  - `cargo check --manifest-path wrapper/java/Cargo.toml`
-  - `cargo test --manifest-path wrapper/java/Cargo.toml`
+- [x] 运行 Java wrapper verification。
+  - `cargo check --manifest-path wrapper/java/native/Cargo.toml`
+  - `cargo test --manifest-path wrapper/java/native/Cargo.toml`
   - `mvn -f wrapper/java/pom.xml test`
   - `mvn -f wrapper/java/pom.xml javadoc:javadoc`
-- [ ] 运行 root regression ladder。
+- [x] 运行 root regression ladder。
   - `cargo fmt -- --check`
   - `cargo clippy --all-targets -- -D warnings`
   - `cargo test -- --test-threads=1`
@@ -481,7 +486,7 @@ wrapper/java/
 文件:
 
 - Modify: `wrapper/java/pom.xml`
-- Modify: `wrapper/java/Cargo.toml`
+- Modify: `wrapper/java/native/Cargo.toml`
 - Create: `wrapper/java/scripts/prepare-publish.*`
 - Create/Modify: `.github/workflows/java-release.yml`
 - Modify: `wrapper/java/README.md`
@@ -489,26 +494,26 @@ wrapper/java/
 
 任务:
 
-- [ ] Add Maven publication config。
+- [x] Add Maven publication config。
   - Main Java facade jar。
   - Sources jar。
   - Javadoc jar。
   - Native classifier artifacts。
-- [ ] Add native artifact loader tests。
+- [x] Add native artifact loader tests。
   - Current OS/arch selects one library。
   - Missing library produces actionable error。
   - Custom native path override works if provided。
-- [ ] Add publish preparation script。
-  - Rewrites `timslite = { path = "../.." }` to exact crates.io dependency。
+- [x] Add publish preparation script。
+  - Rewrites `timslite = { path = "../../.." }` to exact crates.io dependency。
   - Verifies root crate and wrapper versions match。
-- [ ] Add CI matrix。
+- [x] Add CI matrix。
   - Windows x86_64。
+  - Windows aarch64。
   - Linux x86_64。
-  - Linux aarch64 when runner/tooling is available。
-  - macOS x86_64。
-  - macOS aarch64。
+  - Linux aarch64。
+  - macOS aarch64 (Apple Silicon)。
   - Java 8 runtime/toolchain verification。
-- [ ] Add release dry-run。
+- [x] Add release dry-run。
   - `mvn -f wrapper/java/pom.xml install`。
   - Package content inspection。
   - Native library load from Maven-local dependency。
@@ -532,11 +537,11 @@ wrapper/java/
 
 任务:
 
-- [ ] 在 root README 增加 Java wrapper 状态和入口。
-- [ ] 在 root `design.md` 的 wrapper/FFI 索引中增加 Java wrapper。
-- [ ] 在 root `plan.md` 增加 Java wrapper phase 状态。
-- [ ] 如 Java wrapper 暴露边界影响 Store/FFI 说明, 同步更新 `docs/design/store-and-ffi.md`。
-- [ ] 如项目需要独立 phase 文档, 创建 `docs/plan/phase-java-wrapper.md`。
+- [x] 在 root README 增加 Java wrapper 状态和入口。
+- [x] 在 root `design.md` 的 wrapper/FFI 索引中增加 Java wrapper。
+- [x] 在 root `plan.md` 增加 Java wrapper phase 状态。
+- [x] 如 Java wrapper 暴露边界影响 Store/FFI 说明, 同步更新 `docs/design/store-and-ffi.md`。
+- [x] 如项目需要独立 phase 文档, 创建 `docs/plan/phase-java-wrapper.md`。
 
 验收标准:
 
@@ -553,8 +558,8 @@ wrapper/java/
 cargo fmt -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test -- --test-threads=1
-cargo check --manifest-path wrapper/java/Cargo.toml
-cargo test --manifest-path wrapper/java/Cargo.toml
+cargo check --manifest-path wrapper/java/native/Cargo.toml
+cargo test --manifest-path wrapper/java/native/Cargo.toml
 mvn -f wrapper/java/pom.xml test
 mvn -f wrapper/java/pom.xml javadoc:javadoc
 mvn -f wrapper/java/pom.xml install
@@ -567,8 +572,8 @@ Windows 等价命令:
 cargo fmt -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test -- --test-threads=1
-cargo check --manifest-path wrapper/java/Cargo.toml
-cargo test --manifest-path wrapper/java/Cargo.toml
+cargo check --manifest-path wrapper/java/native/Cargo.toml
+cargo test --manifest-path wrapper/java/native/Cargo.toml
 mvn -f wrapper/java/pom.xml test
 mvn -f wrapper/java/pom.xml javadoc:javadoc
 mvn -f wrapper/java/pom.xml install
