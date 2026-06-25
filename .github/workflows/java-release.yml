@@ -61,24 +61,24 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            wrapper/java/target
-          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/Cargo.lock') }}
+            wrapper/java/native/target
+          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-java-
 
       - name: Build Rust cdylib (debug for tests)
-        run: cargo build --manifest-path wrapper/java/Cargo.toml
+        run: cargo build --manifest-path wrapper/java/native/Cargo.toml
 
       - name: Run Maven tests
         run: mvn -f wrapper/java/pom.xml clean test
 
       - name: Build Rust cdylib (release for publication)
-        run: cargo build --manifest-path wrapper/java/Cargo.toml --release
+        run: cargo build --manifest-path wrapper/java/native/Cargo.toml --release
 
       - name: Prepare native artifact
         run: |
           mkdir -p native-upload
-          cp wrapper/java/target/release/${{ matrix.native-lib }} native-upload/
+          cp wrapper/java/native/target/release/${{ matrix.native-lib }} native-upload/
 
       - name: Upload native library
         uses: actions/upload-artifact@v4
@@ -107,8 +107,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            wrapper/java/target
-          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/Cargo.lock') }}
+            wrapper/java/native/target
+          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-java-
 
@@ -121,8 +121,8 @@ jobs:
 
       - name: Place native libraries for classifier jars
         run: |
-          mkdir -p wrapper/java/target/release
-          cp native-download/* wrapper/java/target/release/
+          mkdir -p wrapper/java/native/target/release
+          cp native-download/* wrapper/java/native/target/release/
 
       - name: Import GPG key
         run: |

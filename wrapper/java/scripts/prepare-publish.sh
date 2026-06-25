@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 POM_FILE="${PROJECT_DIR}/pom.xml"
-CARGO_FILE="${PROJECT_DIR}/Cargo.toml"
+CARGO_FILE="${PROJECT_DIR}/native/Cargo.toml"
 CARGO_BAK="${CARGO_FILE}.publish-bak"
 
 # ---- 1. Check version alignment ----
@@ -52,11 +52,11 @@ echo "  Versions match."
 echo ""
 echo "==> Rewriting Cargo.toml dependency from path to crates.io..."
 
-if grep -q 'timslite = { path = "\.\./\.\."' "${CARGO_FILE}"; then
+if grep -q 'timslite = { path = "\.\./\.\./\.\."' "${CARGO_FILE}"; then
     cp "${CARGO_FILE}" "${CARGO_BAK}"
     echo "  Backed up to ${CARGO_BAK}"
 
-    sed -i.bak 's/timslite = { path = "\.\.\/\.\.", version = "=\([^"]*\)" }/timslite = "=\1"/' "${CARGO_FILE}"
+    sed -i.bak 's/timslite = { path = "\.\.\/\.\.\/\.\.", version = "=\([^"]*\)" }/timslite = "=\1"/' "${CARGO_FILE}"
     rm -f "${CARGO_FILE}.bak"
 
     echo "  Updated timslite dependency in ${CARGO_FILE}"

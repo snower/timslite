@@ -54,7 +54,7 @@
         <jna.version>5.14.0</jna.version>
         <junit.version>5.10.2</junit.version>
         <generated.kotlin.dir>${project.basedir}/generated/uniffi</generated.kotlin.dir>
-        <native.build.dir>${project.basedir}/target</native.build.dir>
+        <native.build.dir>${project.basedir}/native/target</native.build.dir>
         <native.lib.dir>${project.build.directory}/native</native.lib.dir>
     </properties>
 
@@ -99,7 +99,7 @@
                         </goals>
                         <configuration>
                             <executable>cargo</executable>
-                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <workingDirectory>${project.basedir}/native</workingDirectory>
                             <arguments>
                                 <argument>build</argument>
                             </arguments>
@@ -114,7 +114,7 @@
                         </goals>
                         <configuration>
                             <executable>cargo</executable>
-                            <workingDirectory>${project.basedir}</workingDirectory>
+                            <workingDirectory>${project.basedir}/native</workingDirectory>
                             <arguments>
                                 <argument>run</argument>
                                 <argument>--bin</argument>

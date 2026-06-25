@@ -179,8 +179,8 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            wrapper/java/target
-          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/Cargo.lock') }}
+            wrapper/java/native/target
+          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-java-
 
