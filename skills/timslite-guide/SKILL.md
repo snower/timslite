@@ -1,13 +1,13 @@
 ---
 name: timslite-guide
-description: Use when integrating or using the timslite time-series storage library (Rust/Python/C FFI), when writing/reading time-series data via Store/DataSet/Queue/Journal APIs, when debugging timslite errors, when configuring StoreConfig/DataSetConfig, or when understanding mmap-backed block storage and retention/queue/journal semantics
+description: Use when integrating or using the timslite time-series storage library (Rust/Python/Node.js/Java), when writing/reading time-series data via Store/DataSet/Queue/Journal APIs, when debugging timslite errors, when configuring StoreConfig/DataSetConfig, or when understanding mmap-backed block storage and retention/queue/journal semantics
 ---
 
 # timslite Developer Guide
 
 ## Overview
 
-timslite is a high-performance **mmap-backed time-series data storage library** written in Rust. It can be used as a Rust crate, a C ABI dynamic library (`cdylib`), or through Python bindings (PyO3).
+timslite is a high-performance **mmap-backed time-series data storage library** written in Rust. It can be used as a Rust crate, a C ABI dynamic library (`cdylib`), or through language bindings for Python, Node.js, and Java.
 
 **Core principle**: Multiple records are aggregated into Blocks (max 64KB), blocks are lazily compressed on seal, and a time index points to `(block_offset, in_block_offset)`. Each `(dataset_name, dataset_type)` pair has independent meta, data segments, index segments, and optional queue state.
 
@@ -19,7 +19,7 @@ timslite is a high-performance **mmap-backed time-series data storage library** 
 - Block-level compression (zstd/deflate) to save disk space
 - Multi-consumer-group queues on top of time-series data
 - A change log (journal) for hot migration, sync, or audit
-- C ABI or Python bindings for cross-language integration
+- Cross-language bindings (Rust, Python, Node.js, Java, C/C++)
 
 **Do NOT use timslite for:**
 - Relational data with complex queries (use a SQL database)
@@ -54,190 +54,44 @@ Store (facade, data_dir level)
 │   ├── state         # inspect statistics cache
 │   ├── data/         # data segment files
 │   └── index/        # index segment files
-└── .journal/logs/    # reserved journal path
-    ├── data/
-    └── queue/{group_name}
+└── .journal/logs/    # reserved journal
 ```
 
-## Installation
+## Language Guides
 
-### Rust (crates.io)
+Choose your language for detailed documentation, quick start guides, API references, and examples.
 
-```toml
-# Cargo.toml
-[dependencies]
-timslite = "0.1"
-```
+### Rust
 
-Or use: `cargo add timslite`
+- **Installation**: Add `timslite = "0.1"` to your `Cargo.toml`
+- **[Quick Start](rust/quick-start.md)** — Getting started with Rust
+- **[API Reference](rust/api-reference.md)** — Complete Rust API signatures
+- **[Examples](rust/examples.md)** — Feature scenarios with Rust examples
 
-### Python (PyPI)
+### Python
 
-```bash
-pip install timslite
-```
+- **Installation**: `pip install timslite`
+- **[Quick Start](python/quick-start.md)** — Getting started with Python
+- **[API Reference](python/api-reference.md)** — Complete Python API signatures
+- **[Examples](python/examples.md)** — Feature scenarios with Python examples
 
-Prebuilt wheels for Python 3.9–3.13 on macOS/Linux/Windows (x86_64 + aarch64). Falls back to source build if no prebuilt matches (requires Rust toolchain).
+### Node.js
 
-### Node.js (npm)
+- **Installation**: `npm install timslite`
+- **[Quick Start](nodejs/quick-start.md)** — Getting started with Node.js
+- **[API Reference](nodejs/api-reference.md)** — Complete Node.js API signatures
+- **[Examples](nodejs/examples.md)** — Feature scenarios with Node.js examples
 
-```bash
-npm install timslite
-```
+### Java
 
-Prebuilt native binaries for macOS/Linux/Windows (x86_64 + aarch64). Falls back to source build if no prebuilt matches (requires Rust toolchain).
+- **Installation**: Maven dependency `io.github.snower:timslite:0.1.1`
+- **[Quick Start](java/quick-start.md)** — Getting started with Java
+- **[API Reference](java/api-reference.md)** — Complete Java API signatures
+- **[Examples](java/examples.md)** — Feature scenarios with Java examples
 
 ### C / C++
 
 Download prebuilt `libtimslite` from [GitHub Releases](https://github.com/user/timslite/releases), or build from source: `cargo build --release`. Link against `libtimslite.so/.dylib/.dll` and include `include/timslite.h`.
-
-## Quick Start
-
-### Rust
-
-```rust
-use timslite::{Store, StoreConfig};
-
-// 1. Open a store
-let config = StoreConfig::default();
-let mut store = Store::open("/data/timslite", config)?;
-
-// 2. Create a dataset (explicit parameters)
-store.create_dataset(
-    "sensor_001", "events",
-    64 * 1024 * 1024,  // data_segment_size = 64MB
-    4 * 1024 * 1024,   // index_segment_size = 4MB
-    6,                 // compress_level (0-9)
-    0,                 // index_continuous (0=sparse, 1=continuous)
-    0,                 // retention_window (0 = no limit, in timestamp units)
-)?;
-
-// 3. Open the dataset (parameters read from meta)
-let handle = store.open_dataset("sensor_001", "events")?;
-
-// 4. Write records (timestamp must be >= latest_written_timestamp)
-let ds = store.get_dataset(&handle)?;
-ds.write(1, b"event_0")?;
-ds.write(2, b"event_1")?;
-
-// 5. Read single record
-let record = ds.read(1)?;  // Option<(i64, Vec<u8>)>
-
-// 6. Range query
-let entries = ds.query(1, 100)?;  // Vec<(i64, Vec<u8>)>
-
-// 7. Close
-store.close()?;
-```
-
-### Python
-
-```python
-import timslite
-
-with timslite.Store.open("/data/timslite") as store:
-    store.create_dataset("sensor", "waveform")
-    ds = store.open_dataset("sensor", "waveform")
-    ds.write(1, b"reading_1")
-    ds.write(2, b"reading_2")
-
-    # Read single record
-    record = ds.read(1)  # -> (1, b"reading_1") or None
-
-    # Read latest
-    latest = ds.read_latest()  # -> (2, b"reading_2") or None
-
-    # Range query (lazy iterator)
-    for ts, data in ds.query(1, 100):
-        print(f"ts={ts}, data={data}")
-
-    # Delete a record
-    ds.delete(1)
-```
-
-### C FFI
-
-```c
-#include "timslite.h"
-
-char err[256];
-TmslStoreConfigFFI config;
-tmsl_store_config_default(&config, err, sizeof(err));
-
-void* store = tmsl_store_open_with_config("/data/timslite", &config, err, sizeof(err));
-if (!store) { /* handle error */ }
-
-// Create dataset, write, query via FFI functions...
-tmsl_store_close(store, err, sizeof(err));
-```
-
-## API Quick Reference
-
-### Store (lifecycle + dataset management)
-
-| Method | Purpose |
-|--------|---------|
-| `Store::open(dir, config)` | Open or create a store |
-| `store.close()` | Flush and close everything |
-| `store.create_dataset(name, type, ...)` | Create dataset with explicit params |
-| `store.create_dataset_with_config(name, type, builder)` | Create with DataSetConfigBuilder |
-| `store.open_dataset(name, type)` | Open existing dataset → DataSetHandle |
-| `store.open_dataset_by_identifier(id)` | Open by numeric identifier |
-| `store.drop_dataset(name, type)` | Delete dataset and all files |
-| `store.get_dataset(&handle)` | Get `Arc<DataSet>` for read/write |
-| `store.list_datasets()` | List all dataset (name, type) pairs |
-| `store.inspect_dataset(name, type)` | Get DataSetInfo + DataSetState |
-| `store.is_read_only()` | Check if store is read-only |
-
-### DataSet (read/write operations)
-
-| Method | Returns | Purpose |
-|--------|---------|---------|
-| `ds.write(ts, data)` | `Result<()>` | Write a record (ts >= latest) |
-| `ds.append(ts, data)` | `Result<()>` | Forward append or in-place tail append |
-| `ds.delete(ts)` | `Result<()>` | Delete a record by timestamp |
-| `ds.read(ts)` | `Option<(i64, Vec<u8>)>` | Read single record |
-| `ds.read_latest()` | `Option<(i64, Vec<u8>)>` | Read latest written record |
-| `ds.read_exist(ts)` | `bool` | Fast existence check (index only) |
-| `ds.read_length(ts)` | `Option<u32>` | Read record data length (header only) |
-| `ds.query(start, end)` | `Vec<(i64, Vec<u8>)>` | Range query (eager) |
-| `ds.query_iter(start, end)` | `QueryIterator` | Range query (lazy) |
-| `ds.query_exist(start, end)` | `Vec<u8>` (bitmap) | Fast range existence bitmap |
-| `ds.query_length(start, end)` | `Vec<(i64, u32)>` | Range lengths (header only) |
-| `ds.query_length_iter(start, end)` | `QueryLengthIterator` | Lazy range lengths |
-| `ds.flush()` | `Result<()>` | Flush dirty segments to disk |
-| `ds.inspect()` | `DataSetInspectResult` | Get info + state |
-| `ds.latest_timestamp()` | `Option<i64>` | Get latest written timestamp |
-
-### Queue (consumer group semantics)
-
-| Method | Purpose |
-|--------|---------|
-| `store.open_queue(handle)` | Open DatasetQueue for a dataset |
-| `store.queue_push(&q, data)` | Push data, auto-assigns next timestamp |
-| `store.queue_poll(&c, timeout)` | Poll next unacked record |
-| `store.queue_ack(&c, ts)` | Ack a polled record |
-| `store.open_consumer(&q, group)` | Open consumer group |
-| `store.open_consumer_with_config(&q, group, cfg)` | Open with retry config |
-| `store.drop_consumer(&q, group)` | Drop a consumer group |
-| `store.close_queue(q)` | Close queue |
-
-### Journal (change log)
-
-| Method | Purpose |
-|--------|---------|
-| `store.journal_latest_sequence()` | Get latest journal sequence |
-| `store.journal_read(seq)` | Read a journal record by sequence |
-| `store.journal_query(start, end)` | Range query journal records |
-| `store.open_journal_queue()` | Open JournalQueue for consumption |
-| `store.read_journal_source_record(id, index_info)` | Dereference journal to source data |
-
-### Background Tasks
-
-| Method | Purpose |
-|--------|---------|
-| `store.tick_background_tasks()` | Manual tick (returns TickResult) |
-| `store.next_background_delay()` | Query delay until next task due |
 
 ## Configuration Defaults
 
@@ -274,14 +128,6 @@ tmsl_store_close(store, err, sizeof(err));
 | `retention_window` | 0 (no limit) | Retention in timestamp units |
 | `enable_journal` | true | Whether to journal this dataset |
 
-## Detailed References
-
-For in-depth information, load these supporting files:
-
-- **[api-reference.md](api-reference.md)** — Complete API signatures, parameters, return types, and semantics for Store, DataSet, Queue, Journal, Config, and FFI
-- **[scenarios.md](scenarios.md)** — Feature scenario analysis with copy-paste examples: write patterns, query optimization, queue consumption, journal recovery, retention, read-only mode
-- **[troubleshooting.md](troubleshooting.md)** — Common errors, root causes, and solutions
-
 ## Common Mistakes
 
 | Mistake | Fix |
@@ -298,3 +144,11 @@ For in-depth information, load these supporting files:
 ## Naming Rules
 
 Dataset name, dataset type, and queue consumer group name must match `^[0-9A-Za-z_-]+$`, max 255 bytes. `.journal` is reserved.
+
+## Troubleshooting
+
+See **[troubleshooting.md](troubleshooting.md)** for common errors, root causes, and solutions.
+
+## Detailed References
+
+For in-depth information, see the language-specific guides above or the universal troubleshooting guide.
