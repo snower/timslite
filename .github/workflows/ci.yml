@@ -43,6 +43,11 @@ jobs:
       - name: Run integration tests
         run: cargo test --tests -- --test-threads=1
 
+      - name: Run benchmarks
+        run: |
+          cargo bench --bench bench_single
+          cargo bench --bench bench_multi
+
   coverage:
     name: Code Coverage
     runs-on: ubuntu-latest

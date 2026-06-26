@@ -17,6 +17,7 @@ include = [
     "include/**",
     "src/**",
     "tests/**",
+    "benchmarks/**",
     "docs/design/**",
 ]
 
@@ -34,3 +35,16 @@ zstd = "0.13"
 [dev-dependencies]
 criterion = "0.5"
 proptest = "1"
+rand = "0.8"
+regex = "1"
+tempfile = "3"
+
+[[bench]]
+name = "bench_single"
+harness = false
+path = "benchmarks/bench_single.rs"
+
+[[bench]]
+name = "bench_multi"
+harness = false
+path = "benchmarks/bench_multi.rs"
