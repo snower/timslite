@@ -1,6 +1,6 @@
 mod common;
 
-use common::{BenchmarkMetrics, LogData, TimestampGenerator, create_temp_dir};
+use common::{create_temp_dir, BenchmarkMetrics, LogData, TimestampGenerator};
 use rand::Rng;
 use std::time::Instant;
 use timslite::{Store, StoreConfig};
@@ -18,7 +18,15 @@ fn main() {
     let mut store = Store::open(&data_dir, config).unwrap();
 
     let handle = store
-        .create_dataset("bench_data", "logs", 64 * 1024 * 1024, 16 * 1024 * 1024, 6, 0, 0)
+        .create_dataset(
+            "bench_data",
+            "logs",
+            64 * 1024 * 1024,
+            16 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
         .unwrap();
 
     let mut metrics = BenchmarkMetrics::new();

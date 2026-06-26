@@ -1,8 +1,11 @@
 mod common;
 
-use common::{BenchmarkMetrics, LogData, create_temp_dir};
+use common::{create_temp_dir, BenchmarkMetrics, LogData};
 use rand::Rng;
-use std::sync::{Arc, Mutex, atomic::{AtomicI64, Ordering}};
+use std::sync::{
+    atomic::{AtomicI64, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::Instant;
 use timslite::{Store, StoreConfig};
@@ -24,7 +27,15 @@ fn main() {
     let ds_handle = {
         let mut store_guard = store.lock().unwrap();
         store_guard
-            .create_dataset("bench_data", "logs", 64 * 1024 * 1024, 16 * 1024 * 1024, 6, 0, 0)
+            .create_dataset(
+                "bench_data",
+                "logs",
+                64 * 1024 * 1024,
+                16 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
             .unwrap()
     };
 
@@ -123,11 +134,16 @@ fn main() {
     metrics.read_random_ops = READ_RANDOM_COUNT;
 
     let store_guard = store.lock().unwrap();
-    let inspect_result = (&*store_guard).inspect_dataset("bench_data", "logs").unwrap();
+    let inspect_result = (&*store_guard)
+        .inspect_dataset("bench_data", "logs")
+        .unwrap();
     metrics.total_data_size = inspect_result.state.total_data_size;
     metrics.total_uncompressed_size = inspect_result.state.total_uncompressed_size;
     drop(store_guard);
 
     drop(store);
-    metrics.print_results(&format!("Multi Thread Benchmark ({}W/{}R)", WRITE_THREADS, READ_THREADS));
+    metrics.print_results(&format!(
+        "Multi Thread Benchmark ({}W/{}R)",
+        WRITE_THREADS, READ_THREADS
+    ));
 }
