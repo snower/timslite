@@ -59,8 +59,8 @@ impl LogData {
                 let size = rng.gen_range(0..10000);
                 let ua = user_agents[rng.gen_range(0..user_agents.len())];
                 format!(
-                    r#"{} - - [26/Jun/2026:09:13:48 +0800] "GET /{} HTTP/2.0" {} {} "-" "{}""#,
-                    ip, path, status, size, ua
+                    r#"{} - - [26/Jun/2026:09:13:48 +0800] "{} /{} HTTP/2.0" {} {} "-" "{}""#,
+                    ip, method, path, status, size, ua
                 )
             })
             .collect()
@@ -213,20 +213,13 @@ pub struct TimestampGenerator {
 }
 
 impl TimestampGenerator {
-    /// Create a new timestamp generator starting from 1.
     pub fn new() -> Self {
         Self { current: 1 }
     }
 
-    /// Get next timestamp.
     pub fn next(&mut self) -> i64 {
         let ts = self.current;
         self.current += 1;
         ts
-    }
-
-    /// Get current timestamp value.
-    pub fn current(&self) -> i64 {
-        self.current
     }
 }
