@@ -57,7 +57,7 @@ fn main() {
                 let line = log_data_clone.random_raw_line();
                 let mut store_guard = store_clone.lock().unwrap();
                 let ts = ts_counter_clone.fetch_add(1, Ordering::SeqCst);
-                match (&mut *store_guard).write_dataset(ds_handle, ts, line.as_bytes()) {
+                match store_guard.write_dataset(ds_handle, ts, line.as_bytes()) {
                     Ok(_) => bytes_written += line.len() as u64,
                     Err(e) => eprintln!("Write error at ts {}: {:?}", ts, e),
                 }
@@ -88,7 +88,7 @@ fn main() {
             let mut bytes_read = 0u64;
             for ts in start_ts..start_ts + reads_per_thread as i64 {
                 let store_guard = store_clone.lock().unwrap();
-                if let Some((_, data)) = (&*store_guard).read_dataset(ds_handle, ts).unwrap() {
+                if let Some((_, data)) = store_guard.read_dataset(ds_handle, ts).unwrap() {
                     bytes_read += data.len() as u64;
                 }
             }
@@ -117,7 +117,7 @@ fn main() {
             for _ in 0..reads_per_thread {
                 let ts = rng.gen_range(1..=total_written);
                 let store_guard = store_clone.lock().unwrap();
-                if let Some((_, data)) = (&*store_guard).read_dataset(ds_handle, ts).unwrap() {
+                if let Some((_, data)) = store_guard.read_dataset(ds_handle, ts).unwrap() {
                     bytes_read += data.len() as u64;
                 }
             }
@@ -134,9 +134,7 @@ fn main() {
     metrics.read_random_ops = READ_RANDOM_COUNT;
 
     let store_guard = store.lock().unwrap();
-    let inspect_result = (&*store_guard)
-        .inspect_dataset("bench_data", "logs")
-        .unwrap();
+    let inspect_result = store_guard.inspect_dataset("bench_data", "logs").unwrap();
     metrics.total_data_size = inspect_result.state.total_data_size;
     metrics.total_uncompressed_size = inspect_result.state.total_uncompressed_size;
     drop(store_guard);

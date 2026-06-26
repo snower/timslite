@@ -1,6 +1,6 @@
 mod common;
 
-use common::{create_temp_dir, BenchmarkMetrics, LogData, TimestampGenerator};
+use common::{create_temp_dir, BenchmarkMetrics, LogData};
 use rand::Rng;
 use std::time::Instant;
 use timslite::{Store, StoreConfig};
@@ -30,13 +30,13 @@ fn main() {
         .unwrap();
 
     let mut metrics = BenchmarkMetrics::new();
-    let mut ts_gen = TimestampGenerator::new();
 
     let start = Instant::now();
-    for _ in 0..WRITE_COUNT {
+    for i in 1..=WRITE_COUNT {
         let line = log_data.random_raw_line();
-        let ts = ts_gen.next();
-        store.write_dataset(handle, ts, line.as_bytes()).unwrap();
+        store
+            .write_dataset(handle, i as i64, line.as_bytes())
+            .unwrap();
         metrics.write_bytes += line.len() as u64;
     }
     metrics.write_duration = start.elapsed();

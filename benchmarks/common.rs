@@ -206,20 +206,3 @@ impl BenchmarkMetrics {
 pub fn create_temp_dir() -> TempDir {
     TempDir::new().expect("Failed to create temporary directory")
 }
-
-/// Generate a unique timestamp for writing.
-pub struct TimestampGenerator {
-    current: i64,
-}
-
-impl TimestampGenerator {
-    pub fn new() -> Self {
-        Self { current: 1 }
-    }
-
-    pub fn next(&mut self) -> i64 {
-        let ts = self.current;
-        self.current += 1;
-        ts
-    }
-}
