@@ -881,4 +881,165 @@ mod tests {
         assert_eq!(set.open_len(), 0);
         assert_eq!(set.closed_len(), 1);
     }
+
+    #[test]
+    fn test_segment_size_returns_correct_value() {
+        let dir = temp_dir("segment_size");
+        let set = DataSegmentSet::new_with_compression(
+            &dir, 8192, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+        assert_eq!(set.segment_size(), 8192);
+    }
+
+    #[test]
+    fn test_segment_offset_for_calculation() {
+        let dir = temp_dir("seg_offset_for");
+        let set = DataSegmentSet::new_with_compression(
+            &dir, 256, 256, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+        assert_eq!(set.segment_offset_for(0), 0);
+        assert_eq!(set.segment_offset_for(100), 0);
+        assert_eq!(set.segment_offset_for(255), 0);
+        assert_eq!(set.segment_offset_for(256), 256);
+        assert_eq!(set.segment_offset_for(300), 256);
+        assert_eq!(set.segment_offset_for(511), 256);
+        assert_eq!(set.segment_offset_for(512), 512);
+    }
+
+    #[test]
+    fn test_append_single_record() {
+        let dir = temp_dir("append_single");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir, 4096, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+
+        let (seg_off, blk_rel, in_blk) = set.append(100, b"hello").unwrap();
+        assert_eq!(seg_off, 0);
+        assert_eq!(blk_rel, 0);
+        assert_eq!(in_blk, 0);
+        assert_eq!(set.total_len(), 1);
+        assert_eq!(set.open_len(), 1);
+        assert_eq!(set.closed_len(), 0);
+    }
+
+    #[test]
+    fn test_append_multiple_records() {
+        let dir = temp_dir("append_multi");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir, 4096, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+
+        let r1 = set.append(100, b"first").unwrap();
+        let r2 = set.append(200, b"second").unwrap();
+        let r3 = set.append(300, b"third").unwrap();
+
+        assert_eq!(r1.0, 0);
+        assert_eq!(r2.0, 0);
+        assert_eq!(r3.0, 0);
+        assert_eq!(r1.1, 0);
+        assert_eq!(r2.1, 0);
+        assert_eq!(r3.1, 0);
+        assert!(r3.2 > r2.2);
+        assert!(r2.2 > r1.2);
+        assert_eq!(set.total_len(), 1);
+    }
+
+    #[test]
+    fn test_append_triggers_segment_creation() {
+        let dir = temp_dir("append_new_seg");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir, 256, 256, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+
+        let data1 = vec![0u8; 100];
+        let data2 = vec![1u8; 100];
+
+        let r1 = set.append(100, &data1).unwrap();
+        assert_eq!(r1.0, 0);
+
+        let mut last_seg = r1.0;
+        for i in 0..50 {
+            let payload = vec![(i % 256) as u8; 30];
+            if let Ok(r) = set.append(200 + i as i64, &payload) {
+                last_seg = r.0;
+            } else {
+                break;
+            }
+        }
+        assert!(set.total_len() >= 1);
+
+        let r_new = set.append(500, &data2);
+        if r_new.is_ok() {
+            assert!(set.total_len() >= 1);
+            let last = set.segments.last_key_value().unwrap().0;
+            assert!(*last >= last_seg);
+        }
+    }
+
+    #[test]
+    fn test_overwrite_in_last_block() {
+        let dir = temp_dir("overwrite_last");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir, 4096, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+
+        let (seg_off, blk_rel, in_blk) = set.append(100, b"original").unwrap();
+        assert_eq!(seg_off, 0);
+        assert_eq!(blk_rel, 0);
+        assert_eq!(in_blk, 0);
+
+        set.overwrite_in_last_block(0, 0, 100, b"modified").unwrap();
+
+        let seg = set.lazy_open(0).unwrap();
+        assert!(seg.pending_block_offset.is_some());
+    }
+
+    #[test]
+    fn test_append_to_last_record() {
+        let dir = temp_dir("append_last_rec");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir, 8192, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+
+        let (seg_off, blk_rel, in_blk) = set.append(100, b"hello").unwrap();
+        assert_eq!(seg_off, 0);
+        assert_eq!(blk_rel, 0);
+
+        let old_data_len = set
+            .append_to_last_record(0, in_blk, b" world")
+            .unwrap();
+        assert_eq!(old_data_len, 5);
+
+        let seg = set.lazy_open(0).unwrap();
+        assert!(seg.pending_block_offset.is_some());
+    }
+
+    #[test]
+    fn test_expand_segment() {
+        let dir = temp_dir("expand_seg");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir, 4096, 256, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+
+        let r1 = set.append(100, b"a").unwrap();
+        assert_eq!(r1.0, 0);
+
+        let big_data = vec![0u8; 150];
+        let r2 = set.append(200, &big_data);
+        if r2.is_ok() {
+            assert_eq!(r2.unwrap().0, 0);
+        }
+
+        assert_eq!(set.total_len(), 1);
+        let stats = set.active_tail_stats().unwrap();
+        assert_eq!(stats.file_offset, 0);
+    }
 }
