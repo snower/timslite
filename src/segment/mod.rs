@@ -1064,8 +1064,8 @@ mod tests {
 
         let big_data = vec![0u8; 150];
         let r2 = set.append(200, &big_data);
-        if r2.is_ok() {
-            assert_eq!(r2.unwrap().0, 0);
+        if let Ok(val) = r2 {
+            assert_eq!(val.0, 0);
         }
 
         assert_eq!(set.total_len(), 1);
