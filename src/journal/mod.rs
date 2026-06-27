@@ -344,8 +344,7 @@ mod tests {
     #[test]
     fn test_journal_manager_disabled() {
         let dir = journal_temp_dir("disabled");
-        let mgr =
-            JournalManager::open_or_create(&dir, &disabled_config(), None).unwrap();
+        let mgr = JournalManager::open_or_create(&dir, &disabled_config(), None).unwrap();
         assert!(matches!(mgr, JournalManager::Disabled));
 
         // is_enabled returns false for Disabled
@@ -353,10 +352,7 @@ mod tests {
 
         // append returns Ok(None) for Disabled
         let entry = IndexEntry::new(1, 100, 0);
-        assert_eq!(
-            mgr.append_data_write(1, entry).unwrap(),
-            None
-        );
+        assert_eq!(mgr.append_data_write(1, entry).unwrap(), None);
 
         // read returns Err for Disabled
         assert!(mgr.read(1).is_err());
@@ -382,8 +378,7 @@ mod tests {
         let dir = journal_temp_dir("read_only");
         // First, create a journal with some data
         {
-            let mgr =
-                JournalManager::open_or_create(&dir, &journal_config(), None).unwrap();
+            let mgr = JournalManager::open_or_create(&dir, &journal_config(), None).unwrap();
             assert!(mgr.is_enabled());
             let entry = IndexEntry::new(1, 100, 0);
             assert_eq!(mgr.append_data_write(1, entry).unwrap().unwrap(), 1);

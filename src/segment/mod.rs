@@ -886,7 +886,11 @@ mod tests {
     fn test_segment_size_returns_correct_value() {
         let dir = temp_dir("segment_size");
         let set = DataSegmentSet::new_with_compression(
-            &dir, 8192, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+            &dir,
+            8192,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
         )
         .unwrap();
         assert_eq!(set.segment_size(), 8192);
@@ -896,7 +900,11 @@ mod tests {
     fn test_segment_offset_for_calculation() {
         let dir = temp_dir("seg_offset_for");
         let set = DataSegmentSet::new_with_compression(
-            &dir, 256, 256, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+            &dir,
+            256,
+            256,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
         )
         .unwrap();
         assert_eq!(set.segment_offset_for(0), 0);
@@ -912,7 +920,11 @@ mod tests {
     fn test_append_single_record() {
         let dir = temp_dir("append_single");
         let mut set = DataSegmentSet::new_with_compression(
-            &dir, 4096, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+            &dir,
+            4096,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
         )
         .unwrap();
 
@@ -929,7 +941,11 @@ mod tests {
     fn test_append_multiple_records() {
         let dir = temp_dir("append_multi");
         let mut set = DataSegmentSet::new_with_compression(
-            &dir, 4096, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+            &dir,
+            4096,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
         )
         .unwrap();
 
@@ -952,7 +968,11 @@ mod tests {
     fn test_append_triggers_segment_creation() {
         let dir = temp_dir("append_new_seg");
         let mut set = DataSegmentSet::new_with_compression(
-            &dir, 256, 256, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+            &dir,
+            256,
+            256,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
         )
         .unwrap();
 
@@ -985,7 +1005,11 @@ mod tests {
     fn test_overwrite_in_last_block() {
         let dir = temp_dir("overwrite_last");
         let mut set = DataSegmentSet::new_with_compression(
-            &dir, 4096, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+            &dir,
+            4096,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
         )
         .unwrap();
 
@@ -1004,7 +1028,11 @@ mod tests {
     fn test_append_to_last_record() {
         let dir = temp_dir("append_last_rec");
         let mut set = DataSegmentSet::new_with_compression(
-            &dir, 8192, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+            &dir,
+            8192,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
         )
         .unwrap();
 
@@ -1012,9 +1040,7 @@ mod tests {
         assert_eq!(seg_off, 0);
         assert_eq!(blk_rel, 0);
 
-        let old_data_len = set
-            .append_to_last_record(0, in_blk, b" world")
-            .unwrap();
+        let old_data_len = set.append_to_last_record(0, in_blk, b" world").unwrap();
         assert_eq!(old_data_len, 5);
 
         let seg = set.lazy_open(0).unwrap();
@@ -1025,7 +1051,11 @@ mod tests {
     fn test_expand_segment() {
         let dir = temp_dir("expand_seg");
         let mut set = DataSegmentSet::new_with_compression(
-            &dir, 4096, 256, 6, crate::compress::COMPRESS_TYPE_ZSTD,
+            &dir,
+            4096,
+            256,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
         )
         .unwrap();
 

@@ -814,16 +814,7 @@ mod tests {
 
     #[test]
     fn test_validate_dataset_config_values_initial_over_max() {
-        let result = validate_dataset_config_values(
-            1024,
-            2048,
-            6,
-            0,
-            0,
-            2048,
-            1024,
-            0,
-        );
+        let result = validate_dataset_config_values(1024, 2048, 6, 0, 0, 2048, 1024, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("initial_data_segment_size"));

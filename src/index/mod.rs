@@ -1493,4 +1493,125 @@ mod tests {
         let entries = idx.query(1100, 1100).unwrap();
         assert_eq!(entries.len(), 1);
     }
+
+    #[test]
+    fn test_timestamp_range_snapshot() {
+        let sub = fresh_subdir("ts_range_snapshot");
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+        idx.in_memory_flush_threshold = 10;
+
+        // Empty index has no range
+        assert_eq!(idx.timestamp_range_snapshot(), None);
+
+        // In-memory buffer only
+        idx.add_entry(100, 1000, 0).unwrap();
+        idx.add_entry(200, 2000, 0).unwrap();
+        idx.add_entry(150, 1500, 0).unwrap();
+        assert_eq!(idx.timestamp_range_snapshot(), Some((100, 200)));
+
+        // Flush to disk and check range across segments
+        idx.flush_to_disk().unwrap();
+        assert_eq!(idx.timestamp_range_snapshot(), Some((100, 200)));
+
+        // Add more entries after flush
+        idx.add_entry(300, 3000, 0).unwrap();
+        idx.add_entry(50, 500, 0).unwrap();
+        assert_eq!(idx.timestamp_range_snapshot(), Some((50, 300)));
+    }
+
+    #[test]
+    fn test_archived_timestamp_range_snapshot() {
+        let sub = fresh_subdir("archived_ts_range");
+        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        idx.in_memory_flush_threshold = 3;
+
+        // Single segment — nothing is archived (the only segment is active)
+        idx.add_entry(100, 100, 0).unwrap();
+        idx.add_entry(101, 101, 0).unwrap();
+        idx.flush_to_disk().unwrap();
+        assert_eq!(idx.archived_timestamp_range_snapshot(), None);
+
+        // Force second segment by writing beyond first segment capacity
+        for ts in 102..107 {
+            idx.add_entry(ts, ts as u64, 0).unwrap();
+        }
+        idx.flush_to_disk().unwrap();
+
+        // Now first segment should be archived
+        let archived = idx.archived_timestamp_range_snapshot();
+        assert!(archived.is_some());
+        let (min, max) = archived.unwrap();
+        assert!(min <= 101);
+        assert!(max >= 100);
+    }
+
+    #[test]
+    fn test_active_timestamp_range_snapshot() {
+        let sub = fresh_subdir("active_ts_range");
+        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        idx.in_memory_flush_threshold = 10;
+
+        // Nothing active when empty
+        assert_eq!(idx.active_timestamp_range_snapshot(), None);
+
+        // In-memory buffer only (no segments yet)
+        // Use sequential timestamps for continuous mode
+        idx.add_entry(100, 100, 0).unwrap();
+        idx.add_entry(101, 101, 0).unwrap();
+        idx.add_entry(102, 102, 0).unwrap();
+        assert_eq!(idx.active_timestamp_range_snapshot(), Some((100, 102)));
+
+        // Flush to disk — active timestamp range should still be correct
+        idx.flush_to_disk().unwrap();
+        let range = idx.active_timestamp_range_snapshot();
+        assert!(range.is_some());
+        let (min, max) = range.unwrap();
+        assert!(min >= 100);
+        assert!(max <= 102);
+    }
+
+    #[test]
+    fn test_open_len_closed_len() {
+        let sub = fresh_subdir("open_closed_len");
+        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        idx.in_memory_flush_threshold = 3;
+
+        // Start: all segments are open, none closed
+        idx.add_entry(100, 100, 0).unwrap();
+        idx.add_entry(101, 101, 0).unwrap();
+        idx.add_entry(102, 102, 0).unwrap();
+        idx.flush_to_disk().unwrap();
+        assert_eq!(idx.open_len(), 1);
+        assert_eq!(idx.closed_len(), 0);
+
+        // After idle_close_all: all become closed
+        idx.idle_close_all().unwrap();
+        assert_eq!(idx.open_len(), 0);
+        assert_eq!(idx.closed_len(), 1);
+
+        // Re-open a segment
+        idx.get_or_create_segment_by_start(100).unwrap();
+        assert_eq!(idx.open_len(), 1);
+        assert_eq!(idx.closed_len(), 0);
+    }
+
+    #[test]
+    fn test_timestamp_range_snapshot_with_closed_segments() {
+        let sub = fresh_subdir("ts_range_closed");
+        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        idx.in_memory_flush_threshold = 5;
+
+        for ts in 100..108 {
+            idx.add_entry(ts, ts as u64, 0).unwrap();
+        }
+        idx.flush_to_disk().unwrap();
+
+        // Verify range before closing
+        let range = idx.timestamp_range_snapshot();
+        assert_eq!(range, Some((100, 107)));
+
+        // Close all and verify range still works
+        idx.idle_close_all().unwrap();
+        assert_eq!(idx.timestamp_range_snapshot(), Some((100, 107)));
+    }
 }

@@ -201,18 +201,28 @@ mod tests {
     fn test_all_variants_have_no_source() {
         // Only Io has a source; all others return None.
         assert!(TmslError::SegmentFull.source().is_none());
-        assert!(TmslError::QueueAlreadyOpen("x".to_string()).source().is_none());
+        assert!(TmslError::QueueAlreadyOpen("x".to_string())
+            .source()
+            .is_none());
         assert!(TmslError::QueueNotOpen("x".to_string()).source().is_none());
-        assert!(TmslError::ConsumerGroupNotFound("x".to_string()).source().is_none());
-        assert!(TmslError::ConsumerGroupExists("x".to_string()).source().is_none());
+        assert!(TmslError::ConsumerGroupNotFound("x".to_string())
+            .source()
+            .is_none());
+        assert!(TmslError::ConsumerGroupExists("x".to_string())
+            .source()
+            .is_none());
         assert!(TmslError::QueueClosed("x".to_string()).source().is_none());
         assert!(TmslError::PendingFull("x".to_string()).source().is_none());
         assert!(TmslError::NotFound("x".to_string()).source().is_none());
         assert!(TmslError::Expired("x".to_string()).source().is_none());
         assert!(TmslError::AlreadyExists("x".to_string()).source().is_none());
         assert!(TmslError::InvalidData("x".to_string()).source().is_none());
-        assert!(TmslError::CompressionError("x".to_string()).source().is_none());
-        assert!(TmslError::DecompressionError("x".to_string()).source().is_none());
+        assert!(TmslError::CompressionError("x".to_string())
+            .source()
+            .is_none());
+        assert!(TmslError::DecompressionError("x".to_string())
+            .source()
+            .is_none());
         assert!(TmslError::MmapError("x".to_string()).source().is_none());
         assert!(TmslError::InvalidVersion(1).source().is_none());
         assert!(TmslError::InvalidMagic.source().is_none());

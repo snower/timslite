@@ -179,8 +179,7 @@ mod tests {
         let mut segments = DataSegmentSet::new(&dir, 64 * 1024 * 1024, 256 * 1024, 6).unwrap();
 
         let (_seg_off_1, _blk_rel_1, in_block_1) = segments.append(100, b"hello").unwrap();
-        let (_seg_off_2, _blk_rel_2, in_block_2) =
-            segments.append(200, b"world2024").unwrap();
+        let (_seg_off_2, _blk_rel_2, in_block_2) = segments.append(200, b"world2024").unwrap();
         let (_seg_off_3, _blk_rel_3, in_block_3) = segments.append(300, b"rust").unwrap();
 
         let entries = vec![
@@ -257,11 +256,8 @@ mod tests {
             position: 0,
         };
 
-        let iter = QueryLengthIterator::new_with_sources(
-            vec![source1, source2],
-            &mut segments,
-            None,
-        );
+        let iter =
+            QueryLengthIterator::new_with_sources(vec![source1, source2], &mut segments, None);
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], (100, 5));

@@ -428,3 +428,237 @@ fn t8_2_10_store_close_with_open_dataset_handles() {
     assert_eq!(entries[0].1, b"data1");
     store2.close().unwrap();
 }
+
+// ─── Segment lifecycle integration tests ──────────────────────────────────────
+
+/// Write data, trigger idle-close via background tick, then read back — verifying
+/// that ensure_open transparently re-mmaps and reopens the segment.
+#[test]
+fn test_segment_idle_close_and_reopen() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .idle_timeout(Duration::from_millis(10))
+        .flush_interval(Duration::from_millis(5))
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    let handle = store
+        .create_dataset("idle_close_test", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    // Write several records
+    for ts in 1..=5 {
+        let payload = format!("record_{ts}").into_bytes();
+        store.write_dataset(handle, ts, &payload).unwrap();
+    }
+
+    // Let idle timeout elapse, then tick to trigger idle-close
+    std::thread::sleep(Duration::from_millis(15));
+    let result = store.tick_background_tasks().unwrap();
+    // At minimum retention reclaim runs; idle_check may also be due
+    assert!(result.executed_tasks > 0);
+
+    // After idle-close, reading should transparently reopen
+    for ts in 1..=5 {
+        let row = store.read_dataset(handle, ts).unwrap().unwrap();
+        assert_eq!(row.1, format!("record_{ts}").as_bytes());
+    }
+
+    store.close().unwrap();
+}
+
+/// Write enough data to overflow the initial small segment, triggering segment
+/// expansion via ensure_data_capacity → expand().
+#[test]
+fn test_segment_expansion_on_overflow() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    // Small initial segment: 8 KiB data segment with max expansion to 256 KiB
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    let handle = store
+        .create_dataset(
+            "expand_test",
+            "data",
+            256 * 1024, // max data segment
+            64 * 1024,  // index segment
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    // Write records that together exceed 8 KiB (≈80 records @ 100 bytes each)
+    let payload = vec![b'X'; 100];
+    for ts in 0..100i64 {
+        store.write_dataset(handle, ts, &payload).unwrap();
+    }
+
+    // Read back every record — segment expansion should have happened transparently
+    for ts in 0..100i64 {
+        let row = store.read_dataset(handle, ts).unwrap().unwrap();
+        assert_eq!(row.0, ts);
+        assert_eq!(row.1.len(), 100);
+    }
+
+    store.close().unwrap();
+}
+
+/// Verify flush runs on tick, writing mmap contents to disk so data survives
+/// a store close/reopen cycle.
+#[test]
+fn test_segment_sync_on_flush() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .flush_interval(Duration::from_millis(5))
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    let handle = store
+        .create_dataset("flush_sync_test", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    // Write data that will be flushed by tick
+    store.write_dataset(handle, 10, b"pre-flush").unwrap();
+    store.write_dataset(handle, 20, b"also-pre-flush").unwrap();
+
+    // Wait for flush interval then trigger flush via tick
+    std::thread::sleep(Duration::from_millis(10));
+    let result = store.tick_background_tasks().unwrap();
+    assert!(result.executed_tasks > 0, "expect at least flush to run");
+
+    // Close and reopen to verify data persisted
+    store.close().unwrap();
+
+    let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h2 = store2.open_dataset("flush_sync_test", "data").unwrap();
+
+    let row10 = store2.read_dataset(h2, 10).unwrap().unwrap();
+    assert_eq!(row10.1, b"pre-flush");
+
+    let row20 = store2.read_dataset(h2, 20).unwrap().unwrap();
+    assert_eq!(row20.1, b"also-pre-flush");
+
+    store2.close().unwrap();
+}
+
+/// Multiple datasets concurrently opened, written, closed, and reopened — verifying
+/// segment lifecycle across datasets.
+#[test]
+fn test_multiple_segments_lifecycle() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    let ds_a = store
+        .create_dataset("mseg_a", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds_b = store
+        .create_dataset("mseg_b", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    // Write interleaved timestamps
+    store.write_dataset(ds_a, 1, b"a1").unwrap();
+    store.write_dataset(ds_b, 1, b"b1").unwrap();
+    store.write_dataset(ds_a, 2, b"a2").unwrap();
+    store.write_dataset(ds_b, 2, b"b2").unwrap();
+
+    // Close everything and reopen
+    store.close().unwrap();
+
+    let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
+    let da = store2.open_dataset("mseg_a", "data").unwrap();
+    let db = store2.open_dataset("mseg_b", "data").unwrap();
+
+    assert_eq!(store2.read_dataset(da, 1).unwrap().unwrap().1, b"a1");
+    assert_eq!(store2.read_dataset(da, 2).unwrap().unwrap().1, b"a2");
+    assert_eq!(store2.read_dataset(db, 1).unwrap().unwrap().1, b"b1");
+    assert_eq!(store2.read_dataset(db, 2).unwrap().unwrap().1, b"b2");
+
+    store2.close().unwrap();
+}
+
+/// Tick background tasks manually (with background thread disabled).
+/// Exercises flush, idle-close, cache eviction, and retention reclaim paths.
+#[test]
+fn test_store_background_tick() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .flush_interval(Duration::from_millis(5))
+        .idle_timeout(Duration::from_millis(10))
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    // Tick on empty store should be harmless
+    let result = store.tick_background_tasks().unwrap();
+    assert!(result.next_delay >= Duration::ZERO);
+
+    // Create dataset and write data
+    let handle = store
+        .create_dataset("bg_tick_test", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    store.write_dataset(handle, 1, b"bg-tick-data").unwrap();
+
+    // Let flush interval elapse, then tick
+    std::thread::sleep(Duration::from_millis(10));
+    let result = store.tick_background_tasks().unwrap();
+    assert!(result.executed_tasks > 0);
+    assert!(result.next_delay >= Duration::ZERO);
+
+    // Data should still be readable after tick
+    let row = store.read_dataset(handle, 1).unwrap().unwrap();
+    assert_eq!(row.1, b"bg-tick-data");
+
+    store.close().unwrap();
+}
+
+/// Full dataset close and reopen cycle: write → close_dataset → open_dataset → read.
+#[test]
+fn test_dataset_close_and_reopen() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+
+    let handle = store
+        .create_dataset("close_reopen", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+
+    // Write diverse records
+    for ts in [10, 20, 50, 100] {
+        let payload = format!("ts_{ts}").into_bytes();
+        store.write_dataset(handle, ts, &payload).unwrap();
+    }
+
+    // Close the dataset
+    store.close_dataset(handle).unwrap();
+
+    // Reopen and verify all records survived
+    let h2 = store.open_dataset("close_reopen", "data").unwrap();
+    for ts in [10, 20, 50, 100] {
+        let row = store.read_dataset(h2, ts).unwrap().unwrap();
+        assert_eq!(row.1, format!("ts_{ts}").as_bytes());
+    }
+
+    store.close().unwrap();
+}
