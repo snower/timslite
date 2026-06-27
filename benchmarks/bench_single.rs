@@ -17,7 +17,7 @@ fn main() {
     let config = StoreConfig::default();
     let mut store = Store::open(&data_dir, config).unwrap();
 
-    let handle = store
+    store
         .create_dataset(
             "bench_data",
             "logs",
@@ -29,14 +29,15 @@ fn main() {
         )
         .unwrap();
 
+    let handle = store.open_dataset("bench_data", "logs").unwrap();
+    let dataset = store.get_dataset(&handle).unwrap();
+
     let mut metrics = BenchmarkMetrics::new();
 
     let start = Instant::now();
     for i in 1..=WRITE_COUNT {
         let line = log_data.random_raw_line();
-        store
-            .write_dataset(handle, i as i64, line.as_bytes())
-            .unwrap();
+        dataset.write(i as i64, line.as_bytes()).unwrap();
         metrics.write_bytes += line.len() as u64;
     }
     metrics.write_duration = start.elapsed();
@@ -44,7 +45,7 @@ fn main() {
 
     let start = Instant::now();
     for i in 1..=READ_SEQUENTIAL_COUNT {
-        if let Some((_, data)) = store.read_dataset(handle, i as i64).unwrap() {
+        if let Some((_, data)) = dataset.read(i as i64).unwrap() {
             metrics.read_sequential_bytes += data.len() as u64;
         }
     }
@@ -55,7 +56,7 @@ fn main() {
     let start = Instant::now();
     for _ in 0..READ_RANDOM_COUNT {
         let ts = rng.gen_range(1..=WRITE_COUNT as i64);
-        if let Some((_, data)) = store.read_dataset(handle, ts).unwrap() {
+        if let Some((_, data)) = dataset.read(ts).unwrap() {
             metrics.read_random_bytes += data.len() as u64;
         }
     }
@@ -66,6 +67,7 @@ fn main() {
     metrics.total_data_size = inspect_result.state.total_data_size;
     metrics.total_uncompressed_size = inspect_result.state.total_uncompressed_size;
 
+    drop(dataset);
     drop(store);
     metrics.print_results("Single Thread Benchmark");
 }
