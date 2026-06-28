@@ -98,3 +98,144 @@ fn read_only_journal_reads_existing_records_and_missing_journal_is_empty() {
     assert!(missing.journal_query(1, 10).unwrap().is_empty());
     assert!(!missing_dir.join(".journal").exists());
 }
+
+#[test]
+fn test_store_open_and_close() {
+    let dir = temp_dir("open_and_close");
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    assert!(!store.is_read_only());
+    let handle = store
+        .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
+        .unwrap();
+    store.write_dataset(handle, 1, b"value_one").unwrap();
+    assert_eq!(
+        store.read_dataset(handle, 1).unwrap(),
+        Some((1, b"value_one".to_vec()))
+    );
+    store.close().unwrap();
+}
+
+#[test]
+fn test_store_multiple_open_close() {
+    let dir = temp_dir("multiple_open_close");
+    for i in 0..3 {
+        let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+        assert!(!store.is_read_only());
+
+        if i == 0 {
+            store
+                .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
+                .unwrap();
+        }
+
+        let handle = store.open_dataset("metrics", "raw").unwrap();
+        store
+            .write_dataset(handle, i as i64 * 100 + 1, b"data")
+            .unwrap();
+        store.get_dataset(&handle).unwrap().flush().unwrap();
+
+        let read_handle = store.open_dataset("metrics", "raw").unwrap();
+        assert_eq!(
+            store.read_dataset(read_handle, i as i64 * 100 + 1).unwrap(),
+            Some((i as i64 * 100 + 1, b"data".to_vec()))
+        );
+        store.close().unwrap();
+    }
+}
+
+#[test]
+fn test_store_background_tick_with_pending() {
+    let dir = temp_dir("tick_with_pending");
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+    assert!(!store.is_read_only());
+
+    let handle = store
+        .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
+        .unwrap();
+    store.write_dataset(handle, 1, b"tick_data").unwrap();
+
+    store.tick_background_tasks().unwrap();
+    store.next_background_delay().unwrap();
+
+    store.close().unwrap();
+}
+
+#[test]
+fn test_store_read_only_rejects_background_tick() {
+    let dir = temp_dir("readonly_no_tick");
+    let mut writer = Store::open(&dir, StoreConfig::default()).unwrap();
+    writer
+        .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
+        .unwrap();
+    writer.close().unwrap();
+
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    assert!(!store.is_read_only());
+    let handle = store.open_dataset("metrics", "raw").unwrap();
+    store.write_dataset(handle, 1, b"lock_holder").unwrap();
+    store.get_dataset(&handle).unwrap().flush().unwrap();
+
+    let reader = Store::open(&dir, StoreConfig::default()).unwrap();
+    assert!(reader.is_read_only());
+
+    assert!(reader.tick_background_tasks().is_err());
+    assert!(reader.next_background_delay().is_err());
+}
+
+#[test]
+fn test_store_read_only_rejects_queue_operations() {
+    let dir = temp_dir("readonly_no_queue");
+    let mut writer = Store::open(&dir, StoreConfig::default()).unwrap();
+    let handle = writer
+        .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
+        .unwrap();
+    writer.write_dataset(handle, 1, b"queue_data").unwrap();
+    writer.get_dataset(&handle).unwrap().flush().unwrap();
+
+    let mut reader = Store::open(&dir, StoreConfig::default()).unwrap();
+    assert!(reader.is_read_only());
+    let read_handle = reader.open_dataset("metrics", "raw").unwrap();
+
+    assert!(reader.open_queue(read_handle).is_err());
+    assert!(reader.open_journal_queue().is_err());
+}
+
+#[test]
+fn test_store_concurrent_readers() {
+    let dir = temp_dir("concurrent_readers");
+    let mut writer = Store::open(&dir, StoreConfig::default()).unwrap();
+    assert!(!writer.is_read_only());
+    let handle = writer
+        .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
+        .unwrap();
+    writer.write_dataset(handle, 10, b"record_ten").unwrap();
+    writer.write_dataset(handle, 20, b"record_twenty").unwrap();
+    writer.get_dataset(&handle).unwrap().flush().unwrap();
+
+    let mut reader1 = Store::open(&dir, StoreConfig::default()).unwrap();
+    assert!(reader1.is_read_only());
+    let r1_handle = reader1.open_dataset("metrics", "raw").unwrap();
+    assert_eq!(
+        reader1.read_dataset(r1_handle, 10).unwrap(),
+        Some((10, b"record_ten".to_vec()))
+    );
+    assert_eq!(
+        reader1.read_dataset(r1_handle, 20).unwrap(),
+        Some((20, b"record_twenty".to_vec()))
+    );
+
+    let mut reader2 = Store::open(&dir, StoreConfig::default()).unwrap();
+    assert!(reader2.is_read_only());
+    let r2_handle = reader2.open_dataset("metrics", "raw").unwrap();
+    assert_eq!(
+        reader2.read_dataset(r2_handle, 10).unwrap(),
+        Some((10, b"record_ten".to_vec()))
+    );
+    assert_eq!(
+        reader2.read_dataset(r2_handle, 20).unwrap(),
+        Some((20, b"record_twenty".to_vec()))
+    );
+}

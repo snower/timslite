@@ -2,10 +2,7 @@
 
 use common::{create_temp_dir, BenchmarkMetrics, LogData};
 use rand::Rng;
-use std::sync::{
-    atomic::{AtomicI64, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Instant;
 use timslite::{Store, StoreConfig};
@@ -22,7 +19,7 @@ fn main() {
     let data_dir = temp_dir.path().join("timslite_data");
 
     let config = StoreConfig::default();
-    let store = Arc::new(Mutex::new(Store::open(&data_dir, config).unwrap()));
+    let mut store = Store::open(&data_dir, config).unwrap();
 
     let dataset = {
         let mut store_guard = store.lock().unwrap();
@@ -39,8 +36,12 @@ fn main() {
             .unwrap()
     };
 
-    let ts_counter = Arc::new(AtomicI64::new(1));
+    let handle = store.open_dataset("bench_data", "logs").unwrap();
+    let dataset = store.get_dataset(&handle).unwrap();
     let mut metrics = BenchmarkMetrics::new();
+
+    let (tx, rx) = mpsc::sync_channel::<(i64, String)>(WRITE_THREADS * 2);
+    let rx = Arc::new(std::sync::Mutex::new(rx));
 
     let start = Instant::now();
     let mut join_handles = vec![];
@@ -48,11 +49,9 @@ fn main() {
     for _ in 0..WRITE_THREADS {
         let dataset = dataset.clone();
         let log_data_clone = Arc::clone(&log_data);
-        let ts_counter_clone = Arc::clone(&ts_counter);
         let writes_per_thread = WRITE_COUNT / WRITE_THREADS as u64;
 
         let jh = thread::spawn(move || {
-            let mut bytes_written = 0u64;
             for _ in 0..writes_per_thread {
                 let line = log_data_clone.random_raw_line();
                 let ts = ts_counter_clone.fetch_add(1, Ordering::SeqCst);
@@ -61,19 +60,30 @@ fn main() {
                     Err(e) => eprintln!("Write error at ts {}: {:?}", ts, e),
                 }
             }
-            bytes_written
         });
 
         join_handles.push(jh);
     }
 
-    for jh in join_handles {
-        metrics.write_bytes += jh.join().unwrap();
+    drop(tx);
+
+    let mut ts = 1i64;
+    while let Ok((_, line)) = rx.lock().unwrap().recv() {
+        match dataset.write(ts, line.as_bytes()) {
+            Ok(_) => metrics.write_bytes += line.len() as u64,
+            Err(e) => eprintln!("Write error at ts {}: {:?}", ts, e),
+        }
+        ts += 1;
     }
+
+    for jh in join_handles {
+        jh.join().unwrap();
+    }
+
     metrics.write_duration = start.elapsed();
     metrics.write_ops = WRITE_COUNT;
 
-    let total_written = ts_counter.load(Ordering::SeqCst) - 1;
+    let total_written = ts - 1;
 
     let start = Instant::now();
     let mut join_handles = vec![];
@@ -130,12 +140,11 @@ fn main() {
     metrics.read_random_duration = start.elapsed();
     metrics.read_random_ops = READ_RANDOM_COUNT;
 
-    let store_guard = store.lock().unwrap();
-    let inspect_result = store_guard.inspect_dataset("bench_data", "logs").unwrap();
+    let inspect_result = store.inspect_dataset("bench_data", "logs").unwrap();
     metrics.total_data_size = inspect_result.state.total_data_size;
     metrics.total_uncompressed_size = inspect_result.state.total_uncompressed_size;
-    drop(store_guard);
 
+    drop(dataset);
     drop(store);
     metrics.print_results(&format!(
         "Multi Thread Benchmark ({}W/{}R)",

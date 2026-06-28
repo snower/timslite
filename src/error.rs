@@ -141,4 +141,90 @@ mod tests {
         assert!(msg.contains("already exists"));
         assert!(msg.contains("sensor_001"));
     }
+
+    #[test]
+    fn test_segment_full_display() {
+        let err = TmslError::SegmentFull;
+        let msg = err.to_string();
+        assert!(msg.contains("segment full"));
+    }
+
+    #[test]
+    fn test_queue_already_open_display() {
+        let err = TmslError::QueueAlreadyOpen("sensor_001".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("queue already open"));
+        assert!(msg.contains("sensor_001"));
+    }
+
+    #[test]
+    fn test_queue_not_open_display() {
+        let err = TmslError::QueueNotOpen("sensor_001".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("queue not open"));
+        assert!(msg.contains("sensor_001"));
+    }
+
+    #[test]
+    fn test_consumer_group_not_found_display() {
+        let err = TmslError::ConsumerGroupNotFound("group_01".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("consumer group not found"));
+        assert!(msg.contains("group_01"));
+    }
+
+    #[test]
+    fn test_consumer_group_exists_display() {
+        let err = TmslError::ConsumerGroupExists("group_01".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("consumer group already exists"));
+        assert!(msg.contains("group_01"));
+    }
+
+    #[test]
+    fn test_queue_closed_display() {
+        let err = TmslError::QueueClosed("sensor_001".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("queue closed"));
+        assert!(msg.contains("sensor_001"));
+    }
+
+    #[test]
+    fn test_pending_full_display() {
+        let err = TmslError::PendingFull("queue sensor_001".to_string());
+        let msg = err.to_string();
+        assert!(msg.contains("pending entries full"));
+        assert!(msg.contains("sensor_001"));
+    }
+
+    #[test]
+    fn test_all_variants_have_no_source() {
+        // Only Io has a source; all others return None.
+        assert!(TmslError::SegmentFull.source().is_none());
+        assert!(TmslError::QueueAlreadyOpen("x".to_string())
+            .source()
+            .is_none());
+        assert!(TmslError::QueueNotOpen("x".to_string()).source().is_none());
+        assert!(TmslError::ConsumerGroupNotFound("x".to_string())
+            .source()
+            .is_none());
+        assert!(TmslError::ConsumerGroupExists("x".to_string())
+            .source()
+            .is_none());
+        assert!(TmslError::QueueClosed("x".to_string()).source().is_none());
+        assert!(TmslError::PendingFull("x".to_string()).source().is_none());
+        assert!(TmslError::NotFound("x".to_string()).source().is_none());
+        assert!(TmslError::Expired("x".to_string()).source().is_none());
+        assert!(TmslError::AlreadyExists("x".to_string()).source().is_none());
+        assert!(TmslError::InvalidData("x".to_string()).source().is_none());
+        assert!(TmslError::CompressionError("x".to_string())
+            .source()
+            .is_none());
+        assert!(TmslError::DecompressionError("x".to_string())
+            .source()
+            .is_none());
+        assert!(TmslError::MmapError("x".to_string()).source().is_none());
+        assert!(TmslError::InvalidVersion(1).source().is_none());
+        assert!(TmslError::InvalidMagic.source().is_none());
+    }
 }

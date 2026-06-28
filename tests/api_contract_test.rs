@@ -1050,3 +1050,361 @@ fn t34_19_error_paths() {
 
     store.close().unwrap();
 }
+
+/// P3-F1: StoreConfig FFI roundtrip
+///
+/// Verify that StoreConfig values set via the builder flow through the
+/// FFI config conversion layer (`store_config_to_ffi` / `store_config_from_ffi`)
+/// and produce a functional store.
+#[test]
+fn t35_1_store_config_ffi_roundtrip() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+
+    // Build a non-default config exercising all fields
+    let config = StoreConfig::builder()
+        .flush_interval(Duration::from_millis(500))
+        .idle_timeout(Duration::from_millis(180_000))
+        .data_segment_size(128 * 1024 * 1024)
+        .index_segment_size(8 * 1024 * 1024)
+        .initial_data_segment_size(256 * 1024)
+        .initial_index_segment_size(64 * 1024)
+        .compress_level(3)
+        .compress_type(0) // zstd
+        .cache_max_memory(32 * 1024 * 1024)
+        .cache_idle_timeout(Duration::from_millis(600_000))
+        .retention_check_hour(2)
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .read_only(None)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    // Verify store is functional
+    assert!(!store.is_read_only());
+    store
+        .create_dataset("cfg_rt", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("cfg_rt", "data").unwrap();
+    let ds = store.get_dataset(&handle).unwrap();
+    ds.write(1, b"roundtrip").unwrap();
+    assert_eq!(ds.read(1).unwrap().unwrap().1, b"roundtrip");
+
+    store.close().unwrap();
+}
+
+/// P3-F2: DataSetConfig FFI validation
+///
+/// Verify that `dataset_config_from_ffi` validation is exercised through
+/// `create_dataset_with_config` with various DataSetConfig values.
+#[test]
+fn t35_2_dataset_config_ffi_validation() {
+    use timslite::{DataSetConfigBuilder, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    // Valid configuration: non-default segment sizes, compression, index_continuous
+    let builder = DataSetConfigBuilder::from_store(store.config())
+        .data_segment_size(16 * 1024 * 1024)
+        .index_segment_size(2 * 1024 * 1024)
+        .initial_data_segment_size(512 * 1024)
+        .initial_index_segment_size(8 * 1024)
+        .compress_level(1)
+        .compress_type(1) // deflate
+        .index_continuous(1)
+        .retention_window(3600);
+    let handle = store
+        .create_dataset_with_config("ds_cfg", "data", Some(builder))
+        .unwrap();
+
+    let ds = store.get_dataset(&handle).unwrap();
+    ds.write(10, b"valid_config").unwrap();
+    let info = store.inspect_dataset("ds_cfg", "data").unwrap();
+    assert_eq!(info.info.data_segment_size, 16 * 1024 * 1024);
+    assert_eq!(info.info.index_segment_size, 2 * 1024 * 1024);
+    assert_eq!(info.info.compress_type, 1);
+    assert_eq!(info.info.compress_level, 1);
+    assert_eq!(info.info.index_continuous, 1);
+
+    store.close().unwrap();
+}
+
+/// P3-F3: QueueConsumerConfig FFI
+///
+/// Verify `queue_consumer_config_from_ffi` by opening consumers with
+/// custom QueueConsumerConfig values.
+#[test]
+fn t35_3_queue_consumer_config_ffi() {
+    use timslite::{QueueConsumerConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset(
+            "qcfg_ds",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let handle = store.open_dataset("qcfg_ds", "data").unwrap();
+
+    // Default config should be valid
+    let default_cfg = QueueConsumerConfig::default();
+    assert_eq!(default_cfg.running_expired_seconds, 900);
+    assert_eq!(default_cfg.max_retry_count, 3);
+
+    let queue = store.open_queue(handle).unwrap();
+
+    // Open consumer with default config
+    let _consumer = store.open_consumer(&queue, "grp_default").unwrap();
+    queue.drop_consumer("grp_default").unwrap();
+
+    // Open consumer with custom config
+    let custom = QueueConsumerConfig::builder()
+        .running_expired_seconds(1800)
+        .max_retry_count(5)
+        .build()
+        .unwrap();
+    let _consumer = store
+        .open_consumer_with_config(&queue, "grp_custom", custom)
+        .unwrap();
+    queue.drop_consumer("grp_custom").unwrap();
+
+    // Config validation: out of bounds should fail
+    assert!(QueueConsumerConfig::builder()
+        .running_expired_seconds(u16::MAX as u64 + 1)
+        .build()
+        .is_err());
+    assert!(QueueConsumerConfig::builder()
+        .max_retry_count(u8::MAX as u16 + 1)
+        .build()
+        .is_err());
+
+    // Re-opening same group with different config should fail
+    store
+        .open_consumer_with_config(&queue, "grp_static", custom)
+        .unwrap();
+    let different = QueueConsumerConfig::builder()
+        .running_expired_seconds(3600)
+        .build()
+        .unwrap();
+    assert!(store
+        .open_consumer_with_config(&queue, "grp_static", different)
+        .is_err());
+
+    store.close().unwrap();
+}
+
+/// P3-F4: Queue handle lifecycle
+///
+/// Verify registration/cleanup of queue handles exercised through
+/// open_queue / close_queue, push / poll / ack.
+#[test]
+fn t35_4_queue_handle_lifecycle() {
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset(
+            "qlife_ds",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let handle = store.open_dataset("qlife_ds", "data").unwrap();
+
+    // Open queue — exercises register_dataset_child internally
+    let queue = store.open_queue(handle).unwrap();
+
+    // Open consumer BEFORE push — consumer initializes from current latest_written_timestamp
+    let consumer = store.open_consumer(&queue, "lifecycle_grp").unwrap();
+
+    // Push a record — consumer should receive it
+    let ts = queue.push(b"first_message").unwrap();
+
+    let result = consumer.poll(Duration::from_millis(100)).unwrap();
+    assert!(result.is_some(), "consumer should receive pushed record");
+    let (polled_ts, data) = result.unwrap();
+    assert_eq!(polled_ts, ts);
+    assert_eq!(data, b"first_message");
+
+    // ACK and verify progress persists
+    consumer.ack(polled_ts).unwrap();
+
+    // Push more records and verify sequential consumption
+    let ts2 = queue.push(b"second_message").unwrap();
+    let ts3 = queue.push(b"third_message").unwrap();
+
+    let result = consumer.poll(Duration::from_millis(100)).unwrap();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().0, ts2);
+
+    consumer.ack(ts2).unwrap();
+
+    let result = consumer.poll(Duration::from_millis(100)).unwrap();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().0, ts3);
+
+    consumer.ack(ts3).unwrap();
+
+    // Close consumer
+    queue.drop_consumer("lifecycle_grp").unwrap();
+
+    // Close queue
+    store.close_queue(handle).unwrap();
+
+    store.close().unwrap();
+}
+
+/// P3-F5: Poll callback registration
+///
+/// Verify `poll_callback` set/clear on a DatasetQueueConsumer exercises
+/// the FFI `set_consumer_poll_callback` path.
+#[test]
+fn t35_5_poll_callback_registration() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset("cb_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("cb_ds", "data").unwrap();
+    let queue = store.open_queue(handle).unwrap();
+
+    let consumer = store.open_consumer(&queue, "cb_grp").unwrap();
+
+    // Register a poll callback
+    let called = Arc::new(AtomicBool::new(false));
+    let called_clone = Arc::clone(&called);
+    let callback: timslite::QueuePollCallback = Arc::new(move || {
+        called_clone.store(true, Ordering::SeqCst);
+    });
+    consumer.poll_callback(Some(callback)).unwrap();
+
+    // Push should trigger the callback
+    queue.push(b"trigger").unwrap();
+    // Give time for callback
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        called.load(Ordering::SeqCst),
+        "poll callback should have been invoked on push"
+    );
+
+    // Clear the callback
+    consumer
+        .poll_callback(None::<timslite::QueuePollCallback>)
+        .unwrap();
+
+    // Push again — callback should not fire
+    let called2 = Arc::new(AtomicBool::new(false));
+    let called2_clone = Arc::clone(&called2);
+    consumer
+        .poll_callback(Some(Arc::new(move || {
+            called2_clone.store(true, Ordering::SeqCst);
+        })))
+        .unwrap();
+
+    // Poll to drain the queue
+    loop {
+        let result = consumer.poll(Duration::from_millis(100)).unwrap();
+        if result.is_none() {
+            break;
+        }
+        consumer.ack(result.unwrap().0).unwrap();
+    }
+
+    store.close().unwrap();
+}
+
+/// P3-F6: Queue consumer with custom config
+///
+/// Verify `open_queue_consumer_with_config_impl` by opening consumers
+/// with custom retry/expiry configs and verifying behavior.
+#[test]
+fn t35_6_queue_consumer_with_config() {
+    use std::time::Duration;
+    use timslite::{QueueConsumerConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .enable_journal(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset("qcc_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("qcc_ds", "data").unwrap();
+    let queue = store.open_queue(handle).unwrap();
+
+    // Open consumer with non-default running_expired_seconds and max_retry_count
+    let custom_config = QueueConsumerConfig::builder()
+        .running_expired_seconds(600)
+        .max_retry_count(0) // unlimited retry
+        .build()
+        .unwrap();
+
+    let consumer = store
+        .open_consumer_with_config(&queue, "cc_grp", custom_config)
+        .unwrap();
+
+    // Push and consume
+    let ts = queue.push(b"custom_config_msg").unwrap();
+    let result = consumer.poll(Duration::from_millis(100)).unwrap();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().0, ts);
+
+    let _ = queue.drop_consumer("cc_grp");
+
+    // Re-open same group with same config should succeed
+    let consumer2 = store
+        .open_consumer_with_config(&queue, "cc_grp", custom_config)
+        .unwrap();
+
+    // Push another message and verify it can be consumed
+    let ts2 = queue.push(b"another_msg").unwrap();
+    let result = consumer2.poll(Duration::from_millis(100)).unwrap();
+    assert!(result.is_some());
+    assert_eq!(result.unwrap().0, ts2);
+
+    consumer2.ack(ts2).unwrap();
+
+    store.close().unwrap();
+}

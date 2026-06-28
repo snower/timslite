@@ -1055,4 +1055,102 @@ mod tests {
         assert_eq!(reopened.read(1).unwrap().unwrap(), b"stable");
         assert!(reopened.read(2).unwrap().is_none());
     }
+
+    #[test]
+    fn open_read_only_allows_reads_and_rejects_writes() {
+        let (mut segment, path) = make_segment("open_read_only");
+        segment.append_record(1, b"first").unwrap();
+        segment.append_record(2, b"second").unwrap();
+        drop(segment);
+
+        let mut ro = JournalSegment::open_read_only(&path, 1, 128 * 1024).unwrap();
+        assert_eq!(ro.read(1).unwrap().unwrap(), b"first");
+        assert_eq!(ro.read(2).unwrap().unwrap(), b"second");
+        assert!(ro.read(3).unwrap().is_none());
+
+        assert!(ro.append_record(3, b"third").is_err());
+    }
+
+    #[test]
+    fn expand_triggers_when_records_exceed_initial_file_size() {
+        let (mut segment, _path) = make_segment("expand");
+        let payload = vec![0xAB; 200];
+
+        // initial_size=512, HEADER_SIZE=108, first block header=16.
+        // After 2 records of 212 bytes each, wrote_position = 108+16+2*212=548 > 512.
+        segment.append_record(1, &payload).unwrap();
+        segment.append_record(2, &payload).unwrap();
+
+        assert_eq!(segment.record_count(), 2);
+        assert_eq!(segment.read(1).unwrap().unwrap(), payload);
+        assert_eq!(segment.read(2).unwrap().unwrap(), payload);
+    }
+
+    #[test]
+    fn seal_pending_block_when_block_overflow_triggers_compression() {
+        let (mut segment, _path) = make_segment("seal_pending");
+        let payload = vec![0xAB; 2000]; // 2012 bytes per record (12 header + 2000 payload)
+
+        // BLOCK_MAX_SIZE = 65536. 32 records * 2012 = 64384 ≤ 65536.
+        // 33rd record = 66396 > 65536 → seal_pending_block triggers.
+        let total: i64 = 33;
+        for i in 1i64..=total {
+            segment.append_record(i, &payload).unwrap();
+        }
+
+        assert_eq!(segment.record_count(), total as u64);
+        for i in 1i64..=total {
+            assert_eq!(
+                segment.read(i).unwrap().unwrap(),
+                payload,
+                "record {i} mismatch after seal"
+            );
+        }
+    }
+
+    #[test]
+    fn mmap_for_test_returns_valid_slice_after_write() {
+        let (mut segment, _path) = make_segment("mmap_access");
+        segment.append_record(1, b"hello").unwrap();
+
+        let mmap = segment.mmap_for_test();
+        assert!(
+            mmap.len() >= segment.wrote_position() as usize,
+            "mmap should be large enough to contain all written data"
+        );
+        assert!(
+            mmap.len() >= segment.header_size() as usize,
+            "mmap should include the header"
+        );
+    }
+
+    #[test]
+    fn ensure_capacity_allows_many_records_beyond_initial_size() {
+        let (mut segment, _path) = make_segment("capacity");
+        let payload = vec![0u8; 100];
+
+        // write 10 records; initial_size=512 but records total > 512 → ensure_capacity expands
+        for i in 1i64..=10 {
+            segment.append_record(i, &payload).unwrap();
+        }
+
+        assert_eq!(segment.record_count(), 10);
+        for i in 1i64..=10 {
+            assert_eq!(segment.read(i).unwrap().unwrap(), payload);
+        }
+    }
+
+    #[test]
+    fn write_raw_record_to_pending_exercised_via_append() {
+        let (mut segment, _path) = make_segment("raw_record");
+        // first append exercises create_pending_and_append → write_raw_record_to_pending
+        segment.append_record(1, b"alpha").unwrap();
+        assert_eq!(segment.record_count(), 1);
+        assert_eq!(segment.read(1).unwrap().unwrap(), b"alpha");
+
+        // second append to same pending block exercises write_raw_record_to_pending directly
+        segment.append_record(2, b"beta").unwrap();
+        assert_eq!(segment.record_count(), 2);
+        assert_eq!(segment.read(2).unwrap().unwrap(), b"beta");
+    }
 }

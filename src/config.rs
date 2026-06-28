@@ -774,4 +774,68 @@ mod tests {
 
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_validate_nonzero_size_zero() {
+        let result = validate_nonzero_size("test_field", 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("test_field"));
+        assert!(msg.contains("> 0"));
+    }
+
+    #[test]
+    fn test_validate_compress_level_over_9() {
+        let result = validate_compress_level(10);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("compress_level"));
+        assert!(msg.contains("10"));
+    }
+
+    #[test]
+    fn test_validate_index_continuous_over_1() {
+        let result = validate_index_continuous(2);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("index_continuous"));
+        assert!(msg.contains("2"));
+    }
+
+    #[test]
+    fn test_validate_retention_window_over_i64_max() {
+        let ret = i64::MAX as u64 + 1;
+        let result = validate_retention_window(ret);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("retention_window"));
+        assert!(msg.contains("i64::MAX"));
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_initial_over_max() {
+        let result = validate_dataset_config_values(1024, 2048, 6, 0, 0, 2048, 1024, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("initial_data_segment_size"));
+        assert!(msg.contains("data_segment_size"));
+    }
+
+    #[test]
+    fn test_builder_read_only_auto() {
+        let cfg = StoreConfig::builder().read_only(None).build();
+        assert!(cfg.read_only().is_none());
+    }
+
+    #[test]
+    fn test_builder_read_only_true() {
+        let cfg = StoreConfig::builder().read_only(Some(true)).build();
+        assert_eq!(cfg.read_only(), Some(true));
+    }
+
+    #[test]
+    fn test_builder_read_only_false() {
+        let cfg = StoreConfig::builder().read_only(Some(false)).build();
+        assert_eq!(cfg.read_only(), Some(false));
+    }
 }
