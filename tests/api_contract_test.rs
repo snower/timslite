@@ -1088,9 +1088,8 @@ fn t35_1_store_config_ffi_roundtrip() {
         .create_dataset("cfg_rt", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let handle = store.open_dataset("cfg_rt", "data").unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
-    ds.write(1, b"roundtrip").unwrap();
-    assert_eq!(ds.read(1).unwrap().unwrap().1, b"roundtrip");
+    handle.write(1, b"roundtrip").unwrap();
+    assert_eq!(handle.read(1).unwrap().unwrap().1, b"roundtrip");
 
     store.close().unwrap();
 }
@@ -1124,8 +1123,7 @@ fn t35_2_dataset_config_ffi_validation() {
         .create_dataset_with_config("ds_cfg", "data", Some(builder))
         .unwrap();
 
-    let ds = store.get_dataset(&handle).unwrap();
-    ds.write(10, b"valid_config").unwrap();
+    handle.write(10, b"valid_config").unwrap();
     let info = store.inspect_dataset("ds_cfg", "data").unwrap();
     assert_eq!(info.info.data_segment_size, 16 * 1024 * 1024);
     assert_eq!(info.info.index_segment_size, 2 * 1024 * 1024);
@@ -1169,10 +1167,10 @@ fn t35_3_queue_consumer_config_ffi() {
     assert_eq!(default_cfg.running_expired_seconds, 900);
     assert_eq!(default_cfg.max_retry_count, 3);
 
-    let queue = store.open_queue(handle).unwrap();
+    let queue = handle.open_queue().unwrap();
 
     // Open consumer with default config
-    let _consumer = store.open_consumer(&queue, "grp_default").unwrap();
+    let _consumer = queue.open_consumer("grp_default").unwrap();
     queue.drop_consumer("grp_default").unwrap();
 
     // Open consumer with custom config
@@ -1181,8 +1179,8 @@ fn t35_3_queue_consumer_config_ffi() {
         .max_retry_count(5)
         .build()
         .unwrap();
-    let _consumer = store
-        .open_consumer_with_config(&queue, "grp_custom", custom)
+    let _consumer = queue
+        .open_consumer_with_config("grp_custom", custom)
         .unwrap();
     queue.drop_consumer("grp_custom").unwrap();
 
@@ -1197,15 +1195,15 @@ fn t35_3_queue_consumer_config_ffi() {
         .is_err());
 
     // Re-opening same group with different config should fail
-    store
-        .open_consumer_with_config(&queue, "grp_static", custom)
+    queue
+        .open_consumer_with_config("grp_static", custom)
         .unwrap();
     let different = QueueConsumerConfig::builder()
         .running_expired_seconds(3600)
         .build()
         .unwrap();
-    assert!(store
-        .open_consumer_with_config(&queue, "grp_static", different)
+    assert!(queue
+        .open_consumer_with_config("grp_static", different)
         .is_err());
 
     store.close().unwrap();
@@ -1241,10 +1239,10 @@ fn t35_4_queue_handle_lifecycle() {
     let handle = store.open_dataset("qlife_ds", "data").unwrap();
 
     // Open queue — exercises register_dataset_child internally
-    let queue = store.open_queue(handle).unwrap();
+    let queue = handle.open_queue().unwrap();
 
     // Open consumer BEFORE push — consumer initializes from current latest_written_timestamp
-    let consumer = store.open_consumer(&queue, "lifecycle_grp").unwrap();
+    let consumer = queue.open_consumer("lifecycle_grp").unwrap();
 
     // Push a record — consumer should receive it
     let ts = queue.push(b"first_message").unwrap();
@@ -1278,7 +1276,7 @@ fn t35_4_queue_handle_lifecycle() {
     queue.drop_consumer("lifecycle_grp").unwrap();
 
     // Close queue
-    store.close_queue(handle).unwrap();
+    handle.close_queue().unwrap();
 
     store.close().unwrap();
 }
@@ -1305,9 +1303,9 @@ fn t35_5_poll_callback_registration() {
         .create_dataset("cb_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let handle = store.open_dataset("cb_ds", "data").unwrap();
-    let queue = store.open_queue(handle).unwrap();
+    let queue = handle.open_queue().unwrap();
 
-    let consumer = store.open_consumer(&queue, "cb_grp").unwrap();
+    let consumer = queue.open_consumer("cb_grp").unwrap();
 
     // Register a poll callback
     let called = Arc::new(AtomicBool::new(false));
@@ -1372,7 +1370,7 @@ fn t35_6_queue_consumer_with_config() {
         .create_dataset("qcc_ds", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let handle = store.open_dataset("qcc_ds", "data").unwrap();
-    let queue = store.open_queue(handle).unwrap();
+    let queue = handle.open_queue().unwrap();
 
     // Open consumer with non-default running_expired_seconds and max_retry_count
     let custom_config = QueueConsumerConfig::builder()
@@ -1381,8 +1379,8 @@ fn t35_6_queue_consumer_with_config() {
         .build()
         .unwrap();
 
-    let consumer = store
-        .open_consumer_with_config(&queue, "cc_grp", custom_config)
+    let consumer = queue
+        .open_consumer_with_config("cc_grp", custom_config)
         .unwrap();
 
     // Push and consume
@@ -1394,8 +1392,8 @@ fn t35_6_queue_consumer_with_config() {
     let _ = queue.drop_consumer("cc_grp");
 
     // Re-open same group with same config should succeed
-    let consumer2 = store
-        .open_consumer_with_config(&queue, "cc_grp", custom_config)
+    let consumer2 = queue
+        .open_consumer_with_config("cc_grp", custom_config)
         .unwrap();
 
     // Push another message and verify it can be consumed

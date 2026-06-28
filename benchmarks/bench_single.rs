@@ -29,9 +29,6 @@ fn main() {
         )
         .unwrap();
 
-    let handle = store.open_dataset("bench_data", "logs").unwrap();
-    let dataset = store.get_dataset(&handle).unwrap();
-
     let mut metrics = BenchmarkMetrics::new();
 
     let start = Instant::now();

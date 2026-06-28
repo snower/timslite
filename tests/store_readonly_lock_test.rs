@@ -107,11 +107,8 @@ fn test_store_open_and_close() {
     let handle = store
         .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
         .unwrap();
-    store.write_dataset(handle, 1, b"value_one").unwrap();
-    assert_eq!(
-        store.read_dataset(handle, 1).unwrap(),
-        Some((1, b"value_one".to_vec()))
-    );
+    handle.write(1, b"value_one").unwrap();
+    assert_eq!(handle.read(1).unwrap(), Some((1, b"value_one".to_vec())));
     store.close().unwrap();
 }
 
@@ -129,14 +126,12 @@ fn test_store_multiple_open_close() {
         }
 
         let handle = store.open_dataset("metrics", "raw").unwrap();
-        store
-            .write_dataset(handle, i as i64 * 100 + 1, b"data")
-            .unwrap();
-        store.get_dataset(&handle).unwrap().flush().unwrap();
+        handle.write(i as i64 * 100 + 1, b"data").unwrap();
+        handle.flush().unwrap();
 
         let read_handle = store.open_dataset("metrics", "raw").unwrap();
         assert_eq!(
-            store.read_dataset(read_handle, i as i64 * 100 + 1).unwrap(),
+            read_handle.read(i as i64 * 100 + 1).unwrap(),
             Some((i as i64 * 100 + 1, b"data".to_vec()))
         );
         store.close().unwrap();
@@ -155,7 +150,7 @@ fn test_store_background_tick_with_pending() {
     let handle = store
         .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
         .unwrap();
-    store.write_dataset(handle, 1, b"tick_data").unwrap();
+    handle.write(1, b"tick_data").unwrap();
 
     store.tick_background_tasks().unwrap();
     store.next_background_delay().unwrap();
@@ -175,8 +170,8 @@ fn test_store_read_only_rejects_background_tick() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     assert!(!store.is_read_only());
     let handle = store.open_dataset("metrics", "raw").unwrap();
-    store.write_dataset(handle, 1, b"lock_holder").unwrap();
-    store.get_dataset(&handle).unwrap().flush().unwrap();
+    handle.write(1, b"lock_holder").unwrap();
+    handle.flush().unwrap();
 
     let reader = Store::open(&dir, StoreConfig::default()).unwrap();
     assert!(reader.is_read_only());
@@ -192,14 +187,14 @@ fn test_store_read_only_rejects_queue_operations() {
     let handle = writer
         .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
         .unwrap();
-    writer.write_dataset(handle, 1, b"queue_data").unwrap();
-    writer.get_dataset(&handle).unwrap().flush().unwrap();
+    handle.write(1, b"queue_data").unwrap();
+    handle.flush().unwrap();
 
     let mut reader = Store::open(&dir, StoreConfig::default()).unwrap();
     assert!(reader.is_read_only());
     let read_handle = reader.open_dataset("metrics", "raw").unwrap();
 
-    assert!(reader.open_queue(read_handle).is_err());
+    assert!(read_handle.open_queue().is_err());
     assert!(reader.open_journal_queue().is_err());
 }
 
@@ -211,19 +206,19 @@ fn test_store_concurrent_readers() {
     let handle = writer
         .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
         .unwrap();
-    writer.write_dataset(handle, 10, b"record_ten").unwrap();
-    writer.write_dataset(handle, 20, b"record_twenty").unwrap();
-    writer.get_dataset(&handle).unwrap().flush().unwrap();
+    handle.write(10, b"record_ten").unwrap();
+    handle.write(20, b"record_twenty").unwrap();
+    handle.flush().unwrap();
 
     let mut reader1 = Store::open(&dir, StoreConfig::default()).unwrap();
     assert!(reader1.is_read_only());
     let r1_handle = reader1.open_dataset("metrics", "raw").unwrap();
     assert_eq!(
-        reader1.read_dataset(r1_handle, 10).unwrap(),
+        r1_handle.read(10).unwrap(),
         Some((10, b"record_ten".to_vec()))
     );
     assert_eq!(
-        reader1.read_dataset(r1_handle, 20).unwrap(),
+        r1_handle.read(20).unwrap(),
         Some((20, b"record_twenty".to_vec()))
     );
 
@@ -231,11 +226,11 @@ fn test_store_concurrent_readers() {
     assert!(reader2.is_read_only());
     let r2_handle = reader2.open_dataset("metrics", "raw").unwrap();
     assert_eq!(
-        reader2.read_dataset(r2_handle, 10).unwrap(),
+        r2_handle.read(10).unwrap(),
         Some((10, b"record_ten".to_vec()))
     );
     assert_eq!(
-        reader2.read_dataset(r2_handle, 20).unwrap(),
+        r2_handle.read(20).unwrap(),
         Some((20, b"record_twenty".to_vec()))
     );
 }

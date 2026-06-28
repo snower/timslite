@@ -1,4 +1,4 @@
-﻿//! Dataset lifecycle tests: create/open/drop error handling and validation.
+//! Dataset lifecycle tests: create/open/drop error handling and validation.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -453,7 +453,7 @@ fn test_segment_idle_close_and_reopen() {
     // Write several records
     for ts in 1..=5 {
         let payload = format!("record_{ts}").into_bytes();
-        store.write_dataset(handle, ts, &payload).unwrap();
+        handle.write(ts, &payload).unwrap();
     }
 
     // Let idle timeout elapse, then tick to trigger idle-close
@@ -464,7 +464,7 @@ fn test_segment_idle_close_and_reopen() {
 
     // After idle-close, reading should transparently reopen
     for ts in 1..=5 {
-        let row = store.read_dataset(handle, ts).unwrap().unwrap();
+        let row = handle.read(ts).unwrap().unwrap();
         assert_eq!(row.1, format!("record_{ts}").as_bytes());
     }
 
@@ -499,12 +499,12 @@ fn test_segment_expansion_on_overflow() {
     // Write records that together exceed 8 KiB (≈80 records @ 100 bytes each)
     let payload = vec![b'X'; 100];
     for ts in 0..100i64 {
-        store.write_dataset(handle, ts, &payload).unwrap();
+        handle.write(ts, &payload).unwrap();
     }
 
     // Read back every record — segment expansion should have happened transparently
     for ts in 0..100i64 {
-        let row = store.read_dataset(handle, ts).unwrap().unwrap();
+        let row = handle.read(ts).unwrap().unwrap();
         assert_eq!(row.0, ts);
         assert_eq!(row.1.len(), 100);
     }
@@ -531,8 +531,8 @@ fn test_segment_sync_on_flush() {
         .unwrap();
 
     // Write data that will be flushed by tick
-    store.write_dataset(handle, 10, b"pre-flush").unwrap();
-    store.write_dataset(handle, 20, b"also-pre-flush").unwrap();
+    handle.write(10, b"pre-flush").unwrap();
+    handle.write(20, b"also-pre-flush").unwrap();
 
     // Wait for flush interval then trigger flush via tick
     std::thread::sleep(Duration::from_millis(10));
@@ -545,10 +545,10 @@ fn test_segment_sync_on_flush() {
     let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
     let h2 = store2.open_dataset("flush_sync_test", "data").unwrap();
 
-    let row10 = store2.read_dataset(h2, 10).unwrap().unwrap();
+    let row10 = h2.read(10).unwrap().unwrap();
     assert_eq!(row10.1, b"pre-flush");
 
-    let row20 = store2.read_dataset(h2, 20).unwrap().unwrap();
+    let row20 = h2.read(20).unwrap().unwrap();
     assert_eq!(row20.1, b"also-pre-flush");
 
     store2.close().unwrap();
@@ -574,10 +574,10 @@ fn test_multiple_segments_lifecycle() {
         .unwrap();
 
     // Write interleaved timestamps
-    store.write_dataset(ds_a, 1, b"a1").unwrap();
-    store.write_dataset(ds_b, 1, b"b1").unwrap();
-    store.write_dataset(ds_a, 2, b"a2").unwrap();
-    store.write_dataset(ds_b, 2, b"b2").unwrap();
+    ds_a.write(1, b"a1").unwrap();
+    ds_b.write(1, b"b1").unwrap();
+    ds_a.write(2, b"a2").unwrap();
+    ds_b.write(2, b"b2").unwrap();
 
     // Close everything and reopen
     store.close().unwrap();
@@ -586,10 +586,10 @@ fn test_multiple_segments_lifecycle() {
     let da = store2.open_dataset("mseg_a", "data").unwrap();
     let db = store2.open_dataset("mseg_b", "data").unwrap();
 
-    assert_eq!(store2.read_dataset(da, 1).unwrap().unwrap().1, b"a1");
-    assert_eq!(store2.read_dataset(da, 2).unwrap().unwrap().1, b"a2");
-    assert_eq!(store2.read_dataset(db, 1).unwrap().unwrap().1, b"b1");
-    assert_eq!(store2.read_dataset(db, 2).unwrap().unwrap().1, b"b2");
+    assert_eq!(da.read(1).unwrap().unwrap().1, b"a1");
+    assert_eq!(da.read(2).unwrap().unwrap().1, b"a2");
+    assert_eq!(db.read(1).unwrap().unwrap().1, b"b1");
+    assert_eq!(db.read(2).unwrap().unwrap().1, b"b2");
 
     store2.close().unwrap();
 }
@@ -617,7 +617,7 @@ fn test_store_background_tick() {
     let handle = store
         .create_dataset("bg_tick_test", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
-    store.write_dataset(handle, 1, b"bg-tick-data").unwrap();
+    handle.write(1, b"bg-tick-data").unwrap();
 
     // Let flush interval elapse, then tick
     std::thread::sleep(Duration::from_millis(10));
@@ -626,7 +626,7 @@ fn test_store_background_tick() {
     assert!(result.next_delay >= Duration::ZERO);
 
     // Data should still be readable after tick
-    let row = store.read_dataset(handle, 1).unwrap().unwrap();
+    let row = handle.read(1).unwrap().unwrap();
     assert_eq!(row.1, b"bg-tick-data");
 
     store.close().unwrap();
@@ -647,16 +647,16 @@ fn test_dataset_close_and_reopen() {
     // Write diverse records
     for ts in [10, 20, 50, 100] {
         let payload = format!("ts_{ts}").into_bytes();
-        store.write_dataset(handle, ts, &payload).unwrap();
+        handle.write(ts, &payload).unwrap();
     }
 
     // Close the dataset
-    store.close_dataset(handle).unwrap();
+    handle.close().unwrap();
 
     // Reopen and verify all records survived
     let h2 = store.open_dataset("close_reopen", "data").unwrap();
     for ts in [10, 20, 50, 100] {
-        let row = store.read_dataset(h2, ts).unwrap().unwrap();
+        let row = h2.read(ts).unwrap().unwrap();
         assert_eq!(row.1, format!("ts_{ts}").as_bytes());
     }
 
