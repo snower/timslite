@@ -334,7 +334,7 @@ impl Iterator for QueryLengthIterator {
 
 ## 五、FFI 接口
 
-轻量读操作的 C ABI 以 [Store 与 FFI](store-and-ffi.md#c-abi-清单) 和 [include/timslite.h](../../include/timslite.h) 为权威来源。当前有效 ABI 全部使用 opaque dataset handle (`void* dataset`) 作为入口, 返回 `int` 状态码或 opaque iterator pointer, 并通过 `err_buf` 返回错误文本。
+轻量读操作的 C ABI 以 [Store 与 C ABI Wrapper](store-and-ffi.md#十二c-abi-wrapper) 和 [wrapper/cffi/include/timslite.h](../../wrapper/cffi/include/timslite.h) 为权威来源。当前有效 ABI 全部使用 opaque dataset pointer (`void* dataset`) 作为入口, 返回 `int` 状态码或 opaque iterator pointer, 并通过 `err_buf` 返回错误文本。
 
 本文件不再复制完整 C 函数签名, 避免旧式 `TmslStore* + name/type` 草案与当前 ABI 漂移。这里仅记录语义:
 

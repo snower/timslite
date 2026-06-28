@@ -10,9 +10,9 @@ Make timslite safe to use as a normal Rust library, not only through the C FFI l
 
 - [x] Removed public direct dataset constructors and raw lifecycle helpers: `DataSet::create`, `DataSet::open`, and `DataSet::drop_dataset` are crate-internal.
 - [x] Removed public raw dataset guard access: `DataSet::lock` and `DataSetGuard` are no longer exposed.
-- [x] Kept `DataSet` as a Store-managed safe operation view returned by `Store::get_dataset`.
+- [x] Kept `DataSet` as a Store-managed safe operation view returned directly by `Store::create_dataset*` and `Store::open_dataset*`.
 - [x] Internalized physical index/query APIs: `query_index_entries`, `query_sources`, `read_entry_at_index`, `read_length_at_index`, `IndexEntry`, `ReadIndexEntry`, `QueryIterator`, `QuerySource`, and `SourceIndex`.
-- [x] Internalized raw queue plumbing: `DataSet::open_queue`, `DataSet::close_queue`, `DatasetQueue::new`, `QueueInner`, and `ConsumerStateFile`; public queue lifecycle goes through `Store`.
+- [x] Internalized raw queue plumbing: `DatasetQueue::new`, `QueueInner`, and `ConsumerStateFile`; public ordinary queue lifecycle goes through Store-managed `DataSet::open_queue` / `DataSet::close_queue`.
 - [x] Internalized `util` as an implementation module instead of a public Rust module.
 - [x] Made config stored fields crate-internal and added read-only getters; external callers use builders/getters instead of struct literals.
 - [x] Added Store-level journal source dereference: `Store::read_journal_source_record(dataset_identifier, index_info)`.

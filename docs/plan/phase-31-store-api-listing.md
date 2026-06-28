@@ -64,7 +64,7 @@ class PyStore:
 - [x] plan.md 更新
 - [x] Store 公共 API 实现
 - [x] FFI 函数实现
-- [x] C 头文件更新 (include/timslite.h)
+- [x] C 头文件更新 (wrapper/cffi/include/timslite.h)
 - [x] Python wrapper 更新
 - [x] 集成测试编写
 - [x] 验证: cargo build + test + fmt + clippy

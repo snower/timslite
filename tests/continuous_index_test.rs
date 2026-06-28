@@ -1,4 +1,4 @@
-//! Continuous index mode deep scenario tests.
+﻿//! Continuous index mode deep scenario tests.
 //!
 //! Covers large-gap writes, logical hole backfill, correction on filler positions,
 //! segment_capacity calculation, base_timestamp persistence, negative timestamps,
@@ -42,8 +42,8 @@ fn continuous_ds_config(store_cfg: &StoreConfig) -> DataSetConfigBuilder {
         .index_segment_size(4096)
 }
 
-/// Helper: create store + continuous dataset, return (store, dataset_arc).
-fn setup_continuous(name: &str) -> (Store, std::sync::Arc<timslite::DataSet>) {
+/// Helper: create store + continuous dataset, return (store, dataset).
+fn setup_continuous(name: &str) -> (Store, timslite::DataSet) {
     let dir = temp_dir();
     let cfg = store_config();
     let mut store = Store::open(&dir, cfg.clone()).unwrap();
@@ -51,7 +51,7 @@ fn setup_continuous(name: &str) -> (Store, std::sync::Arc<timslite::DataSet>) {
     let handle = store
         .create_dataset_with_config(name, "data", Some(ds_cfg))
         .unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
     (store, ds)
 }
 
@@ -140,7 +140,7 @@ fn t32_2_backfill_logical_hole() {
 fn t32_3_correction_on_filler_position() {
     let (store, ds) = setup_continuous("corr_filler");
 
-    // Write ts=100, then ts=120 – the gap 101..119 are fillers within the same segment
+    // Write ts=100, then ts=120 鈥?the gap 101..119 are fillers within the same segment
     ds.write(100, b"orig_100").unwrap();
     ds.write(120, b"orig_120").unwrap();
     ds.flush().unwrap();
@@ -189,7 +189,7 @@ fn t32_4_segment_capacity_calculation() {
         "segment_capacity entries should fit in 1 segment"
     );
 
-    // One more write beyond capacity → new segment
+    // One more write beyond capacity 鈫?new segment
     ds.write(segment_capacity, b"overflow").unwrap();
     ds.flush().unwrap();
 
@@ -214,7 +214,7 @@ fn t32_5_reopen_base_timestamp_preserved() {
         let handle = store
             .create_dataset_with_config("reopen_bt", "data", Some(ds_cfg))
             .unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         ds.write(500, b"hello").unwrap();
         ds.write(700, b"world").unwrap();
@@ -230,7 +230,7 @@ fn t32_5_reopen_base_timestamp_preserved() {
     {
         let mut store = Store::open(&dir, cfg.clone()).unwrap();
         let handle = store.open_dataset("reopen_bt", "data").unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         let info = store.inspect_dataset("reopen_bt", "data").unwrap();
         assert_eq!(
@@ -297,9 +297,9 @@ fn t32_7_multiple_segments_with_gaps() {
     //   segment 5: ts 1415..1697 (ts=1500 is here)
     //   seg_ord(ts) = floor((ts - 0) / 283)
     //   seg_ord(0) = 0
-    //   seg_ord(500) = floor(500/283) = 1  → segment start = 283
-    //   seg_ord(1500) = floor(1500/283) = 5 → segment start = 1415
-    // So writes at ts=0, 500, 1500 span segments 0, 1, 5 → 3 segments on disk.
+    //   seg_ord(500) = floor(500/283) = 1  鈫?segment start = 283
+    //   seg_ord(1500) = floor(1500/283) = 5 鈫?segment start = 1415
+    // So writes at ts=0, 500, 1500 span segments 0, 1, 5 鈫?3 segments on disk.
     let (store, ds) = setup_continuous("multi_seg_gap");
 
     ds.write(0, b"seg0").unwrap();

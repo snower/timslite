@@ -2,13 +2,15 @@
 
 **目标**: C ABI 接口完整实现, errno-safe, panic-safe
 
+> Current contract: this phase has been superseded by Phase 46. C ABI now lives in the independent `wrapper/cffi` crate (`timslitecffi`); the main `timslite` crate no longer contains `wrapper/cffi/src/lib.rs` or exports C ABI symbols.
+
 ---
 
-## 7.1 ffi.rs — 核心工具
+## 7.1 wrapper/cffi/src/lib.rs — 核心工具
 
 - `catch_unwind` 包装所有 FFI 函数体
 - 错误缓冲区写入: `write_err(err_buf, err_len, message)`
-- 句柄类型: `DataSetHandle`, `StoreHandle` 等 opaque pointers
+- C 侧句柄类型: opaque store/dataset pointers and wrapper-owned queue/consumer numeric handles
 
 ## 7.2 FFI: Store 管理
 
@@ -36,13 +38,13 @@
 
 ## 7.6 头文件生成 (.h)
 
-- 创建 `include/timslite.h` C 头文件, 包含所有 FFI 声明
+- 创建 `wrapper/cffi/include/timslite.h` C 头文件, 包含所有 FFI 声明
 - 新增 `tmsl_dataset_create`, `tmsl_dataset_drop` 声明
 
 ## 验收标准
 
 - [x] 编译: `cargo build --release` → 生成 `libtimslite.dll`/`.so`
-- [x] C 程序链接测试: `include/timslite.h` 包含所有 12 个函数声明
+- [x] C 程序链接测试: `wrapper/cffi/include/timslite.h` 包含所有 12 个函数声明
 - [x] FFI 测试: `create` → write → query → close → open → query → verify (12 个 extern "C" 函数)
 - [x] FFI 测试: `create` 已存在 → 返回 -1/null, err_buf 有错误信息
 - [x] FFI 测试: `open` 不存在 → 返回 -1/null, err_buf 有错误信息

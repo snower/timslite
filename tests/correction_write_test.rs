@@ -1,4 +1,4 @@
-//! Correction write tests: overwrite same-size and resize.
+﻿//! Correction write tests: overwrite same-size and resize.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,7 +30,7 @@ fn t17_1_correction_write_same_size() {
         .unwrap();
 
     let ds = store.open_dataset("cw", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write original data
     {
@@ -70,7 +70,7 @@ fn t17_2_correction_write_resize_reopen() {
         .unwrap();
 
     let ds = store.open_dataset("cw_resize", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write original (small)
     {
@@ -112,7 +112,7 @@ fn t17_3_correction_write_on_sealed_compressed_block() {
         .unwrap();
 
     let ds = store.open_dataset("cw_sealed", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write enough data to trigger block sealing and compression
     // BLOCK_MAX_SIZE is 64KB, so write multiple records to overflow

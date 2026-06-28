@@ -287,7 +287,7 @@ if Instant::now() >= next_retention {
 **Store::create_dataset_with_config()**:
 - 从 DataSetConfig 提取 retention_ms 传递到 DataSet::create()
 
-### 2.9 `src/ffi.rs` — FFI
+### 2.9 `wrapper/cffi/src/lib.rs` — FFI
 
 **tmsl_dataset_create()**:
 - 新增参数 `retention_ms: u64`
@@ -297,7 +297,7 @@ if Instant::now() >= next_retention {
 - `tmsl_store_open()` 使用 StoreConfig::default() (retention_check_hour=0)
 - 旧 FFI 调用者需要适配新的 retention_ms 参数
 
-### 2.10 `include/timslite.h` — C 头文件
+### 2.10 `wrapper/cffi/include/timslite.h` — C 头文件
 
 **更新函数声明**:
 ```c

@@ -28,7 +28,7 @@ int tmsl_dataset_read(void* ds, int64_t timestamp, int64_t* out_ts, uint8_t** ou
 
 - [x] `dataset.rs`: 新增 `DataSet::read(timestamp, cache) -> Result<Option<(i64, Vec<u8>)>>`
 - [x] `ffi.rs`: 新增 `tmsl_dataset_read(...)` FFI 函数, 返回码 0/1/-1
-- [x] `include/timslite.h`: 新增 `tmsl_dataset_read` C 函数声明 + doxygen 注释
+- [x] `wrapper/cffi/include/timslite.h`: 新增 `tmsl_dataset_read` C 函数声明 + doxygen 注释
 - [x] 内存所有权: `out_data` 由 `libc::malloc` 分配, 复用 `tmsl_iter_free_data` 释放路径
 
 ## 3. 测试

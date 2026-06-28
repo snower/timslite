@@ -1,4 +1,4 @@
-//! Query iterator and empty range tests.
+﻿//! Query iterator and empty range tests.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,11 +40,11 @@ fn t13_1_iterator_small_range() {
     let ds = store.open_dataset("iter_small", "data").unwrap();
     for i in 0..30i64 {
         let data = format!("item_{}", i).into_bytes();
-        let arc = store.get_dataset(&ds).unwrap();
+        let arc = ds.clone();
         arc.write(i * 10 + 10, &data).unwrap();
     }
 
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     // Query small range: ts 50..120 (should return items at 60,70,80,90,100,110)
     let entries = arc.query(50, 120).unwrap();
     assert!(!entries.is_empty());
@@ -76,7 +76,7 @@ fn t13_3_query_backward_compat() {
 
     let ds = store.open_dataset("back_compat", "data").unwrap();
     // ts_start > ts_end should return empty
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(100, 1).unwrap();
     assert_eq!(entries.len(), 0);
 
@@ -103,9 +103,9 @@ fn t13_4_query_empty_range() {
         .unwrap();
 
     let ds = store.open_dataset("empty_range", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
-    // Query before any writes 閳?should return empty
+    // Query before any writes 闁?should return empty
     let entries = arc.query(1, 100).unwrap();
     assert_eq!(entries.len(), 0);
 
@@ -133,7 +133,7 @@ fn t13_5_cross_segment_query() {
     let handle = store
         .create_dataset_with_config("cross_seg", "data", None)
         .unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     // Write records that span multiple data segments
     for i in 1..=6i64 {
@@ -207,7 +207,7 @@ fn t13_6_query_iterator_full_lifecycle() {
 
     // Phase 1: Write data through Store (flushed to disk, paths 2, 3)
     {
-        let arc = store.get_dataset(&handle).unwrap();
+        let arc = handle.clone();
         let ds = arc.clone();
         for i in 1..=50i64 {
             let data = format!("record_{:03}", i);
@@ -220,7 +220,7 @@ fn t13_6_query_iterator_full_lifecycle() {
     // Phase 2: Reopen dataset (path 3: lazy-open segments)
     let handle2 = store.open_dataset("lifecycle", "data").unwrap();
     {
-        let arc = store.get_dataset(&handle2).unwrap();
+        let arc = handle2.clone();
         let ds = arc.clone();
 
         // Write additional records that stay in memory buffer (path 1)
@@ -250,7 +250,7 @@ fn t13_6_query_iterator_full_lifecycle() {
             );
         }
 
-        // Query again 鈥?BlockCache should serve cached reads (path 5)
+        // Query again 閳?BlockCache should serve cached reads (path 5)
         let entries2 = ds.query(100, 6000).unwrap();
         assert_eq!(entries2.len(), 60);
 

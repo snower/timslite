@@ -1,4 +1,4 @@
-//! Lazy allocation integration tests.
+﻿//! Lazy allocation integration tests.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,10 +44,10 @@ fn t12_1_lazy_create_write_query_small_data() {
     let ds = store.open_dataset("lazy_small", "data").unwrap();
     for i in 0..100i64 {
         let data = format!("small_{}", i).into_bytes();
-        store.get_dataset(&ds).unwrap().write(i + 1, &data).unwrap();
+        ds.clone().write(i + 1, &data).unwrap();
     }
 
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(1, 100).unwrap();
     assert_eq!(entries.len(), 100);
     assert_eq!(entries[0].0, 1);
@@ -84,13 +84,13 @@ fn t12_2_lazy_write_until_max_then_new_segment() {
     // Each record: overhead ~10 + 500 bytes = ~510 bytes
     for i in 0..200i64 {
         let data = vec![i as u8; 500];
-        let write_result = store.get_dataset(&ds).unwrap().write(i + 1, &data);
+        let write_result = ds.clone().write(i + 1, &data);
         if write_result.is_err() {
-            break; // May fail at segment boundary 閳?that's fine
+            break; // May fail at segment boundary 闁?that's fine
         }
     }
 
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(1, 200).unwrap();
     assert!(!entries.is_empty(), "should have some data");
 
@@ -119,7 +119,7 @@ fn t12_3_open_legacy_full_allocated_dataset() {
     let ds = store.open_dataset("legacy_full", "data").unwrap();
     for i in 0..50i64 {
         let data = format!("legacy_{}", i).into_bytes();
-        store.get_dataset(&ds).unwrap().write(i + 1, &data).unwrap();
+        ds.clone().write(i + 1, &data).unwrap();
     }
     store.close().unwrap();
 
@@ -127,7 +127,7 @@ fn t12_3_open_legacy_full_allocated_dataset() {
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     let ds = store.open_dataset("legacy_full", "data").unwrap();
 
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(1, 50).unwrap();
     assert_eq!(entries.len(), 50);
 
@@ -161,7 +161,7 @@ fn t12_4_disk_space_efficiency() {
     let ds = store.open_dataset("small_data", "data").unwrap();
     for i in 0..100i64 {
         let data = format!("small_{}", i).into_bytes();
-        store.get_dataset(&ds).unwrap().write(i + 1, &data).unwrap();
+        ds.clone().write(i + 1, &data).unwrap();
     }
 
     // Verify disk usage is well under the 64MB max segment size
@@ -180,7 +180,7 @@ fn t12_4_disk_space_efficiency() {
     );
 
     // Verify data integrity
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(1, 100).unwrap();
     assert_eq!(entries.len(), 100);
 
@@ -211,10 +211,10 @@ fn t12_5_segment_2x_expansion_on_overflow() {
 
     // Write enough data to force expansion beyond initial_size
     // Each record: ~12 overhead + 100 data = ~112 bytes
-    // initial=512 鈫?usable ~396 鈫?fits ~3 records, then expand to 1024, etc.
+    // initial=512 閳?usable ~396 閳?fits ~3 records, then expand to 1024, etc.
     for i in 1..=20i64 {
         let data = vec![i as u8; 100];
-        let arc = store.get_dataset(&ds).unwrap();
+        let arc = ds.clone();
         arc.write(i, &data).unwrap();
     }
 
@@ -243,7 +243,7 @@ fn t12_5_segment_2x_expansion_on_overflow() {
     );
 
     // Verify data integrity after expansion
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(1, 20).unwrap();
     assert_eq!(entries.len(), 20);
 
@@ -274,7 +274,7 @@ fn t12_6_retention_reclaim_after_expansion() {
             Some(DataSetConfigBuilder::from_store(&config).retention_window(15)),
         )
         .unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     // Write records that span multiple segments
     ds.write(10, &[0xAA; 32]).unwrap();
@@ -297,7 +297,7 @@ fn t12_6_retention_reclaim_after_expansion() {
     );
 }
 
-// 鈹€鈹€鈹€ Index segment expansion test (P1-L-1) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 Index segment expansion test (P1-L-1) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn t12_5_index_segment_expansion_from_initial_to_max() {
@@ -324,7 +324,7 @@ fn t12_5_index_segment_expansion_from_initial_to_max() {
     let handle = store
         .create_dataset_with_config("idx_expand", "data", None)
         .unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     // Write enough records to trigger index segment expansion
     // Each index entry is ~24 bytes (timestamp + block_offset + in_block_offset)

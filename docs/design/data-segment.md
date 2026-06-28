@@ -1,4 +1,4 @@
-﻿# 数据段管理 - DataSegmentSet + DataSegment
+# 数据段管理 - DataSegmentSet + DataSegment
 
 ## 五、DataSegmentSet: 数据段集合
 
@@ -454,4 +454,3 @@ reclaim_expired_segments(expiration_threshold: i64):
 ---
 
 **相关**: [架构概览](architecture.md) | [数据模型](data-model.md) | [懒分配与扩容](lazy-allocation.md)
-

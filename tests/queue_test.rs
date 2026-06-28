@@ -33,24 +33,18 @@ fn t27_1_1_basic_push_poll_ack() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
-    let ts = store.queue_push(&q, b"hello").unwrap();
+    let ts = q.push(b"hello").unwrap();
     assert!(ts > 0);
 
-    let (rts, data) = store
-        .queue_poll(&c, Duration::from_millis(100))
-        .unwrap()
-        .unwrap();
+    let (rts, data) = c.poll(Duration::from_millis(100)).unwrap().unwrap();
     assert_eq!(rts, ts);
     assert_eq!(data, b"hello");
 
-    store.queue_ack(&c, rts).unwrap();
-    assert!(store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .is_none());
+    c.ack(rts).unwrap();
+    assert!(c.poll(Duration::from_millis(50)).unwrap().is_none());
     store.close().unwrap();
 }
 
@@ -64,30 +58,22 @@ fn t27_1_2_multiple_pushes_sequential_poll() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
     for i in 0..10i64 {
-        let ts = store
-            .queue_push(&q, &format!("msg_{}", i).into_bytes())
-            .unwrap();
+        let ts = q.push(&format!("msg_{}", i).into_bytes()).unwrap();
         assert_eq!(ts, i + 1);
     }
 
     for i in 0..10i64 {
-        let (ts, data) = store
-            .queue_poll(&c, Duration::from_millis(50))
-            .unwrap()
-            .unwrap();
+        let (ts, data) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
         assert_eq!(ts, i + 1);
         assert_eq!(data, format!("msg_{}", i).as_bytes());
-        store.queue_ack(&c, ts).unwrap();
+        c.ack(ts).unwrap();
     }
 
-    assert!(store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .is_none());
+    assert!(c.poll(Duration::from_millis(50)).unwrap().is_none());
     store.close().unwrap();
 }
 
@@ -101,10 +87,10 @@ fn t27_1_3_poll_timeout_empty_queue() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
-    let result = store.queue_poll(&c, Duration::from_millis(50)).unwrap();
+    let result = c.poll(Duration::from_millis(50)).unwrap();
     assert!(result.is_none());
     store.close().unwrap();
 }
@@ -118,39 +104,30 @@ fn t27_1_4_poll_skips_continuous_filler_gap() {
     let h = store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
         .unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
     // Write 3 records
-    store.write_dataset(h, 10, b"first").unwrap();
-    store.write_dataset(h, 20, b"second").unwrap();
-    store.write_dataset(h, 30, b"third").unwrap();
+    h.write(10, b"first").unwrap();
+    h.write(20, b"second").unwrap();
+    h.write(30, b"third").unwrap();
 
     // Delete the middle record (creates a filler/gap)
-    store.delete_dataset_record(h, 20).unwrap();
+    h.delete(20).unwrap();
 
     // Poll should skip deleted ts=20 and return ts=10 first
-    let (ts, data) = store
-        .queue_poll(&c, Duration::from_millis(100))
-        .unwrap()
-        .unwrap();
+    let (ts, data) = c.poll(Duration::from_millis(100)).unwrap().unwrap();
     assert_eq!(ts, 10);
     assert_eq!(data, b"first");
-    store.queue_ack(&c, ts).unwrap();
+    c.ack(ts).unwrap();
 
     // Poll should skip ts=20 (deleted/filler) and return ts=30
-    let (ts, data) = store
-        .queue_poll(&c, Duration::from_millis(100))
-        .unwrap()
-        .unwrap();
+    let (ts, data) = c.poll(Duration::from_millis(100)).unwrap().unwrap();
     assert_eq!(ts, 30);
     assert_eq!(data, b"third");
-    store.queue_ack(&c, ts).unwrap();
+    c.ack(ts).unwrap();
 
-    assert!(store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .is_none());
+    assert!(c.poll(Duration::from_millis(50)).unwrap().is_none());
     store.close().unwrap();
 }
 
@@ -163,52 +140,34 @@ fn t27_1_6_poll_skips_natural_gap_filler() {
     let h = store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
         .unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
-    store.write_dataset(h, 10, b"first").unwrap();
-    store.write_dataset(h, 30, b"third").unwrap();
+    h.write(10, b"first").unwrap();
+    h.write(30, b"third").unwrap();
 
-    let (ts, data) = store
-        .queue_poll(&c, Duration::from_millis(100))
-        .unwrap()
-        .unwrap();
+    let (ts, data) = c.poll(Duration::from_millis(100)).unwrap().unwrap();
     assert_eq!(ts, 10);
     assert_eq!(data, b"first");
-    store.queue_ack(&c, ts).unwrap();
+    c.ack(ts).unwrap();
 
-    let (ts, data) = store
-        .queue_poll(&c, Duration::from_millis(100))
-        .unwrap()
-        .unwrap();
+    let (ts, data) = c.poll(Duration::from_millis(100)).unwrap().unwrap();
     assert_eq!(ts, 30);
     assert_eq!(data, b"third");
-    store.queue_ack(&c, ts).unwrap();
+    c.ack(ts).unwrap();
 
-    assert!(store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .is_none());
+    assert!(c.poll(Duration::from_millis(50)).unwrap().is_none());
 
     store.close().unwrap();
 
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
 
-    assert!(
-        !store.dataset_read_exist(h, 20).unwrap(),
-        "ts=20 gap should not exist"
-    );
-    assert!(
-        store.dataset_read_exist(h, 10).unwrap(),
-        "ts=10 should exist"
-    );
-    assert!(
-        store.dataset_read_exist(h, 30).unwrap(),
-        "ts=30 should exist"
-    );
+    assert!(!h.read_exist(20).unwrap(), "ts=20 gap should not exist");
+    assert!(h.read_exist(10).unwrap(), "ts=10 should exist");
+    assert!(h.read_exist(30).unwrap(), "ts=30 should exist");
 
-    let exist_map = store.dataset_query_exist(h, 1, 40).unwrap();
+    let exist_map = h.query_exist(1, 40).unwrap();
     assert_eq!(exist_map.len(), 5, "40 timestamps = 5 bytes bitmap");
     assert_ne!(exist_map[1] & (1u8 << 1), 0, "ts=10 should exist in bitmap");
     assert_eq!(
@@ -235,42 +194,33 @@ fn t27_1_5_sparse_gap_acked_progress_persists_after_reopen() {
         let h = store
             .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
             .unwrap();
-        let q = store.open_queue(h).unwrap();
-        let c = store.open_consumer(&q, "g1").unwrap();
+        let q = h.open_queue().unwrap();
+        let c = q.open_consumer("g1").unwrap();
 
-        store.write_dataset(h, 10, b"first").unwrap();
-        store.write_dataset(h, 20, b"second").unwrap();
-        store.write_dataset(h, 30, b"third").unwrap();
-        store.delete_dataset_record(h, 20).unwrap();
+        h.write(10, b"first").unwrap();
+        h.write(20, b"second").unwrap();
+        h.write(30, b"third").unwrap();
+        h.delete(20).unwrap();
 
-        let (ts, data) = store
-            .queue_poll(&c, Duration::from_millis(100))
-            .unwrap()
-            .unwrap();
+        let (ts, data) = c.poll(Duration::from_millis(100)).unwrap().unwrap();
         assert_eq!(ts, 10);
         assert_eq!(data, b"first");
-        store.queue_ack(&c, ts).unwrap();
+        c.ack(ts).unwrap();
 
-        let (ts, data) = store
-            .queue_poll(&c, Duration::from_millis(100))
-            .unwrap()
-            .unwrap();
+        let (ts, data) = c.poll(Duration::from_millis(100)).unwrap().unwrap();
         assert_eq!(ts, 30);
         assert_eq!(data, b"third");
-        store.queue_ack(&c, ts).unwrap();
+        c.ack(ts).unwrap();
 
         store.close().unwrap();
     }
     {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         let h = store.open_dataset("t27q", "events").unwrap();
-        let q = store.open_queue(h).unwrap();
-        let c = store.open_consumer(&q, "g1").unwrap();
+        let q = h.open_queue().unwrap();
+        let c = q.open_consumer("g1").unwrap();
 
-        assert!(store
-            .queue_poll(&c, Duration::from_millis(50))
-            .unwrap()
-            .is_none());
+        assert!(c.poll(Duration::from_millis(50)).unwrap().is_none());
         store.close().unwrap();
     }
 }
@@ -285,37 +235,25 @@ fn t27_2_1_multi_consumer_groups() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let ca = store.open_consumer(&q, "ga").unwrap();
-    let cb = store.open_consumer(&q, "gb").unwrap();
+    let q = h.open_queue().unwrap();
+    let ca = q.open_consumer("ga").unwrap();
+    let cb = q.open_consumer("gb").unwrap();
 
-    store.queue_push(&q, b"item1").unwrap();
-    store.queue_push(&q, b"item2").unwrap();
+    q.push(b"item1").unwrap();
+    q.push(b"item2").unwrap();
 
-    let (ts_a, data_a) = store
-        .queue_poll(&ca, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (ts_a, data_a) = ca.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(data_a, b"item1");
-    store.queue_ack(&ca, ts_a).unwrap();
+    ca.ack(ts_a).unwrap();
 
-    let (ts_b, data_b) = store
-        .queue_poll(&cb, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (ts_b, data_b) = cb.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(data_b, b"item1");
-    store.queue_ack(&cb, ts_b).unwrap();
+    cb.ack(ts_b).unwrap();
 
-    let (_, data_a2) = store
-        .queue_poll(&ca, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (_, data_a2) = ca.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(data_a2, b"item2");
 
-    let (_, data_b2) = store
-        .queue_poll(&cb, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (_, data_b2) = cb.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(data_b2, b"item2");
 
     store.close().unwrap();
@@ -331,21 +269,15 @@ fn t27_2_2_two_consumers_same_group() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c1 = store.open_consumer(&q, "shared").unwrap();
-    let c2 = store.open_consumer(&q, "shared").unwrap();
+    let q = h.open_queue().unwrap();
+    let c1 = q.open_consumer("shared").unwrap();
+    let c2 = q.open_consumer("shared").unwrap();
 
-    store.queue_push(&q, b"shared_item").unwrap();
+    q.push(b"shared_item").unwrap();
 
-    let (ts, _) = store
-        .queue_poll(&c1, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (ts, _) = c1.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(ts, 1);
-    assert!(store
-        .queue_poll(&c2, Duration::from_millis(10))
-        .unwrap()
-        .is_none());
+    assert!(c2.poll(Duration::from_millis(10)).unwrap().is_none());
 
     store.close().unwrap();
 }
@@ -360,7 +292,7 @@ fn t41_1_same_group_unexpired_pending_does_not_block_next_record() {
         .create_dataset("t41q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t41q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
+    let q = h.open_queue().unwrap();
     let config = QueueConsumerConfig::builder()
         .running_expired_seconds(60)
         .max_retry_count(3)
@@ -369,25 +301,19 @@ fn t41_1_same_group_unexpired_pending_does_not_block_next_record() {
     let c1 = q.open_consumer_with_config("shared", config).unwrap();
     let c2 = q.open_consumer_with_config("shared", config).unwrap();
 
-    store.queue_push(&q, b"first").unwrap();
-    store.queue_push(&q, b"second").unwrap();
+    q.push(b"first").unwrap();
+    q.push(b"second").unwrap();
 
-    let (ts1, data1) = store
-        .queue_poll(&c1, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (ts1, data1) = c1.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(ts1, 1);
     assert_eq!(data1, b"first");
 
-    let (ts2, data2) = store
-        .queue_poll(&c2, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (ts2, data2) = c2.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(ts2, 2);
     assert_eq!(data2, b"second");
 
-    store.queue_ack(&c1, ts1).unwrap();
-    store.queue_ack(&c2, ts2).unwrap();
+    c1.ack(ts1).unwrap();
+    c2.ack(ts2).unwrap();
     store.close().unwrap();
 }
 
@@ -401,7 +327,7 @@ fn t41_2_expired_pending_retries_once_then_drops_and_advances() {
         .create_dataset("t41q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t41q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
+    let q = h.open_queue().unwrap();
     let config = QueueConsumerConfig::builder()
         .running_expired_seconds(1)
         .max_retry_count(1)
@@ -409,33 +335,24 @@ fn t41_2_expired_pending_retries_once_then_drops_and_advances() {
         .unwrap();
     let c = q.open_consumer_with_config("retry", config).unwrap();
 
-    store.queue_push(&q, b"first").unwrap();
-    store.queue_push(&q, b"second").unwrap();
+    q.push(b"first").unwrap();
+    q.push(b"second").unwrap();
 
-    let (ts1, data1) = store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (ts1, data1) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(ts1, 1);
     assert_eq!(data1, b"first");
 
     std::thread::sleep(Duration::from_millis(1100));
-    let (retry_ts, retry_data) = store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (retry_ts, retry_data) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(retry_ts, 1);
     assert_eq!(retry_data, b"first");
 
     std::thread::sleep(Duration::from_millis(1100));
-    let (next_ts, next_data) = store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (next_ts, next_data) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(next_ts, 2);
     assert_eq!(next_data, b"second");
 
-    store.queue_ack(&c, next_ts).unwrap();
+    c.ack(next_ts).unwrap();
     store.close().unwrap();
 }
 
@@ -449,7 +366,7 @@ fn t41_3_same_group_rejects_config_mismatch() {
         .create_dataset("t41q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t41q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
+    let q = h.open_queue().unwrap();
 
     q.open_consumer("shared").unwrap();
     let mismatched = QueueConsumerConfig::builder()
@@ -472,10 +389,10 @@ fn t27_2_3_open_consumer_creates_group() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "new_group").unwrap();
-    store.queue_push(&q, b"test").unwrap();
-    let result = store.queue_poll(&c, Duration::from_millis(100)).unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("new_group").unwrap();
+    q.push(b"test").unwrap();
+    let result = c.poll(Duration::from_millis(100)).unwrap();
     assert!(result.is_some());
     store.close().unwrap();
 }
@@ -490,7 +407,7 @@ fn t27_2_4_consumer_group_name_must_be_path_safe() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
+    let q = h.open_queue().unwrap();
 
     for group_name in [
         "",
@@ -500,20 +417,20 @@ fn t27_2_4_consumer_group_name_must_be_path_safe() {
         "bad/name",
         "bad\\name",
         "bad name",
-        "涓枃",
+        "bad.name",
     ] {
         assert!(
-            store.open_consumer(&q, group_name).is_err(),
+            q.open_consumer(group_name).is_err(),
             "group name {group_name:?} must be rejected"
         );
     }
     let too_long_group = "a".repeat(256);
     assert!(
-        store.open_consumer(&q, &too_long_group).is_err(),
+        q.open_consumer(&too_long_group).is_err(),
         "group name longer than 255 bytes must be rejected"
     );
 
-    store.open_consumer(&q, "A-z_09").unwrap();
+    q.open_consumer("A-z_09").unwrap();
     store.close().unwrap();
 }
 
@@ -527,8 +444,8 @@ fn t27_3_1_open_queue_twice_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    store.open_queue(h).unwrap();
-    assert!(store.open_queue(h).is_err());
+    h.open_queue().unwrap();
+    assert!(h.open_queue().is_err());
     store.close().unwrap();
 }
 
@@ -542,9 +459,9 @@ fn t27_3_2_push_to_closed_queue_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    store.close_queue(h).unwrap();
-    assert!(store.queue_push(&q, b"test").is_err());
+    let q = h.open_queue().unwrap();
+    h.close_queue().unwrap();
+    assert!(q.push(b"test").is_err());
     store.close().unwrap();
 }
 
@@ -558,10 +475,10 @@ fn t27_3_3_poll_after_close_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
-    store.close_queue(h).unwrap();
-    assert!(store.queue_poll(&c, Duration::from_millis(50)).is_err());
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
+    h.close_queue().unwrap();
+    assert!(c.poll(Duration::from_millis(50)).is_err());
     store.close().unwrap();
 }
 
@@ -575,9 +492,9 @@ fn t27_3_4_ack_nonexistent_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
-    assert!(store.queue_ack(&c, 99999).is_err());
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
+    assert!(c.ack(99999).is_err());
     store.close().unwrap();
 }
 
@@ -591,8 +508,8 @@ fn t27_3_5_drop_nonexistent_consumer_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    assert!(store.drop_consumer(&q, "no_such").is_err());
+    let q = h.open_queue().unwrap();
+    assert!(q.drop_consumer("no_such").is_err());
     store.close().unwrap();
 }
 
@@ -606,9 +523,9 @@ fn t27_3_5_open_consumer_on_closed_queue_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    store.close_queue(h).unwrap();
-    let err = store.open_consumer(&q, "g1").unwrap_err();
+    let q = h.open_queue().unwrap();
+    h.close_queue().unwrap();
+    let err = q.open_consumer("g1").unwrap_err();
     assert!(matches!(err, TmslError::QueueClosed(_)));
     store.close().unwrap();
 }
@@ -623,8 +540,8 @@ fn t27_3_6_drop_nonexistent_consumer_group_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let err = store.drop_consumer(&q, "no_such_group").unwrap_err();
+    let q = h.open_queue().unwrap();
+    let err = q.drop_consumer("no_such_group").unwrap_err();
     assert!(matches!(err, TmslError::ConsumerGroupNotFound(_)));
     store.close().unwrap();
 }
@@ -640,44 +557,32 @@ fn t27_4_1_pending_survives_reopen() {
             .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
             .unwrap();
         let h = store.open_dataset("t27q", "events").unwrap();
-        let q = store.open_queue(h).unwrap();
-        let c = store.open_consumer(&q, "g1").unwrap();
+        let q = h.open_queue().unwrap();
+        let c = q.open_consumer("g1").unwrap();
 
-        store.queue_push(&q, b"a").unwrap();
-        store.queue_push(&q, b"b").unwrap();
-        store.queue_push(&q, b"c").unwrap();
+        q.push(b"a").unwrap();
+        q.push(b"b").unwrap();
+        q.push(b"c").unwrap();
 
-        let (ts1, _) = store
-            .queue_poll(&c, Duration::from_millis(50))
-            .unwrap()
-            .unwrap();
-        store.queue_ack(&c, ts1).unwrap();
+        let (ts1, _) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
+        c.ack(ts1).unwrap();
 
-        let (ts2, _) = store
-            .queue_poll(&c, Duration::from_millis(50))
-            .unwrap()
-            .unwrap();
+        let (ts2, _) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
         assert_eq!(ts2, 2);
         store.close().unwrap();
     }
     {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         let h = store.open_dataset("t27q", "events").unwrap();
-        let q = store.open_queue(h).unwrap();
-        let c = store.open_consumer(&q, "g1").unwrap();
+        let q = h.open_queue().unwrap();
+        let c = q.open_consumer("g1").unwrap();
 
-        let (ts, data) = store
-            .queue_poll(&c, Duration::from_millis(50))
-            .unwrap()
-            .unwrap();
+        let (ts, data) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
         assert_eq!(ts, 2);
         assert_eq!(data, b"b");
-        store.queue_ack(&c, ts).unwrap();
+        c.ack(ts).unwrap();
 
-        let (ts3, data3) = store
-            .queue_poll(&c, Duration::from_millis(50))
-            .unwrap()
-            .unwrap();
+        let (ts3, data3) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
         assert_eq!(ts3, 3);
         assert_eq!(data3, b"c");
 
@@ -695,10 +600,10 @@ fn t27_4_2_drop_and_recreate_consumer() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    store.open_consumer(&q, "temp").unwrap();
-    store.drop_consumer(&q, "temp").unwrap();
-    store.open_consumer(&q, "temp").unwrap();
+    let q = h.open_queue().unwrap();
+    q.open_consumer("temp").unwrap();
+    q.drop_consumer("temp").unwrap();
+    q.open_consumer("temp").unwrap();
     store.close().unwrap();
 }
 
@@ -712,27 +617,19 @@ fn t27_4_3_acked_progress_persists() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
     for i in 0..3 {
-        let ts = store
-            .queue_push(&q, format!("item{}", i).as_bytes())
-            .unwrap();
-        store
-            .queue_poll(&c, Duration::from_millis(100))
-            .unwrap()
-            .unwrap();
-        store.queue_ack(&c, ts).unwrap();
+        let ts = q.push(format!("item{}", i).as_bytes()).unwrap();
+        c.poll(Duration::from_millis(100)).unwrap().unwrap();
+        c.ack(ts).unwrap();
     }
     store.close().unwrap();
     let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
     let h2 = store2.open_dataset("t27q", "events").unwrap();
-    let q2 = store2.open_queue(h2).unwrap();
-    let c2 = store2.open_consumer(&q2, "g1").unwrap();
-    assert!(store2
-        .queue_poll(&c2, Duration::from_millis(50))
-        .unwrap()
-        .is_none());
+    let q2 = h2.open_queue().unwrap();
+    let c2 = q2.open_consumer("g1").unwrap();
+    assert!(c2.poll(Duration::from_millis(50)).unwrap().is_none());
     store2.close().unwrap();
 }
 
@@ -748,7 +645,7 @@ fn t27_5_1_producer_consumer_threads() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = Arc::new(store.open_queue(h).unwrap());
+    let q = Arc::new(h.open_queue().unwrap());
     let q_prod = q.clone();
     let q_cons = q.clone();
     let barrier = Arc::new(Barrier::new(2));
@@ -794,8 +691,8 @@ fn t27_5_2_multiple_producers() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = Arc::new(store.open_queue(h).unwrap());
-    let qc = store.open_consumer(&q, "g1").unwrap();
+    let q = Arc::new(h.open_queue().unwrap());
+    let qc = q.open_consumer("g1").unwrap();
     let q1 = q.clone();
     let q2 = q.clone();
     let q3 = q.clone();
@@ -846,13 +743,11 @@ fn t27_5_3_multiple_consumers_different_groups() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let ca = store.open_consumer(&q, "group_a").unwrap();
-    let cb = store.open_consumer(&q, "group_b").unwrap();
+    let q = h.open_queue().unwrap();
+    let ca = q.open_consumer("group_a").unwrap();
+    let cb = q.open_consumer("group_b").unwrap();
     for i in 0..5 {
-        store
-            .queue_push(&q, format!("msg_{}", i).as_bytes())
-            .unwrap();
+        q.push(format!("msg_{}", i).as_bytes()).unwrap();
     }
     let ca_clone = ca.clone();
     let cb_clone = cb.clone();
@@ -885,15 +780,16 @@ fn t27_5_3_multiple_consumers_different_groups() {
 }
 
 #[test]
-fn t27_6_1_store_invalid_handle_errors() {
-    use timslite::{DataSetHandle, Store, StoreConfig};
+fn t27_6_1_closed_dataset_open_queue_errors() {
+    use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
-    store
+    let dataset = store
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
-    assert!(store.open_queue(DataSetHandle(99999)).is_err());
+    dataset.close().unwrap();
+    assert!(dataset.open_queue().is_err());
     store.close().unwrap();
 }
 
@@ -907,10 +803,10 @@ fn t27_6_2_store_close_queue() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    store.queue_push(&q, b"x").unwrap();
-    store.close_queue(h).unwrap();
-    assert!(store.queue_push(&q, b"y").is_err());
+    let q = h.open_queue().unwrap();
+    q.push(b"x").unwrap();
+    h.close_queue().unwrap();
+    assert!(q.push(b"y").is_err());
     store.close().unwrap();
 }
 
@@ -924,12 +820,12 @@ fn t27_6_3_direct_queue_close_releases_dataset_queue_state() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
+    let q = h.open_queue().unwrap();
     q.close().unwrap();
 
-    assert!(store.queue_push(&q, b"old").is_err());
-    let q2 = store.open_queue(h).unwrap();
-    assert!(store.queue_push(&q2, b"new").is_ok());
+    assert!(q.push(b"old").is_err());
+    let q2 = h.open_queue().unwrap();
+    assert!(q2.push(b"new").is_ok());
     store.close().unwrap();
 }
 
@@ -943,13 +839,10 @@ fn t27_6_1_store_open_queue_valid() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
-    store.queue_push(&q, b"data").unwrap();
-    assert!(store
-        .queue_poll(&c, Duration::from_millis(100))
-        .unwrap()
-        .is_some());
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
+    q.push(b"data").unwrap();
+    assert!(c.poll(Duration::from_millis(100)).unwrap().is_some());
     store.close().unwrap();
 }
 
@@ -963,15 +856,12 @@ fn t27_6_4_store_open_consumer_and_drop_consumer() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
-    store.queue_push(&q, b"test").unwrap();
-    assert!(store
-        .queue_poll(&c, Duration::from_millis(100))
-        .unwrap()
-        .is_some());
-    store.drop_consumer(&q, "g1").unwrap();
-    let err = store.drop_consumer(&q, "g1").unwrap_err();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
+    q.push(b"test").unwrap();
+    assert!(c.poll(Duration::from_millis(100)).unwrap().is_some());
+    q.drop_consumer("g1").unwrap();
+    let err = q.drop_consumer("g1").unwrap_err();
     assert!(matches!(err, TmslError::ConsumerGroupNotFound(_)));
     store.close().unwrap();
 }
@@ -993,8 +883,8 @@ fn t27_7_push_notification_wakes_blocking_consumer_poll() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
     // Push from a background thread after a short delay
     let q_clone = q.clone();
@@ -1043,9 +933,9 @@ fn t44_1_poll_callback_runs_for_dataset_queue_write_and_can_be_cleared() {
             0,
         )
         .unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
-    let c2 = store.open_consumer(&q, "g2").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
+    let c2 = q.open_consumer("g2").unwrap();
 
     let hits = Arc::new(AtomicUsize::new(0));
     let callback_hits = Arc::clone(&hits);
@@ -1068,7 +958,7 @@ fn t44_1_poll_callback_runs_for_dataset_queue_write_and_can_be_cleared() {
     })))
     .unwrap();
 
-    store.write_dataset(h, 1, b"row1").unwrap();
+    h.write(1, b"row1").unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     assert_eq!(duplicate_hits.load(Ordering::SeqCst), 0);
     assert_eq!(c2_hits.load(Ordering::SeqCst), 1);
@@ -1083,7 +973,7 @@ fn t44_1_poll_callback_runs_for_dataset_queue_write_and_can_be_cleared() {
     c2.ack(ts).unwrap();
 
     c.poll_callback(None).unwrap();
-    store.write_dataset(h, 2, b"row2").unwrap();
+    h.write(2, b"row2").unwrap();
     assert_eq!(
         hits.load(Ordering::SeqCst),
         1,
@@ -1102,7 +992,7 @@ fn t44_1_poll_callback_runs_for_dataset_queue_write_and_can_be_cleared() {
     store.close().unwrap();
 }
 
-// 鈹€鈹€鈹€ Queue boundary tests (P0-Q-1~7) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 Queue boundary tests (P0-Q-1~7) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn t27_7_1_push_to_closed_queue_errors() {
@@ -1114,16 +1004,16 @@ fn t27_7_1_push_to_closed_queue_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
+    let q = h.open_queue().unwrap();
 
     // Push works before close
-    store.queue_push(&q, b"before_close").unwrap();
+    q.push(b"before_close").unwrap();
 
     // Close the queue
-    store.close_queue(h).unwrap();
+    h.close_queue().unwrap();
 
     // Push after close should fail
-    let result = store.queue_push(&q, b"after_close");
+    let result = q.push(b"after_close");
     assert!(result.is_err(), "push to closed queue should return error");
 
     store.close().unwrap();
@@ -1139,17 +1029,17 @@ fn t27_7_2_poll_closed_consumer_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
     // Push some data first
-    store.queue_push(&q, b"data").unwrap();
+    q.push(b"data").unwrap();
 
     // Close the queue
-    store.close_queue(h).unwrap();
+    h.close_queue().unwrap();
 
     // Poll after close should fail
-    let result = store.queue_poll(&c, Duration::from_millis(50));
+    let result = c.poll(Duration::from_millis(50));
     assert!(result.is_err(), "poll on closed queue should return error");
 
     store.close().unwrap();
@@ -1165,22 +1055,19 @@ fn t27_7_3_ack_closed_consumer_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
     // Push and poll to get a timestamp
-    let ts = store.queue_push(&q, b"data").unwrap();
-    let polled = store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let ts = q.push(b"data").unwrap();
+    let polled = c.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(polled.0, ts);
 
     // Close the queue
-    store.close_queue(h).unwrap();
+    h.close_queue().unwrap();
 
     // Ack after close should fail
-    let result = store.queue_ack(&c, ts);
+    let result = c.ack(ts);
     assert!(result.is_err(), "ack on closed queue should return error");
 
     store.close().unwrap();
@@ -1196,16 +1083,16 @@ fn t27_7_4_drop_consumer_twice_errors() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
+    let q = h.open_queue().unwrap();
 
     // Open a consumer group
-    store.open_consumer(&q, "g1").unwrap();
+    q.open_consumer("g1").unwrap();
 
     // First drop should succeed
-    store.drop_consumer(&q, "g1").unwrap();
+    q.drop_consumer("g1").unwrap();
 
     // Second drop should fail
-    let result = store.drop_consumer(&q, "g1");
+    let result = q.drop_consumer("g1");
     assert!(result.is_err(), "drop consumer twice should return error");
 
     store.close().unwrap();
@@ -1221,17 +1108,17 @@ fn t27_7_5_poll_timeout_precision() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
     // Poll with 200ms timeout on empty queue
     let start = std::time::Instant::now();
-    let result = store.queue_poll(&c, Duration::from_millis(200)).unwrap();
+    let result = c.poll(Duration::from_millis(200)).unwrap();
     let elapsed = start.elapsed();
 
     assert!(result.is_none(), "empty queue should return None");
 
-    // Timeout should be within reasonable range (200ms 卤 100ms)
+    // Timeout should be within reasonable range (200ms 鍗?100ms)
     assert!(
         elapsed >= Duration::from_millis(150) && elapsed < Duration::from_millis(500),
         "timeout precision: expected ~200ms, got {:?}",
@@ -1251,18 +1138,15 @@ fn t27_7_6_push_empty_data() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
-    let c = store.open_consumer(&q, "g1").unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("g1").unwrap();
 
     // Push empty data - should succeed (empty message is valid)
-    let ts = store.queue_push(&q, b"").unwrap();
+    let ts = q.push(b"").unwrap();
     assert!(ts > 0);
 
     // Poll should return the empty data
-    let (rts, data) = store
-        .queue_poll(&c, Duration::from_millis(50))
-        .unwrap()
-        .unwrap();
+    let (rts, data) = c.poll(Duration::from_millis(50)).unwrap().unwrap();
     assert_eq!(rts, ts);
     assert!(
         data.is_empty(),
@@ -1282,31 +1166,31 @@ fn t27_7_7_consumer_group_name_boundary() {
         .create_dataset("t27q", "events", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let h = store.open_dataset("t27q", "events").unwrap();
-    let q = store.open_queue(h).unwrap();
+    let q = h.open_queue().unwrap();
 
     // Valid: long name (within PATH_COMPONENT_MAX_LEN = 255)
     let long_name = "a".repeat(200);
-    store.open_consumer(&q, &long_name).unwrap();
+    q.open_consumer(&long_name).unwrap();
 
     // Valid: name with hyphens and underscores
-    store.open_consumer(&q, "my-group_1").unwrap();
+    q.open_consumer("my-group_1").unwrap();
 
     // Valid: numeric name
-    store.open_consumer(&q, "12345").unwrap();
+    q.open_consumer("12345").unwrap();
 
     // Invalid: empty name
-    let result = store.open_consumer(&q, "");
+    let result = q.open_consumer("");
     assert!(result.is_err(), "empty consumer group name should fail");
 
     // Invalid: name with spaces
-    let result = store.open_consumer(&q, "has space");
+    let result = q.open_consumer("has space");
     assert!(
         result.is_err(),
         "consumer group name with space should fail"
     );
 
     // Invalid: name with special characters
-    let result = store.open_consumer(&q, "group/name");
+    let result = q.open_consumer("group/name");
     assert!(
         result.is_err(),
         "consumer group name with slash should fail"

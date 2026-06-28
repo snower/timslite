@@ -62,7 +62,7 @@
   - [x] `DataSetState` 字段重命名为 `data_segments` / `index_segments`
 - [x] FFI / C header 更新
   - [x] `TmslDataSetState` 字段改为 `data_segments` / `index_segments`
-  - [x] `include/timslite.h` 同步
+  - [x] `wrapper/cffi/include/timslite.h` 同步
 - [x] Python wrapper 更新
   - [x] `DataSetState` PyClass 字段改为 `data_segments` / `index_segments`
   - [x] Python tests 同步断言

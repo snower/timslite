@@ -9,7 +9,6 @@ use crate::store::InspectResult;
 #[napi]
 pub struct Dataset {
     pub(crate) inner: Arc<timslite::DataSet>,
-    handle_id: u64,
     identifier: u64,
     read_only: bool,
 }
@@ -18,20 +17,14 @@ pub struct Dataset {
 impl Dataset {
     pub(crate) fn new(
         inner: Arc<timslite::DataSet>,
-        handle_id: u64,
         identifier: u64,
         read_only: bool,
     ) -> Self {
         Self {
             inner,
-            handle_id,
             identifier,
             read_only,
         }
-    }
-
-    pub(crate) fn handle_id(&self) -> u64 {
-        self.handle_id
     }
 
     #[napi]
@@ -161,7 +154,7 @@ impl Dataset {
 
     #[napi(getter)]
     pub fn id(&self) -> BigInt {
-        types::u64_to_bigint(self.handle_id)
+        types::u64_to_bigint(self.identifier)
     }
 
     #[napi(getter)]

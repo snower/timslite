@@ -1,4 +1,4 @@
-//! PyStore — main entry point, context manager.
+//! PyStore 鈥?main entry point, context manager.
 //!
 //! PyStore wraps Option<Store>. close() uses Option::take() to prevent use-after-close.
 //! Dataset management tracks Arc<DataSet> for sharing with PyDataset.
@@ -192,9 +192,7 @@ impl From<timslite::DataSetInspectResult> for PyDataSetInspectResult {
 pub struct PyStore {
     inner: Option<timslite::Store>,
     /// Track open datasets: dataset_id -> Arc<DataSet>
-    /// This runs parallel to Store's internal registry.
     datasets: std::collections::HashMap<u64, Arc<timslite::DataSet>>,
-    handles: std::collections::HashMap<u64, timslite::DataSetHandle>,
     next_id: u64,
 }
 
@@ -205,7 +203,6 @@ impl PyStore {
         Self {
             inner: None,
             datasets: std::collections::HashMap::new(),
-            handles: std::collections::HashMap::new(),
             next_id: 1,
         }
     }
@@ -229,7 +226,6 @@ impl PyStore {
         Ok(Self {
             inner: Some(store),
             datasets: std::collections::HashMap::new(),
-            handles: std::collections::HashMap::new(),
             next_id: 1,
         })
     }
@@ -239,7 +235,7 @@ impl PyStore {
         Ok(slf)
     }
 
-    /// Context manager exit — calls close().
+    /// Context manager exit 鈥?calls close().
     fn __exit__(
         &mut self,
         _py: Python<'_>,
@@ -260,7 +256,6 @@ impl PyStore {
             let _ = ds_arc.close();
         }
         self.datasets.clear();
-        self.handles.clear();
 
         let store = self
             .inner
@@ -317,16 +312,15 @@ impl PyStore {
         }
         builder = builder.enable_journal(enable_journal);
 
-        let handle = wrap(store.create_dataset_with_config(name, dataset_type, Some(builder)))?;
-        let ds_arc = wrap(store.get_dataset(&handle))?;
+        let dataset = wrap(store.create_dataset_with_config(name, dataset_type, Some(builder)))?;
 
         let id = self.next_id;
         self.next_id += 1;
-        let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
+        let base_dir = dataset.base_dir().to_string_lossy().to_string();
+        let ds_arc = Arc::new(dataset);
 
-        let py_ds = PyDataset::new(ds_arc, id, base_dir, store.is_read_only());
+        let py_ds = PyDataset::new(Arc::clone(&ds_arc), id, base_dir, store.is_read_only());
         self.datasets.insert(id, py_ds.inner_arc());
-        self.handles.insert(id, handle);
         Ok(py_ds)
     }
 
@@ -339,16 +333,15 @@ impl PyStore {
             .as_mut()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
 
-        let handle = wrap(store.open_dataset(name, dataset_type))?;
-        let ds_arc = wrap(store.get_dataset(&handle))?;
+        let dataset = wrap(store.open_dataset(name, dataset_type))?;
 
         let id = self.next_id;
         self.next_id += 1;
-        let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
+        let base_dir = dataset.base_dir().to_string_lossy().to_string();
+        let ds_arc = Arc::new(dataset);
 
-        let py_ds = PyDataset::new(ds_arc, id, base_dir, store.is_read_only());
+        let py_ds = PyDataset::new(Arc::clone(&ds_arc), id, base_dir, store.is_read_only());
         self.datasets.insert(id, py_ds.inner_arc());
-        self.handles.insert(id, handle);
         Ok(py_ds)
     }
 
@@ -359,16 +352,15 @@ impl PyStore {
             .as_mut()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
 
-        let handle = wrap(store.open_dataset_by_identifier(identifier))?;
-        let ds_arc = wrap(store.get_dataset(&handle))?;
+        let dataset = wrap(store.open_dataset_by_identifier(identifier))?;
 
         let id = self.next_id;
         self.next_id += 1;
-        let base_dir = ds_arc.base_dir().to_string_lossy().to_string();
+        let base_dir = dataset.base_dir().to_string_lossy().to_string();
+        let ds_arc = Arc::new(dataset);
 
-        let py_ds = PyDataset::new(ds_arc, id, base_dir, store.is_read_only());
+        let py_ds = PyDataset::new(Arc::clone(&ds_arc), id, base_dir, store.is_read_only());
         self.datasets.insert(id, py_ds.inner_arc());
-        self.handles.insert(id, handle);
         Ok(py_ds)
     }
 
@@ -382,20 +374,15 @@ impl PyStore {
     /// Raises:
     ///     TmslQueueAlreadyOpenError: Queue is already open for this dataset.
     fn open_queue(&mut self, dataset_id: u64) -> PyResult<PyDatasetQueue> {
-        let handle = *self
-            .handles
+        let dataset = self
+            .datasets
             .get(&dataset_id)
             .ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(format!(
                     "dataset_id {dataset_id} not found"
                 ))
             })?;
-        let store = self
-            .inner
-            .as_mut()
-            .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
-
-        Ok(PyDatasetQueue::new(wrap(store.open_queue(handle))?))
+        Ok(PyDatasetQueue::new(wrap(dataset.open_queue())?))
     }
 
     /// Return the latest journal sequence, or None when journal is empty.
@@ -442,7 +429,7 @@ impl PyStore {
             .inner
             .as_mut()
             .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("Store is closed"))?;
-        wrap(store.drop_dataset_by_name(name, dataset_type))
+        wrap(store.drop_dataset(name, dataset_type))
     }
 
     /// Execute one tick of background tasks synchronously.
@@ -464,7 +451,7 @@ impl PyStore {
 
     /// Return the delay in milliseconds until the next background task is due.
     ///
-    /// Does NOT execute any tasks — reads a snapshot of the executor state.
+    /// Does NOT execute any tasks 鈥?reads a snapshot of the executor state.
     /// Useful for scheduling the next `tick_background_tasks()` call.
     fn next_background_delay(&self) -> PyResult<u64> {
         let store = self

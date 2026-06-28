@@ -6,9 +6,9 @@
 
 ### 8.1.1 Public Rust boundary
 
-`DataSet` is a public Store-managed operation view, not a public constructor or raw lock container. External Rust callers must use `Store::create_dataset*`, `Store::open_dataset*`, `Store::drop_dataset*`, and `Store::open_queue` for lifecycle and queue operations. Direct `DataSet::create`, `DataSet::open`, `DataSet::drop_dataset`, raw `DataSet::lock`, raw queue construction, and physical index-entry read helpers are crate-internal only.
+`DataSet` is a public Store-managed operation view, not a public constructor or raw lock container. External Rust callers use `Store::create_dataset*`, `Store::open_dataset*`, and `Store::drop_dataset*` for dataset lifecycle; record operations and ordinary queue open/close live directly on the returned `DataSet`. Direct `DataSet::create`, `DataSet::open`, `DataSet::drop_dataset`, raw `DataSet::lock`, raw queue construction, and physical index-entry read helpers are crate-internal only.
 
-The safe public `DataSet` methods always enter through the outer `DataSet` wrapper. They call `ensure_open`, honor read-only runtime context, use the Store-injected cache/journal/dirty-flush/lifecycle hooks, and keep mutation/read synchronization inside the dataset mutex. `Store::get_dataset` may therefore be used by normal Rust callers without exposing the inner mutex guard.
+The safe public `DataSet` methods always enter through the outer `DataSet` wrapper. They call `ensure_open`, honor read-only runtime context, use the Store-injected cache/journal/dirty-flush/lifecycle hooks, and keep mutation/read synchronization inside the dataset mutex. `Store::create_dataset*` and `Store::open_dataset*` return this wrapper directly.
 
 When a `Store` is opened in read-only mode, ordinary datasets are opened with a read-only runtime context. That context does not install a journal sink or dirty flush queue, and dataset state files are read if present but are not created or written. The view only needs to include data already persisted when the read-only Store opens; it is not a live reader over another writer's in-memory state.
 
@@ -101,7 +101,7 @@ impl DataSet {
 }
 ```
 
-`DataSet::create/open` 是 crate-internal 低层构造路径, 只供 Store 和 crate 内部恢复/测试使用。由 `Store` 创建、打开或扫描加载的普通业务实例必须在放入 registry 前注入 `DataSetRuntimeContext`, 因此外部通过 `Store::get_dataset` 直接持有 `Arc<DataSet>` 后调用 `DataSet::write/append/delete/read/query` 时, 仍由 `DataSet` 内部 mutex 提供同步, 并获得与 Store 门面一致的 cache/journal/dirty-flush/lifecycle 行为。`.journal/logs` 不再作为 `DataSet` 暴露, 由 `JournalManager` 管理专用 `JournalLog`。`*_with_cache`、`*_with_cache_outcome`、`query_index_entries`、`read_entry_at_index` 等只作为 crate 内部辅助接口存在, 不属于 public 边界。
+`DataSet::create/open` 是 crate-internal 低层构造路径, 只供 Store 和 crate 内部恢复/测试使用。由 `Store` 创建、打开或扫描加载的普通业务实例必须在放入 registry 前注入 `DataSetRuntimeContext`, 因此外部通过 `Store::create_dataset*` / `Store::open_dataset*` 取得 `DataSet` 后调用 `write/append/delete/read/query/open_queue` 时, 仍由 `DataSet` 内部 mutex 提供同步, 并获得 Store-managed cache/journal/dirty-flush/lifecycle 行为。`.journal/logs` 不再作为普通 `DataSet` 暴露, 由 `JournalManager` 管理专用 `JournalLog`。`*_with_cache`、`*_with_cache_outcome`、`query_index_entries`、`read_entry_at_index` 等只作为 crate 内部辅助接口存在, 不属于 public 边界。
 
 ## 九、写入流程详解 (Block 聚合 + 延迟压缩)
 

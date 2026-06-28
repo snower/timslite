@@ -31,7 +31,7 @@ int tmsl_dataset_read_latest(void* ds, int64_t* out_ts,
 - [x] `ffi.rs`: 新增 `tmsl_dataset_latest_timestamp(...)` FFI 函数
 - [x] `ffi.rs`: 新增 `tmsl_dataset_read_latest(...)` FFI 函数
 - [x] `ffi.rs`: 修复 `tmsl_dataset_read` 中 `out_ts` 写入 (原为硬编码输入值, 改为写入实际返回的时间戳)
-- [x] `include/timslite.h`: 新增 `tmsl_dataset_latest_timestamp`/`tmsl_dataset_read_latest` 声明; 更新 `tmsl_dataset_read` 注释
+- [x] `wrapper/cffi/include/timslite.h`: 新增 `tmsl_dataset_latest_timestamp`/`tmsl_dataset_read_latest` 声明; 更新 `tmsl_dataset_read` 注释
 - [x] `wrapper/python/src/dataset.rs`: 新增 `latest_timestamp: Optional[int]` 只读属性 + `read_latest()` + 更新 `read()` docstring
 
 ## 3. 测试

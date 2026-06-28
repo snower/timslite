@@ -24,22 +24,22 @@ pub struct Store {
 
 ## 6.3 Store::create_dataset
 
-- `fn create_dataset(&mut self, name, dataset_type, data_segment_size, index_segment_size, compress_level) -> Result<DataSetHandle>`
+- `fn create_dataset(&mut self, name, dataset_type, data_segment_size, index_segment_size, compress_level, index_continuous, retention_window) -> Result<DataSet>`
   - 检测 `{data_dir}/{name}/{type}/meta` 是否存在 → 存在返回 `AlreadyExists`
   - 调用 `DataSet::create(...)`
-  - 注册到 datasets HashMap, 返回 handle
+  - 注册到 datasets HashMap, 返回 Store-managed `DataSet`
 
 ## 6.4 Store::open_dataset
 
-- `fn open_dataset(&mut self, name, dataset_type) -> Result<DataSetHandle>`
+- `fn open_dataset(&mut self, name, dataset_type) -> Result<DataSet>`
   - 检查是否已在内存中
   - 调用 `DataSet::open(...)` 从 meta 读取参数
-  - 注册到 datasets HashMap, 返回 handle
+  - 注册到 datasets HashMap, 返回 Store-managed `DataSet`
 
-## 6.5–6.7 Store::close_dataset / drop_dataset / close
+## 6.5–6.7 DataSet::close / Store::drop_dataset / Store::close
 
-- `fn close_dataset(&mut self, handle) -> Result<()>` — close 并从 HashMap 移除
-- `fn drop_dataset(&mut self, handle) -> Result<()>` — 调用 `DataSet::drop_dataset`, 删除目录树
+- `DataSet::close(&self) -> Result<()>` — close 并从 HashMap 移除
+- `fn drop_dataset(&mut self, name, dataset_type) -> Result<()>` — 关闭 dataset 并删除目录树
 - `fn close(self) -> Result<()>` — close 所有数据集, 停止后台任务
 
 ## 6.8 bg/mod.rs — 单线程后台循环 (合并 flush + idle)

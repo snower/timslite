@@ -1,4 +1,4 @@
-//! PyDataset — wrapped dataset with hidden lock.
+//! PyDataset 鈥?wrapped dataset with hidden lock.
 //!
 //! PyDataset holds an Arc<DataSet> so it can outlive the Store.
 //! All operations automatically acquire the lock.

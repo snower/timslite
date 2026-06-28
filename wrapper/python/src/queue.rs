@@ -1,4 +1,4 @@
-//! PyDatasetQueue and PyDatasetQueueConsumer — Python bindings for queue semantics.
+//! PyDatasetQueue and PyDatasetQueueConsumer 鈥?Python bindings for queue semantics.
 //!
 //! Wraps DatasetQueue (push + consumer group management) and
 //! DatasetQueueConsumer (poll + ack) with Pythonic API.

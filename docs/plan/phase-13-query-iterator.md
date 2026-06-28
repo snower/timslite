@@ -157,7 +157,7 @@ pub fn query(
 }
 ```
 
-## 13.7 src/ffi.rs — FfiIterator 重构
+## 13.7 wrapper/cffi/src/lib.rs — FfiIterator 重构
 
 ```rust
 // 旧: 持有全量 Vec<(i64, Vec<u8>)>
@@ -165,13 +165,12 @@ pub fn query(
 
 // 新: 持有内部查询迭代器
 struct FfiIterator {
-    store_ptr: *mut Store,
-    handle: DataSetHandle,
-    // query 时创建内部迭代器, tmsl_iter_next 按需驱动
-    iter: *mut c_void,  // 指向 Box<QueryIteratorWrapper>
+    rows: Vec<(i64, Vec<u8>)>,
+    position: usize,
 }
 
-// 包装 FFI 安全的迭代器 (Arc<DataSet> 而非裸借用)
+// Rust public QueryLengthIterator 仍可保持 lazy;
+// wrapper/cffi data iterator 通过 public DataSet::query() 收集结果。
 struct QueryIteratorWrapper {
     ds: Arc<DataSet>,
     cache: Option<*const BlockCache>,

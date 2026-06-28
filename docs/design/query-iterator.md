@@ -103,33 +103,29 @@ struct HotBlockCache {
 
 ---
 
-## 五、FFI Iterator
+## 五、C ABI Wrapper Iterator
 
-当前 FFI iterator 是 index-entry snapshot + 按需 record 读取, 但不是 zero-copy:
+C ABI iterator 位于独立 `wrapper/cffi` crate。它依赖主库公开 `DataSet::query()` / `Store::journal_query()` API, 不访问 crate-private `IndexEntry` 或 Store handle registry。
 
 ```rust
-struct FfiIterator {
-    store: Arc<Mutex<Store>>,
-    handle: DataSetHandle,
-    entries: Vec<IndexEntry>,
+struct FfiDataIter {
+    rows: Vec<(i64, Vec<u8>)>,
     position: usize,
 }
 ```
 
 流程:
 
-1. `tmsl_dataset_query` 锁定 FFI Store mutex, 再锁定目标 DataSet, 调用 `query_index_entries(start_ts, end_ts)` 复制当前命中范围的 `IndexEntry` snapshot; filler/deleted entry 可以保留到 `next` 时跳过, 也可以在创建时过滤。
-2. `tmsl_iter_next` 只从 snapshot `entries` 中逐条推进, 不再打开或读取 index segment 文件。
-3. `tmsl_iter_next` 通过 snapshot entry 锁定对应 DataSet 并调用 `read_entry_at_index` 读取当前 record。
-4. 返回数据仍由 `libc::malloc` 分配, C 侧必须用 `tmsl_data_free` 释放。
-5. `tmsl_iter_free_data` 是兼容别名。
+1. `tmsl_dataset_query` 调用 `DataSet::query(start_ts, end_ts)` 收集当前可见结果。
+2. `tmsl_iter_next` 从 `rows` 中逐条推进。
+3. 返回数据由 `timslitecffi` 使用 `malloc` 分配, C 侧必须用 `tmsl_data_free` 释放。
+4. `tmsl_iter_close` 释放普通 data iterator; `tmsl_length_iter_close` 释放 length iterator; journal iterator 使用 `tmsl_journal_iter_close`。
 
 一致性语义:
 
-- FFI iterator 的索引集合是 `tmsl_dataset_query` 调用时刻的 snapshot, 后续 delete/out-of-order rewrite/correction 不改变该 iterator 已持有的 entry 列表。
-- snapshot 不复制 data payload。`tmsl_iter_next` 仍按 snapshot entry 读取源 dataset 当前仍可访问的数据位置。
-- 如果 snapshot entry 指向的数据已被 retention reclaim 删除、文件损坏或边界校验失败, `tmsl_iter_next` 返回错误; 它不会重新查询当前 index 来替换结果。
-- 因为 iterator 不再直接打开 index segment, index segment 在迭代期间被 retention 删除不会影响 entry 推进; data segment 是否仍可读由 `read_entry_at_index` 的 retention/边界校验决定。
+- C data iterator 的结果集和 payload 都在 `tmsl_dataset_query` 调用时完成收集。
+- 后续 delete/out-of-order rewrite/correction 不改变该 iterator 已持有的结果。
+- Rust public `DataSet::query_length_iter` 仍是 source-cursor lazy iterator; C wrapper 的 length iterator 只通过 public API 创建并暴露 `tmsl_length_iter_next`。
 
 后续可选 API:
 

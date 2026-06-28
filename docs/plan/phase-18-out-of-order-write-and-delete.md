@@ -80,7 +80,7 @@ DataSet::delete(timestamp):
 int tmsl_dataset_delete(void* ds, int64_t timestamp, char* err_buf, size_t err_buf_len);
 ```
 
-**C 头文件**: `include/timslite.h` 新增声明。
+**C 头文件**: `wrapper/cffi/include/timslite.h` 新增声明。
 
 **错误场景**:
 - `ds == NULL` → Error(null pointer)
@@ -159,8 +159,8 @@ pub fn increment_invalid_record_count(&mut self, block_offset: u64) -> Result<()
 | `src/segment/mod.rs` | 新增 | DataSegmentSet: `increment_invalid_record_count(block_offset)` 段路由方法 |
 | `src/index/mod.rs` | 新增 | TimeIndex: `update_entry()` + `find_and_delete_entry()` |
 | `src/dataset.rs` | 修改 | `write()` 乱序分支重写 (统一两种模式); 新增 `delete(ts)` 方法 |
-| `src/ffi.rs` | 新增 | `tmsl_dataset_delete` extern "C" 函数 |
-| `include/timslite.h` | 新增 | `tmsl_dataset_delete` C 声明 |
+| `wrapper/cffi/src/lib.rs` | 新增 | `tmsl_dataset_delete` extern "C" 函数 |
+| `wrapper/cffi/include/timslite.h` | 新增 | `tmsl_dataset_delete` C 声明 |
 | `tests/integration_test.rs` | 新增 | 乱序写入 + delete 集成测试 (3 tests) |
 | `README.md` | 修改 | header state 表 `reserved` → `invalid_record_count` |
 

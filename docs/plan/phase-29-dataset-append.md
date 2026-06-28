@@ -78,8 +78,8 @@
 
 ### 29.4.5 FFI And Wrappers
 
-- [x] Add `tmsl_dataset_append` to `src/ffi.rs`.
-- [x] Add declaration to `include/timslite.h`.
+- [x] Add `tmsl_dataset_append` to `wrapper/cffi/src/lib.rs`.
+- [x] Add declaration to `wrapper/cffi/include/timslite.h`.
 - [x] Follow existing pointer/null/data length/error-buffer rules.
 - [x] If Python wrapper exposes dataset write/delete APIs, add matching `append`.
 

@@ -1,8 +1,7 @@
-//! FFI tests: C calling convention, error codes, memory safety.
+//! Public Rust API contract tests.
 //!
-//! These tests verify the FFI layer by testing the Rust API directly.
-//! The FFI functions are thin wrappers around the Rust API, so testing
-//! the Rust API verifies the underlying behavior.
+//! C ABI coverage lives in `wrapper/cffi/tests`; this file validates the
+//! standard Rust library surface directly.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,11 +22,9 @@ fn temp_dir() -> PathBuf {
     ))
 }
 
-/// P2-X-1: C calling convention verification
+/// P2-X-1: Public API basic operations
 ///
 /// Verify that the core API functions work correctly.
-/// The FFI layer wraps these functions, so if they work,
-/// the FFI layer should work too.
 #[test]
 fn t34_1_api_basic_operations() {
     use timslite::{Store, StoreConfig};
@@ -52,7 +49,7 @@ fn t34_1_api_basic_operations() {
     let ds = store.open_dataset("conv_test", "data").unwrap();
 
     // Test dataset write
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     {
         let lock = arc.clone();
         lock.write(100, b"hello api").unwrap();
@@ -139,7 +136,7 @@ fn t34_3_api_memory_safety() {
         .unwrap();
 
     let ds = store.open_dataset("mem_test", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write and read multiple times to test memory management
     for i in 0..100 {
@@ -187,7 +184,7 @@ fn t34_4_api_concurrent_reads() {
         .unwrap();
 
     let ds = store.open_dataset("concurrent", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write initial data
     {
@@ -247,7 +244,7 @@ fn t34_5_api_query_operations() {
         .unwrap();
 
     let ds = store.open_dataset("query_test", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write data
     {
@@ -303,7 +300,7 @@ fn t34_6_api_delete_and_correction() {
         .unwrap();
 
     let ds = store.open_dataset("del_corr", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write data
     {
@@ -379,7 +376,7 @@ fn t34_7_create_dataset_with_config() {
         .create_dataset_with_config("cfg_ds", "metrics", Some(builder))
         .unwrap();
 
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
     ds.write(1, b"config_test").unwrap();
 
     let result = ds.read(1).unwrap();
@@ -416,16 +413,16 @@ fn t34_8_open_dataset_by_identifier() {
         .unwrap();
 
     let handle = store.open_dataset("id_ds", "data").unwrap();
-    let identifier = store.dataset_identifier(handle).unwrap();
+    let identifier = handle.identifier();
     assert!(identifier > 0, "identifier should be positive");
 
     // Write via original handle
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
     ds.write(100, b"via_handle").unwrap();
 
     // Open by identifier and read
     let handle2 = store.open_dataset_by_identifier(identifier).unwrap();
-    let ds2 = store.get_dataset(&handle2).unwrap();
+    let ds2 = handle2.clone();
     let result = ds2.read(100).unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().1, b"via_handle");
@@ -467,7 +464,7 @@ fn t34_9_read_latest() {
         .unwrap();
 
     let handle = store.open_dataset("latest_ds", "data").unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     // Empty dataset: read_latest should return None
     let result = ds.read_latest().unwrap();
@@ -522,7 +519,7 @@ fn t34_10_read_exist() {
         .unwrap();
 
     let handle = store.open_dataset("exist_ds", "data").unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     ds.write(100, b"exists").unwrap();
     ds.write(200, b"to_delete").unwrap();
@@ -571,7 +568,7 @@ fn t34_11_query_exist() {
         .unwrap();
 
     let handle = store.open_dataset("qexist_ds", "data").unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     // Write records at specific timestamps
     ds.write(100, b"a").unwrap();
@@ -623,7 +620,7 @@ fn t34_12_read_length() {
         .unwrap();
 
     let handle = store.open_dataset("rlen_ds", "data").unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     let payload = b"hello world, this is a test payload";
     ds.write(100, payload).unwrap();
@@ -673,7 +670,7 @@ fn t34_13_query_length() {
         .unwrap();
 
     let handle = store.open_dataset("qlen_ds", "data").unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     ds.write(100, b"aaa").unwrap(); // 3 bytes
     ds.write(200, b"bbbbb").unwrap(); // 5 bytes
@@ -725,7 +722,7 @@ fn t34_14_inspect_dataset() {
         .unwrap();
 
     let handle = store.open_dataset("insp_ds", "data").unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     ds.write(100, b"inspect_test").unwrap();
     ds.write(200, b"inspect_test_2").unwrap();
@@ -824,48 +821,46 @@ fn t34_16_queue_push_poll_ack() {
         .unwrap();
 
     let handle = store.open_dataset("queue_ds", "data").unwrap();
-    let queue = store.open_queue(handle).unwrap();
-    let consumer = store.open_consumer(&queue, "group_a").unwrap();
+    let queue = handle.open_queue().unwrap();
+    let consumer = queue.open_consumer("group_a").unwrap();
 
     // Push records
-    let ts1 = store.queue_push(&queue, b"msg1").unwrap();
-    let ts2 = store.queue_push(&queue, b"msg2").unwrap();
-    let ts3 = store.queue_push(&queue, b"msg3").unwrap();
+    let ts1 = queue.push(b"msg1").unwrap();
+    let ts2 = queue.push(b"msg2").unwrap();
+    let ts3 = queue.push(b"msg3").unwrap();
     assert!(ts1 > 0);
     assert!(ts2 > ts1);
     assert!(ts3 > ts2);
 
     // Poll should return records in order
-    let r1 = store.queue_poll(&consumer, Duration::from_secs(1)).unwrap();
+    let r1 = consumer.poll(Duration::from_secs(1)).unwrap();
     assert!(r1.is_some());
     let (poll_ts1, poll_data1) = r1.unwrap();
     assert_eq!(poll_ts1, ts1);
     assert_eq!(poll_data1, b"msg1");
 
     // Ack
-    store.queue_ack(&consumer, poll_ts1).unwrap();
+    consumer.ack(poll_ts1).unwrap();
 
     // Poll next
-    let r2 = store.queue_poll(&consumer, Duration::from_secs(1)).unwrap();
+    let r2 = consumer.poll(Duration::from_secs(1)).unwrap();
     assert!(r2.is_some());
     let (poll_ts2, poll_data2) = r2.unwrap();
     assert_eq!(poll_ts2, ts2);
     assert_eq!(poll_data2, b"msg2");
 
-    store.queue_ack(&consumer, poll_ts2).unwrap();
+    consumer.ack(poll_ts2).unwrap();
 
-    let r3 = store.queue_poll(&consumer, Duration::from_secs(1)).unwrap();
+    let r3 = consumer.poll(Duration::from_secs(1)).unwrap();
     assert!(r3.is_some());
     let (poll_ts3, poll_data3) = r3.unwrap();
     assert_eq!(poll_ts3, ts3);
     assert_eq!(poll_data3, b"msg3");
 
-    store.queue_ack(&consumer, poll_ts3).unwrap();
+    consumer.ack(poll_ts3).unwrap();
 
     // Poll with short timeout after all consumed should return None
-    let r4 = store
-        .queue_poll(&consumer, Duration::from_millis(50))
-        .unwrap();
+    let r4 = consumer.poll(Duration::from_millis(50)).unwrap();
     assert!(
         r4.is_none(),
         "should return None after all records consumed"
@@ -902,28 +897,24 @@ fn t34_17_queue_multiple_consumers() {
         .unwrap();
 
     let handle = store.open_dataset("multi_q", "data").unwrap();
-    let queue = store.open_queue(handle).unwrap();
+    let queue = handle.open_queue().unwrap();
 
-    let consumer_a = store.open_consumer(&queue, "group_a").unwrap();
-    let consumer_b = store.open_consumer(&queue, "group_b").unwrap();
+    let consumer_a = queue.open_consumer("group_a").unwrap();
+    let consumer_b = queue.open_consumer("group_b").unwrap();
 
     // Push two records
-    let ts1 = store.queue_push(&queue, b"data1").unwrap();
-    let _ts2 = store.queue_push(&queue, b"data2").unwrap();
+    let ts1 = queue.push(b"data1").unwrap();
+    let _ts2 = queue.push(b"data2").unwrap();
 
     // Consumer A polls and acks first record
-    let r_a = store
-        .queue_poll(&consumer_a, Duration::from_secs(1))
-        .unwrap();
+    let r_a = consumer_a.poll(Duration::from_secs(1)).unwrap();
     assert!(r_a.is_some());
     let (ts_a, _) = r_a.unwrap();
     assert_eq!(ts_a, ts1);
-    store.queue_ack(&consumer_a, ts_a).unwrap();
+    consumer_a.ack(ts_a).unwrap();
 
     // Consumer B should also get the first record (independent progress)
-    let r_b = store
-        .queue_poll(&consumer_b, Duration::from_secs(1))
-        .unwrap();
+    let r_b = consumer_b.poll(Duration::from_secs(1)).unwrap();
     assert!(r_b.is_some());
     let (ts_b, data_b) = r_b.unwrap();
     assert_eq!(ts_b, ts1);
@@ -960,7 +951,7 @@ fn t34_18_query_range_edge_cases() {
         .unwrap();
 
     let handle = store.open_dataset("range_ds", "data").unwrap();
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
 
     // Query empty dataset
     let results = ds.query(0, 1000).unwrap();
@@ -1040,8 +1031,7 @@ fn t34_19_error_paths() {
 
     // Error: dataset_identifier on valid handle should succeed
     let handle = store.open_dataset("dup_ds", "data").unwrap();
-    let id = store.dataset_identifier(handle);
-    assert!(id.is_ok());
+    assert_ne!(handle.identifier(), 0);
 
     // Error: open_dataset_by_identifier with non-existent id
     let err = store.open_dataset_by_identifier(u64::MAX);

@@ -266,7 +266,7 @@ impl DataSet {
 新增 C ABI FFI 函数。
 
 ### 实现位置
-`src/ffi.rs`
+`wrapper/cffi/src/lib.rs`
 
 ### 新增函数
 ```c
@@ -328,32 +328,31 @@ int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
 
 ## 30.8 Store 门面 API
 
-在 Store 层暴露轻量读 snapshot 接口。`query_length_iter` 是 `DataSet` public wrapper 方法; Store facade 当前保留 `dataset_query_length` snapshot 方法, 不再声明单独的 Store-level length iterator。
+轻量读接口直接暴露在 Store-managed `DataSet` 上。`query_length_iter` 是 `DataSet` public wrapper 方法; Store 不再保留 record/read/query facade。
 
 ### 实现位置
-`src/store.rs`
+`src/dataset.rs`
 
 ### 新增方法
 ```rust
-impl Store {
-    pub fn dataset_read_exist(&self, handle: DataSetHandle, timestamp: i64) -> Result<bool>;
-    pub fn dataset_query_exist(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
-    pub fn dataset_read_length(&self, handle: DataSetHandle, timestamp: i64) -> Result<Option<u32>>;
-    pub fn dataset_query_length(&self, handle: DataSetHandle, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
+impl DataSet {
+    pub fn read_exist(&self, timestamp: i64) -> Result<bool>;
+    pub fn query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>;
+    pub fn read_length(&self, timestamp: i64) -> Result<Option<u32>>;
+    pub fn query_length(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>;
 }
 ```
 
 ### 实现要点
-1. 通过 `DataSetHandle` 从 registry 获取 dataset 锁
-2. 调用对应的 DataSet 方法
-3. 更新 `last_used_at`
+1. 调用 Store 返回的 `DataSet` public wrapper 方法
+2. DataSet 内部负责锁、read-only 校验和 `last_used_at` 更新
 
 ---
 
 ## 30.9 C 头文件更新
 
 ### 实现位置
-`include/timslite.h`
+`wrapper/cffi/include/timslite.h`
 
 ### 新增声明
 ```c
@@ -477,7 +476,7 @@ cd wrapper/python && cargo test && cargo clippy
 - [x] QueryLengthIterator + query_length_iter() — 惰性数据长度迭代器
 - [x] FFI 接口 — tmsl_dataset_read_exist/query_exist/read_length/query_length/query_length_iter
 - [x] Store 门面 API — dataset_read_exist/query_exist/read_length/query_length/query_length_iter
-- [x] C 头文件 — include/timslite.h 新增函数声明
+- [x] C 头文件 — wrapper/cffi/include/timslite.h 新增函数声明
 - [x] Python Wrapper — DataSet 类新增方法
 - [x] 集成测试 — 完整测试矩阵覆盖
 - [x] 验证 — `cargo test -- --test-threads=1`, `cargo fmt -- --check`, `cargo clippy -- -D warnings`

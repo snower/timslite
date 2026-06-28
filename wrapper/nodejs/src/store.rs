@@ -1,5 +1,6 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use std::sync::Arc;
 
 use crate::config::{self, CreateDatasetOptions, StoreConfigOptions};
 use crate::dataset::Dataset;
@@ -160,10 +161,9 @@ impl Store {
         dataset_type: String,
     ) -> napi::Result<Dataset> {
         let store = self.inner.as_mut().ok_or_else(errors::store_closed)?;
-        let handle = errors::wrap(store.open_dataset(&name, &dataset_type))?;
-        let identifier = errors::wrap(store.dataset_identifier(handle))?;
-        let ds = errors::wrap(store.get_dataset(&handle))?;
-        Ok(Dataset::new(ds, handle.0, identifier, store.is_read_only()))
+        let ds = errors::wrap(store.open_dataset(&name, &dataset_type))?;
+        let identifier = ds.identifier();
+        Ok(Dataset::new(Arc::new(ds), identifier, store.is_read_only()))
     }
 
     #[napi]
@@ -173,15 +173,14 @@ impl Store {
         if !lossless {
             return Err(errors::invalid_data("identifier must be a non-negative u64"));
         }
-        let handle = errors::wrap(store.open_dataset_by_identifier(id_u64))?;
-        let ds = errors::wrap(store.get_dataset(&handle))?;
-        Ok(Dataset::new(ds, handle.0, id_u64, store.is_read_only()))
+        let ds = errors::wrap(store.open_dataset_by_identifier(id_u64))?;
+        Ok(Dataset::new(Arc::new(ds), id_u64, store.is_read_only()))
     }
 
     #[napi]
     pub fn drop_dataset(&mut self, name: String, dataset_type: String) -> napi::Result<()> {
         let store = self.inner.as_mut().ok_or_else(errors::store_closed)?;
-        errors::wrap(store.drop_dataset_by_name(&name, &dataset_type))
+        errors::wrap(store.drop_dataset(&name, &dataset_type))
     }
 
     #[napi]
@@ -225,9 +224,7 @@ impl Store {
 
     #[napi]
     pub fn open_queue(&mut self, dataset: &Dataset) -> napi::Result<crate::queue::Queue> {
-        let store = self.inner.as_mut().ok_or_else(errors::store_closed)?;
-        let handle = timslite::DataSetHandle(dataset.handle_id());
-        let queue = errors::wrap(store.open_queue(handle))?;
+        let queue = errors::wrap(dataset.inner.open_queue())?;
         Ok(crate::queue::Queue::new(queue))
     }
 

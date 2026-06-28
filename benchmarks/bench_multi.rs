@@ -1,4 +1,4 @@
-mod common;
+﻿mod common;
 
 use common::{create_temp_dir, BenchmarkMetrics, LogData};
 use rand::Rng;
@@ -24,7 +24,7 @@ fn main() {
     let config = StoreConfig::default();
     let store = Arc::new(Mutex::new(Store::open(&data_dir, config).unwrap()));
 
-    let ds_handle = {
+    let dataset = {
         let mut store_guard = store.lock().unwrap();
         store_guard
             .create_dataset(
@@ -46,7 +46,7 @@ fn main() {
     let mut join_handles = vec![];
 
     for _ in 0..WRITE_THREADS {
-        let store_clone = Arc::clone(&store);
+        let dataset = dataset.clone();
         let log_data_clone = Arc::clone(&log_data);
         let ts_counter_clone = Arc::clone(&ts_counter);
         let writes_per_thread = WRITE_COUNT / WRITE_THREADS as u64;
@@ -55,9 +55,8 @@ fn main() {
             let mut bytes_written = 0u64;
             for _ in 0..writes_per_thread {
                 let line = log_data_clone.random_raw_line();
-                let mut store_guard = store_clone.lock().unwrap();
                 let ts = ts_counter_clone.fetch_add(1, Ordering::SeqCst);
-                match store_guard.write_dataset(ds_handle, ts, line.as_bytes()) {
+                match dataset.write(ts, line.as_bytes()) {
                     Ok(_) => bytes_written += line.len() as u64,
                     Err(e) => eprintln!("Write error at ts {}: {:?}", ts, e),
                 }
@@ -80,15 +79,14 @@ fn main() {
     let mut join_handles = vec![];
 
     for i in 0..READ_THREADS {
-        let store_clone = Arc::clone(&store);
+        let dataset = dataset.clone();
         let reads_per_thread = READ_SEQUENTIAL_COUNT / READ_THREADS as u64;
         let start_ts = (i as i64 * reads_per_thread as i64) + 1;
 
         let jh = thread::spawn(move || {
             let mut bytes_read = 0u64;
             for ts in start_ts..start_ts + reads_per_thread as i64 {
-                let store_guard = store_clone.lock().unwrap();
-                if let Some((_, data)) = store_guard.read_dataset(ds_handle, ts).unwrap() {
+                if let Some((_, data)) = dataset.read(ts).unwrap() {
                     bytes_read += data.len() as u64;
                 }
             }
@@ -108,7 +106,7 @@ fn main() {
     let mut join_handles = vec![];
 
     for _ in 0..READ_THREADS {
-        let store_clone = Arc::clone(&store);
+        let dataset = dataset.clone();
         let reads_per_thread = READ_RANDOM_COUNT / READ_THREADS as u64;
 
         let jh = thread::spawn(move || {
@@ -116,8 +114,7 @@ fn main() {
             let mut bytes_read = 0u64;
             for _ in 0..reads_per_thread {
                 let ts = rng.gen_range(1..=total_written);
-                let store_guard = store_clone.lock().unwrap();
-                if let Some((_, data)) = store_guard.read_dataset(ds_handle, ts).unwrap() {
+                if let Some((_, data)) = dataset.read(ts).unwrap() {
                     bytes_read += data.len() as u64;
                 }
             }

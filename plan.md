@@ -1,7 +1,7 @@
 # timslite 开发计划
 
 > 基于 design.md 详细设计  
-> 目标: 完成 Rust cdylib 时序数据存储库, 提供 C ABI FFI
+> 目标: 完成标准 Rust 时序数据存储库; C ABI 由独立 `wrapper/cffi` (`timslitecffi`) 提供
 
 ---
 
@@ -54,6 +54,7 @@
 | 43 | Index Entry Timestamp Delta | ✅ 完成 | [phase-43-index-entry-delta.md](docs/plan/phase-43-index-entry-delta.md) |
 | 44 | Queue Poll Callback | ✅ 完成 | [phase-44-queue-poll-callback.md](docs/plan/phase-44-queue-poll-callback.md) |
 | 45 | Store Read-only Lock | ✅ 完成 | [phase-45-store-read-only-lock.md](docs/plan/phase-45-store-read-only-lock.md) |
+| 46 | Rust API 简化与 C ABI Wrapper 拆分 | ✅ 完成 | [phase-46-rust-api-simplify-cffi-split.md](docs/plan/phase-46-rust-api-simplify-cffi-split.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 | NODE | Node.js Package (Node-API) | ✅ 完成 | [wrapper/nodejs/plan.md](wrapper/nodejs/plan.md) |
 | JAVA | Java Package (UniFFI) | ✅ 完成 | [wrapper/java/plan.md](wrapper/java/plan.md) |
@@ -64,8 +65,8 @@
 
 > 已完成 Phase 的任务详情已合并到对应 `docs/plan/phase-XX-*.md` 文件, 如需查看请参考各 Phase 文档。
 
-### Phase 7: FFI 接口
-- [ ] C 链接测试 — 独立 C 程序链接 `libtimslite` 并调用 FFI 完整流程验证
+### Phase 46: C ABI Wrapper
+- [ ] C 链接测试 — 独立 C 程序链接 `timslitecffi` 并调用 C ABI 完整流程验证
 
 ### Phase 8: 集成测试 + 性能调优
 - [ ] 性能基准测试 (`benches/`) — criterion 已配置, 目录已创建但无文件
@@ -126,6 +127,7 @@ docs/plan/
 ├── phase-43-index-entry-delta.md ← Phase 43: Index Entry Timestamp Delta
 ├── phase-44-queue-poll-callback.md ← Phase 44: Queue Poll Callback
 ├── phase-45-store-read-only-lock.md ← Phase 45: Store Read-only Lock
+├── phase-46-rust-api-simplify-cffi-split.md ← Phase 46: Rust API 简化与 C ABI Wrapper 拆分
 ├── wrapper/nodejs/plan.md ← NODE: Node.js Package (Node-API)
 └── wrapper/java/plan.md   ← JAVA: Java Package (UniFFI)
 ```

@@ -1,4 +1,4 @@
-use proptest::prelude::*;
+﻿use proptest::prelude::*;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,7 +36,7 @@ proptest! {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         store.create_dataset("ds", "test", 64 * 1024 * 1024, 64 * 1024 * 1024, 3, 0, 0).unwrap();
         let handle = store.open_dataset("ds", "test").unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         let mut sorted = items.clone();
         sorted.sort_by_key(|(ts, _)| *ts);
@@ -69,7 +69,7 @@ proptest! {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         store.create_dataset("ds", "test", 64 * 1024 * 1024, 64 * 1024 * 1024, 3, 0, 0).unwrap();
         let handle = store.open_dataset("ds", "test").unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         let data = vec![0xABu8; data_size];
 
@@ -107,7 +107,7 @@ proptest! {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         store.create_dataset("ds", "test", 64 * 1024 * 1024, 64 * 1024 * 1024, 3, 0, retention_window).unwrap();
         let handle = store.open_dataset("ds", "test").unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         let mut sorted_ts: Vec<i64> = ts_values.clone();
         sorted_ts.sort();

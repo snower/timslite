@@ -75,7 +75,7 @@ const META_INDEX_CONTINUOUS: u8 = 0x05; // u8: 0=非连续, 1=连续
 ## 10.10 FFI API 更新
 
 - `tmsl_dataset_create`: 新增 `index_continuous: c_uchar` 参数
-- `include/timslite.h`: 更新函数声明
+- `wrapper/cffi/include/timslite.h`: 更新函数声明
 - 错误处理: 逆序写入返回 -1, err_buf 写错误信息
 
 ## 验收标准

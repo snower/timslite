@@ -1,4 +1,4 @@
-﻿# 时间索引 - TimeIndex + IndexSegment
+# 时间索引 - TimeIndex + IndexSegment
 
 ## 七、TimeIndex: 时间索引
 
@@ -272,4 +272,3 @@ reclaim_expired_segments(expiration_threshold: i64):
 ---
 
 **相关**: [架构概览](architecture.md) | [数据模型](data-model.md) | [索引连续存储](index-continuous.md)
-

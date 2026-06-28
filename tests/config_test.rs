@@ -1,4 +1,4 @@
-//! StoreConfig and DataSetConfig builder API tests.
+﻿//! StoreConfig and DataSetConfig builder API tests.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,7 +36,7 @@ fn t14_1_create_with_none_config_uses_store_defaults() {
         .unwrap();
 
     let ds = store.open_dataset("defaults_test", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     arc.write(1, b"hello").unwrap();
 
     let entries = arc.query(1, 1).unwrap();
@@ -67,7 +67,7 @@ fn t14_2_create_with_builder_override() {
         .unwrap();
 
     let ds = store.open_dataset("override_test", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     for i in 0..10i64 {
         let data = format!("data_{}", i).into_bytes();
         arc.write(i + 1, &data).unwrap();
@@ -121,7 +121,7 @@ fn t14_3_backward_compat_existing_api() {
         .unwrap();
 
     let ds = store.open_dataset("compat_old", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     arc.write(1, b"compat_test").unwrap();
 
     let entries = arc.query(1, 1).unwrap();
@@ -130,7 +130,7 @@ fn t14_3_backward_compat_existing_api() {
     store.close().unwrap();
 }
 
-// 鈹€鈹€鈹€ Config boundary value tests (P1-F-1~4) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 Config boundary value tests (P1-F-1~4) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn t14_4_data_segment_size_boundary_values() {
@@ -169,7 +169,7 @@ fn t14_5_compress_level_boundary_values() {
         .create_dataset("comp0", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 0, 0, 0)
         .unwrap();
     let ds = store.open_dataset("comp0", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     arc.write(1, b"no_compress").unwrap();
     let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
@@ -191,7 +191,7 @@ fn t14_5_compress_level_boundary_values() {
         )
         .unwrap();
     let ds = store.open_dataset("comp10", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     arc.write(1, b"high_compress").unwrap();
     let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
@@ -210,7 +210,7 @@ fn t14_6_retention_window_boundary_values() {
         .create_dataset("ret0", "data", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap();
     let ds = store.open_dataset("ret0", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     assert_eq!(arc.retention_window(), 0);
     store.close().unwrap();
 
@@ -229,7 +229,7 @@ fn t14_6_retention_window_boundary_values() {
         )
         .unwrap();
     let ds = store.open_dataset("ret_large", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     assert_eq!(arc.retention_window(), i64::MAX as u64);
     store.close().unwrap();
 

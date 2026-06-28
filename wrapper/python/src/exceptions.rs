@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyModuleMethods;
 use pyo3::PyTypeInfo;
 
-// ── Exception hierarchy ─────────────────────────────────────────────────────
+// 鈹€鈹€ Exception hierarchy 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 // TmslError (base) inherits PyException
 // All specific error types inherit TmslError
 
@@ -107,7 +107,7 @@ create_exception!(
 /// Register all exception types on the Python module.
 ///
 /// Must be called from the `#[pymodule]` function body.
-/// Uses `m.add()` — `#[pymodule_export]` does NOT work for `create_exception!` types.
+/// Uses `m.add()` 鈥?`#[pymodule_export]` does NOT work for `create_exception!` types.
 pub fn register(m: &Bound<'_, pyo3::types::PyModule>) -> PyResult<()> {
     m.add("TmslError", TmslError::type_object(m.py()))?;
     m.add("TmslIoError", TmslIoError::type_object(m.py()))?;

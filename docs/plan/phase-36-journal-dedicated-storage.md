@@ -38,7 +38,7 @@ Out of scope:
 - Create: `src/journal/queue.rs` — JournalQueue and JournalQueueConsumer.
 - Modify: `src/bg/mod.rs` — call `JournalManager::flush_dirty()` directly during flush task.
 - Modify: `src/store.rs` — replace public journal DataSet handle path with dedicated Store APIs.
-- Modify: `src/ffi.rs` and `include/timslite.h` — add dedicated journal C ABI.
+- Modify: `wrapper/cffi/src/lib.rs` and `wrapper/cffi/include/timslite.h` — add dedicated journal C ABI.
 - Modify: `wrapper/python/src/store.rs` and wrapper tests — expose Python journal APIs.
 - Modify tests: `tests/journal_test.rs`, `tests/queue_test.rs`, `tests/negative_test.rs`, and new focused tests as needed.
 
@@ -378,7 +378,7 @@ impl JournalManager {
 
 - [x] **Step 4: Remove public journal DataSet path**
 
-`Store::open_dataset(".journal", "logs")` must no longer return a read-only `DataSetHandle`.
+`Store::open_dataset(".journal", "logs")` must not return an ordinary `DataSet`; journal access uses dedicated Store journal APIs.
 
 - [x] **Step 5: Verify integration tests**
 
@@ -466,9 +466,9 @@ Expected: dedicated journal API tests pass.
 ## Task 8: C ABI And Header
 
 **Files:**
-- Modify: `src/ffi.rs`
-- Modify: `include/timslite.h`
-- Test: `src/ffi.rs`
+- Modify: `wrapper/cffi/src/lib.rs`
+- Modify: `wrapper/cffi/include/timslite.h`
+- Test: `wrapper/cffi/src/lib.rs`
 
 - [x] **Step 1: Add FFI tests first**
 

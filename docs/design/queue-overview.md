@@ -109,7 +109,7 @@ pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
 
 **所有权模型**: `DatasetQueue` 和 `DatasetQueueConsumer` 都是 Clone-safe handle, 内部通过 `Arc` 共享状态。`open_queue()` 返回一个 handle, 重复调用返回相同内部引用的新 handle。
 
-Rust public API ownership boundary: callers open and close ordinary dataset queues through `Store::open_queue(handle)` and `Store::close_queue(handle)`. `DataSet::open_queue`, `DataSet::close_queue`, `DatasetQueue::new`, `QueueInner`, and `ConsumerStateFile` are crate-internal plumbing; wrapper and FFI layers also route queue open/close through Store-owned handles.
+Rust public API ownership boundary: callers open and close ordinary dataset queues through `DataSet::open_queue()` and `DataSet::close_queue()` on the Store-managed `DataSet` returned by `Store::create_dataset*` or `Store::open_dataset*`. `DatasetQueue::new`, `QueueInner`, and `ConsumerStateFile` are crate-internal plumbing; wrapper layers route queue open through the public `DataSet` API.
 
 ### 28.4 API 概览
 
@@ -118,10 +118,10 @@ Rust public API ownership boundary: callers open and close ordinary dataset queu
 ```rust
 impl DataSet {
     /// 打开队列 (singleton, 重复调用返回已打开的 queue)
-    pub fn open_queue(&mut self) -> Result<DatasetQueue>;
+    pub fn open_queue(&self) -> Result<DatasetQueue>;
 
     /// 关闭队列 (自动关闭所有打开的 consumers)
-    pub fn close_queue(&mut self) -> Result<()>;
+    pub fn close_queue(&self) -> Result<()>;
 }
 ```
 #### DatasetQueue 方法
@@ -148,7 +148,7 @@ impl DataSet {
 
 #### C ABI Queue 方法
 
-Queue 正式进入 C ABI, 但 C 侧不直接持有 Rust `DatasetQueue` 或 `DataSetHandle`:
+Queue 由独立 `wrapper/cffi` crate (`timslitecffi`) 暴露到 C ABI。C 侧不直接持有 Rust `DatasetQueue`, 也不依赖主 crate 的 `DataSetHandle`:
 
 ```c
 typedef struct TmslQueueConsumerConfigFFI {
@@ -172,7 +172,7 @@ typedef struct TmslQueueConsumerConfigFFI {
 | `tmsl_queue_ack(consumer_handle, timestamp)` | ack 已 poll 的 timestamp | `0` 成功, `-1` 错误 |
 | `tmsl_queue_consumer_poll_callback(consumer_handle, callback, userdata)` | 为当前 consumer 注册轻量唤醒回调; `callback == NULL` 清除; 已有 callback 时重复设置非空 callback 返回错误 | `0` 成功, `-1` 错误 |
 
-FFI queue/consumer 是 Store 的子句柄。`tmsl_store_close` 在存在 queue 或 consumer handle 时必须失败; `tmsl_dataset_close` 在该 dataset 仍有 queue handle 时必须失败。`tmsl_queue_close` 会移除该 queue 下所有 FFI consumer handle, 防止 C 侧继续 poll/ack 已关闭 queue。
+FFI queue/consumer 是 `timslitecffi` 自己维护的 wrapper 句柄, 不属于主 `timslite` crate 的 Store registry。`tmsl_queue_close` 会移除该 queue 下所有 FFI consumer handle, 防止 C 侧继续 poll/ack 已关闭 queue。
 
 Journal queue 使用专用 FFI:
 
@@ -212,9 +212,9 @@ journal_consumer.poll_callback(None)
 ### 28.5 生命周期
 
 ```
-Dataset.open()
+Store.open_dataset()
     ↓
-Store.open_queue(handle) → DatasetQueue (singleton, repeatable)
+DataSet.open_queue() → DatasetQueue (singleton, repeatable)
     ↓
 DatasetQueue.open_consumer("group_a") → Consumer (multi-instance)
     ↓

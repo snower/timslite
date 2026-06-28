@@ -45,11 +45,11 @@ fn t8_1_1_basic_lifecycle() {
 
     for i in 0..100i64 {
         let data: Vec<u8> = format!("event_{}", i).into_bytes();
-        let ds_arc = store.get_dataset(&ds_handle).unwrap();
+        let ds_arc = ds_handle.clone();
         ds_arc.write(i + 1, &data).unwrap();
     }
 
-    let ds_arc = store.get_dataset(&ds_handle).unwrap();
+    let ds_arc = ds_handle.clone();
     let ds = ds_arc.clone();
     ds.flush().unwrap();
 
@@ -99,18 +99,18 @@ fn t8_1_2_multi_dataset_isolation() {
 
     for i in 0..50i64 {
         let data: Vec<u8> = format!("a_{}", i).into_bytes();
-        let ds_arc = store.get_dataset(&ds1).unwrap();
+        let ds_arc = ds1.clone();
         ds_arc.write(i + 1, &data).unwrap();
     }
     for i in 0..30i64 {
         let data: Vec<u8> = format!("b_{}", i).into_bytes();
-        let ds_arc = store.get_dataset(&ds2).unwrap();
+        let ds_arc = ds2.clone();
         ds_arc.write(i + 1, &data).unwrap();
     }
 
     // Verify dataset_a
     {
-        let ds_arc = store.get_dataset(&ds1).unwrap();
+        let ds_arc = ds1.clone();
         let ds = ds_arc.clone();
         let entries = ds.query(1, 50).unwrap();
         assert_eq!(entries.len(), 50);
@@ -122,7 +122,7 @@ fn t8_1_2_multi_dataset_isolation() {
 
     // Verify dataset_b isolated
     {
-        let ds_arc = store.get_dataset(&ds2).unwrap();
+        let ds_arc = ds2.clone();
         let ds = ds_arc.clone();
         let entries = ds.query(1, 30).unwrap();
         assert_eq!(entries.len(), 30);
@@ -154,17 +154,14 @@ fn t8_1_2b_store_read_query_latest_facade() {
         .unwrap();
     let handle = store.open_dataset("facade", "events").unwrap();
 
-    store.write_dataset(handle, 1, b"one").unwrap();
-    store.write_dataset(handle, 2, b"two").unwrap();
+    handle.write(1, b"one").unwrap();
+    handle.write(2, b"two").unwrap();
 
-    assert_eq!(store.latest_written_timestamp(handle).unwrap(), Some(2));
-    assert_eq!(store.read_dataset(handle, 1).unwrap().unwrap().1, b"one");
-    assert!(store.read_dataset(handle, -1).unwrap().is_none());
-    assert_eq!(
-        store.read_dataset_latest(handle).unwrap().unwrap().1,
-        b"two"
-    );
-    let rows = store.query_dataset(handle, 1, 2).unwrap();
+    assert_eq!(handle.latest_written_timestamp(), Some(2));
+    assert_eq!(handle.read(1).unwrap().unwrap().1, b"one");
+    assert!(handle.read(-1).unwrap().is_none());
+    assert_eq!(handle.read_latest().unwrap().unwrap().1, b"two");
+    let rows = handle.query(1, 2).unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].1, b"one");
     assert_eq!(rows[1].1, b"two");
@@ -195,11 +192,11 @@ fn t8_1_3_block_aggregation() {
 
     for i in 0..200i64 {
         let data: Vec<u8> = format!("value_{}", i).into_bytes();
-        let arc = store.get_dataset(&ds).unwrap();
+        let arc = ds.clone();
         arc.write(i + 1, &data).unwrap();
     }
 
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(1, 200).unwrap();
     assert_eq!(entries.len(), 200);
 
@@ -228,10 +225,10 @@ fn t8_1_6_persistence() {
         let ds = store.open_dataset("persist", "data").unwrap();
         for i in 0..50i64 {
             let data = format!("persist_{}", i).into_bytes();
-            let arc = store.get_dataset(&ds).unwrap();
+            let arc = ds.clone();
             arc.write(i + 1, &data).unwrap();
         }
-        let arc = store.get_dataset(&ds).unwrap();
+        let arc = ds.clone();
         arc.flush().unwrap();
         store.close().unwrap();
     }
@@ -240,7 +237,7 @@ fn t8_1_6_persistence() {
     {
         let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
         let ds = store.open_dataset("persist", "data").unwrap();
-        let arc = store.get_dataset(&ds).unwrap();
+        let arc = ds.clone();
         let entries = arc.query(1, 50).unwrap();
         assert_eq!(entries.len(), 50);
         for (i, (ts, data)) in entries.iter().enumerate() {
@@ -277,14 +274,14 @@ fn t8_1_7_flush_does_not_seal() {
     let ds = store.open_dataset("flush_test", "data").unwrap();
     let data = b"pending_data".to_vec();
     {
-        let arc = store.get_dataset(&ds).unwrap();
+        let arc = ds.clone();
         arc.write(1000, &data).unwrap();
     }
 
     // Wait for background flush
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(999, 1001).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, data);

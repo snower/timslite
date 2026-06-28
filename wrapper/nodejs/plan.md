@@ -238,15 +238,14 @@ wrapper/nodejs/
   - 支持 `CreateDatasetOptions`。
   - 使用 `DataSetConfigBuilder::from_store()`。
   - 调用 `create_dataset_with_config`。
-  - 通过 `Store::get_dataset` 获得 `Arc<DataSet>`。
+  - 使用 Rust `Store` 直接返回的 `DataSet` 构造 `Arc<DataSet>`。
 - [x] 实现 `Store.openDataset(...) -> Dataset`。
   - 调用 `Store::open_dataset`。
-  - 追踪 dataset id 和 Rust handle。
+  - 直接持有返回的 `DataSet`, dataset id 使用 Store-assigned identifier。
 - [x] 实现 `Store.openDatasetByIdentifier(identifier)`。
   - identifier 输入接受 number/bigint。
 - [x] 实现 `Store.dropDataset(name, datasetType)`。
-  - 调用 `drop_dataset_by_name`。
-  - 清理 wrapper tracking 中匹配项。
+  - 调用 `drop_dataset(name, datasetType)`。
 - [x] 实现 `Dataset` methods。
   - `write`, `append`, `delete`。
   - `read`, `readLatest`。
@@ -289,8 +288,8 @@ wrapper/nodejs/
 任务:
 
 - [x] 实现 `Store.openQueue(datasetOrId)`。
-  - 接受 `Dataset` 或 dataset id。
-  - 调用 `Store::open_queue(handle)`。
+  - 接受 `Dataset`。
+  - 调用 `DataSet::open_queue()`。
 - [x] 实现 `DatasetQueue`。
   - `push(data) -> bigint`。
   - `openConsumer(groupName, options?)`。

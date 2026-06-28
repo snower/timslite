@@ -1,4 +1,4 @@
-use rand::Rng;
+﻿use rand::Rng;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;

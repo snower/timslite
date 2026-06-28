@@ -1,4 +1,4 @@
-//! Dataset lifecycle tests: create/open/drop error handling and validation.
+﻿//! Dataset lifecycle tests: create/open/drop error handling and validation.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,13 +81,13 @@ fn direct_dataset_close_removes_store_entry_and_invalidates_handle() {
     let handle = store
         .create_dataset("direct_close", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
-    store.write_dataset(handle, 1, b"before close").unwrap();
+    handle.write(1, b"before close").unwrap();
 
-    let dataset = store.get_dataset(&handle).unwrap();
+    let dataset = handle.clone();
     dataset.close().unwrap();
 
     assert!(
-        store.read_dataset(handle, 1).is_err(),
+        handle.read(1).is_err(),
         "old Store handle should be invalid after direct DataSet::close"
     );
     assert!(
@@ -96,7 +96,7 @@ fn direct_dataset_close_removes_store_entry_and_invalidates_handle() {
     );
 
     let reopened = store.open_dataset("direct_close", "data").unwrap();
-    let row = store.read_dataset(reopened, 1).unwrap().unwrap();
+    let row = reopened.read(1).unwrap().unwrap();
     assert_eq!(row.1, b"before close");
 
     store.close().unwrap();
@@ -124,12 +124,12 @@ fn t8_2_3_drop_deletes_dataset() {
     let ds_handle = store.open_dataset("drop_test", "data").unwrap();
 
     // Write some data
-    let arc = store.get_dataset(&ds_handle).unwrap();
+    let arc = ds_handle.clone();
     arc.write(100, b"test").unwrap();
-    store.close_dataset(ds_handle).unwrap();
+    ds_handle.close().unwrap();
 
     // Drop the dataset
-    store.drop_dataset_by_name("drop_test", "data").unwrap();
+    store.drop_dataset("drop_test", "data").unwrap();
 
     // Verify directory is gone
     let dataset_dir = dir.join("drop_test").join("data");
@@ -157,13 +157,13 @@ fn t8_2_4_create_after_drop() {
         )
         .unwrap();
     let ds = store.open_dataset("recreate", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     arc.write(1, b"first").unwrap();
     store.close().unwrap();
 
     // Re-open store, drop, recreate
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
-    store.drop_dataset_by_name("recreate", "data").unwrap();
+    store.drop_dataset("recreate", "data").unwrap();
 
     // Now create should succeed (different params are fine since old data is gone)
     store
@@ -180,7 +180,7 @@ fn t8_2_4_create_after_drop() {
     let ds = store.open_dataset("recreate", "data").unwrap();
 
     // Data from first creation should be gone
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     let entries = arc.query(0, 10).unwrap();
     assert_eq!(entries.len(), 0);
 
@@ -205,7 +205,7 @@ fn t8_2_5_dataset_name_type_validation() {
             0,
         )
         .unwrap();
-    store.close_dataset(valid).unwrap();
+    valid.close().unwrap();
     assert!(dir
         .join("AZaz09-_")
         .join("type_09-OK")
@@ -241,7 +241,7 @@ fn t8_2_5_dataset_name_type_validation() {
     let invalid_open = store.open_dataset("AZaz09-_", "bad type");
     assert!(matches!(invalid_open, Err(TmslError::InvalidData(_))));
 
-    let invalid_drop = store.drop_dataset_by_name("..", "data");
+    let invalid_drop = store.drop_dataset("..", "data");
     assert!(matches!(invalid_drop, Err(TmslError::InvalidData(_))));
 }
 
@@ -269,7 +269,7 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
     let dir = temp_dir();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
 
-    // Space in name 鈫?rejected
+    // Space in name 閳?rejected
     let r = store.create_dataset(
         "my dataset",
         "data",
@@ -284,7 +284,7 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
         "space in name should be rejected"
     );
 
-    // Backslash 鈫?rejected
+    // Backslash 閳?rejected
     let r = store.create_dataset(
         "my\\dataset",
         "data",
@@ -299,7 +299,7 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
         "backslash in name should be rejected"
     );
 
-    // Unicode characters 鈫?rejected (non-ASCII)
+    // Unicode characters 閳?rejected (non-ASCII)
     let r = store.create_dataset(
         "\u{6570}\u{636e}\u{96c6}",
         "data",
@@ -314,7 +314,7 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
         "unicode in name should be rejected"
     );
 
-    // Exactly 255-byte name 鈫?accepted (boundary)
+    // Exactly 255-byte name 閳?accepted (boundary)
     let name_255 = "a".repeat(255);
     let r = store.create_dataset(&name_255, "data", 1024 * 1024, 64 * 1024, 6, 0, 0);
     assert!(
@@ -323,7 +323,7 @@ fn t8_2_7_dataset_name_edge_cases_unicode_space_backslash_boundary() {
         r.err()
     );
 
-    // 256-byte name 鈫?rejected (over limit)
+    // 256-byte name 閳?rejected (over limit)
     let name_256 = "b".repeat(256);
     let r = store.create_dataset(&name_256, "data", 1024 * 1024, 64 * 1024, 6, 0, 0);
     assert!(r.is_err(), "256-byte name should be rejected");
@@ -406,7 +406,7 @@ fn t8_2_10_store_close_with_open_dataset_handles() {
 
     // Write some data
     {
-        let arc = store.get_dataset(&_h1).unwrap();
+        let arc = _h1.clone();
         arc.write(1, b"data1").unwrap();
     }
 
@@ -422,7 +422,7 @@ fn t8_2_10_store_close_with_open_dataset_handles() {
     // Verify data persisted
     let mut store2 = Store::open(&dir, StoreConfig::default()).unwrap();
     let h = store2.open_dataset("ds1", "data").unwrap();
-    let arc = store2.get_dataset(&h).unwrap();
+    let arc = h.clone();
     let entries = arc.query(1, 1).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].1, b"data1");

@@ -155,9 +155,8 @@ impl StoreBridge {
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
         match guard.as_mut() {
             Some(store) => {
-                let handle = store.open_dataset(&name, &dataset_type)?;
-                let ds = store.get_dataset(&handle)?;
-                Ok(Arc::new(DatasetBridge::new(ds)))
+                let ds = store.open_dataset(&name, &dataset_type)?;
+                Ok(Arc::new(DatasetBridge::new(Arc::new(ds))))
             }
             None => Err(TmslError::StoreClosed {
                 message: "store is closed".into(),
@@ -175,9 +174,8 @@ impl StoreBridge {
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
         match guard.as_mut() {
             Some(store) => {
-                let handle = store.open_dataset_by_identifier(identifier)?;
-                let ds = store.get_dataset(&handle)?;
-                Ok(Arc::new(DatasetBridge::new(ds)))
+                let ds = store.open_dataset_by_identifier(identifier)?;
+                Ok(Arc::new(DatasetBridge::new(Arc::new(ds))))
             }
             None => Err(TmslError::StoreClosed {
                 message: "store is closed".into(),
@@ -196,7 +194,7 @@ impl StoreBridge {
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
         match guard.as_mut() {
             Some(store) => {
-                store.drop_dataset_by_name(&name, &dataset_type)?;
+                store.drop_dataset(&name, &dataset_type)?;
                 Ok(())
             }
             None => Err(TmslError::StoreClosed {
@@ -324,20 +322,8 @@ impl StoreBridge {
     }
 
     pub fn open_queue(&self, dataset: Arc<DatasetBridge>) -> Result<Arc<QueueBridge>, TmslError> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        match guard.as_mut() {
-            Some(store) => {
-                let handle = store.open_dataset_by_identifier(dataset.identifier())?;
-                let queue = store.open_queue(handle)?;
-                Ok(Arc::new(QueueBridge::new(queue)))
-            }
-            None => Err(TmslError::StoreClosed {
-                message: "store is closed".into(),
-            }),
-        }
+        let queue = dataset.inner.open_queue()?;
+        Ok(Arc::new(QueueBridge::new(queue)))
     }
 
     pub fn open_journal_queue(&self) -> Result<Arc<JournalQueueBridge>, TmslError> {

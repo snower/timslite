@@ -1,4 +1,4 @@
-//! PyStoreConfig — kwargs-based configuration (no builder pattern in Python).
+//! PyStoreConfig 鈥?kwargs-based configuration (no builder pattern in Python).
 
 use pyo3::prelude::*;
 use pyo3::types::PyType;

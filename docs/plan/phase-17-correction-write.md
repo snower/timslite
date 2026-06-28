@@ -250,7 +250,7 @@ fn correct_write(&mut self, timestamp: i64, data: &[u8]) -> Result<()> {
 
 ### 2.5 无需修改的文件
 
-`src/config.rs`, `src/meta.rs`, `src/ffi.rs`, `include/timslite.h`, `src/index/segment.rs`
+`src/config.rs`, `src/meta.rs`, `wrapper/cffi/src/lib.rs`, `wrapper/cffi/include/timslite.h`, `src/index/segment.rs`
 
 ## 3. 测试计划
 

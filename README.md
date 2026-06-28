@@ -1,6 +1,6 @@
 # timslite
 
-> 高性能 Rust 时序数据存储库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、C ABI FFI、Python wrapper、Node.js wrapper 和 Java wrapper。
+> 高性能 Rust 时序数据存储库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、独立 C ABI wrapper、Python wrapper、Node.js wrapper 和 Java wrapper。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
@@ -8,7 +8,7 @@
 
 timslite 是一个可嵌入到其它项目中的本地时序数据存储引擎。它面向需要高性能本地写入、精确时间戳读取、范围查询、持久化消费队列和轻量变更日志的应用，不需要单独部署数据库服务。
 
-你可以把它作为 Rust library 使用，也可以编译为 `cdylib` 后通过 C ABI 接入 C/C++/Go 等宿主，还可以通过 `wrapper/python` 在 Python 项目中、通过 `wrapper/nodejs` 在 Node.js 项目中、或通过 `wrapper/java` 在 Java/Kotlin 项目中使用。
+你可以把主项目作为标准 Rust library 使用。C ABI 已迁移到独立的 `wrapper/cffi` crate (`timslitecffi`)，Python/Node.js/Java wrapper 分别位于 `wrapper/python`、`wrapper/nodejs` 和 `wrapper/java`。
 
 ## 当前状态
 
@@ -17,7 +17,7 @@ timslite 仍处于首次正式发布前的开发阶段。Rust API、C ABI、Pyth
 当前可用能力:
 
 - Rust 核心存储引擎已实现。
-- C ABI 头文件维护在 [include/timslite.h](include/timslite.h)。
+- C ABI wrapper 位于 [wrapper/cffi](wrapper/cffi)，头文件维护在 [wrapper/cffi/include/timslite.h](wrapper/cffi/include/timslite.h)。
 - Python wrapper 位于 [wrapper/python](wrapper/python)。
 - Node.js wrapper 位于 [wrapper/nodejs](wrapper/nodejs)。
 - Java wrapper 位于 [wrapper/java](wrapper/java)。
@@ -66,7 +66,7 @@ timslite 不需要外部数据库进程。主要 Rust 依赖:
 - `zstd`: 默认 block 压缩算法。
 - `miniz_oxide`: deflate 压缩支持。
 - `log`: 日志门面。
-- `libc`: C ABI 内存分配和释放边界。
+主 Rust library 不依赖 C ABI 运行时；`libc` 仅用于独立的 `wrapper/cffi` crate。
 
 ## 快速开始
 
@@ -83,8 +83,7 @@ fn main() -> timslite::Result<()> {
 
     let dataset_config = DataSetConfigBuilder::from_store(&store_config)
         .index_continuous(0)
-        .retention_window(0)
-        .build();
+        .retention_window(0);
 
     let dataset = store.create_dataset_with_config(
         "sensor",
@@ -92,13 +91,13 @@ fn main() -> timslite::Result<()> {
         Some(dataset_config),
     )?;
 
-    store.write_dataset(dataset, 1_700_000_001, b"21.5")?;
-    store.write_dataset(dataset, 1_700_000_002, b"21.7")?;
+    dataset.write(1_700_000_001, b"21.5")?;
+    dataset.write(1_700_000_002, b"21.7")?;
 
-    let row = store.read_dataset(dataset, 1_700_000_001)?;
+    let row = dataset.read(1_700_000_001)?;
     assert_eq!(row.unwrap().1, b"21.5");
 
-    let rows = store.query_dataset(dataset, 1_700_000_001, 1_700_000_010)?;
+    let rows = dataset.query(1_700_000_001, 1_700_000_010)?;
     assert_eq!(rows.len(), 2);
 
     store.close()?;
@@ -115,14 +114,14 @@ fn main() -> timslite::Result<()> {
     let mut store = Store::open("./data/timslite", StoreConfig::default())?;
     let dataset = store.open_dataset("sensor", "temperature")?;
 
-    let latest = store.read_dataset(dataset, -1)?;
+    let latest = dataset.read_latest()?;
     println!("latest: {:?}", latest);
 
     Ok(())
 }
 ```
 
-`read_dataset(handle, -1)` 会读取 `latest_written_timestamp` 对应的精确 timestamp。如果该 timestamp 已删除或已过期，会返回 `Ok(None)`，不会自动向前搜索上一条有效数据。
+`DataSet::read_latest()` 会读取 `latest_written_timestamp` 对应的精确 timestamp。如果该 timestamp 已删除或已过期，会返回 `Ok(None)`，不会自动向前搜索上一条有效数据。`DataSet::read(timestamp)` 始终表示精确 timestamp 读取。
 
 ## 核心概念
 
@@ -130,7 +129,7 @@ fn main() -> timslite::Result<()> {
 
 `Store` 是顶层入口，负责:
 
-- dataset registry 和 dataset handle。
+- dataset 生命周期、registry、全局运行时上下文。
 - 全局 immutable compressed-block cache。
 - 可选后台维护线程。
 - 可选内置 `.journal/logs` dataset。
@@ -226,7 +225,7 @@ fn main() -> timslite::Result<()> {
     let mut store = Store::open("./data/timslite-queue", StoreConfig::default())?;
     let dataset = store.create_dataset_with_config("jobs", "default", None)?;
 
-    let queue = store.open_queue(dataset)?;
+    let queue = dataset.open_queue()?;
     let consumer = queue.open_consumer("worker_1")?;
 
     let ts = queue.push(b"job payload")?;
@@ -272,8 +271,7 @@ let consumer = journal_queue.open_consumer("migrator_1")?;
 
 ```rust
 let dataset_config = timslite::DataSetConfigBuilder::from_store(&store_config)
-    .retention_window(30 * 86400) // timestamp 为秒时表示 30 天
-    .build();
+    .retention_window(30 * 86400); // timestamp 为秒时表示 30 天
 ```
 
 启用 retention 后:
@@ -285,7 +283,7 @@ let dataset_config = timslite::DataSetConfigBuilder::from_store(&store_config)
 
 ## C ABI
 
-公开 C 头文件位于 [include/timslite.h](include/timslite.h)。
+C ABI 是独立 wrapper crate，不属于主 `timslite` Rust library。公开 C 头文件位于 [wrapper/cffi/include/timslite.h](wrapper/cffi/include/timslite.h)，实现位于 [wrapper/cffi](wrapper/cffi)，crate 名为 `timslitecffi`。
 
 主要 API 组:
 

@@ -1,4 +1,4 @@
-//! Negative tests: error paths and boundary conditions for all public APIs.
+﻿//! Negative tests: error paths and boundary conditions for all public APIs.
 //!
 //! Covers:
 //! - DataSet error paths (delete/read/query on invalid state)
@@ -30,7 +30,7 @@ fn make_store(dir: &PathBuf) -> timslite::Store {
     Store::open(dir, StoreConfig::default()).unwrap()
 }
 
-fn create_dataset(store: &mut timslite::Store, name: &str, dtype: &str) -> timslite::DataSetHandle {
+fn create_dataset(store: &mut timslite::Store, name: &str, dtype: &str) -> timslite::DataSet {
     store
         .create_dataset(name, dtype, 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
         .unwrap()
@@ -60,7 +60,7 @@ fn negative_delete_nonexistent_timestamp() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds1", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     let ds = arc.clone();
     // Write one record so dataset is not empty
@@ -85,7 +85,7 @@ fn negative_correction_write_rejected_for_sealed() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds2", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     {
         let ds = arc.clone();
@@ -122,7 +122,7 @@ fn negative_read_latest_no_data_and_minus_one_exact() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds3", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     let ds = arc.clone();
     assert!(ds.read_latest().unwrap().is_none());
@@ -135,7 +135,7 @@ fn negative_query_start_greater_than_end() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds4", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     let ds = arc.clone();
     ds.write(100, b"data").unwrap();
@@ -150,7 +150,7 @@ fn negative_query_exist_start_greater_than_end() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds5", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     let ds = arc.clone();
     ds.write(100, b"data").unwrap();
@@ -164,7 +164,7 @@ fn negative_read_length_nonexistent() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds6", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     let ds = arc.clone();
     ds.write(100, b"hello").unwrap();
@@ -178,7 +178,7 @@ fn negative_query_length_start_greater_than_end() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds7", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     let ds = arc.clone();
     ds.write(100, b"data").unwrap();
@@ -192,7 +192,7 @@ fn negative_flush_empty_dataset() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds8", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     let ds = arc.clone();
     // Flush with no data should succeed (no-op)
@@ -205,7 +205,7 @@ fn negative_append_oversized_data() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "ds9", "data");
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
 
     let ds = arc.clone();
     let big_data = vec![0xBBu8; 5 * 1024 * 1024]; // 5MB
@@ -227,7 +227,7 @@ fn negative_write_close_reopen_verify() {
     {
         let mut store = make_store(&dir);
         let h = create_dataset(&mut store, "ds10", "data");
-        let arc = store.get_dataset(&h).unwrap();
+        let arc = h.clone();
         let ds = arc.clone();
         ds.write(42, b"persistent").unwrap();
         ds.flush().unwrap();
@@ -235,7 +235,7 @@ fn negative_write_close_reopen_verify() {
     // Reopen
     let mut store = make_store(&dir);
     let h = store.open_dataset("ds10", "data").unwrap();
-    let arc = store.get_dataset(&h).unwrap();
+    let arc = h.clone();
     let ds = arc.clone();
     let result = ds.read(42).unwrap();
     assert!(result.is_some());
@@ -322,30 +322,12 @@ fn negative_open_invalid_name() {
     assert_err_contains(result, "must match");
 }
 
-/// close_dataset with invalid handle - returns Ok (no-op, handle not found).
-#[test]
-fn negative_close_invalid_handle() {
-    let dir = temp_dir();
-    let mut store = make_store(&dir);
-    // close_dataset returns Ok for invalid handle (no-op)
-    store.close_dataset(timslite::DataSetHandle(9999)).unwrap();
-}
-
-/// drop_dataset with invalid handle should fail.
-#[test]
-fn negative_drop_invalid_handle() {
-    let dir = temp_dir();
-    let mut store = make_store(&dir);
-    let result = store.drop_dataset(timslite::DataSetHandle(9999));
-    assert_err_contains(result, "not found");
-}
-
-/// drop_dataset_by_name nonexistent should fail.
+/// drop_dataset nonexistent should fail.
 #[test]
 fn negative_drop_by_name_nonexistent() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
-    let result = store.drop_dataset_by_name("no_such", "data");
+    let result = store.drop_dataset("no_such", "data");
     assert!(result.is_err());
     // Error could be "not found" or I/O error (path not found)
     let err = result.unwrap_err();
@@ -356,105 +338,6 @@ fn negative_drop_by_name_nonexistent() {
             || msg.contains("os error"),
         "unexpected error: {msg}"
     );
-}
-
-/// get_dataset with invalid handle should fail.
-#[test]
-fn negative_get_invalid_handle() {
-    let dir = temp_dir();
-    let store = make_store(&dir);
-    let result = store.get_dataset(&timslite::DataSetHandle(9999));
-    assert_err_contains(result, "not found");
-}
-
-/// write_dataset with invalid handle should fail.
-#[test]
-fn negative_write_invalid_handle() {
-    let dir = temp_dir();
-    let mut store = make_store(&dir);
-    let result = store.write_dataset(timslite::DataSetHandle(9999), 1, b"data");
-    assert_err_contains(result, "not found");
-}
-
-/// read_dataset with invalid handle should fail.
-#[test]
-fn negative_read_invalid_handle() {
-    let dir = temp_dir();
-    let store = make_store(&dir);
-    let result = store.read_dataset(timslite::DataSetHandle(9999), 1);
-    assert_err_contains(result, "not found");
-}
-
-/// append_dataset with invalid handle should fail.
-#[test]
-fn negative_append_invalid_handle() {
-    let dir = temp_dir();
-    let mut store = make_store(&dir);
-    let result = store.append_dataset(timslite::DataSetHandle(9999), 1, b"data");
-    assert_err_contains(result, "not found");
-}
-
-/// delete_dataset_record with invalid handle should fail.
-#[test]
-fn negative_delete_invalid_handle() {
-    let dir = temp_dir();
-    let mut store = make_store(&dir);
-    let result = store.delete_dataset_record(timslite::DataSetHandle(9999), 1);
-    assert_err_contains(result, "not found");
-}
-
-/// query_dataset with invalid handle should fail.
-#[test]
-fn negative_query_invalid_handle() {
-    let dir = temp_dir();
-    let store = make_store(&dir);
-    let result = store.query_dataset(timslite::DataSetHandle(9999), 0, 100);
-    assert_err_contains(result, "not found");
-}
-
-/// dataset_read_exist with invalid handle should fail.
-#[test]
-fn negative_read_exist_invalid_handle() {
-    let dir = temp_dir();
-    let store = make_store(&dir);
-    let result = store.dataset_read_exist(timslite::DataSetHandle(9999), 1);
-    assert_err_contains(result, "not found");
-}
-
-/// dataset_query_exist with invalid handle should fail.
-#[test]
-fn negative_query_exist_invalid_handle() {
-    let dir = temp_dir();
-    let store = make_store(&dir);
-    let result = store.dataset_query_exist(timslite::DataSetHandle(9999), 0, 100);
-    assert_err_contains(result, "not found");
-}
-
-/// dataset_read_length with invalid handle should fail.
-#[test]
-fn negative_read_length_invalid_handle() {
-    let dir = temp_dir();
-    let store = make_store(&dir);
-    let result = store.dataset_read_length(timslite::DataSetHandle(9999), 1);
-    assert_err_contains(result, "not found");
-}
-
-/// dataset_query_length with invalid handle should fail.
-#[test]
-fn negative_query_length_invalid_handle() {
-    let dir = temp_dir();
-    let store = make_store(&dir);
-    let result = store.dataset_query_length(timslite::DataSetHandle(9999), 0, 100);
-    assert_err_contains(result, "not found");
-}
-
-/// latest_written_timestamp with invalid handle should fail.
-#[test]
-fn negative_latest_timestamp_invalid_handle() {
-    let dir = temp_dir();
-    let store = make_store(&dir);
-    let result = store.latest_written_timestamp(timslite::DataSetHandle(9999));
-    assert_err_contains(result, "not found");
 }
 
 /// inspect_dataset nonexistent should fail.
@@ -522,9 +405,9 @@ fn negative_open_consumer_nonexistent_group() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q1", "data");
-    let queue = store.open_queue(h).unwrap();
+    let queue = h.open_queue().unwrap();
     // open_consumer creates a new group if it doesn't exist
-    let result = store.open_consumer(&queue, "new_group");
+    let result = queue.open_consumer("new_group");
     assert!(result.is_ok());
 }
 
@@ -534,8 +417,8 @@ fn negative_drop_consumer_nonexistent_group() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q2", "data");
-    let queue = store.open_queue(h).unwrap();
-    let result = store.drop_consumer(&queue, "no_such_group");
+    let queue = h.open_queue().unwrap();
+    let result = queue.drop_consumer("no_such_group");
     assert_err_contains(result, "consumer group not found");
 }
 
@@ -545,8 +428,8 @@ fn negative_queue_push_empty_data() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q3", "data");
-    let queue = store.open_queue(h).unwrap();
-    let result = store.queue_push(&queue, b"");
+    let queue = h.open_queue().unwrap();
+    let result = queue.push(b"");
     // Empty data may be accepted (no-op) or rejected - both are valid
     match result {
         Ok(_) => {} // Accepted as no-op
@@ -566,9 +449,9 @@ fn negative_queue_push_oversized() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q4", "data");
-    let queue = store.open_queue(h).unwrap();
+    let queue = h.open_queue().unwrap();
     let big = vec![0xCCu8; 5 * 1024 * 1024];
-    let result = store.queue_push(&queue, &big);
+    let result = queue.push(&big);
     if let Err(e) = result {
         let msg = e.to_string();
         assert!(
@@ -586,7 +469,7 @@ fn negative_open_consumer_invalid_group_name() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q5", "data");
-    let queue = store.open_queue(h).unwrap();
+    let queue = h.open_queue().unwrap();
     for name in &[
         "bad/name",
         "bad name",
@@ -596,7 +479,7 @@ fn negative_open_consumer_invalid_group_name() {
         "bad.group",
         "bad\tgroup",
     ] {
-        let result = store.open_consumer(&queue, name);
+        let result = queue.open_consumer(name);
         assert_err_contains(result, "must match");
     }
 }
@@ -607,8 +490,8 @@ fn negative_open_queue_twice() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q6", "data");
-    let _queue1 = store.open_queue(h).unwrap();
-    let result = store.open_queue(h);
+    let _queue1 = h.open_queue().unwrap();
+    let result = h.open_queue();
     assert_err_contains(result, "queue already open");
 }
 
@@ -618,10 +501,10 @@ fn negative_close_then_reopen_queue() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q7", "data");
-    let _queue = store.open_queue(h).unwrap();
-    store.close_queue(h).unwrap();
+    let _queue = h.open_queue().unwrap();
+    h.close_queue().unwrap();
     // Reopen should succeed
-    let _queue2 = store.open_queue(h).unwrap();
+    let _queue2 = h.open_queue().unwrap();
 }
 
 /// queue_push after close_queue should fail.
@@ -630,10 +513,10 @@ fn negative_queue_push_after_close_queue() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "q8", "data");
-    let queue = store.open_queue(h).unwrap();
-    store.close_queue(h).unwrap();
+    let queue = h.open_queue().unwrap();
+    h.close_queue().unwrap();
     // Push after close should fail
-    let result = store.queue_push(&queue, b"data");
+    let result = queue.push(b"data");
     assert!(result.is_err());
 }
 
@@ -739,24 +622,24 @@ fn negative_read_after_drop() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "dropped", "data");
-    store.drop_dataset(h).unwrap();
-    let result = store.get_dataset(&h);
-    assert_err_contains(result, "not found");
+    h.write(1, b"before-drop").unwrap();
+    store.drop_dataset("dropped", "data").unwrap();
+    assert!(h.read(1).is_err());
 }
 
-/// close_dataset then operations should fail.
+/// DataSet::close then operations should fail.
 #[test]
 fn negative_operations_after_close() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
     let h = create_dataset(&mut store, "closed_ds", "data");
-    store.close_dataset(h).unwrap();
+    h.close().unwrap();
     // All operations on closed handle should fail
-    assert!(store.write_dataset(h, 1, b"data").is_err());
-    assert!(store.read_dataset(h, 1).is_err());
-    assert!(store.delete_dataset_record(h, 1).is_err());
-    assert!(store.append_dataset(h, 1, b"data").is_err());
-    assert!(store.query_dataset(h, 0, 100).is_err());
+    assert!(h.write(1, b"data").is_err());
+    assert!(h.read(1).is_err());
+    assert!(h.delete(1).is_err());
+    assert!(h.append(1, b"data").is_err());
+    assert!(h.query(0, 100).is_err());
 }
 
 /// Multiple datasets with same name but different types should work.
@@ -779,9 +662,9 @@ fn negative_same_name_different_type() {
 fn negative_drop_one_type_keep_other() {
     let dir = temp_dir();
     let mut store = make_store(&dir);
-    let h1 = create_dataset(&mut store, "keep", "type_a");
+    let _h1 = create_dataset(&mut store, "keep", "type_a");
     let _h2 = create_dataset(&mut store, "keep", "type_b");
-    store.drop_dataset(h1).unwrap();
+    store.drop_dataset("keep", "type_a").unwrap();
     // type_b should still exist
     let result = store.open_dataset("keep", "type_b");
     assert!(result.is_ok());

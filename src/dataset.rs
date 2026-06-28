@@ -21,7 +21,8 @@ use crate::query::hot_block::HotBlockCache;
 use crate::query::iter::{QueryIterator, QuerySource};
 use crate::query::length_iter::QueryLengthIterator as InnerQueryLengthIterator;
 use crate::queue::{
-    flush_queue_state_file, flush_queue_state_files, queue_dir_for, QueueInner, QueueNotifier,
+    flush_queue_state_file, flush_queue_state_files, queue_dir_for, DatasetQueue, QueueInner,
+    QueueNotifier,
 };
 use crate::segment::data::MAX_RECORD_DATA_SIZE;
 use crate::segment::DataSegmentSet;
@@ -475,11 +476,23 @@ impl DataSet {
         self.with_inner_ref(|inner| Ok(inner.queue_dir()))
     }
 
-    pub(crate) fn open_queue(&self) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
+    pub fn open_queue(&self) -> Result<DatasetQueue> {
+        if self.with_inner_ref(|inner| Ok(inner.runtime_context.read_only))? {
+            return Err(TmslError::InvalidData(
+                "read-only dataset cannot open queue".into(),
+            ));
+        }
+        let (inner, notify) = self.open_queue_components()?;
+        Ok(DatasetQueue::new(Arc::new(self.clone()), inner, notify))
+    }
+
+    pub(crate) fn open_queue_components(
+        &self,
+    ) -> Result<(Arc<Mutex<QueueInner>>, QueueCondvarPair)> {
         self.with_open_inner(|inner| inner.open_queue())
     }
 
-    pub(crate) fn close_queue(&self) -> Result<()> {
+    pub fn close_queue(&self) -> Result<()> {
         self.with_inner(|inner| inner.close_queue())
     }
 
@@ -2220,7 +2233,7 @@ mod tests {
             .unwrap()
             .clone();
         let ds_arc = Arc::new(DataSet::new(ds_inner));
-        let (inner, notify) = ds_arc.open_queue().unwrap();
+        let (inner, notify) = ds_arc.open_queue_components().unwrap();
         let queue = crate::queue::DatasetQueue::new(Arc::clone(&ds_arc), inner, notify);
         let consumer = queue.open_consumer("group1").unwrap();
 

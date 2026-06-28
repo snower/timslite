@@ -22,23 +22,20 @@ fn auto_read_only_opens_when_writer_holds_lock_and_rejects_mutations() {
     let handle = writer
         .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
         .unwrap();
-    writer.write_dataset(handle, 1, b"one").unwrap();
-    writer.get_dataset(&handle).unwrap().flush().unwrap();
+    handle.write(1, b"one").unwrap();
+    handle.clone().flush().unwrap();
 
     let mut reader = Store::open(&dir, StoreConfig::default()).unwrap();
     assert!(reader.is_read_only());
     let read_handle = reader.open_dataset("metrics", "raw").unwrap();
-    assert_eq!(
-        reader.read_dataset(read_handle, 1).unwrap(),
-        Some((1, b"one".to_vec()))
-    );
-    assert!(reader.write_dataset(read_handle, 2, b"two").is_err());
+    assert_eq!(read_handle.read(1).unwrap(), Some((1, b"one".to_vec())));
+    assert!(read_handle.write(2, b"two").is_err());
     assert!(reader
         .create_dataset("other", "raw", 262144, 4096, 0, 0, 0)
         .is_err());
-    assert!(reader.open_queue(read_handle).is_err());
-    let writer_queue = writer.open_queue(handle).unwrap();
-    assert!(reader.open_consumer(&writer_queue, "reader").is_err());
+    assert!(read_handle.open_queue().is_err());
+    let writer_queue = handle.open_queue().unwrap();
+    writer_queue.open_consumer("writer").unwrap();
     assert!(reader.tick_background_tasks().is_err());
     assert!(reader.next_background_delay().is_err());
 }
@@ -82,7 +79,7 @@ fn read_only_journal_reads_existing_records_and_missing_journal_is_empty() {
         let handle = writer
             .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
             .unwrap();
-        writer.write_dataset(handle, 1, b"one").unwrap();
+        handle.write(1, b"one").unwrap();
         writer.close().unwrap();
     }
 

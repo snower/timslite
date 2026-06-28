@@ -1,4 +1,4 @@
-//! Append tests: pending block capacity, sealed block, empty data, timestamp order.
+﻿//! Append tests: pending block capacity, sealed block, empty data, timestamp order.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,7 +42,7 @@ fn t32_1_append_existing_latest_exceeding_pending_capacity_errors() {
         .unwrap();
 
     let ds = store.open_dataset("append_migrate", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write initial record
     {
@@ -117,7 +117,7 @@ fn t32_2_append_to_sealed_block() {
         .unwrap();
 
     let ds = store.open_dataset("append_sealed", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write record at timestamp 100
     {
@@ -183,7 +183,7 @@ fn t32_3_append_empty_data() {
         .unwrap();
 
     let ds = store.open_dataset("append_empty", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write initial record
     {
@@ -237,7 +237,7 @@ fn t32_4_append_timestamp_order() {
         .unwrap();
 
     let ds = store.open_dataset("append_order", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write records at timestamps 100, 200, 300
     {
@@ -300,7 +300,7 @@ fn t32_5_append_forward_new_record() {
         .unwrap();
 
     let ds = store.open_dataset("append_forward", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write initial record
     {
@@ -375,7 +375,7 @@ fn t32_6_append_to_tail_record() {
         .unwrap();
 
     let ds = store.open_dataset("append_tail", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write initial record
     {
@@ -423,7 +423,7 @@ fn t32_7_append_to_deleted_latest() {
         .unwrap();
 
     let ds = store.open_dataset("append_del", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     arc.write(100, b"first").unwrap();
     arc.write(200, b"latest").unwrap();
@@ -459,7 +459,7 @@ fn t32_8_append_to_sealed_block() {
         .unwrap();
 
     let ds = store.open_dataset("append_sealed", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     let big_data = vec![0xAAu8; 10_000];
     for i in 1..=7i64 {

@@ -82,7 +82,7 @@
 - [x] `store_config_to_ffi()` writes `enable_journal`.
 - [x] `store_config_from_ffi()` reads `enable_journal`.
 - [-] Old FFI config versions are not accepted; this phase does not preserve old-version config compatibility.
-- [x] `include/timslite.h` is synchronized.
+- [x] `wrapper/cffi/include/timslite.h` is synchronized.
 - [x] Python wrapper exposes `enable_journal`.
 
 ### Tests
@@ -173,12 +173,12 @@
 
 ### Implementation
 
-- [x] Store tracks read-only journal handles.
-- [x] `.journal/logs` public open is allowed only when journal is enabled.
-- [x] Allowed operations: close, read, query, query_iter, latest_timestamp, open_queue.
-- [x] Rejected operations: write, delete, drop, external queue push.
+- [x] Store keeps `.journal/logs` behind `JournalManager` dedicated APIs.
+- [x] `.journal/logs` public `open_dataset` is not exposed as an ordinary dataset.
+- [x] Allowed operations use dedicated APIs: `journal_latest_sequence`, `journal_read`, `journal_query`, `open_journal_queue`.
+- [x] Rejected operations: ordinary dataset write/delete/drop/open_queue against `.journal/logs`.
 - [x] `Store::open_journal_queue()` is implemented.
-- [x] `Store::open_queue(handle)` returns the journal queue for journal read-only handles.
+- [x] `Store::open_journal_queue()` returns the dedicated journal queue.
 - [x] `DatasetQueue` supports a read-only producer mode.
 - [x] Normal queue `push()` remains writable.
 - [x] Journal producer is internal to `JournalManager.append_*`.
@@ -272,8 +272,8 @@
 - [x] `src/dataset.rs`
 - [x] `src/store.rs`
 - [x] `src/queue/mod.rs`
-- [x] `src/ffi.rs`
-- [x] `include/timslite.h`
+- [x] `wrapper/cffi/src/lib.rs`
+- [x] `wrapper/cffi/include/timslite.h`
 - [x] `tests/integration_test.rs`
 - [x] `wrapper/python/src/config.rs`
 - [x] `wrapper/python/src/dataset.rs`

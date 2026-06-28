@@ -535,6 +535,12 @@ void* tmsl_dataset_query_length_iter(void* dataset, int64_t start_ts, int64_t en
 int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
                           char* err_buf, size_t err_buf_len);
 
+/**
+ * Close and free a length iterator returned by tmsl_dataset_query_length_iter.
+ * @param iter         Opaque length iterator pointer.
+ */
+void tmsl_length_iter_close(void* iter);
+
 /* Queue API */
 
 /**

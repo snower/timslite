@@ -43,7 +43,7 @@ int tmsl_store_next_background_delay(void* store, int64_t* out_next_delay_ms, ch
 - [x] `store.rs`: `Store::open` 按配置启用/禁用线程
 - [x] `store.rs`: `Store::tick_background_tasks()` + `Store::next_background_delay()`
 - [x] `ffi.rs`: 新增两个 FFI 函数
-- [x] `include/timslite.h`: 新增函数声明 + doxygen 注释
+- [x] `wrapper/cffi/include/timslite.h`: 新增函数声明 + doxygen 注释
 
 ## 3. 测试
 

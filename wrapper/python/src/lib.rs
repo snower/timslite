@@ -1,4 +1,4 @@
-//! timslite — High-performance time-series data storage for Python.
+//! timslite 鈥?High-performance time-series data storage for Python.
 //!
 //! Rust bindings via PyO3. Thin wrapper, Pythonic API.
 

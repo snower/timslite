@@ -5,10 +5,9 @@
 //! - Delayed compression (seal on overflow)
 //! - Lazy segment lifecycle (on-demand open, idle-close after 30min)
 //! - Time-indexed queries with binary search
-//! - C ABI FFI interface
 //! - Explicit create/open/drop lifecycle for datasets
 
-// Intentionally unused pub helpers / FFI-facing API 鈥?suppress dead_code warnings
+// Intentionally unused public helpers are kept for wrapper crates and tests.
 #![allow(dead_code)]
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::wrong_self_convention)]
@@ -45,7 +44,6 @@ mod cache;
 mod compress;
 mod dataset;
 mod dataset_state;
-mod ffi;
 mod header;
 mod index;
 mod journal;
@@ -67,7 +65,7 @@ pub use journal::{
 pub use queue::{
     DatasetQueue, DatasetQueueConsumer, PendingEntry, QueueConsumerConfig, QueuePollCallback,
 };
-pub use store::{DataSetHandle, Store};
+pub use store::Store;
 
 /// Queue state file magic bytes ("QSTF").
 pub const QUEUE_STATE_MAGIC: [u8; 4] = *queue::QUEUE_STATE_MAGIC;

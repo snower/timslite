@@ -209,7 +209,7 @@ class Store:
   - [x] TmslInspectResult 结构体
   - [x] tmsl_store_inspect_dataset
   - [x] tmsl_free_inspect_result (释放 info 字符串 + state)
-- [x] C 头文件更新 (include/timslite.h)
+- [x] C 头文件更新 (wrapper/cffi/include/timslite.h)
 - [x] Python wrapper 更新
   - [x] DataSetInfo PyClass
   - [x] DataSetState PyClass

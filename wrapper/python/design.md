@@ -33,7 +33,7 @@
 | `BlockCache` | Auto-managed by Store, no user interaction needed |
 | `HotBlockCache` | Internal optimization, no Python API needed |
 | `QuerySource`, `SourceIndex` | Internal iterator state |
-| `DataSetHandle` | Wrapped as opaque `Dataset` object |
+| Rust handle registry | Not exposed; `Dataset` wraps a Store-managed `DataSet` object |
 | `DataSetKey` | Internal key, never exposed |
 
 ---
@@ -286,7 +286,7 @@ class Dataset:
         """Base directory of this dataset."""
 ```
 
-**Rust backing**: `PyDataset` holds `Arc<DataSet>` from `Store::get_dataset()`.
+**Rust backing**: `PyDataset` holds `Arc<DataSet>` created from the `DataSet` returned by `Store::create_dataset*` or `Store::open_dataset*`.
 Each method calls `self.dataset.write(...)`, `self.dataset.read(...)`, etc.; the Rust DataSet owns the mutex.
 
 ### 3.4 `QueryIterator` — `#[pyclass]`

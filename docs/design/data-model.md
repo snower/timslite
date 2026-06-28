@@ -290,17 +290,10 @@ struct DataSetKey {
 // Store 层只接受非空且匹配 ^[0-9A-Za-z_-]+$ 的 name/type。
 // name/type 直接作为目录组件, 不做 escaping。
 
-/// FFI 数据集句柄 (不透明指针, 内部为 Arc ID)
-pub struct DataSetHandle(pub(crate) u64);
-
-/// 数据集句柄
+/// Store-managed public dataset operation view.
+/// C ABI wrapper has its own opaque dataset pointer in wrapper/cffi.
 struct DataSet {
-    id: DataSetKey,
-    base_dir: PathBuf,
-    config: DataSetConfig,
-    segments: DataSegmentSet,
-    time_index: TimeIndex,
-    last_used_at: Instant,
+    inner: Arc<Mutex<DataSetInner>>,
 }
 
 /// Store 配置: 后台/缓存等运行时设置 + 新建 DataSet 默认值。

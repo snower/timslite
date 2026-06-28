@@ -44,7 +44,7 @@ pub fn create_dataset_with_config(
     name: &str,
     dataset_type: &str,
     config_builder: Option<DataSetConfigBuilder>,
-) -> Result<DataSetHandle>
+) -> Result<DataSet>
 ```
 
 - `None` → 使用 `DataSetConfigBuilder::from_store(&self.config).build()` (全部 store 默认值)
@@ -59,7 +59,7 @@ pub fn create_dataset(
     &mut self, name: &str, dataset_type: &str,
     data_segment_size: u64, index_segment_size: u64,
     compress_level: u8, index_continuous: u8,
-) -> Result<DataSetHandle> {
+) -> Result<DataSet> {
     self.create_dataset_with_config(name, dataset_type, Some(
         DataSetConfigBuilder::from_store(&self.config)
             .data_segment_size(data_segment_size)

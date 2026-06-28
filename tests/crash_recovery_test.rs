@@ -1,4 +1,4 @@
-//! Recovery tests for Store-managed datasets after flush and drop without close.
+﻿//! Recovery tests for Store-managed datasets after flush and drop without close.
 
 use std::fs;
 use std::path::PathBuf;
@@ -46,7 +46,7 @@ fn t_crash_recover_pending_block_after_drop_without_close() {
         let handle = store
             .create_dataset_with_config("crash_ds", "data", None)
             .unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         ds.write(10, b"rec_10").unwrap();
         ds.write(20, b"rec_20").unwrap();
@@ -59,7 +59,7 @@ fn t_crash_recover_pending_block_after_drop_without_close() {
     {
         let mut store = Store::open(&dir, config).unwrap();
         let handle = store.open_dataset("crash_ds", "data").unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         let (ts, data) = ds.read(10).unwrap().unwrap();
         assert_eq!(ts, 10);
@@ -100,7 +100,7 @@ fn t_crash_recover_index_segment_integrity() {
         let handle = store
             .create_dataset_with_config("idx_ds", "data", None)
             .unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         for i in 1..=30i64 {
             ds.write(i * 10, format!("rec_{}", i * 10).as_bytes())
@@ -114,7 +114,7 @@ fn t_crash_recover_index_segment_integrity() {
     {
         let mut store = Store::open(&dir, config).unwrap();
         let handle = store.open_dataset("idx_ds", "data").unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         let info = ds.inspect().unwrap();
         assert!(
@@ -163,7 +163,7 @@ fn t_crash_recover_multiple_pending_records_after_drop() {
         let handle = store
             .create_dataset_with_config("multi_p", "data", None)
             .unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         for i in 1..=20i64 {
             let data = format!("payload_{}", i);
@@ -177,7 +177,7 @@ fn t_crash_recover_multiple_pending_records_after_drop() {
     {
         let mut store = Store::open(&dir, config).unwrap();
         let handle = store.open_dataset("multi_p", "data").unwrap();
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
 
         for i in 1..=20i64 {
             let result = ds.read(i * 10).unwrap();

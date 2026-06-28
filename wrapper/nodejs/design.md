@@ -258,7 +258,7 @@ class Dataset {
 }
 ```
 
-`Dataset` 持有 `Arc<timslite::DataSet>`。所有读写继续走 public `DataSet` API, 由 Rust 内部 mutex 保护。普通用户不接触 `DataSetHandle` 或 `Arc`。
+`Dataset` 持有 `Arc<timslite::DataSet>`。所有读写继续走 public `DataSet` API, 由 Rust 内部 mutex 保护。普通用户不接触 Rust 内部共享指针或锁。
 
 ### 5.7 Query iterators
 

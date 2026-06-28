@@ -69,7 +69,7 @@ Store 根目录新增:
 6. 创建 dataset 目录、`meta`、初始 data/index segment。
 7. 写入 `{dataset_dir}/identifier`, 内容为 `next_identifier.to_string()`。
 8. 更新 Store 内存中的 `max_identifier` 和 `identifier -> DataSetKey` cache。
-9. 注入 runtime context, 注册 dataset handle, 执行 journal create hook。
+9. 注入 runtime context, 放入 Store registry, 执行 journal create hook。
 
 Crash 边界:
 
@@ -84,8 +84,11 @@ Rust Store 新增:
 
 ```rust
 impl Store {
-    pub fn open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSetHandle>;
-    pub fn dataset_identifier(&self, handle: DataSetHandle) -> Result<u64>;
+    pub fn open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSet>;
+}
+
+impl DataSet {
+    pub fn identifier(&self) -> u64;
 }
 ```
 
@@ -96,7 +99,7 @@ impl Store {
 - cache miss 时临时扫描合法 public dataset 目录, 读取 `identifier` 并缓存匹配映射。
 - 扫描发现重复 identifier 返回 `InvalidData`。
 - 找到后等价于按对应 `(name,type)` 调用 `open_dataset`。
-- 如果目标 dataset 已经在 registry 中打开, 返回新的 handle 或复用现有 registry entry, 行为应与 `open_dataset(name,type)` 一致。
+- 如果目标 dataset 已经在 registry 中打开, 返回指向同一 Store-managed dataset 的 `DataSet` wrapper, 行为应与 `open_dataset(name,type)` 一致。
 - `.journal/logs` 不支持通过 id 打开。
 
 FFI 后续应同步增加:
@@ -113,11 +116,11 @@ int tmsl_dataset_identifier(void* dataset,
                             size_t err_buf_len);
 ```
 
-Python wrapper 后续应同步暴露:
+Python/Node.js/Java wrapper 同步暴露:
 
 ```python
 store.open_dataset_by_identifier(identifier: int) -> DataSet
-dataset.identifier() -> int
+dataset.identifier -> int
 ```
 
 ## 与 Inspect / Listing 的关系

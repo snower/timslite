@@ -1,8 +1,6 @@
-//! Integration tests for dataset inspect API.
+﻿//! Integration tests for dataset inspect API.
 
-use std::sync::Arc;
-
-use timslite::{DataSet, DataSetConfigBuilder, DataSetHandle, Store, StoreConfig};
+use timslite::{DataSet, DataSetConfigBuilder, Store, StoreConfig};
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join("timslite_inspect_test");
@@ -31,7 +29,7 @@ fn create_dataset(
     initial_data_segment_size: u64,
     initial_index_segment_size: u64,
     retention_window: u64,
-) -> (Store, DataSetHandle, Arc<DataSet>) {
+) -> (Store, DataSet, DataSet) {
     let mut store = Store::open(dir, store_config()).unwrap();
     let builder = DataSetConfigBuilder::from_store(store.config())
         .data_segment_size(data_segment_size)
@@ -44,7 +42,7 @@ fn create_dataset(
     let handle = store
         .create_dataset_with_config(name, dataset_type, Some(builder))
         .unwrap();
-    let dataset = store.get_dataset(&handle).unwrap();
+    let dataset = handle.clone();
     (store, handle, dataset)
 }
 
@@ -262,7 +260,7 @@ fn test_inspect_counts_archived_segments_after_reopen_without_opening_all_segmen
     ds.close().unwrap();
 
     let reopened_handle = store.open_dataset("sensor", "temperature").unwrap();
-    let reopened = store.get_dataset(&reopened_handle).unwrap();
+    let reopened = reopened_handle.clone();
     let result = reopened.inspect().unwrap();
 
     assert_eq!(result.state.open_data_segments, 0);
@@ -370,7 +368,7 @@ fn test_inspect_state_empty_dataset() {
 #[test]
 fn test_inspect_with_queue() {
     let dir = temp_dir("inspect_with_queue");
-    let (mut store, handle, ds) = create_dataset(
+    let (_store, handle, ds) = create_dataset(
         &dir,
         "sensor",
         "temperature",
@@ -384,7 +382,7 @@ fn test_inspect_with_queue() {
     );
 
     // Open queue
-    let _queue = store.open_queue(handle).unwrap();
+    let _queue = handle.open_queue().unwrap();
 
     let result = ds.inspect().unwrap();
 
@@ -410,7 +408,7 @@ fn test_store_inspect_unopened_dataset_opens_and_keeps_it_loaded() {
         let handle = store
             .create_dataset_with_config("inspect_lazy", "data", None)
             .unwrap();
-        store.write_dataset(handle, 1, b"row").unwrap();
+        handle.write(1, b"row").unwrap();
         store.close().unwrap();
     }
 
@@ -419,7 +417,7 @@ fn test_store_inspect_unopened_dataset_opens_and_keeps_it_loaded() {
     assert_eq!(result.info.name, "inspect_lazy");
 
     let handle = store.open_dataset("inspect_lazy", "data").unwrap();
-    assert_eq!(store.read_dataset(handle, 1).unwrap().unwrap().1, b"row");
+    assert_eq!(handle.read(1).unwrap().unwrap().1, b"row");
 }
 
 #[test]
@@ -444,7 +442,7 @@ fn test_inspect_after_drop() {
     assert_eq!(result.info.name, "sensor");
 
     // Drop the dataset
-    store.drop_dataset_by_name("sensor", "temperature").unwrap();
+    store.drop_dataset("sensor", "temperature").unwrap();
 
     // Inspect should fail after drop
     let result = store.inspect_dataset("sensor", "temperature");

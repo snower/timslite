@@ -1,4 +1,4 @@
-//! Journal integration tests.
+﻿//! Journal integration tests.
 
 use std::fs;
 use std::path::PathBuf;
@@ -50,6 +50,25 @@ fn read_all_journal_records(store: &mut Store) -> Vec<JournalRecord> {
         .collect()
 }
 
+fn write_with_mmap_release_retry(path: &std::path::Path, data: &[u8]) {
+    let mut last_err = None;
+    for _ in 0..20 {
+        match fs::write(path, data) {
+            Ok(()) => return,
+            Err(err) if err.raw_os_error() == Some(1224) => {
+                last_err = Some(err);
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => panic!("failed to write {:?}: {}", path, err),
+        }
+    }
+    panic!(
+        "failed to write {:?} after waiting for mmap release: {}",
+        path,
+        last_err.unwrap()
+    );
+}
+
 #[test]
 fn t28_0_store_reads_journal_source_record_through_safe_api() {
     let dir = temp_dir("source_record_api");
@@ -57,7 +76,7 @@ fn t28_0_store_reads_journal_source_record_through_safe_api() {
     let handle = store
         .create_dataset_with_config("source_ds", "data", None)
         .unwrap();
-    store.write_dataset(handle, 42, b"journal-source").unwrap();
+    handle.write(42, b"journal-source").unwrap();
 
     let record = read_all_journal_records(&mut store)
         .into_iter()
@@ -151,7 +170,7 @@ fn t28_5_journal_records_dataset_deletion() {
     store
         .create_dataset("t28_ds", "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
-    store.drop_dataset_by_name("t28_ds", "metrics").unwrap();
+    store.drop_dataset("t28_ds", "metrics").unwrap();
 
     let records = read_all_journal_records(&mut store);
     let deletion_records: Vec<_> = records
@@ -178,9 +197,9 @@ fn t28_6_journal_records_open_close() {
         .unwrap();
 
     let ds_handle = store.open_dataset("t28_ds", "metrics").unwrap();
-    store.close_dataset(ds_handle).unwrap();
+    ds_handle.close().unwrap();
     let ds_handle2 = store.open_dataset("t28_ds", "metrics").unwrap();
-    store.close_dataset(ds_handle2).unwrap();
+    ds_handle2.close().unwrap();
 
     let records = read_all_journal_records(&mut store);
     // Open/close may not log separate journal entries; verify journal has records.
@@ -263,9 +282,9 @@ fn t28_11_direct_dataset_mutations_use_store_context_journal() {
     let handle = store
         .create_dataset("ctx_ds", "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
-    let identifier = store.dataset_identifier(handle).unwrap();
+    let identifier = handle.identifier();
     {
-        let ds = store.get_dataset(&handle).unwrap();
+        let ds = handle.clone();
         let ds = ds.clone();
         ds.write(10, b"direct").unwrap();
         ds.append(20, b"append").unwrap();
@@ -342,7 +361,7 @@ fn t28_13_journal_dedicated_api_queryable_at_store_level() {
     store.close().unwrap();
 }
 
-// 鈹€鈹€鈹€ Journal 0x13 append tests (P0-J-1~2) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 Journal 0x13 append tests (P0-J-1~2) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn t28_14_append_writes_journal_0x13_record() {
@@ -356,10 +375,8 @@ fn t28_14_append_writes_journal_0x13_record() {
 
     // Use append to create a new record (forward append: ts > latest)
     let ds_handle = store.open_dataset("jds", "data").unwrap();
-    let identifier = store.dataset_identifier(ds_handle).unwrap();
-    store
-        .append_dataset(ds_handle, 1, b"append_data_1")
-        .unwrap();
+    let identifier = ds_handle.identifier();
+    ds_handle.append(1, b"append_data_1").unwrap();
 
     // Read journal records
     let records = read_all_journal_records(&mut store);
@@ -409,8 +426,8 @@ fn t28_15_journal_queue_consumes_0x13_records() {
 
     // Use append to create records
     let ds_handle = store.open_dataset("jds", "data").unwrap();
-    store.append_dataset(ds_handle, 1, b"append_1").unwrap();
-    store.append_dataset(ds_handle, 2, b"append_2").unwrap();
+    ds_handle.append(1, b"append_1").unwrap();
+    ds_handle.append(2, b"append_2").unwrap();
 
     // Poll journal queue for records
     let mut append_count = 0;
@@ -466,8 +483,8 @@ fn t41_4_journal_queue_unexpired_pending_does_not_block_next_record() {
     let c1 = queue.open_consumer_with_config("shared", config).unwrap();
     let c2 = queue.open_consumer_with_config("shared", config).unwrap();
 
-    store.write_dataset(handle, 1, b"first").unwrap();
-    store.write_dataset(handle, 2, b"second").unwrap();
+    handle.write(1, b"first").unwrap();
+    handle.write(2, b"second").unwrap();
 
     let (seq1, payload1) = c1.poll(Duration::from_millis(100)).unwrap().unwrap();
     let first = JournalRecord::decode(&payload1).unwrap();
@@ -499,8 +516,8 @@ fn t41_5_journal_queue_retry_limit_drops_before_next_sequence() {
         .unwrap();
     let consumer = queue.open_consumer_with_config("retry", config).unwrap();
 
-    store.write_dataset(handle, 1, b"first").unwrap();
-    store.write_dataset(handle, 2, b"second").unwrap();
+    handle.write(1, b"first").unwrap();
+    handle.write(2, b"second").unwrap();
 
     let (seq1, payload1) = consumer.poll(Duration::from_millis(100)).unwrap().unwrap();
     let first = JournalRecord::decode(&payload1).unwrap();
@@ -556,7 +573,7 @@ fn t44_2_poll_callback_runs_for_journal_queue_and_can_be_cleared() {
         })))
         .unwrap();
 
-    store.write_dataset(handle, 1, b"first").unwrap();
+    handle.write(1, b"first").unwrap();
     assert_eq!(hits.load(Ordering::SeqCst), 1);
     assert_eq!(duplicate_hits.load(Ordering::SeqCst), 0);
     assert_eq!(consumer2_hits.load(Ordering::SeqCst), 1);
@@ -571,7 +588,7 @@ fn t44_2_poll_callback_runs_for_journal_queue_and_can_be_cleared() {
     assert_eq!(record.index_info.unwrap().timestamp, 1);
 
     consumer.poll_callback(None).unwrap();
-    store.write_dataset(handle, 2, b"second").unwrap();
+    handle.write(2, b"second").unwrap();
     assert_eq!(
         hits.load(Ordering::SeqCst),
         1,
@@ -603,28 +620,22 @@ fn t39_1_dataset_journal_disabled_skips_all_record_kinds() {
             Some(DataSetConfigBuilder::from_store(&config).enable_journal(false)),
         )
         .unwrap();
-    let quiet_identifier = store.dataset_identifier(quiet_handle).unwrap();
+    let quiet_identifier = quiet_handle.identifier();
 
-    store
-        .write_dataset(quiet_handle, 10, b"quiet_write")
-        .unwrap();
-    store
-        .append_dataset(quiet_handle, 20, b"quiet_append")
-        .unwrap();
-    store.delete_dataset_record(quiet_handle, 10).unwrap();
+    quiet_handle.write(10, b"quiet_write").unwrap();
+    quiet_handle.append(20, b"quiet_append").unwrap();
+    quiet_handle.delete(10).unwrap();
 
     let loud_handle = store
         .create_dataset_with_config("loud", "data", None)
         .unwrap();
-    let loud_identifier = store.dataset_identifier(loud_handle).unwrap();
-    store.write_dataset(loud_handle, 10, b"loud_write").unwrap();
-    store
-        .append_dataset(loud_handle, 20, b"loud_append")
-        .unwrap();
-    store.delete_dataset_record(loud_handle, 10).unwrap();
+    let loud_identifier = loud_handle.identifier();
+    loud_handle.write(10, b"loud_write").unwrap();
+    loud_handle.append(20, b"loud_append").unwrap();
+    loud_handle.delete(10).unwrap();
 
-    store.drop_dataset(quiet_handle).unwrap();
-    store.drop_dataset(loud_handle).unwrap();
+    store.drop_dataset("quiet", "data").unwrap();
+    store.drop_dataset("loud", "data").unwrap();
 
     let records = read_all_journal_records(&mut store);
     assert!(
@@ -671,21 +682,19 @@ fn t39_2_dataset_journal_disabled_persists_after_reopen() {
         let inspect = store.inspect_dataset("quiet", "data").unwrap();
         assert!(!inspect.info.enable_journal);
         assert!(!inspect.state.has_journal);
-        store.close_dataset(quiet_handle).unwrap();
+        quiet_handle.close().unwrap();
         store.close().unwrap();
     }
 
     let mut store = Store::open(&dir, config).unwrap();
     let quiet_handle = store.open_dataset("quiet", "data").unwrap();
-    let quiet_identifier = store.dataset_identifier(quiet_handle).unwrap();
+    let quiet_identifier = quiet_handle.identifier();
     let inspect = store.inspect_dataset("quiet", "data").unwrap();
     assert!(!inspect.info.enable_journal);
     assert!(!inspect.state.has_journal);
 
-    store
-        .write_dataset(quiet_handle, 10, b"quiet_after_reopen")
-        .unwrap();
-    store.drop_dataset(quiet_handle).unwrap();
+    quiet_handle.write(10, b"quiet_after_reopen").unwrap();
+    store.drop_dataset("quiet", "data").unwrap();
 
     let records = read_all_journal_records(&mut store);
     assert!(records
@@ -695,11 +704,11 @@ fn t39_2_dataset_journal_disabled_persists_after_reopen() {
     store.close().unwrap();
 }
 
-// ── End-to-end hot migration tests ────────────────────────────────────────────
+// 鈹€鈹€ End-to-end hot migration tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 #[test]
 fn t28_20_end_to_end_write_journal_replay() {
-    // Source store writes data → journal records it → read journal →
+    // Source store writes data 鈫?journal records it 鈫?read journal 鈫?
     // replay on target store using read_journal_source_record
     let source_dir = temp_dir("e2e_source");
     let target_dir = temp_dir("e2e_target");
@@ -709,18 +718,12 @@ fn t28_20_end_to_end_write_journal_replay() {
         .create_dataset("migrate", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
     let src_handle = source.open_dataset("migrate", "data").unwrap();
-    let src_identifier = source.dataset_identifier(src_handle).unwrap();
+    let src_identifier = src_handle.identifier();
 
     // Write multiple records
-    source
-        .write_dataset(src_handle, 100, b"record_100")
-        .unwrap();
-    source
-        .write_dataset(src_handle, 200, b"record_200")
-        .unwrap();
-    source
-        .write_dataset(src_handle, 300, b"record_300")
-        .unwrap();
+    src_handle.write(100, b"record_100").unwrap();
+    src_handle.write(200, b"record_200").unwrap();
+    src_handle.write(300, b"record_300").unwrap();
 
     // Read journal and extract DataWrite records for our dataset
     let records = read_all_journal_records(&mut source);
@@ -748,13 +751,13 @@ fn t28_20_end_to_end_write_journal_replay() {
         let (ts, data) = source
             .read_journal_source_record(src_identifier, index_info)
             .unwrap();
-        target.write_dataset(tgt_handle, ts, &data).unwrap();
+        tgt_handle.write(ts, &data).unwrap();
     }
 
     // Verify replayed data matches source
     for ts in [100, 200, 300] {
-        let src_data = source.read_dataset(src_handle, ts).unwrap().unwrap();
-        let tgt_data = target.read_dataset(tgt_handle, ts).unwrap().unwrap();
+        let src_data = src_handle.read(ts).unwrap().unwrap();
+        let tgt_data = tgt_handle.read(ts).unwrap().unwrap();
         assert_eq!(src_data, tgt_data, "mismatch at ts={}", ts);
     }
 
@@ -764,7 +767,7 @@ fn t28_20_end_to_end_write_journal_replay() {
 
 #[test]
 fn t28_21_delete_replay_via_journal() {
-    // Source store writes then deletes data → journal records 0x11 and 0x12 →
+    // Source store writes then deletes data 鈫?journal records 0x11 and 0x12 鈫?
     // consume and verify delete on target
     let source_dir = temp_dir("delete_source");
     let target_dir = temp_dir("delete_target");
@@ -774,14 +777,14 @@ fn t28_21_delete_replay_via_journal() {
         .create_dataset("del_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
     let src_handle = source.open_dataset("del_ds", "data").unwrap();
-    let src_identifier = source.dataset_identifier(src_handle).unwrap();
+    let src_identifier = src_handle.identifier();
 
     // Write then delete
-    source.write_dataset(src_handle, 50, b"to_delete").unwrap();
-    source.delete_dataset_record(src_handle, 50).unwrap();
+    src_handle.write(50, b"to_delete").unwrap();
+    src_handle.delete(50).unwrap();
 
     // Also write a record that stays
-    source.write_dataset(src_handle, 60, b"survivor").unwrap();
+    src_handle.write(60, b"survivor").unwrap();
 
     let records = read_all_journal_records(&mut source);
     let write_records: Vec<_> = records
@@ -818,7 +821,7 @@ fn t28_21_delete_replay_via_journal() {
         let (ts, data) = source
             .read_journal_source_record(src_identifier, index_info)
             .unwrap();
-        target.write_dataset(tgt_handle, ts, &data).unwrap();
+        tgt_handle.write(ts, &data).unwrap();
     }
 
     // Replay deletes
@@ -827,15 +830,15 @@ fn t28_21_delete_replay_via_journal() {
         let (ts, _) = source
             .read_journal_source_record(src_identifier, index_info)
             .unwrap();
-        target.delete_dataset_record(tgt_handle, ts).unwrap();
+        tgt_handle.delete(ts).unwrap();
     }
 
     // ts=50 should be deleted, ts=60 should exist
     assert!(
-        target.read_dataset(tgt_handle, 50).unwrap().is_none(),
+        tgt_handle.read(50).unwrap().is_none(),
         "ts=50 should be deleted on target"
     );
-    let survivor = target.read_dataset(tgt_handle, 60).unwrap().unwrap();
+    let survivor = tgt_handle.read(60).unwrap().unwrap();
     assert_eq!(survivor, (60, b"survivor".to_vec()));
 
     source.close().unwrap();
@@ -852,12 +855,12 @@ fn t28_22_corrupted_journal_returns_error() {
         .create_dataset("cj_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
         .unwrap();
     let cj_handle = store.open_dataset("cj_ds", "data").unwrap();
-    store
-        .write_dataset(cj_handle, 1, b"before_corrupt")
-        .unwrap();
+    cj_handle.write(1, b"before_corrupt").unwrap();
 
     let before = read_all_journal_records(&mut store);
     assert!(!before.is_empty());
+    cj_handle.close().unwrap();
+    drop(cj_handle);
     store.close().unwrap();
 
     // Corrupt journal data segment files
@@ -873,7 +876,7 @@ fn t28_22_corrupted_journal_returns_error() {
                 // Truncate file to 1 byte to corrupt it
                 let metadata = fs::metadata(&path).unwrap();
                 if metadata.len() > 1 {
-                    fs::write(&path, [0xFFu8; 1]).unwrap();
+                    write_with_mmap_release_retry(&path, &[0xFFu8; 1]);
                     corrupted = true;
                 }
             }
@@ -896,7 +899,7 @@ fn t28_22_corrupted_journal_returns_error() {
     let mut store2 = Store::open(&dir, config_no_journal).unwrap();
     // Source dataset should still be readable even with corrupted journal
     let cj_handle2 = store2.open_dataset("cj_ds", "data").unwrap();
-    let read_back = store2.read_dataset(cj_handle2, 1).unwrap();
+    let read_back = cj_handle2.read(1).unwrap();
     assert!(
         read_back.is_some(),
         "source data must survive journal corruption"
@@ -932,9 +935,7 @@ fn t28_23_journal_sequence_is_contiguous_from_one() {
     let write_count = 20usize;
     for i in 0..write_count {
         let ts = (i as i64) + 1;
-        store
-            .write_dataset(handle, ts, format!("val_{}", ts).as_bytes())
-            .unwrap();
+        handle.write(ts, format!("val_{}", ts).as_bytes()).unwrap();
     }
 
     // Query all journal records

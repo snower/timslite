@@ -1,0 +1,25 @@
+[package]
+name = "timslitecffi"
+version = "0.1.1"
+edition = "2021"
+publish = false
+description = "C ABI wrapper for the timslite Rust time-series storage library."
+license = "MIT"
+repository = "https://github.com/snower/timslite"
+include = [
+    "Cargo.toml",
+    "include/**",
+    "src/**",
+    "tests/**",
+]
+
+[lib]
+name = "timslitecffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+libc = "0.2"
+timslite = { path = "../..", version = "=0.1.1" }
+
+[dev-dependencies]
+tempfile = "3"

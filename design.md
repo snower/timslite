@@ -1,6 +1,6 @@
 # timslite - Rust 时序数据存储库详细设计
 
-> 目标: Rust 动态库(`cdylib`), 提供 FFI 可调用 C ABI
+> 目标: 标准 Rust library；C ABI 由独立 `wrapper/cffi` crate (`timslitecffi`) 提供
 > 核心: 按数据集名称+类型分段 + 内存映射(mmap) + 时间索引 + Block 延迟压缩 + 懒加载生命周期
 
 ---
@@ -17,7 +17,7 @@
 | 4 | [数据段管理](docs/design/data-segment.md) | DataSegmentSet 路由、DataSegment Block 生命周期、Pending 恢复 | 数据写入/读取相关 |
 | 5 | [时间索引](docs/design/time-index.md) | TimeIndex 生命周期、IndexSegment 二分查找、14 字节 timestamp-delta 序列化 | 索引查询优化 |
 | 6 | [数据集操作](docs/design/dataset-operations.md) | DataSet create/open/close 生命周期、写入/读取/流程详解 | 数据集 API 行为 |
-| 7 | [Store 与 FFI](docs/design/store-and-ffi.md) | Store 门面 API、FFI C ABI 函数列表、C 侧调用示例 | 外部集成/跨语言调用 |
+| 7 | [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md) | Store/DataSet 公开 API、独立 `wrapper/cffi` C ABI 边界、C 侧调用示例 | Rust API/跨语言调用 |
 | 8 | [后台任务与缓存](docs/design/background-and-cache.md) | 统一执行器 (线程/手动双路径)、Flush/Idle-Close/Retention、外部手动 Execute、BlockCache LRU+Idle 回收 | 性能调优/后台行为/外部事件循环集成 |
 | 9 | [内存与并发](docs/design/memory-and-concurrency.md) | mmap 生命周期、并发控制、Crash 安全、Pending 恢复 | 稳定性保障 |
 | 10 | [压缩策略](docs/design/compression.md) | Block 级延迟压缩、selected compression algorithm (zstd default, deflate supported)、flags 设计 | 压缩相关优化 |
@@ -47,7 +47,7 @@
 - **删除记录**: [数据集操作·§9.3 删除操作](docs/design/dataset-operations.md#93-删除操作-datasetdelete) → [索引连续存储·§23.5 哨兵值设计](docs/design/index-continuous.md#235-哨兵值设计)
 - **读取数据**: [时间索引](docs/design/time-index.md) → [数据集操作·读取流程](docs/design/dataset-operations.md#十读取流程详解) → [数据集读操作](docs/design/dataset-read-operations.md) → [查询迭代器](docs/design/query-iterator.md) → [后台任务与缓存](docs/design/background-and-cache.md)
 - **数据保留回收**: [元数据格式·retention_window](docs/design/meta-format.md) → [数据集操作·§11](docs/design/dataset-operations.md#十一数据保留-retention-与回收) → [后台任务·§17.8](docs/design/background-and-cache.md#178-retention-reclaim-数据保留回收)
-- **FFI 集成**: [Store 与 FFI](docs/design/store-and-ffi.md)
+- **C ABI 集成**: [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md)
 - **崩溃安全**: [内存与并发](docs/design/memory-and-concurrency.md#崩溃安全)
 - **磁盘优化**: [懒分配与扩容](docs/design/lazy-allocation.md)
 - **连续时间索引**: [索引连续存储](docs/design/index-continuous.md) (稀疏 filler + 逻辑空洞)
@@ -57,9 +57,9 @@
 ### 按模块查找
 | 模块 | 对应文档 |
 |------|---------|
-| `Store` + `create_dataset` + `open_dataset` | [Store 与 FFI](docs/design/store-and-ffi.md) |
-| `StoreConfig.read_only` + `.lock` | [Store 与 FFI](docs/design/store-and-ffi.md#1121-store-read-only-and-lock-contract) |
-| Rust public API boundary | [Store 与 FFI](docs/design/store-and-ffi.md#111-rust-public-api-boundary) |
+| `Store` + `create_dataset` + `open_dataset` | [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md) |
+| `StoreConfig.read_only` + `.lock` | [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md#1121-store-read-only-and-lock-contract) |
+| Rust public API boundary | [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md#111-rust-public-api-boundary) |
 | `DataSet` | [数据集操作](docs/design/dataset-operations.md) |
 | `DataSetMeta` (meta.rs) | [元数据格式](docs/design/meta-format.md) |
 | Dataset Identifier | [Dataset Identifier](docs/design/dataset-identifier.md) |

@@ -102,7 +102,7 @@ const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 ## 12.10 ffi.rs — FFI API 更新
 
 - `tmsl_dataset_create` 新增 2 个 u64 参数
-- `include/timslite.h` 更新函数声明
+- `wrapper/cffi/include/timslite.h` 更新函数声明
 
 ## 12.11 单元测试
 

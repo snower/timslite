@@ -1,4 +1,4 @@
-//! Integration tests for lightweight read operations: read_exist, query_exist, read_length, query_length, query_length_iter.
+﻿//! Integration tests for lightweight read operations: read_exist, query_exist, read_length, query_length, query_length_iter.
 
 use std::fs;
 use std::path::PathBuf;
@@ -19,7 +19,7 @@ fn temp_dir() -> PathBuf {
     ))
 }
 
-// 鈹€鈹€鈹€ read_exist tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 read_exist tests 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn test_read_exist_existing_timestamp() {
@@ -33,14 +33,14 @@ fn test_read_exist_existing_timestamp() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     // Write some data
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(100, b"hello").unwrap();
     ds.write(200, b"world").unwrap();
     drop(ds);
 
     // Check existence
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     assert!(ds.read_exist(100).unwrap());
     assert!(ds.read_exist(200).unwrap());
@@ -59,20 +59,20 @@ fn test_read_exist_latest_timestamp() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     // No data yet
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     assert!(!ds.read_exist(-1).unwrap());
     drop(ds);
 
     // Write exact -1 first, then a later timestamp.
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(-1, b"minus-one").unwrap();
     ds.write(100, b"hello").unwrap();
     drop(ds);
 
     // -1 is an exact timestamp, not a latest sentinel.
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     assert!(ds.read_exist(-1).unwrap());
     assert!(ds.read_exist(100).unwrap());
@@ -89,13 +89,13 @@ fn test_read_exist_empty_dataset() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     assert!(!ds.read_exist(1).unwrap());
     assert!(!ds.read_exist(-1).unwrap());
 }
 
-// 鈹€鈹€鈹€ query_exist tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 query_exist tests 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn test_query_exist_basic() {
@@ -109,7 +109,7 @@ fn test_query_exist_basic() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     // Write data at timestamps 1, 3, 5
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"a").unwrap();
     ds.write(3, b"b").unwrap();
@@ -117,7 +117,7 @@ fn test_query_exist_basic() {
     drop(ds);
 
     // Query existence for range [1, 7]
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let bitmap = ds.query_exist(1, 7).unwrap();
 
@@ -138,7 +138,7 @@ fn test_query_exist_empty_range() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
 
     // Empty range
@@ -158,14 +158,14 @@ fn test_query_exist_cross_byte_boundary() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     // Write data at timestamps 1 and 9
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"a").unwrap();
     ds.write(9, b"b").unwrap();
     drop(ds);
 
     // Query range [1, 16] - should span 2 bytes
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let bitmap = ds.query_exist(1, 16).unwrap();
 
@@ -188,7 +188,7 @@ fn test_query_exist_excludes_expired_timestamps() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(100, b"expired").unwrap();
     ds.write(160, b"visible").unwrap();
@@ -210,7 +210,7 @@ fn test_query_exist_rejects_bitmap_larger_than_4mib() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let max_bitmap_bytes = 4usize * 1024 * 1024;
     let too_many_timestamps = (max_bitmap_bytes as i64) * 8 + 1;
@@ -232,7 +232,7 @@ fn test_public_query_length_iter_reads_from_source_cursor() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds = store.get_dataset(&handle).unwrap();
+    let ds = handle.clone();
     ds.write(10, b"ten").unwrap();
     ds.write(20, b"twenty").unwrap();
 
@@ -249,7 +249,7 @@ fn test_public_query_length_iter_reads_from_source_cursor() {
     );
 }
 
-// 鈹€鈹€鈹€ read_length tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 read_length tests 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn test_read_length_existing() {
@@ -263,12 +263,12 @@ fn test_read_length_existing() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     let data = b"hello world";
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(100, data).unwrap();
     drop(ds);
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let len = ds.read_length(100).unwrap();
     assert_eq!(len, Some(data.len() as u32));
@@ -285,7 +285,7 @@ fn test_read_length_nonexistent() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let len = ds.read_length(100).unwrap();
     assert_eq!(len, None);
@@ -303,13 +303,13 @@ fn test_read_length_latest() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     let data = b"test data 123";
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(-1, b"minus one").unwrap();
     ds.write(100, data).unwrap();
     drop(ds);
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let len = ds.read_length(-1).unwrap();
     assert_eq!(len, Some("minus one".len() as u32));
@@ -317,7 +317,7 @@ fn test_read_length_latest() {
     assert_eq!(len, Some(data.len() as u32));
 }
 
-// 鈹€鈹€鈹€ query_length tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 query_length tests 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn test_query_length_basic() {
@@ -330,14 +330,14 @@ fn test_query_length_basic() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"aaa").unwrap();
     ds.write(2, b"bb").unwrap();
     ds.write(3, b"c").unwrap();
     drop(ds);
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let result = ds.query_length(1, 3).unwrap();
 
@@ -358,7 +358,7 @@ fn test_query_length_empty_range() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let result = ds.query_length(10, 5).unwrap();
     assert!(result.is_empty());
@@ -375,14 +375,14 @@ fn test_query_length_sparse() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"a").unwrap();
     ds.write(5, b"bbbbb").unwrap();
     ds.write(10, b"cc").unwrap();
     drop(ds);
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let result = ds.query_length(1, 10).unwrap();
 
@@ -392,7 +392,7 @@ fn test_query_length_sparse() {
     assert_eq!(result[2], (10, 2));
 }
 
-// 鈹€鈹€鈹€ query_length_iter tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 query_length_iter tests 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn test_query_length_iter_basic() {
@@ -405,14 +405,14 @@ fn test_query_length_iter_basic() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"aaa").unwrap();
     ds.write(2, b"bb").unwrap();
     ds.write(3, b"c").unwrap();
     drop(ds);
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let iter = ds.query_length_iter(1, 3).unwrap();
     let result: Vec<(i64, u32)> = iter.collect::<Result<Vec<_>, _>>().unwrap();
@@ -434,7 +434,7 @@ fn test_query_length_iter_empty() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let iter = ds.query_length_iter(10, 5).unwrap();
     let result: Vec<(i64, u32)> = iter.collect::<Result<Vec<_>, _>>().unwrap();
@@ -452,7 +452,7 @@ fn test_query_length_iter_matches_query_length() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     for i in 1..=20 {
         let data = vec![0u8; i as usize];
@@ -460,7 +460,7 @@ fn test_query_length_iter_matches_query_length() {
     }
     drop(ds);
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
 
     // Get results from both methods
@@ -474,7 +474,7 @@ fn test_query_length_iter_matches_query_length() {
     assert_eq!(vec_result, iter_result);
 }
 
-// 鈹€鈹€鈹€ Store facade tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 Store facade tests 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn test_store_dataset_read_exist() {
@@ -487,13 +487,13 @@ fn test_store_dataset_read_exist() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(100, b"data").unwrap();
     drop(ds);
 
-    assert!(store.dataset_read_exist(handle, 100).unwrap());
-    assert!(!store.dataset_read_exist(handle, 200).unwrap());
+    assert!(handle.read_exist(100).unwrap());
+    assert!(!handle.read_exist(200).unwrap());
 }
 
 #[test]
@@ -507,13 +507,13 @@ fn test_store_dataset_query_exist() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"a").unwrap();
     ds.write(3, b"b").unwrap();
     drop(ds);
 
-    let bitmap = store.dataset_query_exist(handle, 1, 5).unwrap();
+    let bitmap = handle.query_exist(1, 5).unwrap();
     assert_eq!(bitmap.len(), 1);
     // Bits 0 and 2 set
     assert_eq!(bitmap[0], 0x05);
@@ -530,13 +530,13 @@ fn test_store_dataset_read_length() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(100, b"hello").unwrap();
     drop(ds);
 
-    assert_eq!(store.dataset_read_length(handle, 100).unwrap(), Some(5));
-    assert_eq!(store.dataset_read_length(handle, 200).unwrap(), None);
+    assert_eq!(handle.read_length(100).unwrap(), Some(5));
+    assert_eq!(handle.read_length(200).unwrap(), None);
 }
 
 #[test]
@@ -550,19 +550,19 @@ fn test_store_dataset_query_length() {
         .unwrap();
     let handle = store.open_dataset("ds", "type").unwrap();
 
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"aaa").unwrap();
     ds.write(2, b"bb").unwrap();
     drop(ds);
 
-    let result = store.dataset_query_length(handle, 1, 5).unwrap();
+    let result = handle.query_length(1, 5).unwrap();
     assert_eq!(result.len(), 2);
     assert_eq!(result[0], (1, 3));
     assert_eq!(result[1], (2, 2));
 }
 
-// 鈹€鈹€鈹€ Read Operations deleted record tests (P1-R-1~4) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// 閳光偓閳光偓閳光偓 Read Operations deleted record tests (P1-R-1~4) 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]
 fn test_read_exist_deleted_timestamp_returns_false_for_filler() {
@@ -577,7 +577,7 @@ fn test_read_exist_deleted_timestamp_returns_false_for_filler() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     // Write data then delete it
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(100, b"to_be_deleted").unwrap();
 
@@ -610,7 +610,7 @@ fn test_read_length_deleted_timestamp_returns_none() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     // Write data then delete it
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(100, b"to_be_deleted").unwrap();
 
@@ -645,7 +645,7 @@ fn test_query_exist_excludes_deleted_timestamps_as_fillers() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     // Write multiple records and delete one
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"aaa").unwrap();
     ds.write(2, b"bbb").unwrap();
@@ -683,7 +683,7 @@ fn test_query_length_skips_deleted_timestamps() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     // Write multiple records and delete one
-    let ds_arc = store.get_dataset(&handle).unwrap();
+    let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     ds.write(1, b"aaa").unwrap(); // length 3
     ds.write(2, b"bb").unwrap(); // length 2

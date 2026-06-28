@@ -1,4 +1,4 @@
-//! Store dataset enumeration tests: get_dataset_names, get_dataset_types.
+﻿//! Store dataset enumeration tests: get_dataset_names, get_dataset_types.
 
 use std::fs;
 use std::path::PathBuf;
@@ -221,7 +221,7 @@ fn test_get_dataset_types_after_drop() {
         .unwrap();
 
     // Drop one type
-    store.drop_dataset_by_name("app", "metrics").unwrap();
+    store.drop_dataset("app", "metrics").unwrap();
 
     let types = store.get_dataset_types("app").unwrap();
     assert_eq!(types, vec!["logs", "traces"]); // sorted, metrics dropped

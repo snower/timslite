@@ -851,7 +851,6 @@ name = "timslite"
 version = "0.1.1"
 dependencies = [
  "criterion",
- "libc",
  "log",
  "memmap2",
  "miniz_oxide",

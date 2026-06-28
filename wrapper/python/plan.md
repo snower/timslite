@@ -203,22 +203,21 @@ wrapper/python/
 ### Phase PY-4: Dataset 封装 ✅ 完成
 
 - [x] 在 `PyStore` 中添加 dataset 追踪机制
-  - `PyStore` 内部维护 `HashMap<u64, Arc<DataSet>>` (与 Rust `Store` 并行)
-  - `create_dataset/open_dataset` 返回的 dataset 通过 `Arc` 共享
+  - `PyStore` 内部维护 `HashMap<u64, Arc<DataSet>>` 作为 Python object id 映射
+  - `create_dataset/open_dataset` 直接使用 Rust `Store` 返回的 `DataSet`, 再通过 `Arc` 共享
   - 分配 dataset_id (自增 u64) 作为 Python 端标识
 - [x] `wrapper/python/src/store.rs` — 添加 dataset 管理方法
-  - `fn create_dataset(&mut self, name: &str, dataset_type: &str, **kwargs) -> PyResult<()>`
+  - `fn create_dataset(&mut self, name: &str, dataset_type: &str, **kwargs) -> PyResult<PyDataset>`
     - kwarg 参数: `data_segment_size`, `index_segment_size`, `compress_level`,
       `index_continuous`, `initial_data_segment_size`, `initial_index_segment_size`
     - 使用 `DataSetConfigBuilder::from_store()` + 覆盖构建配置
     - 委托给底层 `Store::create_dataset_with_config()`
-    - 不返回 Dataset — 用户需调用 `open_dataset()` 获取
+    - 返回封装后的 `PyDataset`
   - `fn open_dataset(&mut self, name: &str, dataset_type: &str) -> PyResult<PyDataset>`
-    - 委托给底层 `Store::open_dataset()` 获取 handle
-    - 通过 `Store::get_dataset()` 获取 `Arc<DataSet>`
+    - 委托给底层 `Store::open_dataset()` 获取 `DataSet`
     - 返回封装后的 `PyDataset` (持有 `Arc<DataSet>`)
   - `fn drop_dataset(&mut self, name: &str, dataset_type: &str) -> PyResult<()>`
-    - 委托给底层 `Store::drop_dataset_by_name()`
+    - 委托给底层 `Store::drop_dataset(name, dataset_type)`
     - 清理 Python 端的 dataset 追踪
 - [x] `wrapper/python/src/dataset.rs` — `PyDataset`
   - `#[pyclass]` 持有 `Arc<DataSet>` + `dataset_id: u64`
@@ -226,8 +225,8 @@ wrapper/python/
     - 调用 `DataSet::write()`, 由 DataSet 内部 mutex 保护
     - `data` 接受 Python `bytes`, 通过 `PyBytes::as_bytes()` 零拷贝获取
   - `fn query(&mut self, start_ts: i64, end_ts: i64) -> PyResult<PyQueryIterator>`
-    - 调用 `DataSet::query_index_entries()`, 预收集索引条目
-    - 返回懒加载的 `PyQueryIterator` (持有 `Arc<DataSet>` + 条目列表)
+    - 调用 public `DataSet::query()`
+    - 返回 Python iterator wrapper
   - `fn query_all(&mut self, start_ts: i64, end_ts: i64) -> PyResult<Vec<(i64, Vec<u8>)>>`
     - 便捷方法: 调用 `query()` + 收集全部结果
     - 返回 `list[tuple[int, bytes]]`

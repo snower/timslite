@@ -1,4 +1,4 @@
-use std::fs;
+﻿use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -42,8 +42,8 @@ fn dataset_identifier_create_reopen_and_open_by_id() {
             .create_dataset_with_config("beta", "data", None)
             .unwrap();
 
-        assert_eq!(store.dataset_identifier(first).unwrap(), 1);
-        assert_eq!(store.dataset_identifier(second).unwrap(), 2);
+        assert_eq!(first.identifier(), 1);
+        assert_eq!(second.identifier(), 2);
         assert_eq!(
             fs::read_to_string(dir.join("max_identifier"))
                 .unwrap()
@@ -56,8 +56,8 @@ fn dataset_identifier_create_reopen_and_open_by_id() {
                 .trim(),
             "1"
         );
-        store.write_dataset(first, 1, b"alpha").unwrap();
-        store.write_dataset(second, 1, b"beta").unwrap();
+        first.write(1, b"alpha").unwrap();
+        second.write(1, b"beta").unwrap();
         store.close().unwrap();
     }
 
@@ -66,10 +66,10 @@ fn dataset_identifier_create_reopen_and_open_by_id() {
         let alpha = store.open_dataset_by_identifier(1).unwrap();
         let beta = store.open_dataset_by_identifier(2).unwrap();
 
-        assert_eq!(store.dataset_identifier(alpha).unwrap(), 1);
-        assert_eq!(store.dataset_identifier(beta).unwrap(), 2);
-        assert_eq!(store.read_dataset(alpha, 1).unwrap().unwrap().1, b"alpha");
-        assert_eq!(store.read_dataset(beta, 1).unwrap().unwrap().1, b"beta");
+        assert_eq!(alpha.identifier(), 1);
+        assert_eq!(beta.identifier(), 2);
+        assert_eq!(alpha.read(1).unwrap().unwrap().1, b"alpha");
+        assert_eq!(beta.read(1).unwrap().unwrap().1, b"beta");
     }
 }
 

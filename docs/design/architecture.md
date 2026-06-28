@@ -79,7 +79,7 @@ libtimslite (CDylib)
 | 数据段(DataSegment) | `{name}/{type}/data/` | 20位十进制, 起始字节offset, 零填充 | `00000000000000000000` |
 | 索引段(IndexSegment) | `{name}/{type}/index/` | 20位十进制, 起始秒级timestamp, 零填充 | `0000000000001700000000` |
 
-`dataset_name` 和 `dataset_type` 是目录名, 不做转义或编码。合法值必须非空且整体匹配 `^[0-9A-Za-z_-]+$`: 只允许数字、大小写英文字母、`-`、`_`。任何路径分隔符、`.`、空格、控制字符、非 ASCII 字符、Windows 保留路径写法等都不允许。`Store::create_dataset*` / `open_dataset` / `drop_dataset_by_name` 必须在拼接路径前校验; `Store::open` 不扫描普通 dataset, listing/open-by-id 等按需扫描时也只返回或读取合法 public 目录。
+`dataset_name` 和 `dataset_type` 是目录名, 不做转义或编码。合法值必须非空且整体匹配 `^[0-9A-Za-z_-]+$`: 只允许数字、大小写英文字母、`-`、`_`。任何路径分隔符、`.`、空格、控制字符、非 ASCII 字符、Windows 保留路径写法等都不允许。`Store::create_dataset*` / `open_dataset` / `drop_dataset(name, type)` 必须在拼接路径前校验; `Store::open` 不扫描普通 dataset, listing/open-by-id 等按需扫描时也只返回或读取合法 public 目录。
 
 例外: `.journal/logs` 是 Store 内部保留 journal append log, 不再作为普通 `DataSet` 暴露。`StoreConfig.enable_journal=true` 时通过 Store 的 journal 专用 read/query/open_queue API 访问; 普通扫描路径应跳过它, 由 `JournalManager` 单独管理。普通 dataset 是否实际写 journal 还受其持久化 `DataSetConfig.enable_journal` 控制。
 

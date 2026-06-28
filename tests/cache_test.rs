@@ -1,4 +1,4 @@
-//! Cache invalidation tests: correction, delete, retention, out-of-order write.
+﻿//! Cache invalidation tests: correction, delete, retention, out-of-order write.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,7 +42,7 @@ fn t31_1_cache_correction_write() {
         .unwrap();
 
     let ds = store.open_dataset("cache_corr", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write original data
     {
@@ -112,7 +112,7 @@ fn t31_2_cache_delete() {
         .unwrap();
 
     let ds = store.open_dataset("cache_del", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write data
     {
@@ -169,7 +169,7 @@ fn t31_3_cache_retention_reclaim() {
         .unwrap();
 
     let ds = store.open_dataset("cache_ret", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write data at timestamp 50 (within retention window)
     {
@@ -244,7 +244,7 @@ fn t31_4_cache_out_of_order_write() {
         .unwrap();
 
     let ds = store.open_dataset("cache_ooo", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write data at timestamps 100, 200, 300
     {
@@ -315,7 +315,7 @@ fn t31_5_cache_lru_eviction() {
         .unwrap();
 
     let ds = store.open_dataset("cache_lru", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write enough data to exceed cache size
     // Each record ~8KB, cache is 1MB, so ~128 records to fill

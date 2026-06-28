@@ -1,4 +1,4 @@
-//! Compression tests: seal, single-record block, flags, compress level.
+﻿//! Compression tests: seal, single-record block, flags, compress level.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,7 +42,7 @@ fn t30_1_pending_overflow_seal() {
         .unwrap();
 
     let ds = store.open_dataset("seal_overflow", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write enough data to fill multiple blocks
     // Each record ~4KB, block max 64KB, so ~16 records per block
@@ -100,7 +100,7 @@ fn t30_2_single_record_block() {
         .unwrap();
 
     let ds = store.open_dataset("single_rec", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write a record > 64KB (BLOCK_MAX_SIZE = 65536)
     let large_data = vec![0xCDu8; 100 * 1024]; // 100KB
@@ -158,7 +158,7 @@ fn t30_3_sealed_compressed_flags() {
         .unwrap();
 
     let ds = store.open_dataset("flags_test", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write data to create blocks
     {
@@ -179,7 +179,7 @@ fn t30_3_sealed_compressed_flags() {
     store.close().unwrap();
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     let ds = store.open_dataset("flags_test", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Verify all data is still readable after reopen
     {
@@ -221,7 +221,7 @@ fn t30_4_compression_larger_payload() {
         .unwrap();
 
     let ds = store.open_dataset("incompressible", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write incompressible data (each byte different)
     {
@@ -267,7 +267,7 @@ fn t30_5_compress_level_effect() {
         .unwrap();
 
     let ds1 = store1.open_dataset("comp0", "data").unwrap();
-    let arc1 = store1.get_dataset(&ds1).unwrap();
+    let arc1 = ds1.clone();
 
     // Write compressible data
     {
@@ -286,7 +286,7 @@ fn t30_5_compress_level_effect() {
         .unwrap();
 
     let ds2 = store2.open_dataset("comp9", "data").unwrap();
-    let arc2 = store2.get_dataset(&ds2).unwrap();
+    let arc2 = ds2.clone();
 
     // Write same data
     {
@@ -351,7 +351,7 @@ fn t30_6_compression_data_patterns() {
         .unwrap();
 
     let ds = store.open_dataset("patterns", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Pattern 1: All zeros (highly compressible)
     {
@@ -442,7 +442,7 @@ fn t30_7_deflate_persistence() {
         .unwrap();
 
     let ds = store.open_dataset("deflate_persist", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write data
     for i in 0..30i64 {
@@ -459,7 +459,7 @@ fn t30_7_deflate_persistence() {
 
     // Verify data reads back correctly
     let ds = store.open_dataset("deflate_persist", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     for i in 0..30i64 {
         let result = arc.read(i * 10 + 1).unwrap();
         assert!(result.is_some(), "record {} should exist after reopen", i);
@@ -507,7 +507,7 @@ fn t30_8_mixed_compress_types() {
 
     // Write to zstd dataset
     let ds_z = store.open_dataset("zstd_ds", "data").unwrap();
-    let arc_z = store.get_dataset(&ds_z).unwrap();
+    let arc_z = ds_z.clone();
     for i in 0..20i64 {
         let data = vec![0xAAu8; 4096];
         arc_z.write(i * 10 + 1, &data).unwrap();
@@ -516,7 +516,7 @@ fn t30_8_mixed_compress_types() {
 
     // Write to deflate dataset
     let ds_d = store.open_dataset("deflate_ds", "data").unwrap();
-    let arc_d = store.get_dataset(&ds_d).unwrap();
+    let arc_d = ds_d.clone();
     for i in 0..20i64 {
         let data = vec![0xCCu8; 4096];
         arc_d.write(i * 10 + 1, &data).unwrap();
@@ -529,7 +529,7 @@ fn t30_8_mixed_compress_types() {
 
     // Verify zstd data
     let ds_z = store.open_dataset("zstd_ds", "data").unwrap();
-    let arc_z = store.get_dataset(&ds_z).unwrap();
+    let arc_z = ds_z.clone();
     for i in 0..20i64 {
         let result = arc_z.read(i * 10 + 1).unwrap().unwrap();
         assert_eq!(result.0, i * 10 + 1);
@@ -538,7 +538,7 @@ fn t30_8_mixed_compress_types() {
 
     // Verify deflate data
     let ds_d = store.open_dataset("deflate_ds", "data").unwrap();
-    let arc_d = store.get_dataset(&ds_d).unwrap();
+    let arc_d = ds_d.clone();
     for i in 0..20i64 {
         let result = arc_d.read(i * 10 + 1).unwrap().unwrap();
         assert_eq!(result.0, i * 10 + 1);
@@ -602,7 +602,7 @@ fn t30_9_tampered_compress_type_meta() {
     meta_bytes[37] = 0xFF;
     fs::write(&meta_path, &meta_bytes).unwrap();
 
-    // Reopen store (lazy) then try to open dataset — should fail on meta parse
+    // Reopen store (lazy) then try to open dataset 鈥?should fail on meta parse
     let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
     let result = store.open_dataset("tamper_meta", "data");
     assert!(
@@ -632,7 +632,7 @@ fn t30_10_segment_header_compress_type() {
         .unwrap();
 
     let ds = store.open_dataset("seg_hdr", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write enough data to ensure a data segment file exists
     for i in 0..30i64 {

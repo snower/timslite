@@ -1,4 +1,4 @@
-//! Iterator tests: cross-segment, cross-block queries.
+﻿//! Iterator tests: cross-segment, cross-block queries.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,7 +43,7 @@ fn t33_1_iterator_cross_segment() {
         .unwrap();
 
     let ds = store.open_dataset("cross_seg", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write enough data to span multiple segments
     // 256KB segment / 4KB per record = ~64 records per segment
@@ -113,7 +113,7 @@ fn t33_2_iterator_cross_block() {
         .unwrap();
 
     let ds = store.open_dataset("cross_block", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write enough data to span multiple blocks
     // Block max size is 64KB, each record is 4KB
@@ -182,7 +182,7 @@ fn t33_3_iterator_empty_range() {
         .unwrap();
 
     let ds = store.open_dataset("empty_range", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write some data
     {
@@ -232,7 +232,7 @@ fn t33_4_iterator_single_record() {
         .unwrap();
 
     let ds = store.open_dataset("single_rec", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write one record
     {
@@ -283,7 +283,7 @@ fn t33_5_iterator_skip_deleted() {
         .unwrap();
 
     let ds = store.open_dataset("skip_deleted", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write records
     {
@@ -338,7 +338,7 @@ fn t33_6_iterator_correction_writes() {
         .unwrap();
 
     let ds = store.open_dataset("correction", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write original data
     {
@@ -402,7 +402,7 @@ fn t33_7_closed_segment_transparent_reopen() {
         .unwrap();
 
     let ds = store.open_dataset("closed_seg", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write records in the first batch
     {
@@ -420,7 +420,7 @@ fn t33_7_closed_segment_transparent_reopen() {
     let _ = store.tick_background_tasks().unwrap();
 
     // Write more records (this will re-open the dataset and create new data)
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
     {
         let lock = arc.clone();
         for i in 20..40i64 {
@@ -478,7 +478,7 @@ fn t33_8_in_memory_pending_block_query() {
         .unwrap();
 
     let ds = store.open_dataset("pending_q", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write some data and flush it to disk
     {
@@ -563,7 +563,7 @@ fn t33_9_query_after_data_modification() {
         .unwrap();
 
     let ds = store.open_dataset("mod_iter", "data").unwrap();
-    let arc = store.get_dataset(&ds).unwrap();
+    let arc = ds.clone();
 
     // Write initial batch
     {

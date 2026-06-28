@@ -57,13 +57,13 @@
 
 ### 4. Rust API
 
-- [x] 新增 `Store::open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSetHandle>`。
-- [x] 新增 `Store::dataset_identifier(&self, handle: DataSetHandle) -> Result<u64>`。
+- [x] 新增 `Store::open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSet>`。
+- [x] 新增 `DataSet::identifier(&self) -> u64`。
 - [x] `identifier == 0` 返回 `InvalidData`。
 - [x] 未找到 identifier 返回 `NotFound`。
 - [x] cache miss 时临时扫描合法 public dataset 目录并缓存匹配映射。
 - [x] 扫描发现重复 identifier 返回 `InvalidData`。
-- [x] 已打开 dataset 的复用/新 handle 行为与 `open_dataset(name,type)` 保持一致。
+- [x] 已打开 dataset 的复用行为与 `open_dataset(name,type)` 保持一致。
 
 ### 5. Inspect / Listing
 
@@ -74,10 +74,10 @@
 
 ### 6. FFI
 
-- [x] `include/timslite.h` 增加 `tmsl_dataset_open_by_identifier`。
-- [x] `include/timslite.h` 增加 `tmsl_dataset_identifier`。
+- [x] `wrapper/cffi/include/timslite.h` 增加 `tmsl_dataset_open_by_identifier`。
+- [x] `wrapper/cffi/include/timslite.h` 增加 `tmsl_dataset_identifier`。
 - [x] `TmslDataSetInfo` 增加 `uint64_t identifier`。
-- [x] `src/ffi.rs` 实现对应函数和错误处理。
+- [x] `wrapper/cffi/src/lib.rs` 实现对应函数和错误处理。
 - [x] FFI version 无需调整: 本阶段未修改 versioned config decode 结构。
 
 ### 7. Python Wrapper
