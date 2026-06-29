@@ -704,8 +704,6 @@ fn t39_2_dataset_journal_disabled_persists_after_reopen() {
     store.close().unwrap();
 }
 
-// 鈹€鈹€ End-to-end hot migration tests 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-
 #[test]
 fn t28_20_end_to_end_write_journal_replay() {
     // Source store writes data 鈫?journal records it 鈫?read journal 鈫?

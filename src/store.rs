@@ -1,4 +1,4 @@
-//! Store: facade that manages all datasets and background tasks.
+﻿//! Store: facade that manages all datasets and background tasks.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -647,8 +647,6 @@ impl Store {
             .ok_or_else(|| TmslError::InvalidData("bg_tasks not initialised".into()))?;
         Ok(bg.next_delay())
     }
-
-    // 鈹€鈹€鈹€ Dataset enumeration 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     /// Get all unique dataset names in the store.
     pub fn get_dataset_names(&self) -> Result<Vec<String>> {

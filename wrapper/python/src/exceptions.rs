@@ -8,7 +8,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyModuleMethods;
 use pyo3::PyTypeInfo;
 
-// 鈹€鈹€ Exception hierarchy 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 // TmslError (base) inherits PyException
 // All specific error types inherit TmslError
 
