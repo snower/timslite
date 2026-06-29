@@ -36,7 +36,11 @@ public final class QueueConsumer implements AutoCloseable {
     public void close() {
         if (!closed) {
             closed = true;
-            bridge.close();
+            try {
+                bridge.close();
+            } catch (io.github.snower.timslite.uniffi.TmslException e) {
+                throw TmslException.fromUniFFI(e);
+            }
         }
     }
 
@@ -90,6 +94,35 @@ public final class QueueConsumer implements AutoCloseable {
         checkNotClosed();
         try {
             bridge.ack(timestamp);
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw TmslException.fromUniFFI(e);
+        }
+    }
+
+    /**
+     * Flushes this consumer group's state file.
+     *
+     * @throws TmslException if the flush fails
+     */
+    public void flush() {
+        checkNotClosed();
+        try {
+            bridge.flush();
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw TmslException.fromUniFFI(e);
+        }
+    }
+
+    /**
+     * Inspects this consumer group's public configuration and durable state.
+     *
+     * @return consumer inspect result
+     * @throws TmslException if inspect fails
+     */
+    public QueueConsumerInspectResult inspect() {
+        checkNotClosed();
+        try {
+            return new QueueConsumerInspectResult(bridge.inspect());
         } catch (io.github.snower.timslite.uniffi.TmslException e) {
             throw TmslException.fromUniFFI(e);
         }

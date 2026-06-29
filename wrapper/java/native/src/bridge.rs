@@ -24,6 +24,33 @@ pub struct LengthEntry {
 }
 
 #[derive(Debug, Clone)]
+pub struct QueueConsumerInfo {
+    pub group_name: String,
+    pub running_expired_seconds: u64,
+    pub max_retry_count: u16,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueueConsumerPendingEntry {
+    pub timestamp: i64,
+    pub start_time: i64,
+    pub status: u8,
+    pub retry_count: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueueConsumerState {
+    pub processed_ts: i64,
+    pub pending_entries: Vec<QueueConsumerPendingEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct QueueConsumerInspectResult {
+    pub info: QueueConsumerInfo,
+    pub state: QueueConsumerState,
+}
+
+#[derive(Debug, Clone)]
 pub struct DataSetInfo {
     pub name: String,
     pub dataset_type: String,
@@ -606,6 +633,19 @@ impl QueueBridge {
         }
     }
 
+    pub fn get_consumer_group_names(&self) -> Result<Vec<String>, TmslError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|e| TmslError::Io { message: e.to_string() })?;
+        match guard.as_ref() {
+            Some(queue) => Ok(queue.get_consumer_group_names()?),
+            None => Err(TmslError::QueueBridgeClosed {
+                message: "queue is closed".into(),
+            }),
+        }
+    }
+
     pub fn drop_consumer(&self, group_name: String) -> Result<(), TmslError> {
         let guard = self
             .inner
@@ -627,7 +667,9 @@ impl QueueBridge {
             .inner
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        guard.take();
+        if let Some(queue) = guard.take() {
+            queue.close()?;
+        }
         Ok(())
     }
 }

@@ -95,6 +95,24 @@ public final class Queue implements AutoCloseable {
     }
 
     /**
+     * Returns current consumer group names.
+     *
+     * <p>This lists existing state file directory entries without opening or
+     * validating the state files.</p>
+     *
+     * @return consumer group names
+     * @throws TmslException if the list operation fails
+     */
+    public List<String> getConsumerGroupNames() {
+        checkNotClosed();
+        try {
+            return bridge.getConsumerGroupNames();
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw TmslException.fromUniFFI(e);
+        }
+    }
+
+    /**
      * Drops a consumer group and its state.
      *
      * @param groupName consumer group name to drop

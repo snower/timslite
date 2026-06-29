@@ -63,6 +63,30 @@ typedef struct TmslQueueConsumerConfigFFI {
     uint32_t max_retry_count;         /* 0=unlimited, default 3, max 255 */
 } TmslQueueConsumerConfigFFI;
 
+typedef struct TmslQueueConsumerInfoFFI {
+    char* group_name;
+    uint32_t running_expired_seconds;
+    uint32_t max_retry_count;
+} TmslQueueConsumerInfoFFI;
+
+typedef struct TmslQueueConsumerPendingEntryFFI {
+    int64_t timestamp;
+    int64_t start_time;
+    uint8_t status;
+    uint8_t retry_count;
+} TmslQueueConsumerPendingEntryFFI;
+
+typedef struct TmslQueueConsumerStateFFI {
+    int64_t processed_ts;
+    TmslQueueConsumerPendingEntryFFI* pending_entries;
+    uint32_t pending_entries_count;
+} TmslQueueConsumerStateFFI;
+
+typedef struct TmslQueueConsumerInspectResultFFI {
+    TmslQueueConsumerInfoFFI info;
+    TmslQueueConsumerStateFFI state;
+} TmslQueueConsumerInspectResultFFI;
+
 typedef void (*TmslQueuePollCallback)(void* userdata);
 
 typedef struct TmslLengthEntry {
@@ -145,12 +169,22 @@ int tmsl_store_next_background_delay(void* store,
 /* ─── Store Dataset Enumeration ──────────────────────────────────────── */
 
 /**
- * Free a malloc'd array of C strings returned by tmsl_store_get_dataset_names
- * or tmsl_store_get_dataset_types.
+ * Free a malloc'd array of C strings returned by tmsl_store_get_dataset_names,
+ * tmsl_store_get_dataset_types, or tmsl_queue_get_consumer_group_names.
  * @param arr    Pointer to the array returned by the enumeration function.
  * @param count  Number of elements in the array.
  */
 void tmsl_free_string_array(char** arr, uint32_t count);
+
+/**
+ * Free heap allocations inside a queue consumer inspect result.
+ *
+ * The result struct itself is owned by the caller; this only frees nested
+ * strings and arrays allocated by tmsl_queue_consumer_inspect.
+ *
+ * @param result Result previously filled by tmsl_queue_consumer_inspect.
+ */
+void tmsl_queue_consumer_inspect_result_free(TmslQueueConsumerInspectResultFFI* result);
 
 /**
  * Get all unique dataset names in the store.
@@ -602,6 +636,24 @@ size_t tmsl_queue_open(void* dataset, char* err_buf, size_t err_buf_len);
 int tmsl_queue_close(size_t queue_handle, char* err_buf, size_t err_buf_len);
 
 /**
+ * List current consumer group names for a dataset queue.
+ *
+ * This only lists state file directory entries; it does not open or validate
+ * the state files.
+ *
+ * @param queue_handle Queue handle returned by tmsl_queue_open.
+ * @param out_names    Written with a malloc'd array of malloc'd C strings.
+ * @param out_count    Written with the number of names.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error. Caller must free with tmsl_free_string_array.
+ */
+int tmsl_queue_get_consumer_group_names(size_t queue_handle,
+                                        char*** out_names,
+                                        uint32_t* out_count,
+                                        char* err_buf, size_t err_buf_len);
+
+/**
  * Open or create a queue consumer group.
  *
  * group_name must match ^[0-9A-Za-z_-]+$ and be at most 255 bytes.
@@ -710,6 +762,48 @@ int tmsl_queue_consumer_poll_callback(size_t consumer_handle,
                                       TmslQueuePollCallback callback,
                                       void* userdata,
                                       char* err_buf, size_t err_buf_len);
+
+/**
+ * Flush a queue consumer group's state file.
+ *
+ * @param consumer_handle Consumer handle returned by tmsl_queue_consumer_open.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_queue_consumer_flush(size_t consumer_handle,
+                              char* err_buf, size_t err_buf_len);
+
+/**
+ * Close a queue consumer group and invalidate all matching FFI handles.
+ *
+ * Any unacknowledged pending entries are released for redelivery when the
+ * group is opened again.
+ *
+ * @param queue_handle    Queue handle returned by tmsl_queue_open.
+ * @param consumer_handle Consumer handle returned by tmsl_queue_consumer_open.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_queue_consumer_close(size_t queue_handle, size_t consumer_handle,
+                              char* err_buf, size_t err_buf_len);
+
+/**
+ * Inspect a queue consumer group's public configuration and durable state.
+ *
+ * On success, nested strings/arrays are allocated by the library and must be
+ * released with tmsl_queue_consumer_inspect_result_free.
+ *
+ * @param consumer_handle Consumer handle returned by tmsl_queue_consumer_open.
+ * @param out_result      Output inspect result.
+ * @param err_buf         Buffer for error message.
+ * @param err_buf_len     Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_queue_consumer_inspect(size_t consumer_handle,
+                                TmslQueueConsumerInspectResultFFI* out_result,
+                                char* err_buf, size_t err_buf_len);
 
 /* Journal API */
 

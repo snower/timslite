@@ -1,6 +1,9 @@
 use std::sync::Mutex;
 
-use crate::bridge::Record;
+use crate::bridge::{
+    QueueConsumerInfo, QueueConsumerInspectResult, QueueConsumerPendingEntry, QueueConsumerState,
+    Record,
+};
 use crate::errors::TmslError;
 
 pub struct QueueConsumerBridge {
@@ -49,12 +52,66 @@ impl QueueConsumerBridge {
         }
     }
 
+    pub fn flush(&self) -> Result<(), TmslError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|e| TmslError::Io { message: e.to_string() })?;
+        match guard.as_ref() {
+            Some(consumer) => {
+                consumer.flush()?;
+                Ok(())
+            }
+            None => Err(TmslError::QueueBridgeClosed {
+                message: "consumer is closed".into(),
+            }),
+        }
+    }
+
     pub fn close(&self) -> Result<(), TmslError> {
         let mut guard = self
             .inner
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        guard.take();
+        if let Some(consumer) = guard.take() {
+            consumer.close()?;
+        }
         Ok(())
+    }
+
+    pub fn inspect(&self) -> Result<QueueConsumerInspectResult, TmslError> {
+        let guard = self
+            .inner
+            .lock()
+            .map_err(|e| TmslError::Io { message: e.to_string() })?;
+        match guard.as_ref() {
+            Some(consumer) => {
+                let result = consumer.inspect()?;
+                Ok(QueueConsumerInspectResult {
+                    info: QueueConsumerInfo {
+                        group_name: result.info.group_name,
+                        running_expired_seconds: result.info.running_expired_seconds as u64,
+                        max_retry_count: result.info.max_retry_count as u16,
+                    },
+                    state: QueueConsumerState {
+                        processed_ts: result.state.processed_ts,
+                        pending_entries: result
+                            .state
+                            .pending_entries
+                            .into_iter()
+                            .map(|entry| QueueConsumerPendingEntry {
+                                timestamp: entry.timestamp,
+                                start_time: entry.start_time,
+                                status: entry.status,
+                                retry_count: entry.retry_count,
+                            })
+                            .collect(),
+                    },
+                })
+            }
+            None => Err(TmslError::QueueBridgeClosed {
+                message: "consumer is closed".into(),
+            }),
+        }
     }
 }

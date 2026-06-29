@@ -2,8 +2,11 @@ package io.github.snower.timslite;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.util.Arrays;
 import java.nio.file.Path;
+import java.util.List;
 
+import io.github.snower.timslite.errors.TmslException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -145,6 +148,56 @@ class QueueTest {
                     consumer.close();
                     queue.dropConsumer("group1");
                     // dropping after close is fine as group still exists
+                } finally {
+                    queue.close();
+                }
+            } finally {
+                dataset.close();
+            }
+        } finally {
+            store.close();
+        }
+    }
+
+    @Test
+    void groupNamesInspectFlushAndCloseReleasePending() {
+        Store store = Store.open(tempDir.toString());
+        try {
+            store.createDataset("qds", "events",
+                    CreateDatasetOptionsBuilder.builder().build());
+            Dataset dataset = store.openDataset("qds", "events");
+            try {
+                Queue queue = store.openQueue(dataset);
+                try {
+                    QueueConsumer consumer = queue.openConsumer("shared");
+                    QueueConsumer alias = queue.openConsumer("shared");
+                    queue.openConsumer("other");
+
+                    List<String> names = queue.getConsumerGroupNames();
+                    assertEquals(Arrays.asList("other", "shared"), names);
+
+                    queue.push(new byte[]{1, 2, 3});
+                    Record record = consumer.poll(5000L);
+                    assertNotNull(record);
+                    assertEquals(1L, record.getTimestamp());
+                    consumer.flush();
+
+                    QueueConsumerInspectResult inspected = consumer.inspect();
+                    assertEquals("shared", inspected.getInfo().getGroupName());
+                    assertEquals(900L, inspected.getInfo().getRunningExpiredSeconds());
+                    assertEquals(3, inspected.getInfo().getMaxRetryCount());
+                    assertEquals(Long.MIN_VALUE, inspected.getState().getProcessedTs());
+                    assertEquals(1L, inspected.getState().getPendingEntries().get(0).getTimestamp());
+
+                    consumer.close();
+                    assertThrows(TmslException.class, () -> alias.poll(100L));
+
+                    QueueConsumer reopened = queue.openConsumer("shared");
+                    Record redelivered = reopened.poll(5000L);
+                    assertNotNull(redelivered);
+                    assertEquals(1L, redelivered.getTimestamp());
+                    reopened.ack(redelivered.getTimestamp());
+                    reopened.close();
                 } finally {
                     queue.close();
                 }

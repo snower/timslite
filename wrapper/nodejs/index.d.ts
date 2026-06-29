@@ -34,6 +34,29 @@ export interface QueueConsumerOptions {
   maxRetryCount?: number
 }
 
+export interface QueueConsumerInfo {
+  groupName: string
+  runningExpiredSeconds: number
+  maxRetryCount: number
+}
+
+export interface QueueConsumerPendingEntry {
+  timestamp: bigint
+  startTime: bigint
+  status: number
+  retryCount: number
+}
+
+export interface QueueConsumerState {
+  processedTs: bigint
+  pendingEntries: QueueConsumerPendingEntry[]
+}
+
+export interface QueueConsumerInspectResult {
+  info: QueueConsumerInfo
+  state: QueueConsumerState
+}
+
 export interface DataSetInfo {
   name: string
   datasetType: string
@@ -148,6 +171,7 @@ export class QueryLengthIterator implements Iterable<[bigint, number]> {
 export class Queue {
   push(data: Buffer | Uint8Array): bigint
   openConsumer(groupName: string, options?: QueueConsumerOptions): QueueConsumer
+  getConsumerGroupNames(): string[]
   dropConsumer(groupName: string): void
   close(): void
 }
@@ -156,6 +180,9 @@ export class QueueConsumer {
   poll(timeoutMs?: number): Promise<[bigint, Buffer] | null>
   pollSync(timeoutMs?: number): [bigint, Buffer] | null
   ack(timestamp: number | bigint): void
+  flush(): void
+  close(): void
+  inspect(): QueueConsumerInspectResult
   pollCallback(callback: (() => void) | null): void
 }
 

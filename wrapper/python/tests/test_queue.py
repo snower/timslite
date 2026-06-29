@@ -233,6 +233,40 @@ class TestConsumerGroups:
 
             q.close()
 
+    def test_group_names_inspect_flush_and_close_release_pending(self, tmpdir):
+        cfg = timslite.StoreConfig(enable_background_thread=False)
+        with timslite.Store.open(tmpdir, cfg) as store:
+            store.create_dataset("events", "events")
+            ds = store.open_dataset("events", "events")
+            q = store.open_queue(ds.id)
+            c1 = q.open_consumer("shared")
+            c1_alias = q.open_consumer("shared")
+            q.open_consumer("other")
+
+            assert q.get_consumer_group_names() == ["other", "shared"]
+
+            q.push(b"first")
+            assert c1.poll(50) == (1, b"first")
+            c1.flush()
+
+            inspected = c1.inspect()
+            assert inspected.info.group_name == "shared"
+            assert inspected.info.running_expired_seconds == 900
+            assert inspected.info.max_retry_count == 3
+            assert inspected.state.processed_ts == -(2**63)
+            assert inspected.state.pending_entries[0].timestamp == 1
+
+            c1.close()
+            with pytest.raises(timslite.TmslQueueClosedError):
+                c1_alias.poll(0)
+            with pytest.raises(timslite.TmslQueueClosedError):
+                c1.ack(1)
+
+            reopened = q.open_consumer("shared")
+            assert reopened.poll(50) == (1, b"first")
+            reopened.ack(1)
+            q.close()
+
 
 class TestQueueErrors:
     def test_open_twice_raises(self, tmpdir):

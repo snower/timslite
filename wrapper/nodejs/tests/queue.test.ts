@@ -155,6 +155,45 @@ describe("queue", () => {
       });
     });
 
+    it("lists groups, inspects state, flushes, and close releases pending", () => {
+      withStore((store) => {
+        store.createDataset("events", "events");
+        const ds = store.openDataset("events", "events");
+        const q = store.openQueue(ds);
+        const c1 = q.openConsumer("shared");
+        const c1Alias = q.openConsumer("shared");
+        q.openConsumer("other");
+
+        assert.deepEqual(q.getConsumerGroupNames(), ["other", "shared"]);
+
+        q.push(Buffer.from("first"));
+        const first = c1.pollSync(100);
+        assert(first !== null);
+        assert.equal(first[0], 1n);
+        c1.flush();
+
+        const inspected = c1.inspect();
+        assert.equal(inspected.info.groupName, "shared");
+        assert.equal(inspected.info.runningExpiredSeconds, 900);
+        assert.equal(inspected.info.maxRetryCount, 3);
+        assert.equal(inspected.state.processedTs, -(2n ** 63n));
+        assert.equal(inspected.state.pendingEntries[0].timestamp, 1n);
+
+        c1.close();
+        assert.throws(() => c1Alias.pollSync(0));
+        assert.throws(() => c1.ack(1n));
+
+        const reopened = q.openConsumer("shared");
+        const redelivered = reopened.pollSync(100);
+        assert(redelivered !== null);
+        assert.equal(redelivered[0], 1n);
+        reopened.ack(1n);
+
+        q.close();
+        ds.close();
+      });
+    });
+
     it("unacked messages redelivered after expire", async () => {
       const dir = makeTmpDir();
       try {

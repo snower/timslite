@@ -13,6 +13,33 @@ pub struct QueueConsumerOptions {
     pub max_retry_count: Option<u16>,
 }
 
+#[napi(object)]
+pub struct QueueConsumerInfo {
+    pub group_name: String,
+    pub running_expired_seconds: u32,
+    pub max_retry_count: u8,
+}
+
+#[napi(object)]
+pub struct QueueConsumerPendingEntry {
+    pub timestamp: BigInt,
+    pub start_time: BigInt,
+    pub status: u8,
+    pub retry_count: u8,
+}
+
+#[napi(object)]
+pub struct QueueConsumerState {
+    pub processed_ts: BigInt,
+    pub pending_entries: Vec<QueueConsumerPendingEntry>,
+}
+
+#[napi(object)]
+pub struct QueueConsumerInspectResult {
+    pub info: QueueConsumerInfo,
+    pub state: QueueConsumerState,
+}
+
 fn build_consumer_config(opts: &Option<QueueConsumerOptions>) -> napi::Result<timslite::QueueConsumerConfig> {
     let mut builder = timslite::QueueConsumerConfig::builder();
     if let Some(ref o) = opts {
@@ -61,6 +88,12 @@ impl Queue {
     }
 
     #[napi]
+    pub fn get_consumer_group_names(&self) -> napi::Result<Vec<String>> {
+        let queue = self.inner.as_ref().ok_or_else(errors::store_closed)?;
+        errors::wrap(queue.get_consumer_group_names())
+    }
+
+    #[napi]
     pub fn drop_consumer(&self, group_name: String) -> napi::Result<()> {
         let queue = self.inner.as_ref().ok_or_else(errors::store_closed)?;
         errors::wrap(queue.drop_consumer(&group_name))
@@ -101,6 +134,45 @@ impl QueueConsumer {
         let consumer = self.inner.as_ref().ok_or_else(errors::store_closed)?;
         let ts = types::bigint_to_i64(&timestamp)?;
         errors::wrap(consumer.ack(ts))
+    }
+
+    #[napi]
+    pub fn flush(&self) -> napi::Result<()> {
+        let consumer = self.inner.as_ref().ok_or_else(errors::store_closed)?;
+        errors::wrap(consumer.flush())
+    }
+
+    #[napi]
+    pub fn close(&self) -> napi::Result<()> {
+        let consumer = self.inner.as_ref().ok_or_else(errors::store_closed)?;
+        errors::wrap(consumer.close())
+    }
+
+    #[napi]
+    pub fn inspect(&self) -> napi::Result<QueueConsumerInspectResult> {
+        let consumer = self.inner.as_ref().ok_or_else(errors::store_closed)?;
+        let result = errors::wrap(consumer.inspect())?;
+        Ok(QueueConsumerInspectResult {
+            info: QueueConsumerInfo {
+                group_name: result.info.group_name,
+                running_expired_seconds: result.info.running_expired_seconds as u32,
+                max_retry_count: result.info.max_retry_count,
+            },
+            state: QueueConsumerState {
+                processed_ts: types::i64_to_bigint(result.state.processed_ts),
+                pending_entries: result
+                    .state
+                    .pending_entries
+                    .into_iter()
+                    .map(|entry| QueueConsumerPendingEntry {
+                        timestamp: types::i64_to_bigint(entry.timestamp),
+                        start_time: types::i64_to_bigint(entry.start_time),
+                        status: entry.status,
+                        retry_count: entry.retry_count,
+                    })
+                    .collect(),
+            },
+        })
     }
 
     #[napi]

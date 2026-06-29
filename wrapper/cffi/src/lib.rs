@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use libc::{free, malloc};
 use timslite::{
-    DataSet, DataSetConfigBuilder, DataSetInspectResult, DatasetQueue, DatasetQueueConsumer,
-    JournalQueue, JournalQueueConsumer, QueueConsumerConfig, QueuePollCallback, Store,
-    StoreConfig, TmslError,
+    DataSet, DataSetConfigBuilder, DataSetInspectResult, DatasetQueue,
+    DatasetQueueConsumerInspectResult, DatasetQueueConsumer, JournalQueue, JournalQueueConsumer,
+    QueueConsumerConfig, QueuePollCallback, Store, StoreConfig, TmslError,
 };
 
 const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 5;
@@ -65,6 +65,38 @@ pub struct TmslQueueConsumerConfigFFI {
     pub version: u32,
     pub running_expired_seconds: u32,
     pub max_retry_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslQueueConsumerInfoFFI {
+    pub group_name: *mut c_char,
+    pub running_expired_seconds: u32,
+    pub max_retry_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslQueueConsumerPendingEntryFFI {
+    pub timestamp: i64,
+    pub start_time: i64,
+    pub status: u8,
+    pub retry_count: u8,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslQueueConsumerStateFFI {
+    pub processed_ts: i64,
+    pub pending_entries: *mut TmslQueueConsumerPendingEntryFFI,
+    pub pending_entries_count: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslQueueConsumerInspectResultFFI {
+    pub info: TmslQueueConsumerInfoFFI,
+    pub state: TmslQueueConsumerStateFFI,
 }
 
 pub type TmslQueuePollCallback = Option<extern "C" fn(*mut c_void)>;
@@ -384,6 +416,59 @@ fn write_string_array(
     Ok(())
 }
 
+fn write_queue_consumer_inspect_result(
+    result: DatasetQueueConsumerInspectResult,
+    out_result: *mut TmslQueueConsumerInspectResultFFI,
+) -> timslite::Result<()> {
+    if out_result.is_null() {
+        return Err(invalid_data("out_result is null"));
+    }
+
+    let group_name = cstring_ptr(result.info.group_name)?;
+    let pending_count = u32::try_from(result.state.pending_entries.len())
+        .map_err(|_| invalid_data("too many pending entries"))?;
+    let pending_entries = if result.state.pending_entries.is_empty() {
+        ptr::null_mut()
+    } else {
+        let bytes = result.state.pending_entries.len()
+            * std::mem::size_of::<TmslQueueConsumerPendingEntryFFI>();
+        let entries = unsafe { malloc(bytes) }.cast::<TmslQueueConsumerPendingEntryFFI>();
+        if entries.is_null() {
+            unsafe {
+                drop(CString::from_raw(group_name));
+            }
+            return Err(invalid_data("malloc failed"));
+        }
+        for (idx, entry) in result.state.pending_entries.iter().enumerate() {
+            unsafe {
+                *entries.add(idx) = TmslQueueConsumerPendingEntryFFI {
+                    timestamp: entry.timestamp,
+                    start_time: entry.start_time,
+                    status: entry.status,
+                    retry_count: entry.retry_count,
+                };
+            }
+        }
+        entries
+    };
+
+    unsafe {
+        *out_result = TmslQueueConsumerInspectResultFFI {
+            info: TmslQueueConsumerInfoFFI {
+                group_name,
+                running_expired_seconds: result.info.running_expired_seconds as u32,
+                max_retry_count: result.info.max_retry_count as u32,
+            },
+            state: TmslQueueConsumerStateFFI {
+                processed_ts: result.state.processed_ts,
+                pending_entries,
+                pending_entries_count: pending_count,
+            },
+        };
+    }
+    Ok(())
+}
+
 fn duration_millis(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
@@ -594,6 +679,18 @@ fn remove_consumers_for_queue(queue_id: usize) -> timslite::Result<()> {
     Ok(())
 }
 
+fn remove_dataset_consumers_for_group(queue_id: usize, group_name: &str) -> timslite::Result<()> {
+    CONSUMERS
+        .lock()
+        .map_err(|_| invalid_data("consumer registry mutex poisoned"))?
+        .retain(|_, consumer| {
+            consumer.queue_id != queue_id
+                || consumer.group_name != group_name
+                || !matches!(consumer.kind, ConsumerKind::Dataset(_))
+        });
+    Ok(())
+}
+
 #[no_mangle]
 pub extern "C" fn tmsl_store_config_default(
     out_config: *mut TmslStoreConfigFFI,
@@ -714,6 +811,27 @@ pub extern "C" fn tmsl_free_string_array(arr: *mut *mut c_char, count: u32) {
             }
         }
         free(arr.cast::<c_void>());
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_queue_consumer_inspect_result_free(
+    result: *mut TmslQueueConsumerInspectResultFFI,
+) {
+    if result.is_null() {
+        return;
+    }
+    unsafe {
+        let result = &mut *result;
+        if !result.info.group_name.is_null() {
+            drop(CString::from_raw(result.info.group_name));
+            result.info.group_name = ptr::null_mut();
+        }
+        if !result.state.pending_entries.is_null() {
+            free(result.state.pending_entries.cast::<c_void>());
+            result.state.pending_entries = ptr::null_mut();
+            result.state.pending_entries_count = 0;
+        }
     }
 }
 
@@ -1292,6 +1410,23 @@ pub extern "C" fn tmsl_queue_close(
 }
 
 #[no_mangle]
+pub extern "C" fn tmsl_queue_get_consumer_group_names(
+    queue_handle: usize,
+    out_names: *mut *mut *mut c_char,
+    out_count: *mut u32,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || match queue_kind(queue_handle)? {
+        QueueKind::Dataset(queue) => {
+            write_string_array(queue.get_consumer_group_names()?, out_names, out_count)?;
+            Ok(0)
+        }
+        QueueKind::Journal(_) => Err(invalid_data("journal queue is not supported")),
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn tmsl_queue_consumer_open(
     queue_handle: usize,
     group_name: *const c_char,
@@ -1338,22 +1473,24 @@ pub extern "C" fn tmsl_queue_consumer_drop(
     err_buf_len: usize,
 ) -> c_int {
     run_int(err_buf, err_buf_len, || {
-        let mut consumers = CONSUMERS
+        let consumers = CONSUMERS
             .lock()
             .map_err(|_| invalid_data("consumer registry mutex poisoned"))?;
         let consumer = consumers
-            .remove(&consumer_handle)
+            .get(&consumer_handle)
             .ok_or_else(|| invalid_data("invalid consumer handle"))?;
         if consumer.queue_id != queue_handle {
             return Err(invalid_data("consumer does not belong to queue"));
         }
+        let group_name = consumer.group_name.clone();
         drop(consumers);
         match queue_kind(queue_handle)? {
-            QueueKind::Dataset(queue) => queue.drop_consumer(&consumer.group_name)?,
+            QueueKind::Dataset(queue) => queue.drop_consumer(&group_name)?,
             QueueKind::Journal(_) => {
                 return Err(invalid_data("journal consumer drop is not supported"))
             }
         }
+        remove_dataset_consumers_for_group(queue_handle, &group_name)?;
         Ok(0)
     })
 }
@@ -1442,6 +1579,72 @@ pub extern "C" fn tmsl_queue_consumer_poll_callback(
                 "journal consumer requires tmsl_journal_queue_consumer_poll_callback",
             )),
         }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_queue_consumer_flush(
+    consumer_handle: usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || match consumer_kind(consumer_handle)? {
+        ConsumerKind::Dataset(consumer) => consumer.flush().map(|_| 0),
+        ConsumerKind::Journal(_) => Err(invalid_data(
+            "journal consumer requires journal-specific API",
+        )),
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_queue_consumer_close(
+    queue_handle: usize,
+    consumer_handle: usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        let consumers = CONSUMERS
+            .lock()
+            .map_err(|_| invalid_data("consumer registry mutex poisoned"))?;
+        let consumer = consumers
+            .get(&consumer_handle)
+            .ok_or_else(|| invalid_data("invalid consumer handle"))?;
+        if consumer.queue_id != queue_handle {
+            return Err(invalid_data("consumer does not belong to queue"));
+        }
+        let group_name = consumer.group_name.clone();
+        let kind = consumer.kind.clone();
+        drop(consumers);
+
+        match kind {
+            ConsumerKind::Dataset(consumer) => consumer.close()?,
+            ConsumerKind::Journal(_) => {
+                return Err(invalid_data(
+                    "journal consumer requires journal-specific API",
+                ))
+            }
+        }
+        remove_dataset_consumers_for_group(queue_handle, &group_name)?;
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_queue_consumer_inspect(
+    consumer_handle: usize,
+    out_result: *mut TmslQueueConsumerInspectResultFFI,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || match consumer_kind(consumer_handle)? {
+        ConsumerKind::Dataset(consumer) => {
+            write_queue_consumer_inspect_result(consumer.inspect()?, out_result)?;
+            Ok(0)
+        }
+        ConsumerKind::Journal(_) => Err(invalid_data(
+            "journal consumer requires journal-specific API",
+        )),
     })
 }
 

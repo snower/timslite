@@ -10,6 +10,95 @@ use std::time::Duration;
 
 use crate::exceptions::wrap;
 
+/// Public configuration for a dataset queue consumer group.
+#[pyclass(name = "DatasetQueueConsumerInfo", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyDatasetQueueConsumerInfo {
+    #[pyo3(get)]
+    pub group_name: String,
+    #[pyo3(get)]
+    pub running_expired_seconds: u16,
+    #[pyo3(get)]
+    pub max_retry_count: u8,
+}
+
+/// Pending queue record state returned by DatasetQueueConsumer.inspect().
+#[pyclass(name = "DatasetQueueConsumerPendingEntry", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyDatasetQueueConsumerPendingEntry {
+    #[pyo3(get)]
+    pub timestamp: i64,
+    #[pyo3(get)]
+    pub start_time: i64,
+    #[pyo3(get)]
+    pub status: u8,
+    #[pyo3(get)]
+    pub retry_count: u8,
+}
+
+/// Durable state for a dataset queue consumer group.
+#[pyclass(name = "DatasetQueueConsumerState", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyDatasetQueueConsumerState {
+    #[pyo3(get)]
+    pub processed_ts: i64,
+    #[pyo3(get)]
+    pub pending_entries: Vec<PyDatasetQueueConsumerPendingEntry>,
+}
+
+/// Result of DatasetQueueConsumer.inspect().
+#[pyclass(name = "DatasetQueueConsumerInspectResult", skip_from_py_object)]
+#[derive(Clone, Debug)]
+pub struct PyDatasetQueueConsumerInspectResult {
+    #[pyo3(get)]
+    pub info: PyDatasetQueueConsumerInfo,
+    #[pyo3(get)]
+    pub state: PyDatasetQueueConsumerState,
+}
+
+impl From<timslite::DatasetQueueConsumerInfo> for PyDatasetQueueConsumerInfo {
+    fn from(info: timslite::DatasetQueueConsumerInfo) -> Self {
+        Self {
+            group_name: info.group_name,
+            running_expired_seconds: info.running_expired_seconds,
+            max_retry_count: info.max_retry_count,
+        }
+    }
+}
+
+impl From<timslite::DatasetQueueConsumerPendingEntry> for PyDatasetQueueConsumerPendingEntry {
+    fn from(entry: timslite::DatasetQueueConsumerPendingEntry) -> Self {
+        Self {
+            timestamp: entry.timestamp,
+            start_time: entry.start_time,
+            status: entry.status,
+            retry_count: entry.retry_count,
+        }
+    }
+}
+
+impl From<timslite::DatasetQueueConsumerState> for PyDatasetQueueConsumerState {
+    fn from(state: timslite::DatasetQueueConsumerState) -> Self {
+        Self {
+            processed_ts: state.processed_ts,
+            pending_entries: state
+                .pending_entries
+                .into_iter()
+                .map(PyDatasetQueueConsumerPendingEntry::from)
+                .collect(),
+        }
+    }
+}
+
+impl From<timslite::DatasetQueueConsumerInspectResult> for PyDatasetQueueConsumerInspectResult {
+    fn from(result: timslite::DatasetQueueConsumerInspectResult) -> Self {
+        Self {
+            info: PyDatasetQueueConsumerInfo::from(result.info),
+            state: PyDatasetQueueConsumerState::from(result.state),
+        }
+    }
+}
+
 /// Python wrapper for DatasetQueue.
 ///
 /// Maintains an open queue on a dataset, allowing push and consumer
@@ -55,6 +144,14 @@ impl PyDatasetQueue {
         )?;
         let consumer = wrap(self.inner.open_consumer_with_config(group_name, config))?;
         Ok(PyDatasetQueueConsumer { inner: consumer })
+    }
+
+    /// Return current consumer group names.
+    ///
+    /// This lists existing state file directory entries without opening or
+    /// validating the state files.
+    fn get_consumer_group_names(&self) -> PyResult<Vec<String>> {
+        wrap(self.inner.get_consumer_group_names())
     }
 
     /// Close the queue and all associated consumers.
@@ -119,6 +216,25 @@ impl PyDatasetQueueConsumer {
     /// returned by `poll()`.
     fn ack(&self, timestamp: i64) -> PyResult<()> {
         wrap(self.inner.ack(timestamp))
+    }
+
+    /// Flush this consumer group's state file.
+    fn flush(&self) -> PyResult<()> {
+        wrap(self.inner.flush())
+    }
+
+    /// Close this consumer group.
+    ///
+    /// All opened handles for the same group become invalid, and any
+    /// unacknowledged pending entries are released for redelivery after reopen.
+    fn close(&self) -> PyResult<()> {
+        wrap(self.inner.close())
+    }
+
+    /// Inspect this consumer group's public config and durable state.
+    fn inspect(&self) -> PyResult<PyDatasetQueueConsumerInspectResult> {
+        let result = wrap(self.inner.inspect())?;
+        Ok(PyDatasetQueueConsumerInspectResult::from(result))
     }
 
     /// Register or clear a lightweight wake callback.

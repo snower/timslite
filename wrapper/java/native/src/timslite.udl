@@ -68,6 +68,29 @@ dictionary QueueConsumerOptions {
     QueueConsumerConfig? config;
 };
 
+dictionary QueueConsumerInfo {
+    string group_name;
+    u64 running_expired_seconds;
+    u16 max_retry_count;
+};
+
+dictionary QueueConsumerPendingEntry {
+    i64 timestamp;
+    i64 start_time;
+    u8 status;
+    u8 retry_count;
+};
+
+dictionary QueueConsumerState {
+    i64 processed_ts;
+    sequence<QueueConsumerPendingEntry> pending_entries;
+};
+
+dictionary QueueConsumerInspectResult {
+    QueueConsumerInfo info;
+    QueueConsumerState state;
+};
+
 dictionary DataSetInfo {
     string name;
     string dataset_type;
@@ -217,7 +240,11 @@ interface QueueBridge {
     [Throws=TmslError]
     QueueConsumerBridge open_consumer(string group_name, QueueConsumerOptions options);
     [Throws=TmslError]
+    sequence<string> get_consumer_group_names();
+    [Throws=TmslError]
     void drop_consumer(string group_name);
+    [Throws=TmslError]
+    void close();
 };
 
 interface QueueConsumerBridge {
@@ -225,6 +252,12 @@ interface QueueConsumerBridge {
     Record? poll(u64 timeout_ms);
     [Throws=TmslError]
     void ack(i64 timestamp);
+    [Throws=TmslError]
+    void flush();
+    [Throws=TmslError]
+    void close();
+    [Throws=TmslError]
+    QueueConsumerInspectResult inspect();
 };
 
 interface JournalQueueBridge {
