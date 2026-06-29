@@ -248,7 +248,7 @@ effective_dataset_journal = StoreConfig.enable_journal && DataSetMeta.enable_jou
 
 #### DataSet runtime context
 
-Store 管理的业务 `DataSet` 持有 `DataSetRuntimeContext`。当该 dataset 的有效 journal 开关为 true 时, context 中的 journal hook 指向 `JournalManager`; 否则 journal hook 为 `None`。业务 `DataSet::write/append/delete` 在主操作成功后调用 hook:
+Store 管理的业务 `DataSet` 持有 `DataSetRuntimeContext`。当该 dataset 的有效 journal 开关为 true 时, context 中的 journal hook 指向 `JournalManager`; 否则 journal hook 为 `None`。业务 `DataSet::write/write_now/append/append_now/delete` 在主操作成功后调用 hook; `write_now` / `append_now` 仅在获取 dataset mutex 后补齐当前 Unix 秒级 timestamp, journal 记录类型仍分别为 `0x11` / `0x13`:
 
 ```rust
 trait DataSetJournalSink {

@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -79,4 +79,58 @@ fn queue_opens_from_dataset_object() {
     );
 
     store.close().unwrap();
+}
+
+#[test]
+fn dataset_write_now_and_append_now_use_current_unix_second() {
+    use timslite::{DataSetConfigBuilder, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let dataset = store
+        .create_dataset_with_config(
+            "now_api",
+            "events",
+            Some(
+                DataSetConfigBuilder::from_store(store.config())
+                    .data_segment_size(1024 * 1024)
+                    .index_segment_size(64 * 1024),
+            ),
+        )
+        .unwrap();
+
+    let before = current_unix_seconds();
+    dataset.write_now(b"one").unwrap();
+    let after_write = current_unix_seconds();
+
+    let (write_ts, write_data) = dataset.read_latest().unwrap().unwrap();
+    assert_eq!(write_data, b"one");
+    assert!(
+        (before..=after_write).contains(&write_ts),
+        "write_now timestamp {write_ts} should be in [{before}, {after_write}]"
+    );
+    assert_eq!(dataset.latest_written_timestamp(), Some(write_ts));
+
+    dataset.append_now(b"-two").unwrap();
+    let after_append = current_unix_seconds();
+    let (append_ts, append_data) = dataset.read_latest().unwrap().unwrap();
+    assert!(
+        (write_ts..=after_append).contains(&append_ts),
+        "append_now timestamp {append_ts} should be in [{write_ts}, {after_append}]"
+    );
+    if append_ts == write_ts {
+        assert_eq!(append_data, b"one-two");
+    } else {
+        assert_eq!(append_data, b"-two");
+    }
+    assert_eq!(dataset.latest_written_timestamp(), Some(append_ts));
+
+    store.close().unwrap();
+}
+
+fn current_unix_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }

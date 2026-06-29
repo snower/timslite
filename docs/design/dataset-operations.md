@@ -54,6 +54,8 @@ impl DataSet {
     fn drop_dataset(base_dir: &Path) -> io::Result<()>;
 
     fn write(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
+    /// 使用当前 Unix 秒级时间戳写入; 时间戳必须在 DataSet 内部 mutex 获取后采样。
+    fn write_now(&self, data: &[u8]) -> io::Result<()>;
     fn read(&mut self, timestamp: i64) -> io::Result<Option<(i64, Vec<u8>)>>;
     fn read_latest(&mut self) -> io::Result<Option<(i64, Vec<u8>)>>;
     fn query(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<(i64, Vec<u8>)>>;
@@ -91,6 +93,8 @@ impl DataSet {
 
     /// 向记录追加数据: 不存在则按正序写入创建; 仅允许追加到最新未压缩末尾记录
     fn append(&mut self, timestamp: i64, data: &[u8]) -> io::Result<()>;
+    /// 使用当前 Unix 秒级时间戳追加; 时间戳必须在 DataSet 内部 mutex 获取后采样。
+    fn append_now(&self, data: &[u8]) -> io::Result<()>;
 
     /// 回收超过有效期的分段文件 (需先 close)
     /// retention_window=0 时跳过; retention_window > 0 时计算过期阈值并删除过期分段
@@ -101,7 +105,7 @@ impl DataSet {
 }
 ```
 
-`DataSet::create/open` 是 crate-internal 低层构造路径, 只供 Store 和 crate 内部恢复/测试使用。由 `Store` 创建、打开或扫描加载的普通业务实例必须在放入 registry 前注入 `DataSetRuntimeContext`, 因此外部通过 `Store::create_dataset*` / `Store::open_dataset*` 取得 `DataSet` 后调用 `write/append/delete/read/query/open_queue` 时, 仍由 `DataSet` 内部 mutex 提供同步, 并获得 Store-managed cache/journal/dirty-flush/lifecycle 行为。`.journal/logs` 不再作为普通 `DataSet` 暴露, 由 `JournalManager` 管理专用 `JournalLog`。`*_with_cache`、`*_with_cache_outcome`、`query_index_entries`、`read_entry_at_index` 等只作为 crate 内部辅助接口存在, 不属于 public 边界。
+`DataSet::create/open` 是 crate-internal 低层构造路径, 只供 Store 和 crate 内部恢复/测试使用。由 `Store` 创建、打开或扫描加载的普通业务实例必须在放入 registry 前注入 `DataSetRuntimeContext`, 因此外部通过 `Store::create_dataset*` / `Store::open_dataset*` 取得 `DataSet` 后调用 `write/write_now/append/append_now/delete/read/query/open_queue` 时, 仍由 `DataSet` 内部 mutex 提供同步, 并获得 Store-managed cache/journal/dirty-flush/lifecycle 行为。`.journal/logs` 不再作为普通 `DataSet` 暴露, 由 `JournalManager` 管理专用 `JournalLog`。`*_with_cache`、`*_with_cache_outcome`、`query_index_entries`、`read_entry_at_index` 等只作为 crate 内部辅助接口存在, 不属于 public 边界。
 
 ## 九、写入流程详解 (Block 聚合 + 延迟压缩)
 
@@ -234,6 +238,8 @@ DataSet::write(timestamp, data):
 **单条 record 上限**: `DataSet::write` 必须拒绝 `data.len() > 4MiB`。该限制适用于普通聚合 block 和 exclusive/single-record block, 与 `data_len:u32` 的磁盘编码能力无关。
 
 **public timestamp 契约**: `timestamp` 是 signed `i64` 业务时间戳, `0` 和负数都是合法值。`read(-1)` 不再有 latest 快捷语义, 而是读取精确 timestamp `-1`; 获取最新写入 timestamp 对应记录必须使用 `read_latest()`。
+
+**current-time 写入辅助 API**: `write_now(data)` 和 `append_now(data)` 是公开 Rust convenience API, 采样 `SystemTime::now()` 的 Unix 秒级时间戳后分别复用普通 `write(timestamp, data)` / `append(timestamp, data)` 语义。采样必须发生在外层 `DataSet` 已获取内部 mutex 之后, 调用方不得在锁外预先取时间再传入, 否则线程调度延迟可能让并发 now 写入以错误顺序进入 timestamp 检查。这两个 helper 不引入单调计数器; 同一秒内的调用仍遵循既有 correction / append 规则。
 
 **纠正写入**: 当 `latest_written_timestamp == Some(timestamp)` 时, 允许覆盖之前写入的同时间戳数据 (数据纠正场景)。
 

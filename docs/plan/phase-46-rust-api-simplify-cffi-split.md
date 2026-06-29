@@ -13,7 +13,7 @@
 - [x] `Store::create_dataset*`, `Store::open_dataset*`, `Store::open_dataset_by_identifier` 直接返回 `DataSet`。
 - [x] 移除 public `DataSetHandle` 和 Store handle registry。
 - [x] 移除 Store 上与 Store 职责无关的 record/queue facade API: `write_dataset`, `append_dataset`, `delete_dataset_record`, `read_dataset`, `query_dataset`, `open_queue`, `queue_push`, `queue_poll`, `queue_ack` 等。
-- [x] 普通 record API 统一通过 `DataSet::{write, append, delete, read, read_latest, query, ...}` 调用。
+- [x] 普通 record API 统一通过 `DataSet::{write, write_now, append, append_now, delete, read, read_latest, query, ...}` 调用。
 - [x] 普通 queue API 统一通过 `DataSet::open_queue()`、`DatasetQueue`、`DatasetQueueConsumer` 调用。
 - [x] 新增 `wrapper/cffi` 独立 crate, package name 为 `timslitecffi`。
 - [x] C header 迁移到 `wrapper/cffi/include/timslite.h`。
@@ -23,6 +23,7 @@
 - [x] 更新 Java native wrapper, 改为直接持有 `Arc<DataSet>`。
 - [x] 主 Rust tests/benchmarks 改为直接 `DataSet` API。
 - [x] 新增 `tests/rust_public_api_test.rs` 覆盖直接 `DataSet` 返回和 queue open。
+- [x] `tests/rust_public_api_test.rs` 覆盖 `DataSet::write_now(data)` / `DataSet::append_now(data)` 的 Unix 秒级时间戳 public API。
 - [x] 新增 `wrapper/cffi/tests/cffi_api_test.rs` 覆盖 C ABI store/dataset/read/queue roundtrip。
 - [x] 更新 README、design.md、Store/C ABI、Queue、Dataset 操作、Dataset Identifier、Query Iterator 等当前设计文档。
 

@@ -25,7 +25,9 @@
 普通 record 操作不再通过 Store facade 转发。调用方拿到 `DataSet` 后直接使用:
 
 - `DataSet::write(timestamp, data)`
+- `DataSet::write_now(data)`
 - `DataSet::append(timestamp, data)`
+- `DataSet::append_now(data)`
 - `DataSet::delete(timestamp)`
 - `DataSet::read(timestamp)`
 - `DataSet::read_latest()`
@@ -57,7 +59,7 @@
 - lifecycle invalidation hook
 - Store read-only 状态
 
-因此调用方直接调用 `DataSet::write/read/query/open_queue` 不会绕过 cache、journal、read-only、background flush 或 queue 通知语义。
+因此调用方直接调用 `DataSet::write/write_now/read/query/open_queue` 不会绕过 cache、journal、read-only、background flush 或 queue 通知语义。`write_now(data)` 和 `append_now(data)` 在 `DataSet` 内部 mutex 获取之后采样 Unix 秒级时间戳, 再复用普通 write/append 路径, 避免锁外取时间后因线程调度造成 timestamp 逆序。
 
 低层 `DataSet::create/open/drop_dataset`、raw lock、`IndexEntry`、`QuerySource`、`QueueInner`、`ConsumerStateFile` 等仍是 crate-internal 实现细节。
 
@@ -91,7 +93,7 @@ dataset.write(1, b"21.5")?;
 | `Store::open_dataset` | 读取并校验 dataset `identifier` 和 `meta`, 加载已有 segments, 注入 runtime context, 缓存到 registry |
 | `Store::open_dataset_by_identifier` | 扫描合法 public dataset 目录查找 identifier, 找到后复用 `open_dataset` 语义 |
 | `Store::drop_dataset` | 按 name/type 加载并关闭 dataset/queue, 删除 `{name}/{type}` 目录, 成功后按配置写 journal drop record |
-| `DataSet::write/append/delete` | 执行 record 操作、cache invalidation、queue notify 和 journal hook |
+| `DataSet::write/write_now/append/append_now/delete` | 执行 record 操作、cache invalidation、queue notify 和 journal hook |
 | `DataSet::read/read_latest/query` | 使用 Store 注入的 cache 和 read-only context 执行读取 |
 | `DataSet::open_queue` | 打开普通 dataset queue; read-only dataset 返回错误 |
 | `Store::journal_*` | 通过 `JournalManager` 专用路径读取内置 journal, 不通过普通 dataset API |
@@ -108,7 +110,7 @@ dataset.write(1, b"21.5")?;
 
 The acquired lock handle is stored inside `Store` as `Option<File>` and is released by normal Store drop/close semantics. Read-only Stores store no lock handle.
 
-Read-only Store mode rejects every mutating Store or Store-managed `DataSet` operation, including create/drop/write/append/delete, retention reclaim, queue open/close/push/poll/ack, and `open_journal_queue`. `read`, `read_latest`, `query`, inspect/list operations, and journal latest/read/query remain read-capable. Background tasks are not started in read-only mode, and manual background task APIs are unavailable for that Store.
+Read-only Store mode rejects every mutating Store or Store-managed `DataSet` operation, including create/drop/write/write_now/append/append_now/delete, retention reclaim, queue open/close/push/poll/ack, and `open_journal_queue`. `read`, `read_latest`, `query`, inspect/list operations, and journal latest/read/query remain read-capable. Background tasks are not started in read-only mode, and manual background task APIs are unavailable for that Store.
 
 The read-only view is an open-time persisted view, not a live reader. It only needs to read bytes already flushed to the Store files before the read-only Store opened.
 

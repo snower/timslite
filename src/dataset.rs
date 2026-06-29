@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cache::BlockCache;
 use crate::config::{validate_dataset_config_values, DataSetConfig};
@@ -31,6 +31,19 @@ use crate::segment::ReadIndexEntry;
 type QueueCondvarPair = Arc<QueueNotifier>;
 
 const QUERY_EXIST_MAX_BITMAP_BYTES: usize = 4 * 1024 * 1024;
+
+fn current_unix_seconds() -> Result<i64> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| TmslError::InvalidData("system time is before Unix epoch".into()))?;
+    let seconds = duration.as_secs();
+    if seconds > i64::MAX as u64 {
+        return Err(TmslError::InvalidData(
+            "system time exceeds i64 Unix timestamp range".into(),
+        ));
+    }
+    Ok(seconds as i64)
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum SegmentFlushTarget {
@@ -387,8 +400,22 @@ impl DataSet {
         self.with_open_inner(|inner| inner.write(timestamp, data))
     }
 
+    pub fn write_now(&self, data: &[u8]) -> Result<()> {
+        self.with_open_inner(|inner| {
+            let timestamp = current_unix_seconds()?;
+            inner.write(timestamp, data)
+        })
+    }
+
     pub fn append(&self, timestamp: i64, data: &[u8]) -> Result<()> {
         self.with_open_inner(|inner| inner.append(timestamp, data))
+    }
+
+    pub fn append_now(&self, data: &[u8]) -> Result<()> {
+        self.with_open_inner(|inner| {
+            let timestamp = current_unix_seconds()?;
+            inner.append(timestamp, data)
+        })
     }
 
     pub fn delete(&self, timestamp: i64) -> Result<()> {
