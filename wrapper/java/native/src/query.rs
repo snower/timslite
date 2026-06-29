@@ -22,7 +22,7 @@ impl QueryIteratorBridge {
         Ok(guard.pop())
     }
 
-    pub fn close(&self) -> Result<(), TmslError> {
+    pub fn release(&self) -> Result<(), TmslError> {
         let mut guard = self
             .inner
             .lock()
@@ -51,7 +51,7 @@ impl QueryLengthIteratorBridge {
         Ok(guard.pop())
     }
 
-    pub fn close(&self) -> Result<(), TmslError> {
+    pub fn release(&self) -> Result<(), TmslError> {
         let mut guard = self
             .inner
             .lock()

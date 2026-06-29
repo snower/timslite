@@ -662,7 +662,7 @@ impl QueueBridge {
         }
     }
 
-    pub fn close(&self) -> Result<(), TmslError> {
+    pub fn release(&self) -> Result<(), TmslError> {
         let mut guard = self
             .inner
             .lock()
@@ -716,7 +716,7 @@ impl JournalQueueBridge {
         }
     }
 
-    pub fn close(&self) -> Result<(), TmslError> {
+    pub fn release(&self) -> Result<(), TmslError> {
         let mut guard = self
             .inner
             .lock()
@@ -772,7 +772,7 @@ impl JournalQueueConsumerBridge {
         }
     }
 
-    pub fn close(&self) -> Result<(), TmslError> {
+    pub fn release(&self) -> Result<(), TmslError> {
         let mut guard = self
             .inner
             .lock()

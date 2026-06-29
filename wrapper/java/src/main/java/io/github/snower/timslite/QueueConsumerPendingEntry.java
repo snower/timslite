@@ -12,8 +12,8 @@ public final class QueueConsumerPendingEntry {
     QueueConsumerPendingEntry(io.github.snower.timslite.uniffi.QueueConsumerPendingEntry kotlinEntry) {
         this.timestamp = kotlinEntry.getTimestamp();
         this.startTime = kotlinEntry.getStartTime();
-        this.status = kotlinEntry.getStatus().shortValue();
-        this.retryCount = kotlinEntry.getRetryCount().shortValue();
+        this.status = (short) (KotlinConversions.getUByte(kotlinEntry, "getStatus") & 0xFF);
+        this.retryCount = (short) (KotlinConversions.getUByte(kotlinEntry, "getRetryCount") & 0xFF);
     }
 
     public long getTimestamp() {

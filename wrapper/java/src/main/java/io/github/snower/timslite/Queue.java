@@ -29,7 +29,11 @@ public final class Queue implements AutoCloseable {
     public void close() {
         if (!closed) {
             closed = true;
-            bridge.close();
+            try {
+                bridge.release();
+            } catch (io.github.snower.timslite.uniffi.TmslException e) {
+                throw TmslException.fromUniFFI(e);
+            }
         }
     }
 

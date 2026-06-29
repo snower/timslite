@@ -16,9 +16,10 @@ final class KotlinConversions {
 
     // Kotlin mangles getter names for inline value class fields.
     // Suffixes observed with Kotlin 2.2.0:
-    //   ULong: -s-VKNKU    UInt: -pVg5ArA    UByte: -w2LRezQ
+    //   ULong: -s-VKNKU    UInt: -pVg5ArA    UShort: -Mh2AYeg    UByte: -w2LRezQ
     private static final String ULONG_SUFFIX = "-s-VKNKU";
     private static final String UINT_SUFFIX = "-pVg5ArA";
+    private static final String USHORT_SUFFIX = "-Mh2AYeg";
     private static final String UBYTE_SUFFIX = "-w2LRezQ";
 
     static {
@@ -69,6 +70,10 @@ final class KotlinConversions {
 
     static int getUInt(Object obj, String baseName) {
         return (int) invokeMangledGetter(obj, baseName, UINT_SUFFIX);
+    }
+
+    static short getUShort(Object obj, String baseName) {
+        return (short) invokeMangledGetter(obj, baseName, USHORT_SUFFIX);
     }
 
     static byte getUByte(Object obj, String baseName) {

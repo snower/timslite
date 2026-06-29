@@ -244,7 +244,7 @@ interface QueueBridge {
     [Throws=TmslError]
     void drop_consumer(string group_name);
     [Throws=TmslError]
-    void close();
+    void release();
 };
 
 interface QueueConsumerBridge {
@@ -255,7 +255,7 @@ interface QueueConsumerBridge {
     [Throws=TmslError]
     void flush();
     [Throws=TmslError]
-    void close();
+    void release();
     [Throws=TmslError]
     QueueConsumerInspectResult inspect();
 };

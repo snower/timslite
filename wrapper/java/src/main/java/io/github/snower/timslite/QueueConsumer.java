@@ -37,7 +37,7 @@ public final class QueueConsumer implements AutoCloseable {
         if (!closed) {
             closed = true;
             try {
-                bridge.close();
+                bridge.release();
             } catch (io.github.snower.timslite.uniffi.TmslException e) {
                 throw TmslException.fromUniFFI(e);
             }

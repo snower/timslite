@@ -68,7 +68,7 @@ impl QueueConsumerBridge {
         }
     }
 
-    pub fn close(&self) -> Result<(), TmslError> {
+    pub fn release(&self) -> Result<(), TmslError> {
         let mut guard = self
             .inner
             .lock()

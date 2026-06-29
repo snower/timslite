@@ -10,8 +10,8 @@ public final class QueueConsumerInfo {
 
     QueueConsumerInfo(io.github.snower.timslite.uniffi.QueueConsumerInfo kotlinInfo) {
         this.groupName = kotlinInfo.getGroupName();
-        this.runningExpiredSeconds = kotlinInfo.getRunningExpiredSeconds().longValue();
-        this.maxRetryCount = kotlinInfo.getMaxRetryCount().intValue();
+        this.runningExpiredSeconds = KotlinConversions.getULong(kotlinInfo, "getRunningExpiredSeconds");
+        this.maxRetryCount = (short) (KotlinConversions.getUShort(kotlinInfo, "getMaxRetryCount") & 0xFFFF);
     }
 
     public String getGroupName() {
