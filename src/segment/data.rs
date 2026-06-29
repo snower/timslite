@@ -1007,6 +1007,7 @@ impl DataSegment {
     /// Returns `(timestamp, data)`.
     pub fn read_at_index(
         &self,
+        cache_scope_id: u64,
         entry: &ReadIndexEntry,
         cache: Option<&BlockCache>,
     ) -> Result<(i64, Vec<u8>)> {
@@ -1023,7 +1024,7 @@ impl DataSegment {
         let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
 
         // ── Cache check ──
-        let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
+        let cache_key = CacheKey::new(cache_scope_id, self.file_offset, entry.block_offset);
 
         // Only compressed blocks are globally cached; raw blocks may still be mutable.
         if is_compressed {
@@ -1096,6 +1097,7 @@ impl DataSegment {
     /// Read a record at the given index entry, with HotBlockCache support.
     pub fn read_at_index_with_hot_cache(
         &self,
+        cache_scope_id: u64,
         entry: &ReadIndexEntry,
         cache: Option<&BlockCache>,
         hot_block: &mut HotBlockCache,
@@ -1106,17 +1108,16 @@ impl DataSegment {
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
 
         let hdr_pos = (self.header_size + entry.block_offset) as usize;
-        let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
-
-        if hot_block.is_hit(self.file_offset, entry.block_offset) {
-            return hot_block.extract_record(entry.in_block_offset);
-        }
+        let cache_key = CacheKey::new(cache_scope_id, self.file_offset, entry.block_offset);
 
         let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
         let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
         let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
 
         if is_compressed {
+            if hot_block.is_hit(cache_scope_id, self.file_offset, entry.block_offset) {
+                return hot_block.extract_record(entry.in_block_offset);
+            }
             if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
                 hot_block.fill(cache_key, block_data.clone());
                 return hot_block.extract_record(entry.in_block_offset);
@@ -1132,36 +1133,35 @@ impl DataSegment {
             payload.to_vec()
         };
 
-        hot_block.fill(cache_key.clone(), block_data.clone());
         if is_compressed {
+            hot_block.fill(cache_key.clone(), block_data.clone());
             if let Some(c) = cache {
-                c.put(cache_key, block_data);
+                c.put(cache_key, block_data.clone());
             }
         }
 
         let pos = entry.in_block_offset as usize;
-        if pos + RECORD_HEADER_SIZE > hot_block.current_data.len() {
+        if pos + RECORD_HEADER_SIZE > block_data.len() {
             return Err(TmslError::InvalidData("record index out of bounds".into()));
         }
 
         let timestamp = read_i64_le(
-            hot_block.current_data[pos + 4..pos + 12]
+            block_data[pos + 4..pos + 12]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
         );
         let data_len = read_u32_le(
-            hot_block.current_data[pos..pos + 4]
+            block_data[pos..pos + 4]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
         ) as usize;
 
-        if pos + RECORD_HEADER_SIZE + data_len > hot_block.current_data.len() {
+        if pos + RECORD_HEADER_SIZE + data_len > block_data.len() {
             return Err(TmslError::InvalidData("record data out of bounds".into()));
         }
 
-        let data = hot_block.current_data
-            [pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len]
-            .to_vec();
+        let data =
+            block_data[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
         Ok((timestamp, data))
     }
 
@@ -1169,6 +1169,7 @@ impl DataSegment {
     /// Does not read the actual data payload.
     pub fn read_record_data_len(
         &self,
+        cache_scope_id: u64,
         entry: &ReadIndexEntry,
         cache: Option<&BlockCache>,
     ) -> Result<u32> {
@@ -1178,7 +1179,7 @@ impl DataSegment {
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
 
         let hdr_pos = (self.header_size + entry.block_offset) as usize;
-        let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
+        let cache_key = CacheKey::new(cache_scope_id, self.file_offset, entry.block_offset);
 
         // Try cache first for compressed blocks
         let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
@@ -1226,6 +1227,7 @@ impl DataSegment {
     /// Read record data_len with HotBlockCache support.
     pub fn read_record_data_len_with_hot_cache(
         &self,
+        cache_scope_id: u64,
         entry: &ReadIndexEntry,
         cache: Option<&BlockCache>,
         hot_block: &mut HotBlockCache,
@@ -1236,10 +1238,13 @@ impl DataSegment {
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
 
         let hdr_pos = (self.header_size + entry.block_offset) as usize;
-        let cache_key = CacheKey::new(self.file_offset, entry.block_offset);
+        let cache_key = CacheKey::new(cache_scope_id, self.file_offset, entry.block_offset);
 
-        // Check hot block cache
-        if hot_block.is_hit(self.file_offset, entry.block_offset) {
+        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
+        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
+        let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
+
+        if is_compressed && hot_block.is_hit(cache_scope_id, self.file_offset, entry.block_offset) {
             let pos = entry.in_block_offset as usize;
             if pos + RECORD_HEADER_SIZE > hot_block.current_data.len() {
                 return Err(TmslError::InvalidData("record index out of bounds".into()));
@@ -1251,10 +1256,6 @@ impl DataSegment {
             );
             return Ok(data_len);
         }
-
-        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
-        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
-        let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
 
         // Try global cache
         if is_compressed {
@@ -1283,8 +1284,8 @@ impl DataSegment {
             payload.to_vec()
         };
 
-        hot_block.fill(cache_key.clone(), block_data.clone());
         if is_compressed {
+            hot_block.fill(cache_key.clone(), block_data.clone());
             if let Some(c) = cache {
                 c.put(cache_key, block_data.clone());
             }
@@ -1437,7 +1438,7 @@ mod tests {
             block_offset: off,
             in_block_offset: ib,
         };
-        let (ts, recovered) = seg.read_at_index(&entry, None).unwrap();
+        let (ts, recovered) = seg.read_at_index(1, &entry, None).unwrap();
         assert_eq!(ts, 5000);
         assert_eq!(recovered, data);
     }
@@ -1455,7 +1456,7 @@ mod tests {
             block_offset: off,
             in_block_offset: ib,
         };
-        let (ts, recovered) = seg.read_at_index(&entry, None).unwrap();
+        let (ts, recovered) = seg.read_at_index(1, &entry, None).unwrap();
         assert_eq!(ts, 6000);
         assert_eq!(recovered.len(), data.len());
         assert_eq!(recovered, data);
@@ -1477,7 +1478,7 @@ mod tests {
             block_offset: off,
             in_block_offset: ib,
         };
-        let (ts, recovered) = seg.read_at_index(&entry, None).unwrap();
+        let (ts, recovered) = seg.read_at_index(1, &entry, None).unwrap();
         assert_eq!(ts, 6001);
         assert_eq!(recovered, data);
     }
@@ -1504,7 +1505,7 @@ mod tests {
             block_offset: off,
             in_block_offset: ib,
         };
-        let (ts, recovered) = seg.read_at_index(&entry, None).unwrap();
+        let (ts, recovered) = seg.read_at_index(1, &entry, None).unwrap();
         assert_eq!(ts, 6002);
         assert_eq!(recovered, data);
     }
@@ -1525,7 +1526,7 @@ mod tests {
             block_offset: block_off,
             in_block_offset: in_block_off,
         };
-        let (ts, data) = seg.read_at_index(&entry, None).unwrap();
+        let (ts, data) = seg.read_at_index(1, &entry, None).unwrap();
         assert_eq!(ts, 9999);
         assert_eq!(data, test_data);
     }
@@ -1541,7 +1542,7 @@ mod tests {
             in_block_offset: in_block_off,
         };
 
-        let (ts, data) = seg.read_at_index(&entry, Some(&cache)).unwrap();
+        let (ts, data) = seg.read_at_index(1, &entry, Some(&cache)).unwrap();
 
         assert_eq!(ts, 7000);
         assert_eq!(data, b"raw");
@@ -1561,12 +1562,12 @@ mod tests {
         };
 
         let (ts, data) = seg
-            .read_at_index_with_hot_cache(&entry, Some(&cache), &mut hot)
+            .read_at_index_with_hot_cache(1, &entry, Some(&cache), &mut hot)
             .unwrap();
 
         assert_eq!(ts, 7001);
         assert_eq!(data, b"raw-hot");
-        assert!(hot.is_hit(0, block_off));
+        assert!(!hot.is_hit(1, 0, block_off));
         assert_eq!(cache.stats().entry_count, 0);
     }
 
@@ -1582,7 +1583,7 @@ mod tests {
             in_block_offset: in_block_off,
         };
 
-        let (ts, recovered) = seg.read_at_index(&entry, Some(&cache)).unwrap();
+        let (ts, recovered) = seg.read_at_index(1, &entry, Some(&cache)).unwrap();
 
         assert_eq!(ts, 7002);
         assert_eq!(recovered, data);
@@ -1605,7 +1606,7 @@ mod tests {
             block_offset: 0,
             in_block_offset: in_block_off,
         };
-        let (ts, recovered) = reopened.read_at_index(&entry, None).unwrap();
+        let (ts, recovered) = reopened.read_at_index(1, &entry, None).unwrap();
         assert_eq!(ts, 12345);
         assert_eq!(recovered, data);
     }
@@ -1634,7 +1635,7 @@ mod tests {
             block_offset: block_off,
             in_block_offset: in_block_off,
         };
-        let (ts, data) = seg2.read_at_index(&entry, None).unwrap();
+        let (ts, data) = seg2.read_at_index(1, &entry, None).unwrap();
         assert_eq!(ts, 7777);
         assert_eq!(data, b"idle_test");
     }
@@ -1657,7 +1658,7 @@ mod tests {
             block_offset: block_off,
             in_block_offset: second_in_block,
         };
-        let (ts, data) = reopened.read_at_index(&second, None).unwrap();
+        let (ts, data) = reopened.read_at_index(1, &second, None).unwrap();
         assert_eq!(ts, 8001);
         assert_eq!(data, b"second");
     }
@@ -1712,7 +1713,7 @@ mod tests {
 
         // Verify all records
         for (i, entry) in entries.iter().enumerate() {
-            let (ts, data) = seg.read_at_index(entry, None).unwrap();
+            let (ts, data) = seg.read_at_index(1, entry, None).unwrap();
             assert_eq!(ts, 1_700_000_000 + i as i64);
             assert_eq!(data, format!("record_{i}", i = i).as_bytes());
         }

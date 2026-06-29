@@ -18,6 +18,61 @@ fn temp_dir() -> PathBuf {
     ))
 }
 
+#[test]
+fn global_block_cache_is_isolated_by_dataset_identifier() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+
+    store
+        .create_dataset(
+            "cache_scope_a",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    store
+        .create_dataset(
+            "cache_scope_b",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let ds_a = store.open_dataset("cache_scope_a", "data").unwrap();
+    let ds_b = store.open_dataset("cache_scope_b", "data").unwrap();
+    let payload_a = vec![b'a'; 70 * 1024];
+    let payload_b = vec![b'b'; 70 * 1024];
+
+    ds_a.write(100, &payload_a).unwrap();
+    ds_b.write(100, &payload_b).unwrap();
+
+    let read_a = ds_a.read(100).unwrap().unwrap();
+    assert_eq!(read_a.1, payload_a);
+    assert!(
+        store.block_cache().stats().entry_count > 0,
+        "single-record compressed block should populate the global cache"
+    );
+
+    let read_b = ds_b.read(100).unwrap().unwrap();
+    assert_eq!(
+        read_b.1, payload_b,
+        "dataset B must not read dataset A's cached block at the same offset"
+    );
+
+    store.close().unwrap();
+}
+
 /// P0-A-1: Cache invalidation after correction write
 ///
 /// Write data, read to cache, then correction write.

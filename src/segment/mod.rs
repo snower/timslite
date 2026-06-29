@@ -96,6 +96,7 @@ pub struct DataSegmentSet {
     pub(crate) segments: BTreeMap<u64, DataSegmentEntry>,
     pub next_offset: u64,
     pub last_used_at: Instant,
+    cache_scope_id: u64,
 }
 
 impl DataSegmentSet {
@@ -134,6 +135,10 @@ impl DataSegmentSet {
 
     pub(crate) fn total_len(&self) -> usize {
         self.segments.len()
+    }
+
+    pub(crate) fn set_cache_scope_id(&mut self, cache_scope_id: u64) {
+        self.cache_scope_id = cache_scope_id;
     }
 
     pub(crate) fn active_tail_offset(&self) -> Option<u64> {
@@ -196,6 +201,7 @@ impl DataSegmentSet {
             segments: BTreeMap::new(),
             next_offset: 0,
             last_used_at: Instant::now(),
+            cache_scope_id: 0,
         })
     }
 
@@ -347,6 +353,7 @@ impl DataSegmentSet {
                 .collect(),
             next_offset,
             last_used_at: Instant::now(),
+            cache_scope_id: 0,
         })
     }
 
@@ -474,7 +481,11 @@ impl DataSegmentSet {
     /// Build the global cache key for an index entry block offset.
     pub fn cache_key_for_absolute_offset(&self, absolute_offset: u64) -> CacheKey {
         let segment_file_offset = (absolute_offset / self.segment_size) * self.segment_size;
-        CacheKey::new(segment_file_offset, absolute_offset - segment_file_offset)
+        CacheKey::new(
+            self.cache_scope_id,
+            segment_file_offset,
+            absolute_offset - segment_file_offset,
+        )
     }
 
     /// Correction write: route to the latest data segment and overwrite the
@@ -622,6 +633,7 @@ impl DataSegmentSet {
         entry: &crate::segment::data::ReadIndexEntry,
         cache: Option<&BlockCache>,
     ) -> Result<(i64, Vec<u8>)> {
+        let cache_scope_id = self.cache_scope_id;
         let seg_offset = entry.block_offset;
         let seg = self.find_or_open_segment(seg_offset)?;
         let seg_file_offset = seg.file_offset;
@@ -630,7 +642,7 @@ impl DataSegmentSet {
             block_offset: entry.block_offset - seg_file_offset,
             in_block_offset: entry.in_block_offset,
         };
-        seg.read_at_index(&rel_entry, cache)
+        seg.read_at_index(cache_scope_id, &rel_entry, cache)
     }
 
     /// Find the segment and read the record with HotBlockCache support.
@@ -640,6 +652,7 @@ impl DataSegmentSet {
         cache: Option<&BlockCache>,
         hot_block: &mut HotBlockCache,
     ) -> Result<(i64, Vec<u8>)> {
+        let cache_scope_id = self.cache_scope_id;
         let seg = self.find_or_open_segment(entry.block_offset)?;
         let seg_file_offset = seg.file_offset;
         let rel_entry = crate::segment::data::ReadIndexEntry {
@@ -647,7 +660,7 @@ impl DataSegmentSet {
             block_offset: entry.block_offset - seg_file_offset,
             in_block_offset: entry.in_block_offset,
         };
-        seg.read_at_index_with_hot_cache(&rel_entry, cache, hot_block)
+        seg.read_at_index_with_hot_cache(cache_scope_id, &rel_entry, cache, hot_block)
     }
 
     /// Find the segment and read only the record data_len (lightweight).
@@ -656,6 +669,7 @@ impl DataSegmentSet {
         entry: &crate::segment::data::ReadIndexEntry,
         cache: Option<&BlockCache>,
     ) -> Result<u32> {
+        let cache_scope_id = self.cache_scope_id;
         let seg = self.find_or_open_segment(entry.block_offset)?;
         let seg_file_offset = seg.file_offset;
         let rel_entry = crate::segment::data::ReadIndexEntry {
@@ -663,7 +677,7 @@ impl DataSegmentSet {
             block_offset: entry.block_offset - seg_file_offset,
             in_block_offset: entry.in_block_offset,
         };
-        seg.read_record_data_len(&rel_entry, cache)
+        seg.read_record_data_len(cache_scope_id, &rel_entry, cache)
     }
 
     /// Find the segment and read record data_len with HotBlockCache support.
@@ -673,6 +687,7 @@ impl DataSegmentSet {
         cache: Option<&BlockCache>,
         hot_block: &mut HotBlockCache,
     ) -> Result<u32> {
+        let cache_scope_id = self.cache_scope_id;
         let seg = self.find_or_open_segment(entry.block_offset)?;
         let seg_file_offset = seg.file_offset;
         let rel_entry = crate::segment::data::ReadIndexEntry {
@@ -680,7 +695,7 @@ impl DataSegmentSet {
             block_offset: entry.block_offset - seg_file_offset,
             in_block_offset: entry.in_block_offset,
         };
-        seg.read_record_data_len_with_hot_cache(&rel_entry, cache, hot_block)
+        seg.read_record_data_len_with_hot_cache(cache_scope_id, &rel_entry, cache, hot_block)
     }
 
     fn find_or_open_segment(&mut self, absolute_offset: u64) -> Result<&mut DS> {

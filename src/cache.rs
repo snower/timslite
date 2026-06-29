@@ -8,12 +8,14 @@ use crate::util::{read_i64_le, read_u32_le};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct CacheKey {
+    pub cache_scope_id: u64,
     pub segment_file_offset: u64,
     pub block_offset: u64,
 }
 impl CacheKey {
-    pub fn new(s: u64, b: u64) -> Self {
+    pub fn new(cache_scope_id: u64, s: u64, b: u64) -> Self {
         Self {
+            cache_scope_id,
             segment_file_offset: s,
             block_offset: b,
         }
@@ -126,6 +128,28 @@ impl BlockCache {
         }
     }
 
+    pub fn invalidate_scope(&self, cache_scope_id: u64) -> usize {
+        if !self.is_enabled() {
+            return 0;
+        }
+        let mut guard = self.entries.write().unwrap();
+        let mut removed = 0usize;
+        let mut freed = 0usize;
+        guard.retain(|key, entry| {
+            if key.cache_scope_id == cache_scope_id {
+                removed += 1;
+                freed += entry.footprint;
+                false
+            } else {
+                true
+            }
+        });
+        if freed > 0 {
+            self.used_memory.fetch_sub(freed, Ordering::Relaxed);
+        }
+        removed
+    }
+
     fn evict_lru(guard: &mut HashMap<CacheKey, CacheEntry>, target_used: usize) -> usize {
         let current: usize = guard.values().map(|v| v.footprint).sum();
         if current <= target_used {
@@ -197,7 +221,7 @@ mod tests {
     fn test_cache_disabled_when_zero() {
         let c = BlockCache::new(0);
         assert!(!c.is_enabled());
-        let k = CacheKey::new(0, 0);
+        let k = CacheKey::new(1, 0, 0);
         c.put(k.clone(), vec![1, 2, 3]);
         assert!(c.get(&k).is_none());
         assert_eq!(c.stats().entry_count, 0);
@@ -205,7 +229,7 @@ mod tests {
     #[test]
     fn test_put_get_roundtrip() {
         let c = BlockCache::new(1024);
-        let k = CacheKey::new(0, 0);
+        let k = CacheKey::new(1, 0, 0);
         let d = vec![10u8; 100];
         c.put(k.clone(), d.clone());
         assert_eq!(c.get(&k).unwrap(), d);
@@ -215,7 +239,7 @@ mod tests {
     #[test]
     fn test_cache_miss_count() {
         let c = BlockCache::new(1024);
-        let k = CacheKey::new(999, 0);
+        let k = CacheKey::new(1, 999, 0);
         assert!(c.get(&k).is_none());
         assert_eq!(c.stats().miss_count, 1);
     }
@@ -223,10 +247,10 @@ mod tests {
     fn test_lru_eviction_at_watermark() {
         let c = BlockCache::new(1000);
         for i in 0..3 {
-            c.put(CacheKey::new(i, 0), vec![0u8; 200]);
+            c.put(CacheKey::new(1, i, 0), vec![0u8; 200]);
         }
         assert_eq!(c.stats().entry_count, 3);
-        c.put(CacheKey::new(3, 0), vec![0u8; 200]);
+        c.put(CacheKey::new(1, 3, 0), vec![0u8; 200]);
         assert!(
             c.stats().used_memory <= 850,
             "used {} exceeds 850",
@@ -236,7 +260,7 @@ mod tests {
     #[test]
     fn test_idle_eviction() {
         let c = BlockCache::new(10240);
-        let k = CacheKey::new(0, 0);
+        let k = CacheKey::new(1, 0, 0);
         c.put(k.clone(), vec![1u8; 100]);
         assert_eq!(c.evict_idle(Duration::from_secs(10)), 0);
         {
@@ -252,7 +276,7 @@ mod tests {
     fn test_clear() {
         let c = BlockCache::new(10240);
         for i in 0..5 {
-            c.put(CacheKey::new(i, 0), vec![0u8; 50]);
+            c.put(CacheKey::new(1, i, 0), vec![0u8; 50]);
         }
         assert_eq!(c.stats().entry_count, 5);
         c.clear();
@@ -263,7 +287,7 @@ mod tests {
     #[test]
     fn test_invalidate_removes_entry_and_updates_memory() {
         let c = BlockCache::new(10240);
-        let k = CacheKey::new(12, 34);
+        let k = CacheKey::new(1, 12, 34);
         c.put(k.clone(), vec![1u8; 100]);
         assert_eq!(c.stats().entry_count, 1);
         assert!(c.stats().used_memory > 0);
@@ -275,9 +299,22 @@ mod tests {
     }
 
     #[test]
+    fn test_invalidate_scope_removes_only_matching_scope() {
+        let c = BlockCache::new(10240);
+        c.put(CacheKey::new(1, 0, 0), vec![1u8; 100]);
+        c.put(CacheKey::new(1, 0, 1), vec![2u8; 100]);
+        c.put(CacheKey::new(2, 0, 0), vec![3u8; 100]);
+
+        assert_eq!(c.invalidate_scope(1), 2);
+        assert_eq!(c.stats().entry_count, 1);
+        assert!(c.get(&CacheKey::new(1, 0, 0)).is_none());
+        assert_eq!(c.get(&CacheKey::new(2, 0, 0)).unwrap(), vec![3u8; 100]);
+    }
+
+    #[test]
     fn test_skip_duplicate_insertion() {
         let c = BlockCache::new(10240);
-        let k = CacheKey::new(0, 0);
+        let k = CacheKey::new(1, 0, 0);
         c.put(k.clone(), vec![1u8; 10]);
         c.put(k.clone(), vec![2u8; 10]);
         assert_eq!(c.get(&k).unwrap(), vec![1u8; 10]);
@@ -305,8 +342,8 @@ impl HotBlockCache {
     }
 
     #[inline]
-    pub fn is_hit(&self, seg_offset: u64, block_offset: u64) -> bool {
-        self.current_key.as_ref() == Some(&CacheKey::new(seg_offset, block_offset))
+    pub fn is_hit(&self, cache_scope_id: u64, seg_offset: u64, block_offset: u64) -> bool {
+        self.current_key.as_ref() == Some(&CacheKey::new(cache_scope_id, seg_offset, block_offset))
     }
 
     pub fn fill(&mut self, key: CacheKey, data: Vec<u8>) {
@@ -374,16 +411,17 @@ mod hot_block_tests {
         data.extend_from_slice(&[6, 7, 8]);
 
         let mut cache = HotBlockCache::new();
-        cache.fill(CacheKey::new(0, 0), data);
+        cache.fill(CacheKey::new(1, 0, 0), data);
         cache
     }
 
     #[test]
     fn test_hot_block_hit_miss() {
         let cache = make_cache();
-        assert!(cache.is_hit(0, 0));
-        assert!(!cache.is_hit(0, 100));
-        assert!(!cache.is_hit(100, 0));
+        assert!(cache.is_hit(1, 0, 0));
+        assert!(!cache.is_hit(1, 0, 100));
+        assert!(!cache.is_hit(1, 100, 0));
+        assert!(!cache.is_hit(2, 0, 0));
     }
 
     #[test]
@@ -412,15 +450,15 @@ mod hot_block_tests {
     fn test_default_is_empty() {
         let cache = HotBlockCache::new();
         assert!(cache.current_key.is_none());
-        assert!(!cache.is_hit(0, 0));
+        assert!(!cache.is_hit(1, 0, 0));
     }
 
     #[test]
     fn test_clear() {
         let mut cache = make_cache();
-        assert!(cache.is_hit(0, 0));
+        assert!(cache.is_hit(1, 0, 0));
         cache.clear();
-        assert!(!cache.is_hit(0, 0));
+        assert!(!cache.is_hit(1, 0, 0));
         assert!(cache.current_data.is_empty());
     }
 }

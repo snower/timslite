@@ -221,7 +221,7 @@ impl QueryLengthIterator {
                         .lock()
                         .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
                     inner.ensure_open()?;
-                    let cache = inner.runtime_context.block_cache.clone();
+                    let cache = inner.scoped_block_cache();
                     let data_len = inner.segments.read_record_data_len_with_hot_cache(
                         &re,
                         cache.as_deref(),
@@ -559,7 +559,7 @@ impl DataSet {
 
     pub(crate) fn read_record_data_len_at_index(&self, entry: &IndexEntry) -> Result<u32> {
         self.with_inner(|inner| {
-            let cache = inner.runtime_context.block_cache.clone();
+            let cache = inner.scoped_block_cache();
             let re = ReadIndexEntry {
                 timestamp: entry.timestamp,
                 block_offset: entry.block_offset,
@@ -826,6 +826,13 @@ impl DataSetInner {
 
     pub(crate) fn set_identifier(&mut self, identifier: u64) {
         self.identifier = identifier;
+        self.segments.set_cache_scope_id(identifier);
+    }
+
+    fn scoped_block_cache(&self) -> Option<Arc<BlockCache>> {
+        (self.identifier != 0)
+            .then(|| self.runtime_context.block_cache.clone())
+            .flatten()
     }
 
     fn ensure_open(&self) -> Result<()> {
@@ -1076,7 +1083,7 @@ impl DataSetInner {
                 "read-only dataset cannot be written".into(),
             ));
         }
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         let journal = self.runtime_context.journal.clone();
         let outcome = self.write_with_cache_outcome(timestamp, data, cache.as_deref())?;
         if let Some(journal) = journal.as_ref() {
@@ -1176,7 +1183,7 @@ impl DataSetInner {
                 "read-only dataset cannot be appended".into(),
             ));
         }
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         let journal = self.runtime_context.journal.clone();
         let outcome = self.append_with_cache_outcome(timestamp, data, cache.as_deref())?;
         if let (Some(outcome), Some(journal)) = (outcome, journal.as_ref()) {
@@ -1371,7 +1378,7 @@ impl DataSetInner {
                 "read-only dataset cannot be deleted".into(),
             ));
         }
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         let journal = self.runtime_context.journal.clone();
         let outcome = self.delete_with_cache_outcome(timestamp, cache.as_deref())?;
         if let Some(journal) = journal.as_ref() {
@@ -1435,7 +1442,7 @@ impl DataSetInner {
     /// Returns `Ok(Some((timestamp, data)))` if found, `Ok(None)` if not found
     /// or entry is a filler (deleted or never-written in continuous mode).
     pub fn read(&mut self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         self.read_with_cache(timestamp, cache.as_deref())
     }
 
@@ -1470,7 +1477,7 @@ impl DataSetInner {
         let Some(timestamp) = self.latest_written_timestamp else {
             return Ok(None);
         };
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         self.read_with_cache(timestamp, cache.as_deref())
     }
 
@@ -1505,7 +1512,7 @@ impl DataSetInner {
             block_offset: entry.block_offset,
             in_block_offset: entry.in_block_offset,
         };
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         let data_len = self.segments.read_record_data_len(&re, cache.as_deref())?;
         self.last_used_at = Instant::now();
         Ok(Some(data_len))
@@ -1514,7 +1521,7 @@ impl DataSetInner {
     /// Return a lazy query iterator for records in [start_ts, end_ts].
     #[allow(clippy::needless_lifetimes)]
     pub fn query_iter<'a>(&'a mut self, start_ts: i64, end_ts: i64) -> Result<QueryIterator<'a>> {
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         self.query_iter_with_cache(start_ts, end_ts, cache)
     }
 
@@ -1540,7 +1547,7 @@ impl DataSetInner {
     /// Filler entries (sentinel block_offset) are skipped.
     #[allow(clippy::needless_lifetimes)]
     pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         let iter = self.query_iter_with_cache(start_ts, end_ts, cache)?;
         iter.collect_all()
     }
@@ -1613,7 +1620,7 @@ impl DataSetInner {
         }
         let mut result = Vec::new();
         let sources = self.time_index.prepare_query_sources(start_ts, end_ts)?;
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
 
         for mut source in sources {
             while let Some(entry) = source.next_entry()? {
@@ -1641,7 +1648,7 @@ impl DataSetInner {
         start_ts: i64,
         end_ts: i64,
     ) -> Result<InnerQueryLengthIterator<'a>> {
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
         if start_ts > end_ts {
             return Ok(InnerQueryLengthIterator::new(
@@ -1659,7 +1666,7 @@ impl DataSetInner {
     }
 
     pub fn read_entry_at_index(&mut self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
-        let cache = self.runtime_context.block_cache.clone();
+        let cache = self.scoped_block_cache();
         self.read_entry_at_index_with_cache(entry, cache.as_deref())
     }
 
@@ -1707,6 +1714,11 @@ impl DataSetInner {
     pub fn close(&mut self) -> Result<()> {
         if self.closed {
             return Ok(());
+        }
+        if self.identifier != 0 {
+            if let Some(cache) = self.runtime_context.block_cache.as_ref() {
+                cache.invalidate_scope(self.identifier);
+            }
         }
         if self.runtime_context.read_only {
             self.closed = true;
@@ -2479,7 +2491,7 @@ mod tests {
         //                     = 16 + 12 + 32 = 60 bytes
         // With data_segment_size = 200:
         //   Available = 200 - 116 = 84 >= 60  (1st record fits, 24 bytes left)
-        //   2nd record needs 60 > 24  鈫?rollover to next segment.
+        //   2nd record needs 60 > 24  閳?rollover to next segment.
         let data_segment_size = 200;
         let mut ds = DataSetInner::create(
             id,
@@ -3280,7 +3292,7 @@ mod tests {
             dataset_type: "data".into(),
         };
         // data_segment_size=188 forces one record per segment (same as reclaim test).
-        // retention_window=15 鈫?threshold = latest_ts(30) - 15 = 15.
+        // retention_window=15 閳?threshold = latest_ts(30) - 15 = 15.
         let data_segment_size = 188u64;
         let ret = 15u64;
         let mut ds = DataSetInner::create(
@@ -3302,9 +3314,9 @@ mod tests {
         ds.write(20, &[0xBB; 32]).unwrap();
         ds.write(30, &[0xCC; 32]).unwrap();
 
-        // Segment 0 (max_ts=10): 10 < 15 鈫?expired
-        // Segment 1 (max_ts=20): 20 >= 15 鈫?kept
-        // Segment 2 (max_ts=30): 30 >= 15 鈫?kept
+        // Segment 0 (max_ts=10): 10 < 15 閳?expired
+        // Segment 1 (max_ts=20): 20 >= 15 閳?kept
+        // Segment 2 (max_ts=30): 30 >= 15 閳?kept
         let data_dir = dir.join("data");
         let count_before = std::fs::read_dir(&data_dir).unwrap().count();
         assert_eq!(count_before, 3);
@@ -3433,9 +3445,9 @@ mod tests {
         assert_eq!(count_before, 3, "should have 3 data segment files");
 
         // retention_threshold = 30 - 15 = 15
-        // Segment 0 (max_ts=10): 10 < 15 鈫?expired, deleted
-        // Segment 1 (max_ts=20): 20 >= 15 鈫?kept
-        // Segment 2 (max_ts=30): 30 >= 15 鈫?kept
+        // Segment 0 (max_ts=10): 10 < 15 閳?expired, deleted
+        // Segment 1 (max_ts=20): 20 >= 15 閳?kept
+        // Segment 2 (max_ts=30): 30 >= 15 閳?kept
         let reclaimed = ds.reclaim_expired_segments().unwrap();
         assert_eq!(reclaimed, 1, "exactly 1 segment should be reclaimed");
 
@@ -4487,7 +4499,7 @@ mod tests {
         ds.write(day3, &[0xCC; 32]).unwrap();
 
         // threshold = latest(=day3) - 86400 = day2
-        // day1 segment has max_ts = day1 < day2 鈫?expired
+        // day1 segment has max_ts = day1 < day2 閳?expired
         let reclaimed = ds.reclaim_expired_segments().unwrap();
         assert!(reclaimed >= 1, "day-1 segment should be expired");
 
