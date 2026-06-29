@@ -58,7 +58,7 @@ timslite Rust public API
 
 - Store lifecycle: open / close / read-only config / manual background tick。
 - Dataset lifecycle: create / open / open by identifier / drop / inspect。
-- Dataset data operations: write / append / delete / read / read latest / query / flush。
+- Dataset data operations: write / write_now / append / append_now / delete / read / read latest / query / flush。
 - Lightweight reads: readExist / queryExist / readLength / queryLength。
 - DatasetQueue: open queue / push / open consumer / drop consumer / close。
 - DatasetQueueConsumer: async poll / sync non-blocking poll / ack / poll callback。
@@ -231,7 +231,9 @@ interface CreateDatasetOptions {
 ```ts
 class Dataset {
   write(timestamp: number | bigint, data: Buffer | Uint8Array): void;
+  writeNow(data: Buffer | Uint8Array): void;
   append(timestamp: number | bigint, data: Buffer | Uint8Array): void;
+  appendNow(data: Buffer | Uint8Array): void;
   delete(timestamp: number | bigint): void;
 
   read(timestamp: number | bigint): [bigint, Buffer] | null;
@@ -259,6 +261,9 @@ class Dataset {
 ```
 
 `Dataset` 持有 `Arc<timslite::DataSet>`。所有读写继续走 public `DataSet` API, 由 Rust 内部 mutex 保护。普通用户不接触 Rust 内部共享指针或锁。
+
+- `writeNow(data: Buffer): void` — Write a record using the current Unix timestamp (seconds). Equivalent to `write(Math.floor(Date.now() / 1000), data)`.
+- `appendNow(data: Buffer): void` — Append to a record using the current Unix timestamp (seconds). Equivalent to `append(Math.floor(Date.now() / 1000), data)`.
 
 ### 5.7 Query iterators
 

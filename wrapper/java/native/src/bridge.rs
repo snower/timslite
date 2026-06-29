@@ -434,6 +434,16 @@ impl DatasetBridge {
         Ok(())
     }
 
+    pub fn write_now(&self, data: Vec<u8>) -> Result<(), TmslError> {
+        self.inner.write_now(&data)?;
+        Ok(())
+    }
+
+    pub fn append_now(&self, data: Vec<u8>) -> Result<(), TmslError> {
+        self.inner.append_now(&data)?;
+        Ok(())
+    }
+
     pub fn delete(&self, timestamp: i64) -> Result<(), TmslError> {
         self.inner.delete(timestamp)?;
         Ok(())

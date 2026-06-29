@@ -120,6 +120,37 @@ class TestWriteQuery:
             results = ds.query_all(1, 1)
             assert len(results) == 1
 
+    def test_write_now_and_append_now(self, tmpdir):
+        """write_now and append_now use current Unix timestamp."""
+        import time
+
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("nowapi", "data")
+            ds = store.open_dataset("nowapi", "data")
+
+            before = int(time.time())
+            ds.write_now(b"hello_now")
+            after = int(time.time())
+
+            result = ds.read_latest()
+            assert result is not None
+            ts, data = result
+            assert data == b"hello_now"
+            assert before <= ts <= after, f"write_now timestamp {ts} should be in [{before}, {after}]"
+
+            # Test append_now
+            ds.append_now(b"-appended")
+            after_append = int(time.time())
+
+            result = ds.read_latest()
+            assert result is not None
+            append_ts, append_data = result
+            assert ts <= append_ts <= after_append
+            if append_ts == ts:
+                assert append_data == b"hello_now-appended"
+            else:
+                assert append_data == b"-appended"
+
 
 class TestExtendedAPI:
     def test_delete_removes_record(self, tmpdir):

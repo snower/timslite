@@ -244,7 +244,9 @@ CreateDatasetOptions options = CreateDatasetOptions.builder()
 ```java
 public final class Dataset implements AutoCloseable {
     public void write(long timestamp, byte[] data);
+    public void writeNow(byte[] data);
     public void append(long timestamp, byte[] data);
+    public void appendNow(byte[] data);
     public void delete(long timestamp);
 
     public Record read(long timestamp);

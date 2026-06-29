@@ -194,6 +194,43 @@ describe("dataset", () => {
     });
   });
 
+  describe("write_now and append_now", () => {
+    it("write_now and append_now use current Unix timestamp", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+
+        const before = Math.floor(Date.now() / 1000);
+        ds.writeNow(Buffer.from("hello_now"));
+        const after = Math.floor(Date.now() / 1000);
+
+        const result = ds.readLatest();
+        assert(result !== null);
+        const [ts, data] = result;
+        assert.equal(typeof ts, "bigint");
+        assert(ts >= BigInt(before) && ts <= BigInt(after),
+          `write_now timestamp ${ts} should be in [${before}, ${after}]`);
+        assert.deepEqual(Buffer.from(data), Buffer.from("hello_now"));
+
+        // Test appendNow
+        ds.appendNow(Buffer.from("-appended"));
+        const afterAppend = Math.floor(Date.now() / 1000);
+
+        const appendResult = ds.readLatest();
+        assert(appendResult !== null);
+        const [appendTs, appendData] = appendResult;
+        assert(appendTs >= ts && appendTs <= BigInt(afterAppend));
+        if (appendTs === ts) {
+          assert.deepEqual(Buffer.from(appendData), Buffer.from("hello_now-appended"));
+        } else {
+          assert.deepEqual(Buffer.from(appendData), Buffer.from("-appended"));
+        }
+
+        ds.close();
+      });
+    });
+  });
+
   describe("delete", () => {
     it("delete removes record", () => {
       withStore((store) => {

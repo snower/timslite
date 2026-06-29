@@ -952,6 +952,34 @@ pub extern "C" fn tmsl_dataset_append(
 }
 
 #[no_mangle]
+pub extern "C" fn tmsl_dataset_write_now(
+    dataset: *mut c_void,
+    data: *const c_uchar,
+    data_len: usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        let data = checked_input_slice(data, data_len)?;
+        with_dataset(dataset, |dataset| dataset.write_now(data).map(|_| 0))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_dataset_append_now(
+    dataset: *mut c_void,
+    data: *const c_uchar,
+    data_len: usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        let data = checked_input_slice(data, data_len)?;
+        with_dataset(dataset, |dataset| dataset.append_now(data).map(|_| 0))
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn tmsl_dataset_delete(
     dataset: *mut c_void,
     timestamp: c_longlong,

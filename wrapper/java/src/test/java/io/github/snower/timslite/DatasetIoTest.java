@@ -234,4 +234,40 @@ class DatasetIoTest {
             store.close();
         }
     }
+
+    @Test
+    void writeNowAndAppendNow() {
+        Store store = Store.open(tempDir.toString());
+        try {
+            store.createDataset("nowapi", "metrics",
+                    CreateDatasetOptionsBuilder.builder().build());
+            Dataset dataset = store.openDataset("nowapi", "metrics");
+            try {
+                long before = System.currentTimeMillis() / 1000;
+                byte[] payload = new byte[]{1, 2, 3};
+                dataset.writeNow(payload);
+                long after = System.currentTimeMillis() / 1000;
+
+                Record record = dataset.readLatest();
+                assertNotNull(record);
+                assertTrue(record.getTimestamp() >= before && record.getTimestamp() <= after,
+                        "write_now timestamp should be in [" + before + ", " + after + "]");
+                assertArrayEquals(payload, record.getData());
+
+                // Test appendNow
+                byte[] appendPayload = new byte[]{4, 5};
+                dataset.appendNow(appendPayload);
+                long afterAppend = System.currentTimeMillis() / 1000;
+
+                Record appendRecord = dataset.readLatest();
+                assertNotNull(appendRecord);
+                assertTrue(appendRecord.getTimestamp() >= record.getTimestamp()
+                        && appendRecord.getTimestamp() <= afterAppend);
+            } finally {
+                dataset.close();
+            }
+        } finally {
+            store.close();
+        }
+    }
 }

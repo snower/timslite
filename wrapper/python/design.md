@@ -255,6 +255,30 @@ class Dataset:
                                   configuration, or oversized record.
         """
 
+    def write_now(self, data: bytes) -> None:
+        """Write a record using the current Unix timestamp (seconds).
+
+        Equivalent to ``write(int(time.time()), data)``.
+
+        Args:
+            data: Payload bytes.
+
+        Raises:
+            TmslInvalidDataError: oversized record.
+        """
+
+    def append_now(self, data: bytes) -> None:
+        """Append to a record using the current Unix timestamp (seconds).
+
+        Equivalent to ``append(int(time.time()), data)``.
+
+        Args:
+            data: Payload bytes to append.
+
+        Raises:
+            TmslInvalidDataError: if append would exceed max record size.
+        """
+
     def query(self, start_ts: int, end_ts: int) -> QueryIterator:
         """Query records in [start_ts, end_ts], returns a lazy iterator.
 

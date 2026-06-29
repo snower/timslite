@@ -73,6 +73,38 @@ impl PyDataset {
         wrap(self.inner.append(timestamp, &data))
     }
 
+    /// Write a record using the current Unix timestamp (seconds).
+    ///
+    /// Args:
+    ///     data: Payload bytes.
+    ///
+    /// Raises:
+    ///     TmslInvalidDataError: oversized record.
+    fn write_now(&mut self, data: Vec<u8>) -> PyResult<()> {
+        if self.read_only {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Dataset is read-only",
+            ));
+        }
+        wrap(self.inner.write_now(&data))
+    }
+
+    /// Append data to a record using the current Unix timestamp (seconds).
+    ///
+    /// Args:
+    ///     data: Payload bytes to append.
+    ///
+    /// Raises:
+    ///     TmslInvalidDataError: if append would exceed max record size.
+    fn append_now(&mut self, data: Vec<u8>) -> PyResult<()> {
+        if self.read_only {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "Dataset is read-only",
+            ));
+        }
+        wrap(self.inner.append_now(&data))
+    }
+
     /// Read a single record by exact timestamp.
     ///
     /// Args:

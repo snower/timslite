@@ -46,6 +46,22 @@ impl Dataset {
     }
 
     #[napi]
+    pub fn write_now(&self, data: Buffer) -> napi::Result<()> {
+        if self.read_only {
+            return Err(errors::invalid_data("dataset is read-only"));
+        }
+        errors::wrap(self.inner.write_now(&data))
+    }
+
+    #[napi]
+    pub fn append_now(&self, data: Buffer) -> napi::Result<()> {
+        if self.read_only {
+            return Err(errors::invalid_data("dataset is read-only"));
+        }
+        errors::wrap(self.inner.append_now(&data))
+    }
+
+    #[napi]
     pub fn delete(&self, timestamp: BigInt) -> napi::Result<()> {
         if self.read_only {
             return Err(errors::invalid_data("dataset is read-only"));

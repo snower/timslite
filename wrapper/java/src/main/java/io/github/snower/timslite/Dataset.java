@@ -100,6 +100,43 @@ public final class Dataset implements AutoCloseable {
     }
 
     /**
+     * Writes a record using the current Unix timestamp (seconds).
+     *
+     * <p>Equivalent to {@code write(System.currentTimeMillis() / 1000, data)}.</p>
+     *
+     * @param data payload bytes
+     * @throws TmslException    if the write fails
+     * @throws ExpiredException if the current time falls outside the retention window
+     */
+    public void writeNow(byte[] data) {
+        checkNotClosed();
+        List<kotlin.UByte> kotlinData = KotlinConversions.toUByteList(data);
+        try {
+            bridge.writeNow(kotlinData);
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw TmslException.fromUniFFI(e);
+        }
+    }
+
+    /**
+     * Appends data to the latest record or creates a new one using the current Unix timestamp.
+     *
+     * <p>Equivalent to {@code append(System.currentTimeMillis() / 1000, data)}.</p>
+     *
+     * @param data payload bytes to append
+     * @throws TmslException if the append fails
+     */
+    public void appendNow(byte[] data) {
+        checkNotClosed();
+        List<kotlin.UByte> kotlinData = KotlinConversions.toUByteList(data);
+        try {
+            bridge.appendNow(kotlinData);
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw TmslException.fromUniFFI(e);
+        }
+    }
+
+    /**
      * Deletes the record at the given timestamp.
      *
      * @param timestamp signed 64-bit timestamp

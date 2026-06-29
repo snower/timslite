@@ -106,3 +106,92 @@ fn cffi_dataset_read_and_queue_roundtrip() {
     assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()), 0);
     assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err.len()), 0);
 }
+
+#[test]
+fn cffi_dataset_write_now_and_append_now() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let dir = tempfile::tempdir().unwrap();
+    let dir = CString::new(dir.path().to_string_lossy().as_bytes()).unwrap();
+    let name = CString::new("nowapi").unwrap();
+    let kind = CString::new("test").unwrap();
+    let mut err = err_buf();
+
+    let store = tmsl_store_open(dir.as_ptr(), err.as_mut_ptr(), err.len());
+    assert!(!store.is_null());
+
+    let dataset = tmsl_dataset_create(
+        store,
+        name.as_ptr(),
+        kind.as_ptr(),
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+        err.as_mut_ptr(),
+        err.len(),
+    );
+    assert!(!dataset.is_null());
+
+    let before = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    let payload = b"hello_now";
+    assert_eq!(
+        tmsl_dataset_write_now(
+            dataset,
+            payload.as_ptr(),
+            payload.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+
+    let after = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // Read latest to verify timestamp is in expected range
+    let mut ts = 0i64;
+    let mut data: *mut c_uchar = ptr::null_mut();
+    let mut data_len = 0usize;
+    assert_eq!(
+        tmsl_dataset_read_latest(
+            dataset,
+            &mut ts,
+            &mut data,
+            &mut data_len,
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+    assert!(
+        ts >= before && ts <= after,
+        "write_now timestamp {ts} should be in [{before}, {after}]"
+    );
+    let read = unsafe { std::slice::from_raw_parts(data, data_len) };
+    assert_eq!(read, payload);
+    tmsl_data_free(data.cast::<c_void>());
+
+    // Test append_now
+    let append_payload = b"-appended";
+    assert_eq!(
+        tmsl_dataset_append_now(
+            dataset,
+            append_payload.as_ptr(),
+            append_payload.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+
+    tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len());
+    tmsl_store_close(store, err.as_mut_ptr(), err.len());
+}
