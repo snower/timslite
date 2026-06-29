@@ -1760,16 +1760,10 @@ impl DataSetInner {
     /// Syncs all consumer state files and marks the queue as closed.
     pub fn close_queue(&mut self) -> Result<()> {
         if let Some(inner) = self.queue_inner.take() {
-            let guard = inner
+            let mut guard = inner
                 .lock()
                 .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
-            for sf in guard.consumers().values() {
-                if let Ok(mut state) = sf.lock() {
-                    let _ = state.sync_to_mmap();
-                    let _ = state.flush();
-                }
-            }
-            guard.close();
+            guard.close()?;
         }
         self.queue_inner = None;
         self.queue_notify = None;

@@ -63,7 +63,9 @@ pub use journal::{
     JournalRecordKind, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
 pub use queue::{
-    DatasetQueue, DatasetQueueConsumer, PendingEntry, QueueConsumerConfig, QueuePollCallback,
+    DatasetQueue, DatasetQueueConsumer, DatasetQueueConsumerInfo,
+    DatasetQueueConsumerInspectResult, DatasetQueueConsumerPendingEntry, DatasetQueueConsumerState,
+    PendingEntry, QueueConsumerConfig, QueuePollCallback,
 };
 pub use store::Store;
 

@@ -166,7 +166,7 @@ poll 的核心顺序:
 | pending entry status=0 | 处理中但未 ack | 保留 entry, reopen 时置 `start_time=0`, 下次 poll 按 retry 规则处理 |
 | pending entry status=1 | 已 ack/已丢弃但未清理 | 只在投递顺序完成前缀内推进 `processed_ts` 并清理 |
 
-“consumer 关闭再次开启”不依赖单个 handle 的 Drop 时机识别。只有 `ConsumerStateFile::open_existing` 从磁盘加载状态文件时触发恢复过期, 覆盖程序重启和 queue 重新打开场景。已经在内存中打开的同组 consumer handle 不因新增 handle 自动过期。
+“consumer 关闭再次开启”不依赖单个 handle 的 Drop 时机识别。`ConsumerStateFile::open_existing` 从磁盘加载状态文件时会触发恢复过期, 覆盖程序重启和 queue 重新打开场景。显式关闭路径也必须执行相同的恢复过期准备: `DatasetQueueConsumer::close()`、`DatasetQueue::close()`、`DataSet::close_queue()` 和 `DataSet::close()` 都要把未 ack pending 的 `start_time` 置为 `0` 并同步到状态文件后再释放打开状态。这样同进程 close/reopen 与进程重启后的 at-least-once 重投语义一致。
 
 ### 31.8 open_existing 格式校验清单
 
@@ -210,6 +210,8 @@ fn flush_target(dataset: &mut DataSet, target: SegmentFlushTarget) {
 ### 32.2 Ack 与 Poll 不执行立即 Sync
 
 普通 dataset queue 的 `ack()` 和 `poll()` 操作后不执行立即 `mmap.flush()`, 仅更新内存中的状态并入队 `QueueState { group_name }`。状态文件与 Dataset 分段文件采用相同的 Sync 策略, 由后台 flush 任务统一执行 `mmap.flush()` (MS_SYNC)。
+
+`DatasetQueueConsumer::flush()` 是公开的主动同步入口, 只同步当前消费组 state file。显式关闭消费组、关闭 queue、关闭 dataset 和 drop consumer 会在释放或删除状态前执行 sync + flush, 并把未 ack pending 标记为恢复过期。
 
 JournalQueue 没有普通 dataset 的全局 dirty flush queue target, 但必须采用相同的状态文件格式和 retry 规则; JournalQueue close/flush 显式同步当前打开的 group state files。
 

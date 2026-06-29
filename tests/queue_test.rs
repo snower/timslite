@@ -1198,3 +1198,195 @@ fn t27_7_7_consumer_group_name_boundary() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn t45_1_get_consumer_group_names_lists_state_file_entries_without_opening() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store
+        .create_dataset(
+            "t45groups",
+            "events",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let q = h.open_queue().unwrap();
+    q.open_consumer("group_a").unwrap();
+    q.open_consumer("group_b").unwrap();
+    fs::write(
+        h.base_dir().join("queue").join("not_a_qstf"),
+        b"not a state file",
+    )
+    .unwrap();
+    q.close().unwrap();
+
+    let q2 = h.open_queue().unwrap();
+    let names = q2.get_consumer_group_names().unwrap();
+    assert_eq!(names, vec!["group_a", "group_b", "not_a_qstf"]);
+    store.close().unwrap();
+}
+
+#[test]
+fn t45_2_consumer_inspect_and_flush_return_state_snapshot() {
+    use timslite::{QueueConsumerConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder()
+        .enable_background_thread(false)
+        .build();
+    let mut store = Store::open(&dir, config).unwrap();
+    let h = store
+        .create_dataset(
+            "t45inspect",
+            "events",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let q = h.open_queue().unwrap();
+    let consumer_config = QueueConsumerConfig::builder()
+        .running_expired_seconds(7)
+        .max_retry_count(2)
+        .build()
+        .unwrap();
+    let c = q
+        .open_consumer_with_config("inspectors", consumer_config)
+        .unwrap();
+
+    let ts = q.push(b"inspect-me").unwrap();
+    let row = c.poll(Duration::from_millis(100)).unwrap().unwrap();
+    assert_eq!(row.0, ts);
+    c.flush().unwrap();
+
+    let inspect = c.inspect().unwrap();
+    assert_eq!(inspect.info.group_name, "inspectors");
+    assert_eq!(inspect.info.running_expired_seconds, 7);
+    assert_eq!(inspect.info.max_retry_count, 2);
+    assert_eq!(inspect.state.pending_entries.len(), 1);
+    assert_eq!(inspect.state.pending_entries[0].timestamp, ts);
+    assert_eq!(inspect.state.pending_entries[0].status, 0);
+    assert_eq!(inspect.state.pending_entries[0].retry_count, 0);
+    store.close().unwrap();
+}
+
+#[test]
+fn t45_3_consumer_close_invalidates_same_group_handles_and_releases_pending() {
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store
+        .create_dataset(
+            "t45close",
+            "events",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let q = h.open_queue().unwrap();
+    let c1 = q.open_consumer("workers").unwrap();
+    let c2 = q.open_consumer("workers").unwrap();
+
+    let ts = q.push(b"retry-after-close").unwrap();
+    let row = c1.poll(Duration::from_millis(100)).unwrap().unwrap();
+    assert_eq!(row.0, ts);
+
+    c1.close().unwrap();
+    assert!(matches!(
+        c1.poll(Duration::from_millis(0)).unwrap_err(),
+        TmslError::QueueClosed(_)
+    ));
+    assert!(matches!(c2.ack(ts).unwrap_err(), TmslError::QueueClosed(_)));
+
+    let reopened = q.open_consumer("workers").unwrap();
+    let retried = reopened.poll(Duration::from_millis(100)).unwrap().unwrap();
+    assert_eq!(retried.0, ts);
+    assert_eq!(retried.1, b"retry-after-close");
+    store.close().unwrap();
+}
+
+#[test]
+fn t45_4_drop_consumer_deletes_closed_group_state_and_recreates_fresh() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store
+        .create_dataset(
+            "t45drop",
+            "events",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("obsolete").unwrap();
+
+    let old_ts = q.push(b"old").unwrap();
+    assert_eq!(
+        c.poll(Duration::from_millis(100)).unwrap().unwrap().0,
+        old_ts
+    );
+    c.close().unwrap();
+    q.drop_consumer("obsolete").unwrap();
+    assert!(!h.base_dir().join("queue").join("obsolete").exists());
+
+    let recreated = q.open_consumer("obsolete").unwrap();
+    assert!(recreated.poll(Duration::from_millis(20)).unwrap().is_none());
+    let new_ts = q.push(b"new").unwrap();
+    let row = recreated.poll(Duration::from_millis(100)).unwrap().unwrap();
+    assert_eq!(row.0, new_ts);
+    assert_eq!(row.1, b"new");
+    store.close().unwrap();
+}
+
+#[test]
+fn t45_5_queue_close_releases_unacked_pending_for_reopen() {
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let h = store
+        .create_dataset(
+            "t45qclose",
+            "events",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+    let q = h.open_queue().unwrap();
+    let c = q.open_consumer("workers").unwrap();
+    let ts = q.push(b"from-queue-close").unwrap();
+    assert_eq!(c.poll(Duration::from_millis(100)).unwrap().unwrap().0, ts);
+
+    q.close().unwrap();
+    assert!(matches!(
+        c.poll(Duration::from_millis(0)).unwrap_err(),
+        TmslError::QueueClosed(_)
+    ));
+
+    let q2 = h.open_queue().unwrap();
+    let c2 = q2.open_consumer("workers").unwrap();
+    let row = c2.poll(Duration::from_millis(100)).unwrap().unwrap();
+    assert_eq!(row.0, ts);
+    assert_eq!(row.1, b"from-queue-close");
+    store.close().unwrap();
+}

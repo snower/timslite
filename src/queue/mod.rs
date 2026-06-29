@@ -14,6 +14,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::fs::{self, OpenOptions};
+use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -232,6 +233,37 @@ pub struct PendingEntry {
     pub retry_count: u8,
 }
 
+/// Public pending-entry snapshot returned by `DatasetQueueConsumer::inspect`.
+#[derive(Clone, Debug)]
+pub struct DatasetQueueConsumerPendingEntry {
+    pub timestamp: i64,
+    pub start_time: i64,
+    pub status: u8,
+    pub retry_count: u8,
+}
+
+/// Immutable consumer-group configuration returned by inspect.
+#[derive(Clone, Debug)]
+pub struct DatasetQueueConsumerInfo {
+    pub group_name: String,
+    pub running_expired_seconds: u16,
+    pub max_retry_count: u8,
+}
+
+/// Mutable consumer-group state returned by inspect.
+#[derive(Clone, Debug)]
+pub struct DatasetQueueConsumerState {
+    pub processed_ts: i64,
+    pub pending_entries: Vec<DatasetQueueConsumerPendingEntry>,
+}
+
+/// Consumer-group inspect result.
+#[derive(Clone, Debug)]
+pub struct DatasetQueueConsumerInspectResult {
+    pub info: DatasetQueueConsumerInfo,
+    pub state: DatasetQueueConsumerState,
+}
+
 impl PendingEntry {
     fn serialize_to(&self, buf: &mut [u8; PENDING_ENTRY_SIZE]) {
         buf[0..8].copy_from_slice(&self.timestamp.to_le_bytes());
@@ -382,12 +414,7 @@ impl ConsumerStateFile {
             pending_entries,
         };
         let mut changed = state.cleanup_acked() > 0;
-        for entry in &mut state.pending_entries {
-            if entry.status == PENDING_STATUS_UNACKED && entry.start_time != 0 {
-                entry.start_time = 0;
-                changed = true;
-            }
-        }
+        changed |= state.mark_unacked_recovery_expired();
         if changed {
             state.sync_to_mmap()?;
         }
@@ -551,6 +578,17 @@ impl ConsumerStateFile {
         &self.pending_entries
     }
 
+    pub(crate) fn mark_unacked_recovery_expired(&mut self) -> bool {
+        let mut changed = false;
+        for entry in &mut self.pending_entries {
+            if entry.status == PENDING_STATUS_UNACKED && entry.start_time != 0 {
+                entry.start_time = 0;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Write in-memory state back to mmap (alias for sync_to_mmap).
     pub fn sync(&mut self) -> Result<()> {
         self.sync_to_mmap()
@@ -560,6 +598,54 @@ impl ConsumerStateFile {
 pub(crate) struct PendingScanResult {
     pub(crate) timestamp: Option<i64>,
     pub(crate) changed: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct ConsumerGroupState {
+    state_file: Arc<Mutex<ConsumerStateFile>>,
+    closed: Arc<AtomicBool>,
+    callback_slots: Vec<QueuePollCallbackSlot>,
+}
+
+impl ConsumerGroupState {
+    fn new(state_file: Arc<Mutex<ConsumerStateFile>>) -> Self {
+        Self {
+            state_file,
+            closed: Arc::new(AtomicBool::new(false)),
+            callback_slots: Vec::new(),
+        }
+    }
+
+    fn state_file(&self) -> Arc<Mutex<ConsumerStateFile>> {
+        Arc::clone(&self.state_file)
+    }
+
+    fn closed(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.closed)
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    fn mark_closed(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+    }
+
+    fn add_callback_slot(&mut self, slot: QueuePollCallbackSlot) {
+        self.callback_slots.push(slot);
+    }
+
+    fn clear_callback_slots(&mut self) -> Result<()> {
+        for slot in &self.callback_slots {
+            let mut guard = slot
+                .lock()
+                .map_err(|_| TmslError::InvalidData("queue callback slot mutex poisoned".into()))?;
+            *guard = None;
+        }
+        self.callback_slots.clear();
+        Ok(())
+    }
 }
 
 fn read_i64_at(mmap: &[u8], offset: usize) -> i64 {
@@ -579,7 +665,7 @@ fn write_i64_at(mmap: &mut MmapMut, offset: usize, val: i64) {
 
 /// Shared internal state for a dataset queue.
 pub(crate) struct QueueInner {
-    consumers: HashMap<String, Arc<Mutex<ConsumerStateFile>>>,
+    consumers: HashMap<String, ConsumerGroupState>,
     consumer_configs: HashMap<String, QueueConsumerConfig>,
     closed: Arc<AtomicBool>,
 }
@@ -597,15 +683,33 @@ impl QueueInner {
         self.closed.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn close(&self) {
+    pub(crate) fn mark_closed(&self) {
         self.closed.store(true, Ordering::SeqCst);
     }
 
-    pub(crate) fn consumers(&self) -> &HashMap<String, Arc<Mutex<ConsumerStateFile>>> {
+    pub(crate) fn close(&mut self) -> Result<()> {
+        self.mark_closed();
+        for group in self.consumers.values_mut() {
+            group.mark_closed();
+            group.clear_callback_slots()?;
+            let state_file = group.state_file();
+            let mut state = state_file
+                .lock()
+                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+            state.mark_unacked_recovery_expired();
+            state.sync_to_mmap()?;
+            state.flush()?;
+        }
+        self.consumers.clear();
+        self.consumer_configs.clear();
+        Ok(())
+    }
+
+    pub(crate) fn consumers(&self) -> &HashMap<String, ConsumerGroupState> {
         &self.consumers
     }
 
-    pub(crate) fn consumers_mut(&mut self) -> &mut HashMap<String, Arc<Mutex<ConsumerStateFile>>> {
+    pub(crate) fn consumers_mut(&mut self) -> &mut HashMap<String, ConsumerGroupState> {
         &mut self.consumers
     }
 
@@ -682,6 +786,8 @@ impl DatasetQueue {
         config: QueueConsumerConfig,
     ) -> Result<DatasetQueueConsumer> {
         validate_consumer_group_name(group_name)?;
+        let callback_slot = Arc::new(Mutex::new(None));
+        self.notify.register_callback_slot(&callback_slot)?;
 
         let mut inner = self
             .inner
@@ -701,8 +807,15 @@ impl DatasetQueue {
 
         let queue_dir = self.dataset.queue_dir()?;
 
-        let state_file = if inner.consumers.contains_key(group_name) {
-            Arc::clone(&inner.consumers[group_name])
+        let (state_file, group_closed) = if let Some(existing) = inner.consumers.get_mut(group_name)
+        {
+            if existing.is_closed() {
+                return Err(TmslError::QueueClosed(format!(
+                    "consumer group {group_name} is closed"
+                )));
+            }
+            existing.add_callback_slot(Arc::clone(&callback_slot));
+            (existing.state_file(), existing.closed())
         } else {
             let state_path = queue_dir.join(group_name);
             // Determine initial processed_ts from the dataset.
@@ -711,17 +824,15 @@ impl DatasetQueue {
             let sf = Arc::new(Mutex::new(ConsumerStateFile::open_or_create(
                 state_path, initial_ts,
             )?));
-            inner
-                .consumers
-                .insert(group_name.to_string(), Arc::clone(&sf));
+            let mut group = ConsumerGroupState::new(Arc::clone(&sf));
+            let group_closed = group.closed();
+            group.add_callback_slot(Arc::clone(&callback_slot));
+            inner.consumers.insert(group_name.to_string(), group);
             inner
                 .consumer_configs
                 .insert(group_name.to_string(), config);
-            sf
+            (sf, group_closed)
         };
-
-        let callback_slot = Arc::new(Mutex::new(None));
-        self.notify.register_callback_slot(&callback_slot)?;
 
         Ok(DatasetQueueConsumer {
             group_name: group_name.to_string(),
@@ -730,37 +841,70 @@ impl DatasetQueue {
             notify: Arc::clone(&self.notify),
             dataset: Arc::clone(&self.dataset),
             closed: Arc::clone(&inner.closed),
+            group_closed,
+            queue_inner: Arc::clone(&self.inner),
             poll_callback: callback_slot,
         })
+    }
+
+    /// List created consumer-group state file names in the queue directory.
+    ///
+    /// This is a directory listing only: entries are not opened or validated as
+    /// QSTF files.
+    pub fn get_consumer_group_names(&self) -> Result<Vec<String>> {
+        let queue_dir = self.dataset.queue_dir()?;
+        let read_dir = match fs::read_dir(queue_dir) {
+            Ok(read_dir) => read_dir,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err.into()),
+        };
+        let mut names = Vec::new();
+        for entry in read_dir {
+            let entry = entry?;
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        Ok(names)
     }
 
     /// Drop (close and remove) a consumer group.
     pub fn drop_consumer(&self, group_name: &str) -> Result<()> {
         validate_consumer_group_name(group_name)?;
+        let queue_dir = self.dataset.queue_dir()?;
+        let state_path = queue_dir.join(group_name);
 
         let mut inner = self
             .inner
             .lock()
             .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
 
-        // Sync state file before dropping
-        if let Some(sf) = inner.consumers.get(group_name) {
-            let mut guard = sf
-                .lock()
-                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-            guard.sync()?;
+        if inner.is_closed() {
+            return Err(TmslError::QueueClosed("queue is closed".into()));
         }
 
-        let removed = inner.consumers.remove(group_name);
+        if let Some(group) = inner.consumers_mut().get_mut(group_name) {
+            group.mark_closed();
+            group.clear_callback_slots()?;
+            let state_file = group.state_file();
+            let mut guard = state_file
+                .lock()
+                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+            guard.mark_unacked_recovery_expired();
+            guard.sync()?;
+            guard.flush()?;
+        }
+
+        let removed = inner.consumers_mut().remove(group_name);
         inner.consumer_configs.remove(group_name);
-        if removed.is_none() {
+        if removed.is_none() && !state_path.exists() {
             return Err(TmslError::ConsumerGroupNotFound(group_name.to_string()));
         }
 
-        // Try to delete the state file
-        let queue_dir = self.dataset.queue_dir()?;
-        let state_path = queue_dir.join(group_name);
-        let _ = fs::remove_file(&state_path);
+        match fs::remove_file(&state_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
 
         Ok(())
     }
@@ -796,15 +940,6 @@ impl DatasetQueue {
     pub fn close(&self) -> Result<()> {
         self.dataset.close_queue()?;
 
-        let mut inner = self
-            .inner
-            .lock()
-            .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
-
-        inner.close();
-        inner.consumers.clear();
-        inner.consumer_configs.clear();
-
         // Close wakes blocking polls, but is not a data notification callback.
         self.notify.notify_waiters()?;
 
@@ -823,6 +958,8 @@ pub struct DatasetQueueConsumer {
     notify: Arc<QueueNotifier>,
     dataset: Arc<DataSet>,
     closed: Arc<AtomicBool>,
+    group_closed: Arc<AtomicBool>,
+    queue_inner: Arc<Mutex<QueueInner>>,
     poll_callback: QueuePollCallbackSlot,
 }
 
@@ -835,6 +972,8 @@ impl Clone for DatasetQueueConsumer {
             notify: Arc::clone(&self.notify),
             dataset: Arc::clone(&self.dataset),
             closed: Arc::clone(&self.closed),
+            group_closed: Arc::clone(&self.group_closed),
+            queue_inner: Arc::clone(&self.queue_inner),
             poll_callback: Arc::clone(&self.poll_callback),
         }
     }
@@ -849,6 +988,96 @@ impl fmt::Debug for DatasetQueueConsumer {
 }
 
 impl DatasetQueueConsumer {
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst) || self.group_closed.load(Ordering::SeqCst)
+    }
+
+    fn ensure_open(&self) -> Result<()> {
+        if self.is_closed() {
+            Err(TmslError::QueueClosed("queue consumer is closed".into()))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Flush the current consumer-group state file.
+    pub fn flush(&self) -> Result<()> {
+        self.ensure_open()?;
+        let mut sf = self
+            .state_file
+            .lock()
+            .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+        sf.sync_to_mmap()?;
+        sf.flush()
+    }
+
+    /// Close this consumer group.
+    pub fn close(&self) -> Result<()> {
+        if self.group_closed.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        {
+            let mut sf = self
+                .state_file
+                .lock()
+                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+            sf.mark_unacked_recovery_expired();
+            sf.sync_to_mmap()?;
+            sf.flush()?;
+        }
+
+        let mut inner = self
+            .queue_inner
+            .lock()
+            .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
+        let remove_group = inner
+            .consumers()
+            .get(&self.group_name)
+            .map(|group| Arc::ptr_eq(&group.closed(), &self.group_closed))
+            .unwrap_or(false);
+        if remove_group {
+            if let Some(mut group) = inner.consumers_mut().remove(&self.group_name) {
+                group.clear_callback_slots()?;
+            }
+            inner.consumer_configs.remove(&self.group_name);
+        }
+        drop(inner);
+
+        self.notify.notify_waiters()?;
+        Ok(())
+    }
+
+    /// Inspect this consumer-group state.
+    pub fn inspect(&self) -> Result<DatasetQueueConsumerInspectResult> {
+        self.ensure_open()?;
+        let sf = self
+            .state_file
+            .lock()
+            .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+        let pending_entries = sf
+            .pending_entries()
+            .iter()
+            .map(|entry| DatasetQueueConsumerPendingEntry {
+                timestamp: entry.timestamp,
+                start_time: entry.start_time,
+                status: entry.status,
+                retry_count: entry.retry_count,
+            })
+            .collect();
+        Ok(DatasetQueueConsumerInspectResult {
+            info: DatasetQueueConsumerInfo {
+                group_name: self.group_name.clone(),
+                running_expired_seconds: self.config.running_expired_seconds,
+                max_retry_count: self.config.max_retry_count,
+            },
+            state: DatasetQueueConsumerState {
+                processed_ts: sf.processed_ts(),
+                pending_entries,
+            },
+        })
+    }
+
     /// Poll for the next unacked record.
     ///
     /// - If a pending entry is expired, retry or discard it according to config.
@@ -858,9 +1087,7 @@ impl DatasetQueueConsumer {
     /// Returns `Ok(Some((timestamp, data)))` if a record is found,
     /// `Ok(None)` if timeout expires, or `Err(QueueClosed)` if the queue was closed.
     pub fn poll(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
-        if self.closed.load(Ordering::SeqCst) {
-            return Err(TmslError::QueueClosed("queue is closed".into()));
-        }
+        self.ensure_open()?;
 
         if let Some(row) = self.try_poll_available()? {
             Ok(Some(row))
@@ -870,6 +1097,7 @@ impl DatasetQueueConsumer {
     }
 
     fn try_poll_available(&self) -> Result<Option<(i64, Vec<u8>)>> {
+        self.ensure_open()?;
         let now = now_unix_seconds();
         let retry_scan = {
             let mut sf = self
@@ -939,9 +1167,7 @@ impl DatasetQueueConsumer {
         let deadline = Instant::now() + timeout;
 
         loop {
-            if self.closed.load(Ordering::SeqCst) {
-                return Err(TmslError::QueueClosed("queue is closed".into()));
-            }
+            self.ensure_open()?;
 
             if *notified {
                 *notified = false;
@@ -982,9 +1208,7 @@ impl DatasetQueueConsumer {
 
     /// Ack a previously polled record.
     pub fn ack(&self, timestamp: i64) -> Result<()> {
-        if self.closed.load(Ordering::SeqCst) {
-            return Err(TmslError::QueueClosed("queue is closed".into()));
-        }
+        self.ensure_open()?;
 
         let mut sf = self
             .state_file
@@ -1003,6 +1227,7 @@ impl DatasetQueueConsumer {
     /// It is best-effort and must only wake external processing; it must not
     /// perform data processing or rely on exact notification counts.
     pub fn poll_callback(&self, callback: Option<QueuePollCallback>) -> Result<()> {
+        self.ensure_open()?;
         let mut slot = self
             .poll_callback
             .lock()
@@ -1028,11 +1253,12 @@ pub(crate) fn flush_queue_state_files(inner: &Arc<Mutex<QueueInner>>) -> Result<
         .lock()
         .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
 
-    for sf in guard.consumers.values() {
+    for group in guard.consumers.values() {
+        let sf = group.state_file();
         if let Ok(mut state) = sf.lock() {
             state.sync_to_mmap()?;
             state.flush()?;
-        }
+        };
     }
     Ok(())
 }
@@ -1046,7 +1272,10 @@ pub(crate) fn flush_queue_state_file(
         let guard = inner
             .lock()
             .map_err(|_| TmslError::InvalidData("queue inner mutex poisoned".into()))?;
-        guard.consumers.get(group_name).cloned()
+        guard
+            .consumers
+            .get(group_name)
+            .map(|group| group.state_file())
     };
     if let Some(sf) = state_file {
         let mut state = sf
@@ -1682,8 +1911,8 @@ mod tests {
 
     #[test]
     fn qi_close() {
-        let qi = QueueInner::new();
-        qi.close();
+        let mut qi = QueueInner::new();
+        qi.close().unwrap();
         assert!(qi.is_closed());
     }
 
@@ -1693,8 +1922,10 @@ mod tests {
         let path = dir.join("group1");
         let sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
         let mut qi = QueueInner::new();
-        qi.consumers_mut()
-            .insert("group1".to_string(), Arc::new(Mutex::new(sf)));
+        qi.consumers_mut().insert(
+            "group1".to_string(),
+            ConsumerGroupState::new(Arc::new(Mutex::new(sf))),
+        );
         assert_eq!(qi.consumers().len(), 1);
         assert!(qi.consumers().contains_key("group1"));
         drop(qi);
@@ -1707,12 +1938,16 @@ mod tests {
         let sf1 = ConsumerStateFile::open_or_create(dir.join("g1"), 0).unwrap();
         let sf2 = ConsumerStateFile::open_or_create(dir.join("g2"), 0).unwrap();
         let mut qi = QueueInner::new();
-        qi.consumers_mut()
-            .insert("g1".to_string(), Arc::new(Mutex::new(sf1)));
-        qi.consumers_mut()
-            .insert("g2".to_string(), Arc::new(Mutex::new(sf2)));
+        qi.consumers_mut().insert(
+            "g1".to_string(),
+            ConsumerGroupState::new(Arc::new(Mutex::new(sf1))),
+        );
+        qi.consumers_mut().insert(
+            "g2".to_string(),
+            ConsumerGroupState::new(Arc::new(Mutex::new(sf2))),
+        );
         assert_eq!(qi.consumers().len(), 2);
-        qi.close();
+        qi.close().unwrap();
         assert!(qi.is_closed());
         drop(qi);
         cleanup(&dir);
