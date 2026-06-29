@@ -17,6 +17,7 @@ timslite 仍处于首次正式发布前的开发阶段。Rust API、C ABI、Pyth
 当前可用能力:
 
 - Rust 核心存储引擎已实现。
+- 主 `timslite` crate 是标准 Rust library，不导出 C ABI 符号，也不直接构建 `cdylib`。
 - C ABI wrapper 位于 [wrapper/cffi](wrapper/cffi)，头文件维护在 [wrapper/cffi/include/timslite.h](wrapper/cffi/include/timslite.h)。
 - Python wrapper 位于 [wrapper/python](wrapper/python)。
 - Node.js wrapper 位于 [wrapper/nodejs](wrapper/nodejs)。
@@ -135,9 +136,13 @@ fn main() -> timslite::Result<()> {
 - 可选内置 `.journal/logs` dataset。
 - 新建 dataset 时使用的默认配置。
 
+`Store::create_dataset*` 和 `Store::open_dataset*` 直接返回 `DataSet`。普通写入、读取、删除、查询和普通 dataset queue 都在 `DataSet` / `DatasetQueue` 上操作，`Store` 不再提供面向 record 的 facade API。
+
 ### Dataset
 
 dataset 由 `(name, dataset_type)` 标识，例如 `("sensor", "temperature")`。
+
+通过 `Store` 获取的 `DataSet` 会携带 cache、journal sink、read-only 状态等运行时上下文；调用方不需要也不应该为普通 record API 传入这些内部资源。
 
 常用操作:
 
@@ -285,6 +290,13 @@ let dataset_config = timslite::DataSetConfigBuilder::from_store(&store_config)
 
 C ABI 是独立 wrapper crate，不属于主 `timslite` Rust library。公开 C 头文件位于 [wrapper/cffi/include/timslite.h](wrapper/cffi/include/timslite.h)，实现位于 [wrapper/cffi](wrapper/cffi)，crate 名为 `timslitecffi`。
 
+本地构建和测试:
+
+```bash
+cargo build --manifest-path wrapper/cffi/Cargo.toml --release
+cargo test --manifest-path wrapper/cffi/Cargo.toml -- --test-threads=1
+```
+
 主要 API 组:
 
 - Store lifecycle: `tmsl_store_open`, `tmsl_store_open_with_config`, `tmsl_store_close`。
@@ -360,6 +372,13 @@ Java wrapper 详情见 [wrapper/java/README.md](wrapper/java/README.md)，设计
 cargo build
 cargo build --release
 cargo test -- --test-threads=1
+```
+
+根 crate 的构建只验证 Rust library；需要 C ABI 时请单独构建 `wrapper/cffi`:
+
+```bash
+cargo build --manifest-path wrapper/cffi/Cargo.toml --release
+cargo test --manifest-path wrapper/cffi/Cargo.toml -- --test-threads=1
 ```
 
 更严格的本地检查:

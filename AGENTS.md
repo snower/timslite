@@ -1,10 +1,10 @@
 # AGENTS.md - timslite
 
-> 高性能 Rust 时序数据存储动态库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、C ABI FFI。
+> 高性能 Rust 时序数据存储库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、独立 C ABI wrapper。
 
 ## 项目概览
 
-timslite 是 Rust 2021 存储引擎，可作为 Rust 库使用，也可编译为 `cdylib` 通过 C ABI 对外暴露，并提供 Python wrapper。存储模型以 dataset 为中心，每个 `(dataset_name, dataset_type)` 拥有独立 meta、data segment、index segment 和可选 queue state。
+timslite 是 Rust 2021 存储引擎，主项目是标准 Rust library。C ABI 已迁移到独立的 `wrapper/cffi` crate，crate 名为 `timslitecffi`；Python、Node.js、Java wrapper 分别位于 `wrapper/python`、`wrapper/nodejs`、`wrapper/java`。存储模型以 dataset 为中心，每个 `(dataset_name, dataset_type)` 拥有独立 meta、data segment、index segment 和可选 queue state。
 
 核心能力:
 
@@ -31,16 +31,18 @@ src/
 ├── compress.rs         # miniz_oxide deflate
 ├── cache.rs            # BlockCache
 ├── dataset.rs          # DataSet 操作
-├── store.rs            # Store facade、handle、journal/cache context
-├── ffi.rs              # C ABI
+├── store.rs            # Store facade、dataset registry、journal/cache context
 ├── bg/                 # 后台任务执行器
 ├── index/              # TimeIndex 和 IndexSegment
 ├── journal/            # JournalManager 和 codec
 ├── queue/              # DatasetQueue、consumer、state file
 └── segment/            # DataSegmentSet 和 DataSegment
 
-include/timslite.h      # C 头文件
+wrapper/cffi/           # 独立 C ABI wrapper crate: timslitecffi
+wrapper/cffi/include/   # C 头文件
 wrapper/python/         # PyO3 wrapper 和 Python tests
+wrapper/nodejs/         # Node-API wrapper
+wrapper/java/           # Java / UniFFI wrapper
 docs/design/            # 详细设计文档
 docs/plan/              # phase 计划
 docs/review/            # design review 和 TODO 追踪
@@ -59,7 +61,14 @@ cargo fmt -- --check
 cargo clippy -- -D warnings
 ```
 
-修改 Python wrapper 时，还需要在 `wrapper/python` 下执行对应 cargo 检查和 Python 测试，前提是本地环境支持。
+修改 C ABI wrapper 时，至少执行:
+
+```bash
+cargo check --manifest-path wrapper/cffi/Cargo.toml --all-targets
+cargo test --manifest-path wrapper/cffi/Cargo.toml -- --test-threads=1
+```
+
+修改 Python、Node.js、Java wrapper 时，还需要在对应 wrapper 目录执行 cargo 检查和语言侧测试，前提是本地环境支持。
 
 ## 工作规则
 
@@ -71,6 +80,9 @@ cargo clippy -- -D warnings
 - 不回退工作区内与当前任务无关的用户修改。
 - 代码注释保持简短，统一使用英文。
 - 优先沿用现有模块模式，不轻易引入新抽象。
+- 主 crate 保持标准 Rust library，不在 `src/` 中恢复 C ABI、`cdylib` 或根目录 `include/` 设计。
+- Rust public API 以 `Store` 管理 dataset 生命周期并直接返回 `DataSet` 为边界；不要重新引入 `DataSetHandle` 或 Store 上的 record/queue facade。
+- C ABI 相关实现、头文件、测试和文档应归属 `wrapper/cffi` / `timslitecffi`。
 - 完成任务后先不要git commit，审核确认后再git commit。
 
 ## 当前存储契约
@@ -141,7 +153,9 @@ cargo clippy -- -D warnings
 ## Store、DataSet、Cache、Journal Context
 
 - Store 管理的 `DataSet` 持有 runtime context，包括 cache、journal sink 和 read-only 状态。
-- 通过 Store 获取的 DataSet，其 public 行为应与 Store facade 行为一致。
+- `Store::create_dataset*`、`Store::open_dataset*` 直接返回 `DataSet`，不使用公开 handle registry。
+- Store 负责 dataset 生命周期、listing、inspect、background、journal context；普通 record 操作直接走 `DataSet`。
+- 普通 dataset queue 通过 `DataSet::open_queue()` 打开，queue push/poll/ack 属于 `DatasetQueue` / consumer。
 - 不要在普通 read/write/delete/query public API 中要求调用方传入 cache 或 journal 参数。
 - 低层 `DataSet::create/open` 绕过 Store 时没有 Store runtime context，journal hook 为 no-op。
 - `.journal/logs` public access 使用 read-only runtime context；`JournalManager` 内部写入走 crate-level 路径，避免递归 journal。
