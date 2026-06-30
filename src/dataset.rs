@@ -2122,17 +2122,20 @@ mod tests {
 
         ds.write(100, b"first").unwrap();
         let targets = ds.flush_queue_segments();
-        assert_eq!(targets.len(), 1);
+        assert_eq!(targets.len(), 2);
         assert!(targets
             .iter()
             .any(|target| matches!(target, SegmentFlushTarget::Data { .. })));
+        assert!(targets
+            .iter()
+            .any(|target| matches!(target, SegmentFlushTarget::Index { .. })));
         assert!(!ds.segments.open_segments().next().unwrap().is_flushed);
 
         ds.write(200, b"second").unwrap();
         assert_eq!(
             ds.flush_queue_len(),
-            1,
-            "same dirty data segment should not be queued twice"
+            2,
+            "same dirty data/index segments should not be queued twice"
         );
 
         ds.flush().unwrap();
@@ -2174,7 +2177,7 @@ mod tests {
         let mut ds = make_dirty_queue_dataset("dirty_queue_idle_stale", 4096);
 
         ds.write(100, b"first").unwrap();
-        assert_eq!(ds.flush_queue_len(), 1);
+        assert_eq!(ds.flush_queue_len(), 2);
 
         ds.segments.idle_close_all().unwrap();
         assert!(ds.segments.open_len() == 0);
