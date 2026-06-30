@@ -15,7 +15,7 @@ use crate::dataset_state::DatasetStateFile;
 use crate::error::{Result, TmslError};
 use crate::header::{TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
 use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
-use crate::index::TimeIndex;
+use crate::index::{IndexEntryPosition, TimeIndex};
 use crate::meta::DataSetMeta;
 use crate::query::hot_block::HotBlockCache;
 use crate::query::iter::QueryIterator;
@@ -223,6 +223,10 @@ impl DataSet {
         f(&inner)
     }
 
+    pub(crate) fn inner_arc(&self) -> Arc<Mutex<DataSetInner>> {
+        Arc::clone(&self.inner)
+    }
+
     /// Create a new dataset (explicit creation, errors if already exists).
     pub(crate) fn create(
         id: DataSetKey,
@@ -396,11 +400,7 @@ impl DataSet {
             let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts);
             Ok((start_ts, end_ts))
         })?;
-        Ok(QueryIterator::new(
-            Arc::clone(&self.inner),
-            start_ts,
-            end_ts,
-        ))
+        Ok(QueryIterator::new(self.inner_arc(), start_ts, end_ts))
     }
 
     pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator> {
@@ -408,11 +408,7 @@ impl DataSet {
             let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts);
             Ok((start_ts, end_ts))
         })?;
-        Ok(QueryLengthIterator::new(
-            Arc::clone(&self.inner),
-            start_ts,
-            end_ts,
-        ))
+        Ok(QueryLengthIterator::new(self.inner_arc(), start_ts, end_ts))
     }
 
     pub(crate) fn read_entry_at_index(&self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
@@ -1471,6 +1467,21 @@ impl DataSetInner {
             return Ok(None);
         }
         Ok(self.time_index.query(start_ts, end_ts)?.into_iter().next())
+    }
+
+    pub(crate) fn next_query_index_entry_from_position(
+        &mut self,
+        next_ts: i64,
+        end_ts: i64,
+        cursor: Option<IndexEntryPosition>,
+    ) -> Result<Option<(IndexEntryPosition, IndexEntry)>> {
+        self.ensure_open()?;
+        let (start_ts, end_ts) = self.clamp_query_range(next_ts, end_ts);
+        if start_ts > end_ts {
+            return Ok(None);
+        }
+        self.time_index
+            .next_query_entry_at_or_after(start_ts, end_ts, cursor)
     }
 
     pub(crate) fn read_entry_with_hot_cache(

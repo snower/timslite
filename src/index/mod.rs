@@ -20,6 +20,12 @@ pub(crate) enum IndexSegmentEntryState {
     Closed(IndexSegmentMeta),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct IndexEntryPosition {
+    pub segment_start_timestamp: i64,
+    pub entry_index: usize,
+}
+
 // ─── TimeIndex ─────────────────────────────────────────────────────────────
 
 pub struct TimeIndex {
@@ -207,6 +213,24 @@ impl TimeIndex {
         keys.sort_unstable();
         keys.dedup();
         keys
+    }
+
+    fn first_segment_key_for_range(&self, start_ts: i64, end_ts: i64) -> Option<i64> {
+        self.index_segments
+            .range(..start_ts)
+            .next_back()
+            .or_else(|| self.index_segments.range(start_ts..=end_ts).next())
+            .map(|(key, _)| *key)
+    }
+
+    fn next_segment_key_after(&self, segment_start_timestamp: i64) -> Option<i64> {
+        self.index_segments
+            .range((
+                std::ops::Bound::Excluded(segment_start_timestamp),
+                std::ops::Bound::Unbounded,
+            ))
+            .next()
+            .map(|(key, _)| *key)
     }
 
     /// Create a new TimeIndex.
@@ -709,6 +733,68 @@ impl TimeIndex {
         results.sort_by_key(|e| e.timestamp);
         results.dedup_by_key(|e| e.timestamp);
         Ok(results)
+    }
+
+    pub(crate) fn next_query_entry_at_or_after(
+        &mut self,
+        start_ts: i64,
+        end_ts: i64,
+        cursor: Option<IndexEntryPosition>,
+    ) -> Result<Option<(IndexEntryPosition, IndexEntry)>> {
+        if start_ts > end_ts {
+            return Ok(None);
+        }
+
+        let ic = self.index_continuous;
+        let mut key = match cursor {
+            Some(cursor)
+                if self
+                    .index_segments
+                    .contains_key(&cursor.segment_start_timestamp) =>
+            {
+                Some(cursor.segment_start_timestamp)
+            }
+            Some(cursor) => self.next_segment_key_after(cursor.segment_start_timestamp),
+            None => self.first_segment_key_for_range(start_ts, end_ts),
+        };
+
+        while let Some(segment_start_timestamp) = key {
+            if segment_start_timestamp > end_ts {
+                return Ok(None);
+            }
+
+            let next_key = self.next_segment_key_after(segment_start_timestamp);
+            let after_cursor_index = cursor
+                .filter(|cursor| cursor.segment_start_timestamp == segment_start_timestamp)
+                .and_then(|cursor| cursor.entry_index.checked_add(1));
+
+            let seg = self.open_index_segment(segment_start_timestamp)?;
+            seg.ensure_open()?;
+            let lower_bound = seg.lower_bound_cs(start_ts, ic);
+            let start_index =
+                after_cursor_index.map_or(lower_bound, |index| index.max(lower_bound));
+
+            for entry_index in start_index..seg.wrote_count {
+                let entry = seg.read_entry_at_index(entry_index)?;
+                if entry.timestamp < start_ts {
+                    continue;
+                }
+                if entry.timestamp > end_ts {
+                    return Ok(None);
+                }
+                return Ok(Some((
+                    IndexEntryPosition {
+                        segment_start_timestamp,
+                        entry_index,
+                    },
+                    entry,
+                )));
+            }
+
+            key = next_key;
+        }
+
+        Ok(None)
     }
 
     // ─── Lifecycle management ────────────────────────────────────────────

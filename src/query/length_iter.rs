@@ -5,43 +5,29 @@ use crate::error::Result;
 use std::sync::{Arc, Mutex};
 
 use super::hot_block::HotBlockCache;
+use super::index_iter::IndexQueryIterator;
 
 /// Public lazy iterator for data lengths returned by `DataSet::query_length_iter`.
 pub struct QueryLengthIterator {
     dataset: Arc<Mutex<DataSetInner>>,
-    next_ts: Option<i64>,
-    end_ts: i64,
+    index_iter: IndexQueryIterator,
     hot_block: HotBlockCache,
 }
 
 impl QueryLengthIterator {
     pub(crate) fn new(dataset: Arc<Mutex<DataSetInner>>, start_ts: i64, end_ts: i64) -> Self {
         Self {
-            dataset,
-            next_ts: (start_ts <= end_ts).then_some(start_ts),
-            end_ts,
+            dataset: Arc::clone(&dataset),
+            index_iter: IndexQueryIterator::new(dataset, start_ts, end_ts),
             hot_block: HotBlockCache::new(),
         }
     }
 
     pub fn next_entry(&mut self) -> Result<Option<(i64, u32)>> {
         loop {
-            let Some(next_ts) = self.next_ts else {
+            let Some(entry) = self.index_iter.next_entry()? else {
                 return Ok(None);
             };
-
-            let entry = {
-                let mut inner = self.dataset.lock().map_err(|_| {
-                    crate::error::TmslError::InvalidData("dataset mutex poisoned".into())
-                })?;
-                inner.next_query_index_entry(next_ts, self.end_ts)?
-            };
-
-            let Some(entry) = entry else {
-                self.next_ts = None;
-                return Ok(None);
-            };
-            self.next_ts = entry.timestamp.checked_add(1);
 
             let mut inner = self.dataset.lock().map_err(|_| {
                 crate::error::TmslError::InvalidData("dataset mutex poisoned".into())
