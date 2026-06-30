@@ -18,8 +18,8 @@ use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOC
 use crate::index::TimeIndex;
 use crate::meta::DataSetMeta;
 use crate::query::hot_block::HotBlockCache;
-use crate::query::iter::{QueryIterator, QuerySource, SourceQueryIterator};
-use crate::query::length_iter::{QueryLengthIterator, SourceQueryLengthIterator};
+use crate::query::iter::QueryIterator;
+use crate::query::length_iter::QueryLengthIterator;
 use crate::queue::{
     flush_queue_state_file, flush_queue_state_files, queue_dir_for, DatasetQueue, QueueInner,
     QueueNotifier,
@@ -381,10 +381,6 @@ impl DataSet {
         end_ts: i64,
     ) -> Result<Vec<IndexEntry>> {
         self.with_open_inner(|inner| inner.query_index_entries(start_ts, end_ts))
-    }
-
-    pub(crate) fn query_sources(&self, start_ts: i64, end_ts: i64) -> Result<Vec<QuerySource>> {
-        self.with_open_inner(|inner| inner.query_sources(start_ts, end_ts))
     }
 
     pub fn query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>> {
@@ -1519,42 +1515,18 @@ impl DataSetInner {
         Ok(Some(data_len))
     }
 
-    /// Return a lazy query iterator for records in [start_ts, end_ts].
-    #[allow(clippy::needless_lifetimes)]
-    pub fn query_iter<'a>(
-        &'a mut self,
-        start_ts: i64,
-        end_ts: i64,
-    ) -> Result<SourceQueryIterator<'a>> {
-        let cache = self.scoped_block_cache();
-        self.query_iter_with_cache(start_ts, end_ts, cache)
-    }
-
-    pub(crate) fn query_iter_with_cache<'a>(
-        &'a mut self,
-        start_ts: i64,
-        end_ts: i64,
-        cache: Option<Arc<BlockCache>>,
-    ) -> Result<SourceQueryIterator<'a>> {
-        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
-        if start_ts > end_ts {
-            return Ok(SourceQueryIterator::new(vec![], &mut self.segments, cache));
-        }
-        let sources = self.time_index.prepare_query_sources(start_ts, end_ts)?;
-        Ok(SourceQueryIterator::new_with_sources(
-            sources,
-            &mut self.segments,
-            cache,
-        ))
-    }
-
     /// Query records in the time range [start_ts, end_ts].
     /// Filler entries (sentinel block_offset) are skipped.
-    #[allow(clippy::needless_lifetimes)]
     pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
-        let cache = self.scoped_block_cache();
-        let iter = self.query_iter_with_cache(start_ts, end_ts, cache)?;
-        iter.collect_all()
+        let entries = self.query_index_entries(start_ts, end_ts)?;
+        let mut result = Vec::new();
+        let mut hot_block = HotBlockCache::new();
+        for entry in entries {
+            if let Some(record) = self.read_entry_with_hot_cache(&entry, &mut hot_block)? {
+                result.push(record);
+            }
+        }
+        Ok(result)
     }
 
     pub fn query_index_entries(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
@@ -1563,14 +1535,6 @@ impl DataSetInner {
             return Ok(vec![]);
         }
         self.time_index.query(start_ts, end_ts)
-    }
-
-    pub fn query_sources(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<QuerySource>> {
-        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
-        if start_ts > end_ts {
-            return Ok(Vec::new());
-        }
-        self.time_index.prepare_query_sources(start_ts, end_ts)
     }
 
     /// Check visible data existence in [start_ts, end_ts].
@@ -1624,50 +1588,16 @@ impl DataSetInner {
             return Ok(Vec::new());
         }
         let mut result = Vec::new();
-        let sources = self.time_index.prepare_query_sources(start_ts, end_ts)?;
-        let cache = self.scoped_block_cache();
-
-        for mut source in sources {
-            while let Some(entry) = source.next_entry()? {
-                if entry.block_offset == BLOCK_OFFSET_FILLER {
-                    continue;
-                }
-                let re = ReadIndexEntry {
-                    timestamp: entry.timestamp,
-                    block_offset: entry.block_offset,
-                    in_block_offset: entry.in_block_offset,
-                };
-                let data_len = self.segments.read_record_data_len(&re, cache.as_deref())?;
+        let entries = self.time_index.query(start_ts, end_ts)?;
+        let mut hot_block = HotBlockCache::new();
+        for entry in entries {
+            if let Some(data_len) =
+                self.read_entry_data_len_with_hot_cache(&entry, &mut hot_block)?
+            {
                 result.push((entry.timestamp, data_len));
             }
         }
-        self.last_used_at = Instant::now();
         Ok(result)
-    }
-
-    /// Create a lazy iterator for data lengths in [start_ts, end_ts].
-    /// Supports HotBlockCache for efficient block reuse.
-    #[allow(clippy::needless_lifetimes)]
-    pub fn query_length_iter<'a>(
-        &'a mut self,
-        start_ts: i64,
-        end_ts: i64,
-    ) -> Result<SourceQueryLengthIterator<'a>> {
-        let cache = self.scoped_block_cache();
-        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
-        if start_ts > end_ts {
-            return Ok(SourceQueryLengthIterator::new(
-                vec![],
-                &mut self.segments,
-                cache,
-            ));
-        }
-        let sources = self.time_index.prepare_query_sources(start_ts, end_ts)?;
-        Ok(SourceQueryLengthIterator::new_with_sources(
-            sources,
-            &mut self.segments,
-            cache,
-        ))
     }
 
     pub fn read_entry_at_index(&mut self, entry: &IndexEntry) -> Result<(i64, Vec<u8>)> {
