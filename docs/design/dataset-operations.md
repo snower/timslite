@@ -323,7 +323,7 @@ DataSet::write(timestamp, data):
 
 > **索引原地更新**: 索引条目 14 字节通过 mmap 直接覆盖, 不改变条目总数。
 > - **连续模式**: 先用 `base_timestamp` 计算逻辑 `seg_start_ts` 和 `entry_index`; 如果 segment 不存在或 `entry_index >= wrote_count`, 该位置是逻辑空洞
-> - **非连续模式**: 在 in_memory_buffer 中线性搜索, 或在已打开的 IndexSegment 中二分查找; 若目标在 closed segment 中, 临时打开 → 覆盖 → idle_close
+> - **非连续模式**: 在 IndexSegment 中二分查找; 若目标在 closed segment 中, 临时打开 → 覆盖 → idle_close
 > - **崩溃边界**: 14 字节索引条目不是原子事务写入。本库不保证 crash 后保留该次更新; reopen/query 必须依靠 entry 边界、filler sentinel 和 record timestamp 校验避免返回错位数据。
 >
 > **invalid_record_count 更新**: 通过 `block_offset` 计算旧数据所在数据段 (段路由: `segment.file_offset = (block_offset / segment_size) × segment_size`), 再对该段 `invalid_record_count` 字段 +1。段可能已关闭, 需通过 `lazy_open` 临时打开以更新 mmap state 字段。
@@ -435,9 +435,9 @@ DataSet::delete(timestamp):
     │
     ├─ time_index.find_and_delete_entry(timestamp)
     │    │
-    │    ├─ 查找索引条目 (三级搜索: in_memory_buffer → open segments → closed segments):
+    │    ├─ 查找索引条目 (segment registry: open/closed IndexSegment):
     │    │    ├─ 连续模式: O(1) 直接计算位置
-    │    │    └─ 非连续模式: 二分查找 / in_memory_buffer 线性搜索
+    │    │    └─ 非连续模式: 二分查找
     │    │
     │    ├─ 条目存在且引用真实数据 (block_offset ≠ FILLER):
     │    │    ├─ 将索引条目覆盖为哨兵: block_offset = 0xFFFFFFFFFFFFFFFF, in_block_offset = 0xFFFF
@@ -496,21 +496,19 @@ DataSet::delete(timestamp):
     └─ 3. 按 timestamp 排序返回
 ```
 
-### 10.2 当前实现流程 (QueryIterator: 数据惰性 + 索引 source cursor)
+### 10.2 当前实现流程 (QueryIterator: 数据惰性 + dataset-managed timestamp cursor)
 
 ```
 查询 [start_ts, end_ts] → QueryIterator (惰性)
     │
-    ├─ 1. TimeIndex.prepare_query_sources()
-    │      → 返回按时间顺序排列的 QuerySource 列表
-    │      → 内存 buffer 只复制命中范围内的未 flush entry
-    │      → index segment 只记录 path + [start_idx, end_idx), 不全量收集 entries
+    ├─ 1. QueryIterator::new(dataset Arc, start_ts, end_ts)
+    │      → 持有 dataset、next_ts、end_ts、HotBlockCache
     │
     └─ 调用 next() 时:
-           ├─ 2. 从当前 source 获取下一个 IndexEntry
-           │      ├─ 当前 source 耗尽 → 切换到下一个 source
-           │      ├─ 跳过 filler entries (block_offset == 0xFFFFFFFFFFFFFFFF)
-           │      └─ 连续模式未创建的逻辑空洞 segment 不产生 source
+           ├─ 2. DataSetInner::next_query_index_entry(next_ts, end_ts)
+           │      ├─ 通过当前 TimeIndex 查找下一条可见 IndexEntry
+           │      ├─ next_ts = entry.timestamp + 1
+           │      └─ 跳过 filler/deleted entries (block_offset == 0xFFFFFFFFFFFFFFFF)
            │
            ├─ 3. 检查 HotBlockCache (无锁, 查询级局部缓存)
            │      ├─ Hit (同一个 data segment 且同一个段内 block offset)
@@ -534,12 +532,12 @@ DataSet::delete(timestamp):
 ```
 
 > **关键改进**:
-> - **索引 source cursor**: 已落盘的 index segment 只在迭代时逐条读取, 不再把整个查询范围一次性收集到 `Vec<IndexEntry>`
+> - **索引 timestamp cursor**: iterator 不持有 segment source 列表; 每次推进都通过 dataset 当前 `TimeIndex` 查下一条可见 `IndexEntry`
 > - **数据惰性化**: `DataSet::query_iter()` 与 FFI iterator 按需读取 record; `DataSet::query()` 作为兼容便利方法仍会 collect 成 `Vec`
 > - **HotBlockCache**: 读取循环中保持最后解压的 Block, 同 Block 内连续读取跳过 mmap+解压
 > - **无锁热点**: HotBlockCache 属于单个 QueryIterator 实例, 不涉及全局锁竞争
 > - **全局缓存不可变性**: 只有 compressed block 的解压 payload 可进入全局 BlockCache; HotBlockCache 为查询局部缓存, 可持有本次读取的 raw payload, 但不跨越写入操作
-> - **内存边界**: 当前 Rust QueryIterator 主要持有 source 元数据、未 flush 命中 entry、当前 hot block 和当前 record; FFI `tmsl_iter_next` 仍按条 `malloc` 返回数据。严格 64KB 级常量内存属于后续零拷贝/buffer API 目标, 不能作为当前 FFI 性能承诺
+> - **内存边界**: 当前 Rust QueryIterator 主要持有 dataset handle、timestamp cursor、当前 hot block 和当前 record; FFI `tmsl_iter_next` 仍按条 `malloc` 返回数据。严格 64KB 级常量内存属于后续零拷贝/buffer API 目标, 不能作为当前 FFI 性能承诺
 >
 > **旧 API 兼容**: `DataSet::query()` 方法保留, 内部改为 `query_iter().collect()`
 
@@ -554,7 +552,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
     │      → return Ok(None)
     │
     ├─ 3. TimeIndex.find_entry(timestamp)
-    │      → 三级搜索: in_memory_buffer → open segments → closed segments
+    │      → segment registry: open/closed IndexSegment
     │      → 返回 None: 时间戳不存在或连续模式逻辑空洞, 直接返回 Ok(None)
     │
     ├─ 4. 检查 entry.block_offset
@@ -586,7 +584,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 - 每次正常写入 (`latest_written_timestamp` 为 `None` 或 `timestamp > latest`) 更新为 `Some(timestamp)`
 - 纠正写 (`latest_written_timestamp == Some(timestamp)`) / 乱序写 (`timestamp < latest`) / `delete(latest)` 不改变
 - `open` 时通过 `recover_latest_timestamp` 从最新索引分段文件的最后一条 entry 恢复; 若该 entry 是 delete/filler 哨兵, 其 timestamp 仍然是 `latest_written_timestamp`
-- 运行期若存在未刷盘的 `in_memory_buffer`, 恢复辅助逻辑会把 buffer 中的最大 timestamp 作为兜底候选; 正常 open 路径下该 buffer 为空
+- 索引 entry 在写入路径中直接追加到 mmap-backed IndexSegment; `open` 恢复只需要读取最新非空 index segment 文件的最后一条 entry
 - 用于:
   - `read_latest()` 解析到最大已写 timestamp; 若该 entry 不存在、已删除或已过期, 返回 `None`, 不反向搜索更早有效记录
   - 数据保留阈值计算 (`latest.saturating_sub(retention_window as i64)`)
@@ -626,7 +624,7 @@ DataSet::reclaim_expired_segments():
   2. if latest_written_timestamp is None → return Ok(0)
      threshold = latest_written_timestamp.unwrap().saturating_sub(retention_window as i64)
   3. old_last_used_at = self.last_used_at
-     self.flush()  -- 确保 in-memory buffer 落盘; flush 内部可能临时 touch
+     self.flush()  -- 确保 dirty mmap segment 同步; flush 内部可能临时 touch
   4. self.time_index.idle_close_all()
      self.segments.idle_close_all()
      确保所有打开分段完成 sync + unmap, 但分段注册表仍保留统一 BTreeMap 条目

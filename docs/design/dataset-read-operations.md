@@ -102,7 +102,7 @@ pub fn query_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryIterator>
 
 **特点**:
 - 支持 HotBlockCache（查询级 block 缓存）
-- 索引按 source cursor 逐条推进
+- iterator 持有 dataset 和 timestamp cursor, 每次推进时通过当前 TimeIndex 查下一条 entry
 - 通过 Store 创建时自动注入 `Arc<BlockCache>`
 
 **相关文档**: [查询迭代器](query-iterator.md)
@@ -259,7 +259,7 @@ pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengt
 - 仅返回有效记录（跳过 filler 和不存在的时间戳）
 - 支持 HotBlockCache（需读取 block 获取 record header）
 - 通过 Store 创建时自动注入 `Arc<BlockCache>`
-- public Rust wrapper 使用 `TimeIndex::prepare_query_sources()` 构造 source cursor, 迭代期间按需打开 index segment 并读取 record header; 创建 iterator 时不预先收集全部 `(timestamp, data_len)`。
+- public Rust wrapper 持有 dataset 和 timestamp cursor, 每次推进时通过当前 `TimeIndex` 查下一条 entry 并读取 record header; 创建 iterator 时不预先收集全部 `(timestamp, data_len)`。
 
 **与 query_iter 的区别**:
 - `query_iter` 返回完整数据 `(i64, Vec<u8>)`
@@ -306,29 +306,29 @@ timestamp: i64 (8 bytes, little-endian)
 
 ```rust
 pub struct QueryLengthIterator {
-    sources: Vec<QuerySource>,
     dataset: Arc<Mutex<DataSetInner>>,
+    next_ts: Option<i64>,
+    end_ts: i64,
     hot_block: HotBlockCache,
-    current_source_idx: usize,
 }
 
 impl Iterator for QueryLengthIterator {
     type Item = Result<(i64, u32)>;
     
     fn next(&mut self) -> Option<Self::Item> {
-        // Read the next source entry lazily, then lock the dataset
+        // Find the next current index entry through the dataset,
         // and read only the record header, not the full payload.
     }
 }
 ```
 
-**复用**: `QuerySource` 和 `HotBlockCache` 可直接复用。crate-internal `DataSetInner::query_length_iter()` 可以继续返回借用 `DataSegmentSet` 的内部 iterator; public wrapper 需要持有 dataset `Arc<Mutex<...>>` 或等价 guard/cursor 结构，避免退化为 `query_length()` snapshot。
+**复用**: `QueryLengthIterator` 与 `QueryIterator` 复用 dataset-managed timestamp cursor 和 `HotBlockCache`; public wrapper 持有 dataset `Arc<Mutex<...>>`, 避免退化为 `query_length()` snapshot。
 
 ### 4.3 索引查询优化
 
 `query_exist` 使用 `TimeIndex::query()` 获取 retention 可见范围内的 entry，并跳过 filler/deleted entry。对于大范围查询，可考虑:
 - 当前实现: bitmap 最大 4MiB，一次性加载可见范围内的 entry 到内存
-- 未来优化: 使用 `prepare_query_sources()` + cursor 模式（需权衡复杂度）
+- 未来优化: 若需要减少大范围 timestamp cursor 扫描, 可增加 segment-level cursor, 但不恢复旧的 source-list 类型。
 
 ---
 

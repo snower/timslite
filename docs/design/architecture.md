@@ -127,7 +127,7 @@ src/
 │   └── segment.rs      # IndexSegment (14B delta entries, lifecycle, binary search)
 ├── query/
 │   ├── mod.rs          # 查询模块导出
-│   ├── iter.rs         # QueryIterator + source cursor 惰性读取
+│   ├── iter.rs         # QueryIterator + dataset-managed timestamp cursor
 │   └── hot_block.rs    # 迭代器局部 hot block 结构
 ├── journal/
 │   ├── mod.rs          # JournalManager + facade + DataSetJournalSink impl

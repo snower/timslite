@@ -46,7 +46,7 @@ flush (默认每 15 秒):
   3. 对每个出现在队列中的普通 dataset:
      a. 通过 datasets HashMap 精确 get 普通 dataset; journal 不进入该队列
      b. 执行该 dataset 的 flush_dirty_segments()
-        - 先把该 dataset 的 in-memory index buffer flush_to_disk()
+        - 执行 index cleanup hook
         - 收集该 dataset 当前仍 dirty 的 data/index segment
         - 仅对这些 dirty segment target 执行 mmap.flush() — MS_SYNC
        - 如果 target 已在 idle-close 中被 flush+close, 或分段已经不存在, 则跳过

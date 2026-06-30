@@ -1,7 +1,7 @@
 //! TimeIndex: manages index segments with lazy lifecycle and time-range queries.
 //!
-//! Index entries are buffered in-memory and flushed to disk segments when the
-//! buffer reaches the threshold. Segments are filled sequentially (not by hash).
+//! Index entries are appended directly to mmap-backed index segments. Segments
+//! are filled sequentially (not by hash).
 
 pub mod segment;
 
@@ -29,8 +29,6 @@ pub struct TimeIndex {
     pub compress_level: u8,
     pub compress_type: u8,
     pub(crate) index_segments: BTreeMap<i64, IndexSegmentEntryState>,
-    pub in_memory_buffer: Vec<IndexEntry>,
-    pub in_memory_flush_threshold: usize,
     pub index_continuous: bool, // true = continuous mode (O(1) lookup enabled)
     pub base_timestamp: Option<i64>,
     pub index_header_size: u64,
@@ -107,11 +105,6 @@ impl TimeIndex {
             }
         }
 
-        for entry in &self.in_memory_buffer {
-            min_ts = Some(min_ts.map_or(entry.timestamp, |min| min.min(entry.timestamp)));
-            max_ts = Some(max_ts.map_or(entry.timestamp, |max| max.max(entry.timestamp)));
-        }
-
         match (min_ts, max_ts) {
             (Some(min), Some(max)) => Some((min, max)),
             _ => None,
@@ -150,15 +143,18 @@ impl TimeIndex {
             }
         }
 
-        for entry in &self.in_memory_buffer {
-            min_ts = Some(min_ts.map_or(entry.timestamp, |min| min.min(entry.timestamp)));
-            max_ts = Some(max_ts.map_or(entry.timestamp, |max| max.max(entry.timestamp)));
-        }
-
         match (min_ts, max_ts) {
             (Some(min), Some(max)) => Some((min, max)),
             _ => None,
         }
+    }
+
+    fn latest_materialized_timestamp(&self) -> Option<i64> {
+        self.index_segments
+            .values()
+            .filter_map(Self::segment_timestamp_range)
+            .map(|(_, max)| max)
+            .max()
     }
 
     fn open_index_segment(&mut self, start_timestamp: i64) -> Result<&mut IndexSegment> {
@@ -246,8 +242,6 @@ impl TimeIndex {
             compress_level,
             compress_type,
             index_segments: BTreeMap::new(),
-            in_memory_buffer: Vec::new(),
-            in_memory_flush_threshold: 1024,
             index_continuous,
             base_timestamp: None,
             index_header_size: INDEX_HEADER_SIZE,
@@ -255,16 +249,21 @@ impl TimeIndex {
     }
 
     /// Add a filler entry (sentinel for continuous mode).
-    /// Filler entries are buffered but skipped during flush in pure-filler segments.
-    pub fn add_filler_entry(&mut self, timestamp: i64) {
-        self.in_memory_buffer.push(IndexEntry::new(
+    pub fn add_filler_entry(&mut self, timestamp: i64) -> Result<()> {
+        let entry = IndexEntry::new(
             timestamp,
             crate::index::segment::BLOCK_OFFSET_FILLER,
             crate::index::segment::IN_BLOCK_OFFSET_FILLER,
-        ));
+        );
+        if self.index_continuous {
+            self.ensure_base_timestamp(timestamp)?;
+            self.append_continuous_entry_to_disk(&entry)
+        } else {
+            self.append_noncontinuous_entry_to_disk(&entry)
+        }
     }
 
-    /// Add an entry to the in-memory buffer. Automatically flushes when threshold reached.
+    /// Add an entry directly to the mmap-backed index segment.
     pub fn add_entry(
         &mut self,
         timestamp: i64,
@@ -274,10 +273,11 @@ impl TimeIndex {
         if self.index_continuous && self.base_timestamp.is_none() {
             self.ensure_base_timestamp(timestamp)?;
         }
-        self.in_memory_buffer
-            .push(IndexEntry::new(timestamp, block_offset, in_block_offset));
-        if self.in_memory_buffer.len() >= self.in_memory_flush_threshold {
-            self.flush_to_disk()?;
+        let entry = IndexEntry::new(timestamp, block_offset, in_block_offset);
+        if self.index_continuous {
+            self.append_continuous_entry_to_disk(&entry)?;
+        } else {
+            self.append_noncontinuous_entry_to_disk(&entry)?;
         }
         Ok(())
     }
@@ -301,19 +301,17 @@ impl TimeIndex {
             let prev_segment_start = self.segment_start_for(previous_latest)?;
             let curr_segment_start = self.segment_start_for(timestamp)?;
             if prev_segment_start == curr_segment_start {
-                self.push_filler_range(previous_latest + 1, timestamp - 1);
+                self.push_filler_range(previous_latest + 1, timestamp - 1)?;
             } else {
                 let segment_capacity = self.segment_capacity()? as i64;
                 let prev_segment_end = prev_segment_start + segment_capacity - 1;
-                self.push_filler_range(previous_latest + 1, prev_segment_end);
-                self.push_filler_range(curr_segment_start, timestamp - 1);
+                self.push_filler_range(previous_latest + 1, prev_segment_end)?;
+                self.push_filler_range(curr_segment_start, timestamp - 1)?;
             }
         }
 
-        self.in_memory_buffer.push(real_entry);
-        if self.in_memory_buffer.len() >= self.in_memory_flush_threshold {
-            self.flush_to_disk()?;
-        }
+        self.append_continuous_entry_to_disk(&real_entry)?;
+        self.remove_pure_filler_segments();
         Ok(())
     }
 
@@ -370,13 +368,14 @@ impl TimeIndex {
         Ok((timestamp - segment_start) as usize)
     }
 
-    fn push_filler_range(&mut self, start: i64, end: i64) {
+    fn push_filler_range(&mut self, start: i64, end: i64) -> Result<()> {
         if start > end {
-            return;
+            return Ok(());
         }
         for ts in start..=end {
-            self.add_filler_entry(ts);
+            self.add_filler_entry(ts)?;
         }
+        Ok(())
     }
 
     fn materialized_count_for_segment(&self, segment_start: i64) -> Result<usize> {
@@ -388,32 +387,17 @@ impl TimeIndex {
                 IndexSegmentEntryState::Closed(meta) => count = count.max(meta.wrote_count),
             }
         }
-        for entry in &self.in_memory_buffer {
-            if self.segment_start_for(entry.timestamp)? == segment_start {
-                count = count.max(self.entry_index_for(entry.timestamp)? + 1);
-            }
-        }
 
         Ok(count)
     }
 
     /// Find the IndexEntry at the given timestamp (for correction write).
     ///
-    /// Searches `in_memory_buffer`, then the unified segment registry.
+    /// Searches the unified segment registry.
     /// Returns `Ok(None)` if not found.
     pub fn find_entry(&mut self, timestamp: i64) -> Result<Option<IndexEntry>> {
         let ic = self.index_continuous;
 
-        // 1. in-memory buffer
-        if let Some(entry) = self
-            .in_memory_buffer
-            .iter()
-            .rfind(|e| e.timestamp == timestamp)
-        {
-            return Ok(Some(*entry));
-        }
-
-        // 2. segment registry
         let segment_start = if ic {
             match self.segment_start_for(timestamp) {
                 Ok(start) => Some(start),
@@ -449,16 +433,6 @@ impl TimeIndex {
     ) -> Result<IndexEntry> {
         let ic = self.index_continuous;
         let new_entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
-
-        if let Some(pos) = self
-            .in_memory_buffer
-            .iter()
-            .position(|e| e.timestamp == timestamp)
-        {
-            let old = self.in_memory_buffer[pos];
-            self.in_memory_buffer[pos] = new_entry;
-            return Ok(old);
-        }
 
         let segment_start = if ic {
             Some(self.segment_start_for(timestamp)?)
@@ -510,15 +484,10 @@ impl TimeIndex {
             )));
         }
 
-        self.push_filler_range(segment_start + materialized_count as i64, timestamp - 1);
-        self.in_memory_buffer.push(IndexEntry::new(
-            timestamp,
-            new_block_offset,
-            new_in_block_offset,
-        ));
-        if self.in_memory_buffer.len() >= self.in_memory_flush_threshold {
-            self.flush_to_disk()?;
-        }
+        self.push_filler_range(segment_start + materialized_count as i64, timestamp - 1)?;
+        let entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
+        self.append_continuous_entry_to_disk(&entry)?;
+        self.remove_pure_filler_segments();
 
         Ok(IndexEntry::new(
             timestamp,
@@ -535,22 +504,6 @@ impl TimeIndex {
     pub fn find_and_delete_entry(&mut self, timestamp: i64) -> Result<IndexEntry> {
         let ic = self.index_continuous;
         let sentinel = IndexEntry::new(timestamp, BLOCK_OFFSET_FILLER, IN_BLOCK_OFFSET_FILLER);
-
-        if let Some(pos) = self
-            .in_memory_buffer
-            .iter()
-            .position(|e| e.timestamp == timestamp)
-        {
-            let old = self.in_memory_buffer[pos];
-            if old.is_filler() {
-                return Err(TmslError::NotFound(format!(
-                    "no real data at timestamp {} (filler)",
-                    timestamp
-                )));
-            }
-            self.in_memory_buffer[pos] = sentinel;
-            return Ok(old);
-        }
 
         let segment_start = if ic {
             Some(self.segment_start_for(timestamp)?)
@@ -583,46 +536,8 @@ impl TimeIndex {
         )))
     }
 
-    /// Flush the in-memory buffer to disk segments.
+    /// Preserve the old flush hook as an index cleanup point.
     pub fn flush_to_disk(&mut self) -> Result<()> {
-        if self.in_memory_buffer.is_empty() {
-            return Ok(());
-        }
-
-        // Sort by timestamp
-        self.in_memory_buffer.sort_by_key(|e| e.timestamp);
-
-        let entries: Vec<IndexEntry> = std::mem::take(&mut self.in_memory_buffer);
-
-        if self.index_continuous && self.base_timestamp.is_none() {
-            if let Some(first) = entries.iter().find(|entry| !entry.is_filler()) {
-                self.ensure_base_timestamp(first.timestamp)?;
-            } else if let Some(first) = entries.first() {
-                self.ensure_base_timestamp(first.timestamp)?;
-            }
-        }
-
-        for entry in &entries {
-            if self.index_continuous {
-                if let Some(base) = self.base_timestamp {
-                    if entry.timestamp < base {
-                        if entry.is_filler() {
-                            continue;
-                        }
-                        return Err(TmslError::InvalidData(format!(
-                            "real index entry timestamp {} is before continuous index base {}",
-                            entry.timestamp, base
-                        )));
-                    }
-                }
-                self.append_continuous_entry_to_disk(entry)?;
-            } else {
-                self.append_noncontinuous_entry_to_disk(entry)?;
-            }
-        }
-
-        self.in_memory_buffer.clear();
-
         if self.index_continuous {
             self.remove_pure_filler_segments();
         }
@@ -648,6 +563,14 @@ impl TimeIndex {
     }
 
     fn append_noncontinuous_entry_to_disk(&mut self, entry: &IndexEntry) -> Result<()> {
+        if let Some(latest) = self.latest_materialized_timestamp() {
+            if entry.timestamp <= latest {
+                return Err(TmslError::InvalidData(format!(
+                    "non-continuous index append timestamp {} must be greater than latest {}",
+                    entry.timestamp, latest
+                )));
+            }
+        }
         loop {
             let seg = self.get_or_create_segment_for_ts(entry.timestamp)?;
             match Self::append_with_expansion(seg, entry) {
@@ -776,12 +699,6 @@ impl TimeIndex {
     pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
         let mut results = Vec::new();
         let ic = self.index_continuous;
-
-        for entry in &self.in_memory_buffer {
-            if entry.timestamp >= start_ts && entry.timestamp <= end_ts {
-                results.push(*entry);
-            }
-        }
 
         for key in self.segment_keys_for_range(start_ts, end_ts) {
             let seg = self.open_index_segment(key)?;
@@ -956,8 +873,6 @@ impl TimeIndex {
                 .into_iter()
                 .map(|meta| (meta.start_timestamp, IndexSegmentEntryState::Closed(meta)))
                 .collect(),
-            in_memory_buffer: Vec::new(),
-            in_memory_flush_threshold: 1024,
             index_continuous,
             base_timestamp,
             index_header_size,
@@ -991,16 +906,6 @@ impl TimeIndex {
             }
         }
         (0, INDEX_HEADER_SIZE, None)
-    }
-}
-
-impl Drop for TimeIndex {
-    fn drop(&mut self) {
-        if !self.in_memory_buffer.is_empty() {
-            if let Err(e) = self.flush_to_disk() {
-                log::error!("[TimeIndex drop] flush_to_disk failed: {}", e);
-            }
-        }
     }
 }
 
@@ -1116,6 +1021,35 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![100, 105]
         );
+    }
+
+    #[test]
+    fn test_add_entry_writes_index_segment_immediately() {
+        let sub = fresh_subdir("add_entry_immediate_segment_write");
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+
+        idx.add_entry(100, 2048, 7).unwrap();
+
+        assert_eq!(idx.total_len(), 1);
+        let segment_path = match idx.index_segments.get(&100).unwrap() {
+            IndexSegmentEntryState::Open(seg) => seg.path.clone(),
+            IndexSegmentEntryState::Closed(meta) => meta.path.clone(),
+        };
+        let reopened = IndexSegment::open(&segment_path, 100, 4096).unwrap();
+        let entry = reopened.find_exact(100).unwrap();
+        assert_eq!(entry.block_offset, 2048);
+        assert_eq!(entry.in_block_offset, 7);
+    }
+
+    #[test]
+    fn test_add_entry_rejects_out_of_order_direct_append() {
+        let sub = fresh_subdir("add_entry_rejects_out_of_order");
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+
+        idx.add_entry(100, 1000, 0).unwrap();
+        idx.add_entry(200, 2000, 0).unwrap();
+
+        assert!(idx.add_entry(150, 1500, 0).is_err());
     }
 
     #[test]
@@ -1345,14 +1279,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let mut idx = TimeIndex::new(&dir, 4096, 4096, false).unwrap();
-        idx.in_memory_flush_threshold = 5;
 
         for i in 0..20 {
             idx.add_entry(1000 + i, i as u64 * 200, (i * 3) as u16)
                 .unwrap();
         }
 
-        // Query should find all 20 (15 in buffer, 5 flushed)
+        // Query should find all 20 directly from index segments.
         let entries = idx.query(1000, 1019).unwrap();
         assert_eq!(entries.len(), 20);
     }
@@ -1364,7 +1297,6 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
 
         let mut idx = TimeIndex::new(&dir, 4096, 4096, false).unwrap();
-        idx.in_memory_flush_threshold = 5;
 
         for i in 0..100 {
             idx.add_entry(2000 + i, i as u64 * 300, (i * 7) as u16)
@@ -1389,11 +1321,10 @@ mod tests {
         fs::create_dir_all(&sub).unwrap();
 
         let mut idx = TimeIndex::new(&sub, 4096, 4096, true).unwrap();
-        idx.in_memory_flush_threshold = 3;
 
         // Add only filler entries (more than one segment worth)
         for i in 0..100 {
-            idx.add_filler_entry(1000 + i);
+            idx.add_filler_entry(1000 + i).unwrap();
         }
         // Add one real entry at the end
         idx.add_entry(1100, 999, 0).unwrap();
@@ -1417,15 +1348,14 @@ mod tests {
     fn test_timestamp_range_snapshot() {
         let sub = fresh_subdir("ts_range_snapshot");
         let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
-        idx.in_memory_flush_threshold = 10;
 
         // Empty index has no range
         assert_eq!(idx.timestamp_range_snapshot(), None);
 
-        // In-memory buffer only
+        // Entries are immediately visible through index segments.
         idx.add_entry(100, 1000, 0).unwrap();
-        idx.add_entry(200, 2000, 0).unwrap();
         idx.add_entry(150, 1500, 0).unwrap();
+        idx.add_entry(200, 2000, 0).unwrap();
         assert_eq!(idx.timestamp_range_snapshot(), Some((100, 200)));
 
         // Flush to disk and check range across segments
@@ -1434,15 +1364,13 @@ mod tests {
 
         // Add more entries after flush
         idx.add_entry(300, 3000, 0).unwrap();
-        idx.add_entry(50, 500, 0).unwrap();
-        assert_eq!(idx.timestamp_range_snapshot(), Some((50, 300)));
+        assert_eq!(idx.timestamp_range_snapshot(), Some((100, 300)));
     }
 
     #[test]
     fn test_archived_timestamp_range_snapshot() {
         let sub = fresh_subdir("archived_ts_range");
         let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
-        idx.in_memory_flush_threshold = 3;
 
         // Single segment — nothing is archived (the only segment is active)
         idx.add_entry(100, 100, 0).unwrap();
@@ -1468,13 +1396,11 @@ mod tests {
     fn test_active_timestamp_range_snapshot() {
         let sub = fresh_subdir("active_ts_range");
         let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
-        idx.in_memory_flush_threshold = 10;
 
         // Nothing active when empty
         assert_eq!(idx.active_timestamp_range_snapshot(), None);
 
-        // In-memory buffer only (no segments yet)
-        // Use sequential timestamps for continuous mode
+        // Use sequential timestamps for continuous mode.
         idx.add_entry(100, 100, 0).unwrap();
         idx.add_entry(101, 101, 0).unwrap();
         idx.add_entry(102, 102, 0).unwrap();
@@ -1493,7 +1419,6 @@ mod tests {
     fn test_open_len_closed_len() {
         let sub = fresh_subdir("open_closed_len");
         let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
-        idx.in_memory_flush_threshold = 3;
 
         // Start: all segments are open, none closed
         idx.add_entry(100, 100, 0).unwrap();
@@ -1518,7 +1443,6 @@ mod tests {
     fn test_timestamp_range_snapshot_with_closed_segments() {
         let sub = fresh_subdir("ts_range_closed");
         let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
-        idx.in_memory_flush_threshold = 5;
 
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();

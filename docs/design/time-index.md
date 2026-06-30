@@ -10,8 +10,6 @@ struct TimeIndex {
     segment_size: u64,
     initial_segment_size: u64,    // 初始分配大小
     index_segments: BTreeMap<i64, IndexSegmentEntry>, // key = index segment start_timestamp
-    in_memory_buffer: Vec<IndexEntry>,
-    in_memory_flush_threshold: usize,               // 默认 1024
     index_continuous: bool,                         // 连续存储模式
     base_timestamp: Option<i64>,                    // 连续模式第一条真实写入 timestamp
     time_step: i64,                                 // 连续模式固定为 1 个 timestamp 单位
@@ -40,9 +38,6 @@ impl TimeIndex {
 
     /// 兼容查询: 收集时间范围 [start_ts, end_ts] 内的所有 entries
     pub fn query(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<IndexEntry>>;
-
-    /// 惰性查询准备: 返回 source cursor, segment 文件不全量加载 IndexEntry
-    pub fn prepare_query_sources(&mut self, start_ts: i64, end_ts: i64) -> io::Result<Vec<QuerySource>>;
 
     /// 从磁盘加载已有 index segments
     pub fn load_existing(base_dir: &Path, segment_size: u64) -> io::Result<Self>;
@@ -157,7 +152,7 @@ impl IndexSegment {
 - 创建、打开、成功 `sync()` 后 `is_flushed=true`。
 - `append_entry()` / `overwrite_entry()` 写 mmap 后置 `is_flushed=false`。
 - dirty 状态首次从 true 变 false 时, 通过 `DataSetRuntimeContext` 引用的 Store 级共享 `flush_queue` 加入 `{ dataset_key, Index { start_timestamp } }` target。
-- `TimeIndex::flush_to_disk()` 可能把内存 index buffer 写入多个 index segment; 写入完成后由 `DataSet` 收集 dirty index targets 入队。
+- `TimeIndex::add_entry()` 直接追加到 mmap-backed index segment, 不再维护 in-memory index buffer; `flush_to_disk()` 仅作为连续模式 pure-filler segment cleanup hook 保留。
 - 创建新的 index segment 前, 对前一个已经完结或跨 grid 的 index segment 直接 `sync()`。
 
 ### 7.5 索引文件布局

@@ -142,7 +142,7 @@ if entry.block_offset == BLOCK_OFFSET_FILLER {
 | 连续模式回填写入 | overwrite filler | 按需创建 segment 并写入 | overwrite real entry, 旧数据失效 |
 
 `query` 不需要为缺失 segment 构造 filler entries。它只遍历:
-- in-memory buffer 中与范围相交的 entry;
+- 已创建 index segment 中与范围相交的 entry;
 - 已打开 index segments;
 - 已存在的 closed index segments。
 

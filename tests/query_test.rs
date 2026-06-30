@@ -223,7 +223,7 @@ fn t13_6_query_iterator_full_lifecycle() {
         let arc = handle2.clone();
         let ds = arc.clone();
 
-        // Write additional records that stay in memory buffer (path 1)
+        // Write additional records that stay in open mmap-backed segments (path 1)
         for i in 51..=60i64 {
             let data = format!("record_{:03}", i);
             ds.write(i * 100, data.as_bytes()).unwrap();

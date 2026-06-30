@@ -61,7 +61,7 @@
 
 因此调用方直接调用 `DataSet::write/write_now/read/query/open_queue` 不会绕过 cache、journal、read-only、background flush 或 queue 通知语义。`write_now(data)` 和 `append_now(data)` 在 `DataSet` 内部 mutex 获取之后采样 Unix 秒级时间戳, 再复用普通 write/append 路径, 避免锁外取时间后因线程调度造成 timestamp 逆序。
 
-低层 `DataSet::create/open/drop_dataset`、raw lock、`IndexEntry`、`QuerySource`、`QueueInner`、`ConsumerStateFile` 等仍是 crate-internal 实现细节。
+低层 `DataSet::create/open/drop_dataset`、raw lock、`IndexEntry`、`QueryIterator` 内部状态、`QueueInner`、`ConsumerStateFile` 等仍是 crate-internal 实现细节。
 
 ### 11.1.2 Config
 

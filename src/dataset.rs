@@ -1732,17 +1732,7 @@ impl DataSetInner {
             .max_by_key(|seg| seg.start_timestamp)
             .and_then(Self::last_open_index_entry_timestamp);
 
-        let latest_buffered = time_index
-            .in_memory_buffer
-            .iter()
-            .map(|entry| entry.timestamp)
-            .max();
-
-        latest_closed
-            .into_iter()
-            .chain(latest_open)
-            .chain(latest_buffered)
-            .max()
+        latest_closed.into_iter().chain(latest_open).max()
     }
 
     fn last_open_index_entry_timestamp(seg: &IndexSegment) -> Option<i64> {
@@ -1897,7 +1887,7 @@ impl DataSetInner {
 
         // Aggregate index state
         let open_idx = self.time_index.open_len() as u32;
-        let pending_entries = self.time_index.in_memory_buffer.len() as u32;
+        let pending_entries = 0;
         let base_timestamp = self.time_index.base_timestamp;
 
         // Queue state
@@ -1999,7 +1989,10 @@ pub struct DataSetState {
     pub open_index_segments: u32,
     /// Total number of index segments
     pub index_segments: u32,
-    /// Number of in-memory buffered index entries pending flush
+    /// Number of index entries pending materialization into index segments.
+    ///
+    /// TimeIndex appends entries directly to mmap-backed index segments, so this
+    /// is currently always 0 and is kept for inspect ABI compatibility.
     pub pending_index_entries: u32,
     /// Index base timestamp (first entry's timestamp), None if no data
     pub base_timestamp: Option<i64>,
@@ -2478,9 +2471,10 @@ mod tests {
 
         ds.write(100, b"first").unwrap();
 
-        assert_eq!(ds.time_index.in_memory_buffer.len(), 1);
-        assert_eq!(ds.time_index.in_memory_buffer[0].timestamp, 100);
-        assert!(!ds.time_index.in_memory_buffer[0].is_filler());
+        let index_entries = ds.time_index.query(100, 100).unwrap();
+        assert_eq!(index_entries.len(), 1);
+        assert_eq!(index_entries[0].timestamp, 100);
+        assert!(!index_entries[0].is_filler());
         assert!(!dir.join("index").join("base").exists());
     }
 
@@ -2514,7 +2508,8 @@ mod tests {
 
         let filler_count = ds
             .time_index
-            .in_memory_buffer
+            .query(first_ts, second_ts)
+            .unwrap()
             .iter()
             .filter(|entry| entry.is_filler())
             .count();
