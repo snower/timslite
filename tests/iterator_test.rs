@@ -633,3 +633,58 @@ fn t33_9_query_after_data_modification() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn public_query_iter_reads_current_index_entry_after_correction() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(1, b"one").unwrap();
+    ds.write(2, b"old").unwrap();
+    ds.write(3, b"three").unwrap();
+
+    let mut iter = ds.query_iter(1, 3).unwrap();
+    assert_eq!(iter.next().unwrap().unwrap(), (1, b"one".to_vec()));
+
+    ds.write(2, b"corrected").unwrap();
+
+    assert_eq!(iter.next().unwrap().unwrap(), (2, b"corrected".to_vec()));
+    assert_eq!(iter.next().unwrap().unwrap(), (3, b"three".to_vec()));
+    assert!(iter.next().is_none());
+
+    store.close().unwrap();
+}
+
+#[test]
+fn public_query_iter_skips_entry_deleted_after_iterator_creation() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(1, b"one").unwrap();
+    ds.write(2, b"two").unwrap();
+    ds.write(3, b"three").unwrap();
+
+    let mut iter = ds.query_iter(1, 3).unwrap();
+    assert_eq!(iter.next().unwrap().unwrap(), (1, b"one".to_vec()));
+
+    ds.delete(2).unwrap();
+
+    assert_eq!(iter.next().unwrap().unwrap(), (3, b"three".to_vec()));
+    assert!(iter.next().is_none());
+
+    store.close().unwrap();
+}

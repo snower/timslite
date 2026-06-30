@@ -731,3 +731,58 @@ fn query_length_iter_does_not_reuse_mutable_raw_hot_block_after_write() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn query_length_iter_reads_current_index_entry_after_correction() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(1, b"one").unwrap();
+    ds.write(2, b"old").unwrap();
+    ds.write(3, b"three").unwrap();
+
+    let mut iter = ds.query_length_iter(1, 3).unwrap();
+    assert_eq!(iter.next().unwrap().unwrap(), (1, 3));
+
+    ds.write(2, b"corrected").unwrap();
+
+    assert_eq!(iter.next().unwrap().unwrap(), (2, 9));
+    assert_eq!(iter.next().unwrap().unwrap(), (3, 5));
+    assert!(iter.next().is_none());
+
+    store.close().unwrap();
+}
+
+#[test]
+fn query_length_iter_skips_entry_deleted_after_iterator_creation() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(1, b"one").unwrap();
+    ds.write(2, b"two").unwrap();
+    ds.write(3, b"three").unwrap();
+
+    let mut iter = ds.query_length_iter(1, 3).unwrap();
+    assert_eq!(iter.next().unwrap().unwrap(), (1, 3));
+
+    ds.delete(2).unwrap();
+
+    assert_eq!(iter.next().unwrap().unwrap(), (3, 5));
+    assert!(iter.next().is_none());
+
+    store.close().unwrap();
+}

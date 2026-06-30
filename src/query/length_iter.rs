@@ -1,19 +1,83 @@
 //! QueryLengthIterator: lazy iteration for data lengths with HotBlockCache
 
 use crate::cache::BlockCache;
+use crate::dataset::DataSetInner;
 use crate::error::Result;
 use crate::index::segment::{IndexEntry, BLOCK_OFFSET_FILLER};
 use crate::segment::data::ReadIndexEntry;
 use crate::segment::DataSegmentSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use super::hot_block::HotBlockCache;
 use super::iter::QuerySource;
 
-/// Lazy iterator for data lengths in [start_ts, end_ts].
-/// Each next() returns (timestamp, data_len) for valid records.
-/// Skips filler entries. Uses HotBlockCache for efficiency.
-pub struct QueryLengthIterator<'a> {
+/// Public lazy iterator for data lengths returned by `DataSet::query_length_iter`.
+pub struct QueryLengthIterator {
+    dataset: Arc<Mutex<DataSetInner>>,
+    next_ts: Option<i64>,
+    end_ts: i64,
+    hot_block: HotBlockCache,
+}
+
+impl QueryLengthIterator {
+    pub(crate) fn new(dataset: Arc<Mutex<DataSetInner>>, start_ts: i64, end_ts: i64) -> Self {
+        Self {
+            dataset,
+            next_ts: (start_ts <= end_ts).then_some(start_ts),
+            end_ts,
+            hot_block: HotBlockCache::new(),
+        }
+    }
+
+    pub fn next_entry(&mut self) -> Result<Option<(i64, u32)>> {
+        loop {
+            let Some(next_ts) = self.next_ts else {
+                return Ok(None);
+            };
+
+            let entry = {
+                let mut inner = self.dataset.lock().map_err(|_| {
+                    crate::error::TmslError::InvalidData("dataset mutex poisoned".into())
+                })?;
+                inner.next_query_index_entry(next_ts, self.end_ts)?
+            };
+
+            let Some(entry) = entry else {
+                self.next_ts = None;
+                return Ok(None);
+            };
+            self.next_ts = entry.timestamp.checked_add(1);
+
+            let mut inner = self.dataset.lock().map_err(|_| {
+                crate::error::TmslError::InvalidData("dataset mutex poisoned".into())
+            })?;
+            if let Some(data_len) =
+                inner.read_entry_data_len_with_hot_cache(&entry, &mut self.hot_block)?
+            {
+                return Ok(Some((entry.timestamp, data_len)));
+            }
+        }
+    }
+
+    pub fn collect_all(mut self) -> Result<Vec<(i64, u32)>> {
+        let mut result = Vec::new();
+        while let Some(pair) = self.next_entry()? {
+            result.push(pair);
+        }
+        Ok(result)
+    }
+}
+
+impl Iterator for QueryLengthIterator {
+    type Item = Result<(i64, u32)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_entry().transpose()
+    }
+}
+
+/// Low-level lazy iterator for data lengths over pre-selected query sources.
+pub struct SourceQueryLengthIterator<'a> {
     sources: Vec<QuerySource>,
     current_source: usize,
     segments: &'a mut DataSegmentSet,
@@ -21,7 +85,7 @@ pub struct QueryLengthIterator<'a> {
     hot_block: HotBlockCache,
 }
 
-impl<'a> QueryLengthIterator<'a> {
+impl<'a> SourceQueryLengthIterator<'a> {
     pub fn new(
         entries: Vec<IndexEntry>,
         segments: &'a mut DataSegmentSet,
@@ -102,7 +166,7 @@ impl<'a> QueryLengthIterator<'a> {
     }
 }
 
-impl<'a> Iterator for QueryLengthIterator<'a> {
+impl<'a> Iterator for SourceQueryLengthIterator<'a> {
     type Item = Result<(i64, u32)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -125,7 +189,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut segments = DataSegmentSet::new(&dir, 64 * 1024 * 1024, 256 * 1024, 6).unwrap();
 
-        let iter = QueryLengthIterator::new(vec![], &mut segments, None);
+        let iter = SourceQueryLengthIterator::new(vec![], &mut segments, None);
         let results = iter.collect_all().unwrap();
         assert!(results.is_empty());
     }
@@ -140,7 +204,7 @@ mod tests {
         let (_seg_off, _blk_rel, in_block_0) = segments.append(100, b"hello").unwrap();
 
         let entries = vec![IndexEntry::new(100, 0, in_block_0)];
-        let iter = QueryLengthIterator::new(entries, &mut segments, None);
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, None);
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 100);
@@ -164,7 +228,7 @@ mod tests {
         ];
 
         let cache = Arc::new(BlockCache::new(1024));
-        let iter = QueryLengthIterator::new(entries, &mut segments, Some(cache));
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, Some(cache));
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 100);
@@ -188,7 +252,7 @@ mod tests {
             IndexEntry::new(300, 0, in_block_3),
         ];
 
-        let iter = QueryLengthIterator::new(entries, &mut segments, None);
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, None);
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 3);
         assert_eq!(results[0], (100, 5)); // "hello"
@@ -207,7 +271,7 @@ mod tests {
 
         let entries = vec![IndexEntry::new(100, 0, in_block_0)];
         let cache = Arc::new(BlockCache::new(1024));
-        let iter = QueryLengthIterator::new(entries, &mut segments, Some(cache));
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, Some(cache));
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 100);
@@ -230,7 +294,7 @@ mod tests {
             IndexEntry::new(200, 0, in_block_2),
         ];
 
-        let iter = QueryLengthIterator::new(entries, &mut segments, None);
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, None);
         let results: Vec<_> = iter.map(|r| r.unwrap()).collect();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], (100, 5));
@@ -256,8 +320,11 @@ mod tests {
             position: 0,
         };
 
-        let iter =
-            QueryLengthIterator::new_with_sources(vec![source1, source2], &mut segments, None);
+        let iter = SourceQueryLengthIterator::new_with_sources(
+            vec![source1, source2],
+            &mut segments,
+            None,
+        );
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], (100, 5));
@@ -274,7 +341,7 @@ mod tests {
         // Use an invalid block_offset that does not exist in any segment
         let entries = vec![IndexEntry::new(100, 99999999, 0)];
 
-        let iter = QueryLengthIterator::new(entries, &mut segments, None);
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, None);
         let result = iter.collect_all();
         assert!(result.is_err());
     }
@@ -291,7 +358,7 @@ mod tests {
             IndexEntry::new(150, BLOCK_OFFSET_FILLER, 0xFFFF),
         ];
 
-        let iter = QueryLengthIterator::new(entries, &mut segments, None);
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, None);
         let results = iter.collect_all().unwrap();
         assert!(results.is_empty());
     }
@@ -307,7 +374,7 @@ mod tests {
 
         let entries = vec![IndexEntry::new(100, 0, in_block_0)];
         // Pass None for cache to test cache-less path
-        let iter = QueryLengthIterator::new(entries, &mut segments, None);
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, None);
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0], (100, 7)); // "nocache" is 7 bytes
@@ -331,7 +398,7 @@ mod tests {
             IndexEntry::new(400, BLOCK_OFFSET_FILLER, 0xFFFF),
         ];
 
-        let iter = QueryLengthIterator::new(entries, &mut segments, None);
+        let iter = SourceQueryLengthIterator::new(entries, &mut segments, None);
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 2);
         assert_eq!(results[0], (100, 1)); // "a"

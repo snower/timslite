@@ -1,9 +1,10 @@
 //! QueryIterator: lazy query iteration with HotBlockCache
 
 use crate::cache::BlockCache;
+use crate::dataset::DataSetInner;
 use crate::error::Result;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::index::segment::{IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
 use crate::segment::data::ReadIndexEntry;
@@ -117,8 +118,71 @@ pub struct SourceIndex {
     pub entries_remaining: usize,
 }
 
-/// Lazy query iterator
-pub struct QueryIterator<'a> {
+/// Public lazy query iterator backed by a Store-managed dataset.
+pub struct QueryIterator {
+    dataset: Arc<Mutex<DataSetInner>>,
+    next_ts: Option<i64>,
+    end_ts: i64,
+    hot_block: HotBlockCache,
+}
+
+impl QueryIterator {
+    pub(crate) fn new(dataset: Arc<Mutex<DataSetInner>>, start_ts: i64, end_ts: i64) -> Self {
+        Self {
+            dataset,
+            next_ts: (start_ts <= end_ts).then_some(start_ts),
+            end_ts,
+            hot_block: HotBlockCache::new(),
+        }
+    }
+
+    pub fn next_entry(&mut self) -> Result<Option<(i64, Vec<u8>)>> {
+        loop {
+            let Some(next_ts) = self.next_ts else {
+                return Ok(None);
+            };
+
+            let entry = {
+                let mut inner = self.dataset.lock().map_err(|_| {
+                    crate::error::TmslError::InvalidData("dataset mutex poisoned".into())
+                })?;
+                inner.next_query_index_entry(next_ts, self.end_ts)?
+            };
+
+            let Some(entry) = entry else {
+                self.next_ts = None;
+                return Ok(None);
+            };
+            self.next_ts = entry.timestamp.checked_add(1);
+
+            let mut inner = self.dataset.lock().map_err(|_| {
+                crate::error::TmslError::InvalidData("dataset mutex poisoned".into())
+            })?;
+            if let Some(record) = inner.read_entry_with_hot_cache(&entry, &mut self.hot_block)? {
+                return Ok(Some(record));
+            }
+        }
+    }
+
+    pub fn collect_all(mut self) -> Result<Vec<(i64, Vec<u8>)>> {
+        let mut records = Vec::new();
+        while let Some(record) = self.next_entry()? {
+            records.push(record);
+        }
+        Ok(records)
+    }
+}
+
+impl Iterator for QueryIterator {
+    type Item = Result<(i64, Vec<u8>)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_entry().transpose()
+    }
+}
+
+/// Low-level lazy query iterator over pre-selected query sources.
+pub struct SourceQueryIterator<'a> {
     sources: Vec<QuerySource>,
     current_source: usize,
     segments: &'a mut DataSegmentSet,
@@ -126,7 +190,7 @@ pub struct QueryIterator<'a> {
     hot_block: HotBlockCache,
 }
 
-impl<'a> QueryIterator<'a> {
+impl<'a> SourceQueryIterator<'a> {
     pub fn new(
         entries: Vec<IndexEntry>,
         segments: &'a mut DataSegmentSet,
@@ -227,7 +291,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut segments = DataSegmentSet::new(&dir, 64 * 1024 * 1024, 256 * 1024, 6).unwrap();
 
-        let iter = QueryIterator::new(vec![], &mut segments, None);
+        let iter = SourceQueryIterator::new(vec![], &mut segments, None);
         let results = iter.collect_all().unwrap();
         assert!(results.is_empty());
     }
@@ -249,7 +313,7 @@ mod tests {
         ];
 
         let cache = Arc::new(BlockCache::new(1024));
-        let iter = QueryIterator::new(entries, &mut segments, Some(cache));
+        let iter = SourceQueryIterator::new(entries, &mut segments, Some(cache));
         let results = iter.collect_all().unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, 100);

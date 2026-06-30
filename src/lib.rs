@@ -56,12 +56,14 @@ mod store;
 
 pub use bg::TickResult;
 pub use config::{DataSetConfig, DataSetConfigBuilder, StoreConfig, StoreConfigBuilder};
-pub use dataset::{DataSet, DataSetInfo, DataSetInspectResult, DataSetState, QueryLengthIterator};
+pub use dataset::{DataSet, DataSetInfo, DataSetInspectResult, DataSetState};
 pub use error::{Result, TmslError};
 pub use journal::{
     JournalAppendInfo, JournalIndexInfo, JournalQueue, JournalQueueConsumer, JournalRecord,
     JournalRecordKind, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
+pub use query::iter::QueryIterator;
+pub use query::length_iter::QueryLengthIterator;
 pub use queue::{
     DatasetQueue, DatasetQueueConsumer, DatasetQueueConsumerInfo,
     DatasetQueueConsumerInspectResult, DatasetQueueConsumerPendingEntry, DatasetQueueConsumerState,
