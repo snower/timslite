@@ -249,7 +249,7 @@ fn main() -> timslite::Result<()> {
 
 ## Journal
 
-Journal 由 `StoreConfig.enable_journal(true)` 控制，默认开启。
+Journal 由 `StoreConfig.enable_journal(true)` 控制，默认开启。普通 dataset 的 `DataSetConfig.enable_journal` 默认关闭，需要显式开启后才记录该 dataset 的 create/drop/write/delete/append。
 
 内置 journal dataset 固定为 `.journal/logs`，记录:
 

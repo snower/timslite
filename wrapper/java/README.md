@@ -172,13 +172,16 @@ Call `ack(timestamp)` after processing to advance the consumer position. Unackno
 
 ## Journal
 
-When journal is enabled, timslite records dataset changes (create, write, delete, append) as sequential log entries.
+When store journal is enabled and a dataset is created with `enableJournal(true)`, timslite records dataset changes (create, write, delete, append) as sequential log entries. Dataset journal recording is disabled by default.
 
 ### Enabling Journal
 
 ```java
 StoreConfig config = StoreConfigBuilder.builder()
         .enableJournal(true)
+        .build();
+CreateDatasetOptions options = CreateDatasetOptionsBuilder.builder()
+        .config(DatasetConfigBuilder.builder().enableJournal(true).build())
         .build();
 ```
 

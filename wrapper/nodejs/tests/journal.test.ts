@@ -21,11 +21,15 @@ function withStore(fn: (store: Store) => void): void {
   }
 }
 
+function createJournaledDataset(store: Store): void {
+  store.createDataset("test", "data", { enableJournal: true });
+}
+
 describe("journal", () => {
   describe("read and query", () => {
     it("journalRead returns sequence and payload", () => {
       withStore((store) => {
-        store.createDataset("test", "data");
+        createJournaledDataset(store);
         const latest = store.journalLatestSequence();
         assert(latest !== null);
         assert(typeof latest === "bigint");
@@ -40,7 +44,7 @@ describe("journal", () => {
 
     it("journalQuery returns range", () => {
       withStore((store) => {
-        store.createDataset("test", "data");
+        createJournaledDataset(store);
         const latest = store.journalLatestSequence();
         assert(latest !== null);
 
@@ -53,7 +57,7 @@ describe("journal", () => {
 
     it("journalRead nonexistent returns null", () => {
       withStore((store) => {
-        store.createDataset("test", "data");
+        createJournaledDataset(store);
         const latest = store.journalLatestSequence();
         assert(latest !== null);
         assert.equal(store.journalRead(latest + 100n), null);
@@ -62,7 +66,7 @@ describe("journal", () => {
 
     it("journalLatestSequence grows after writes", () => {
       withStore((store) => {
-        store.createDataset("test", "data");
+        createJournaledDataset(store);
         const before = store.journalLatestSequence();
         assert(before !== null);
 
@@ -80,7 +84,7 @@ describe("journal", () => {
   describe("journal queue", () => {
     it("journalQueue push/poll/ack", () => {
       withStore((store) => {
-        store.createDataset("test", "data");
+        createJournaledDataset(store);
         const beforeLatest = store.journalLatestSequence();
         assert(beforeLatest !== null);
 
@@ -105,7 +109,7 @@ describe("journal", () => {
       const dir = makeTmpDir();
       try {
         const store = Store.open(dir, { enableBackgroundThread: false });
-        store.createDataset("test", "data");
+        createJournaledDataset(store);
         const beforeLatest = store.journalLatestSequence();
         assert(beforeLatest !== null);
 
@@ -132,7 +136,7 @@ describe("journal", () => {
       const dir = makeTmpDir();
       try {
         const store = Store.open(dir, { enableBackgroundThread: false });
-        store.createDataset("test", "data");
+        createJournaledDataset(store);
         const jq = store.openJournalQueue();
         const jc = jq.openConsumer("journal-worker");
 
@@ -161,7 +165,7 @@ describe("journal", () => {
 
     it("closed journal queue operations throw", () => {
       withStore((store) => {
-        store.createDataset("test", "data");
+        createJournaledDataset(store);
         const jq = store.openJournalQueue();
         jq.close();
         assert.throws(() => jq.openConsumer("worker"));

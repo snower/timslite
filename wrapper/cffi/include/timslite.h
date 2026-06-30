@@ -54,7 +54,7 @@ typedef struct TmslDatasetConfigFFI {
     uint8_t compress_level;
     uint8_t compress_type; /* 0=zstd (default), 1=deflate */
     uint8_t index_continuous;
-    uint8_t enable_journal; /* 0=false, non-zero=true; default true */
+    uint8_t enable_journal; /* 0=false, non-zero=true; default false */
 } TmslDatasetConfigFFI;
 
 typedef struct TmslQueueConsumerConfigFFI {

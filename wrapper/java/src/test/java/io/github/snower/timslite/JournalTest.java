@@ -13,14 +13,19 @@ class JournalTest {
     @TempDir
     Path tempDir;
 
+    private io.github.snower.timslite.uniffi.CreateDatasetOptions journaledOptions() {
+        return CreateDatasetOptionsBuilder.builder()
+                .config(DatasetConfigBuilder.builder().enableJournal(true).build())
+                .build();
+    }
+
     @Test
     void journalWriteCreatesSequence() {
         io.github.snower.timslite.uniffi.StoreConfig config =
                 StoreConfigBuilder.builder().enableJournal(true).build();
         Store store = Store.open(tempDir.toString(), config);
         try {
-            store.createDataset("jds", "logs",
-                    CreateDatasetOptionsBuilder.builder().build());
+            store.createDataset("jds", "logs", journaledOptions());
             Dataset dataset = store.openDataset("jds", "logs");
             try {
                 dataset.write(100L, new byte[]{10, 20});
@@ -42,8 +47,7 @@ class JournalTest {
                 StoreConfigBuilder.builder().enableJournal(true).build();
         Store store = Store.open(tempDir.toString(), config);
         try {
-            store.createDataset("jds", "logs",
-                    CreateDatasetOptionsBuilder.builder().build());
+            store.createDataset("jds", "logs", journaledOptions());
             Dataset dataset = store.openDataset("jds", "logs");
             try {
                 byte[] payload = new byte[]{1, 2, 3};
@@ -69,8 +73,7 @@ class JournalTest {
                 StoreConfigBuilder.builder().enableJournal(true).build();
         Store store = Store.open(tempDir.toString(), config);
         try {
-            store.createDataset("jds", "logs",
-                    CreateDatasetOptionsBuilder.builder().build());
+            store.createDataset("jds", "logs", journaledOptions());
             Dataset dataset = store.openDataset("jds", "logs");
             try {
                 dataset.write(100L, new byte[]{1});
@@ -97,8 +100,7 @@ class JournalTest {
                 StoreConfigBuilder.builder().enableJournal(true).build();
         Store store = Store.open(tempDir.toString(), config);
         try {
-            store.createDataset("jds", "logs",
-                    CreateDatasetOptionsBuilder.builder().build());
+            store.createDataset("jds", "logs", journaledOptions());
             Dataset dataset = store.openDataset("jds", "logs");
             try {
                 JournalQueue jq = store.openJournalQueue();
@@ -130,8 +132,7 @@ class JournalTest {
                 StoreConfigBuilder.builder().enableJournal(true).build();
         Store store = Store.open(tempDir.toString(), config);
         try {
-            store.createDataset("jds", "logs",
-                    CreateDatasetOptionsBuilder.builder().build());
+            store.createDataset("jds", "logs", journaledOptions());
             Dataset dataset = store.openDataset("jds", "logs");
             try {
                 JournalQueue jq = store.openJournalQueue();
@@ -166,8 +167,7 @@ class JournalTest {
                 StoreConfigBuilder.builder().enableJournal(true).build();
         Store store = Store.open(tempDir.toString(), config);
         try {
-            store.createDataset("jds", "logs",
-                    CreateDatasetOptionsBuilder.builder().build());
+            store.createDataset("jds", "logs", journaledOptions());
             Dataset dataset = store.openDataset("jds", "logs");
             try {
                 JournalQueue jq = store.openJournalQueue();
@@ -196,8 +196,7 @@ class JournalTest {
                 StoreConfigBuilder.builder().enableJournal(true).build();
         Store store = Store.open(tempDir.toString(), config);
         try {
-            store.createDataset("jds", "logs",
-                    CreateDatasetOptionsBuilder.builder().build());
+            store.createDataset("jds", "logs", journaledOptions());
             Dataset dataset = store.openDataset("jds", "logs");
             try {
                 JournalRecord jr = store.journalRead(999999L);

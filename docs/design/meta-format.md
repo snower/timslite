@@ -61,7 +61,7 @@ const META_TYPE_ENABLE_JOURNAL: u8     = 0x0A;  // u8 (0=false, 1=true)
 
 > `block_max_size` 无 TLV type。普通聚合 Block 上限由 `BLOCK_MAX_SIZE=65536` 固定定义, 不是 dataset 创建参数。
 > `retention_window` 磁盘编码为 `u64 LE`, 但有效范围是 `0..=i64::MAX`。builder、FFI config decode、dataset create 和 `DataSetMeta::from_bytes` 均必须拒绝超过 `i64::MAX` 的值, 避免与 signed timestamp 阈值计算发生 wrap 或错误过期。
-> `enable_journal` 是 dataset 级不可变创建参数, 默认 `true`。新 meta 必须写入 canonical 值 `0` 或 `1`; 解析到其它值必须返回 `InvalidData`。缺失该 TLV 的旧 meta 按 `true` 处理。
+> `enable_journal` 是 dataset 级不可变创建参数, 默认 `false`。新 meta 必须写入 canonical 值 `0` 或 `1`; 解析到其它值必须返回 `InvalidData`。缺失该 TLV 的旧 meta 按 `true` 处理。
 >
 > 所有多字节 TLV length/value 均为 Little Endian。时间类字段使用 signed `i64 LE` (`create_time`), size/count/duration 类字段使用 unsigned LE。解析时必须校验 TLV length 与字段类型长度一致; 未知 type 仅按 length 跳过, 但 length 不得越过 `meta_data_length` 边界。
 
@@ -78,7 +78,7 @@ pub struct DataSetMeta {
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
     pub retention_window: u64,   // 数据保留窗口 (timestamp unit, 0=不限)
-    pub enable_journal: bool,    // 是否记录本 dataset 的 journal, 默认 true
+    pub enable_journal: bool,    // 是否记录本 dataset 的 journal, 默认 false
 }
 
 impl DataSetMeta {

@@ -2,11 +2,11 @@
 
 ## 目标
 
-在全局 `StoreConfig.enable_journal=true` 的情况下, 允许创建单个 dataset 时关闭该 dataset 的 journal 记录。默认保持 `true`, 以维持现有行为。
+在全局 `StoreConfig.enable_journal=true` 的情况下, 允许创建单个 dataset 时显式开启或关闭该 dataset 的 journal 记录。默认改为 `false`, 以降低普通 dataset 的默认写入放大。
 
 ## 设计契约
 
-- 新增 `DataSetConfig.enable_journal: bool`, 默认 `true`。
+- 新增 `DataSetConfig.enable_journal: bool`, 默认 `false`。
 - 新增 `DataSetConfigBuilder::enable_journal(bool)`。
 - 新增 dataset meta TLV `0x0A enable_journal`, `u8`, canonical 值只能是 `0` 或 `1`。
 - 有效 journal 开关定义为 `StoreConfig.enable_journal && DataSetMeta.enable_journal`。

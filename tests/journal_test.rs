@@ -50,6 +50,19 @@ fn read_all_journal_records(store: &mut Store) -> Vec<JournalRecord> {
         .collect()
 }
 
+fn create_journaled_dataset(
+    store: &mut Store,
+    config: &StoreConfig,
+    name: &str,
+    dataset_type: &str,
+) -> timslite::Result<timslite::DataSet> {
+    store.create_dataset_with_config(
+        name,
+        dataset_type,
+        Some(DataSetConfigBuilder::from_store(config).enable_journal(true)),
+    )
+}
+
 fn write_with_mmap_release_retry(path: &std::path::Path, data: &[u8]) {
     let mut last_err = None;
     for _ in 0..20 {
@@ -72,10 +85,9 @@ fn write_with_mmap_release_retry(path: &std::path::Path, data: &[u8]) {
 #[test]
 fn t28_0_store_reads_journal_source_record_through_safe_api() {
     let dir = temp_dir("source_record_api");
-    let mut store = Store::open(&dir, test_config()).unwrap();
-    let handle = store
-        .create_dataset_with_config("source_ds", "data", None)
-        .unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
+    let handle = create_journaled_dataset(&mut store, &config, "source_ds", "data").unwrap();
     handle.write(42, b"journal-source").unwrap();
 
     let record = read_all_journal_records(&mut store)
@@ -144,11 +156,10 @@ fn t28_3_disabled_journal_does_not_open_public_handle() {
 #[test]
 fn t28_4_journal_records_dataset_creation() {
     let dir = temp_dir("creation");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
-    store
-        .create_dataset("t28_ds", "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut store, &config, "t28_ds", "metrics").unwrap();
 
     let records = read_all_journal_records(&mut store);
     assert!(!records.is_empty());
@@ -165,11 +176,10 @@ fn t28_4_journal_records_dataset_creation() {
 #[test]
 fn t28_5_journal_records_dataset_deletion() {
     let dir = temp_dir("deletion");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
-    store
-        .create_dataset("t28_ds", "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut store, &config, "t28_ds", "metrics").unwrap();
     store.drop_dataset("t28_ds", "metrics").unwrap();
 
     let records = read_all_journal_records(&mut store);
@@ -190,11 +200,10 @@ fn t28_5_journal_records_dataset_deletion() {
 #[test]
 fn t28_6_journal_records_open_close() {
     let dir = temp_dir("open_close");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
-    store
-        .create_dataset("t28_ds", "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut store, &config, "t28_ds", "metrics").unwrap();
 
     let ds_handle = store.open_dataset("t28_ds", "metrics").unwrap();
     ds_handle.close().unwrap();
@@ -232,16 +241,15 @@ fn t28_7_disabled_journal_creates_no_journal_files() {
 #[test]
 fn t28_8_reopen_preserves_journal() {
     let dir = temp_dir("reopen");
-    let mut store = Store::open(&dir, test_config()).unwrap();
-    store
-        .create_dataset("rp", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
+    create_journaled_dataset(&mut store, &config, "rp", "data").unwrap();
 
     let records1 = read_all_journal_records(&mut store);
     assert!(!records1.is_empty());
     store.close().unwrap();
 
-    let mut store2 = Store::open(&dir, test_config()).unwrap();
+    let mut store2 = Store::open(&dir, config).unwrap();
     let records2 = read_all_journal_records(&mut store2);
     assert!(records2.len() >= records1.len());
     store2.close().unwrap();
@@ -277,11 +285,10 @@ fn t28_10_direct_journal_dataset_mutations_are_read_only() {
 #[test]
 fn t28_11_direct_dataset_mutations_use_store_context_journal() {
     let dir = temp_dir("direct_dataset_context");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
-    let handle = store
-        .create_dataset("ctx_ds", "metrics", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    let handle = create_journaled_dataset(&mut store, &config, "ctx_ds", "metrics").unwrap();
     let identifier = handle.identifier();
     {
         let ds = handle.clone();
@@ -340,12 +347,11 @@ fn t28_12_journal_queue_rejects_external_push() {
 #[test]
 fn t28_13_journal_dedicated_api_queryable_at_store_level() {
     let dir = temp_dir("journal_openable");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
     // Create at least one dataset so the journal receives log entries
-    store
-        .create_dataset("jds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut store, &config, "jds", "data").unwrap();
 
     let records = read_all_journal_records(&mut store);
     assert!(
@@ -367,11 +373,10 @@ fn t28_13_journal_dedicated_api_queryable_at_store_level() {
 fn t28_14_append_writes_journal_0x13_record() {
     // P0-J-1: DataSet::append() should write journal record with kind=DataAppend
     let dir = temp_dir("append_0x13");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
-    store
-        .create_dataset("jds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut store, &config, "jds", "data").unwrap();
 
     // Use append to create a new record (forward append: ts > latest)
     let ds_handle = store.open_dataset("jds", "data").unwrap();
@@ -414,11 +419,10 @@ fn t28_14_append_writes_journal_0x13_record() {
 fn t28_15_journal_queue_consumes_0x13_records() {
     // P0-J-2: journal queue should correctly return 0x13 type records
     let dir = temp_dir("queue_0x13");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
-    store
-        .create_dataset("jds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut store, &config, "jds", "data").unwrap();
 
     // Open journal queue BEFORE append operations so we receive the notifications
     let journal_queue = store.open_journal_queue().unwrap();
@@ -469,10 +473,9 @@ fn t28_15_journal_queue_consumes_0x13_records() {
 #[test]
 fn t41_4_journal_queue_unexpired_pending_does_not_block_next_record() {
     let dir = temp_dir("journal_queue_visibility");
-    let mut store = Store::open(&dir, test_config()).unwrap();
-    store
-        .create_dataset("jretry", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
+    create_journaled_dataset(&mut store, &config, "jretry", "data").unwrap();
     let handle = store.open_dataset("jretry", "data").unwrap();
     let queue = store.open_journal_queue().unwrap();
     let config = QueueConsumerConfig::builder()
@@ -503,10 +506,9 @@ fn t41_4_journal_queue_unexpired_pending_does_not_block_next_record() {
 #[test]
 fn t41_5_journal_queue_retry_limit_drops_before_next_sequence() {
     let dir = temp_dir("journal_queue_retry_limit");
-    let mut store = Store::open(&dir, test_config()).unwrap();
-    store
-        .create_dataset("jretry", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
+    create_journaled_dataset(&mut store, &config, "jretry", "data").unwrap();
     let handle = store.open_dataset("jretry", "data").unwrap();
     let queue = store.open_journal_queue().unwrap();
     let config = QueueConsumerConfig::builder()
@@ -542,10 +544,9 @@ fn t41_5_journal_queue_retry_limit_drops_before_next_sequence() {
 #[test]
 fn t44_2_poll_callback_runs_for_journal_queue_and_can_be_cleared() {
     let dir = temp_dir("journal_queue_poll_callback");
-    let mut store = Store::open(&dir, test_config()).unwrap();
-    let handle = store
-        .create_dataset("jcallback", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
+    let handle = create_journaled_dataset(&mut store, &config, "jcallback", "data").unwrap();
     let queue = store.open_journal_queue().unwrap();
     let consumer = queue.open_consumer("wake").unwrap();
     let consumer2 = queue.open_consumer("wake2").unwrap();
@@ -627,7 +628,11 @@ fn t39_1_dataset_journal_disabled_skips_all_record_kinds() {
     quiet_handle.delete(10).unwrap();
 
     let loud_handle = store
-        .create_dataset_with_config("loud", "data", None)
+        .create_dataset_with_config(
+            "loud",
+            "data",
+            Some(DataSetConfigBuilder::from_store(&config).enable_journal(true)),
+        )
         .unwrap();
     let loud_identifier = loud_handle.identifier();
     loud_handle.write(10, b"loud_write").unwrap();
@@ -710,11 +715,10 @@ fn t28_20_end_to_end_write_journal_replay() {
     // replay on target store using read_journal_source_record
     let source_dir = temp_dir("e2e_source");
     let target_dir = temp_dir("e2e_target");
-    let mut source = Store::open(&source_dir, test_config()).unwrap();
+    let config = test_config();
+    let mut source = Store::open(&source_dir, config.clone()).unwrap();
 
-    source
-        .create_dataset("migrate", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut source, &config, "migrate", "data").unwrap();
     let src_handle = source.open_dataset("migrate", "data").unwrap();
     let src_identifier = src_handle.identifier();
 
@@ -769,11 +773,10 @@ fn t28_21_delete_replay_via_journal() {
     // consume and verify delete on target
     let source_dir = temp_dir("delete_source");
     let target_dir = temp_dir("delete_target");
-    let mut source = Store::open(&source_dir, test_config()).unwrap();
+    let config = test_config();
+    let mut source = Store::open(&source_dir, config.clone()).unwrap();
 
-    source
-        .create_dataset("del_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut source, &config, "del_ds", "data").unwrap();
     let src_handle = source.open_dataset("del_ds", "data").unwrap();
     let src_identifier = src_handle.identifier();
 
@@ -847,11 +850,10 @@ fn t28_21_delete_replay_via_journal() {
 fn t28_22_corrupted_journal_returns_error() {
     // Write data, corrupt journal file on disk, reopen and verify error handling
     let dir = temp_dir("corrupt_journal");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
-    store
-        .create_dataset("cj_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut store, &config, "cj_ds", "data").unwrap();
     let cj_handle = store.open_dataset("cj_ds", "data").unwrap();
     cj_handle.write(1, b"before_corrupt").unwrap();
 
@@ -904,7 +906,7 @@ fn t28_22_corrupted_journal_returns_error() {
     );
 
     // Reopen with journal enabled - either opens and re-creates or returns error
-    let store3_result = Store::open(&dir, test_config());
+    let store3_result = Store::open(&dir, config);
     match store3_result {
         Ok(store3) => {
             // If store opens, journal query must not panic
@@ -923,11 +925,10 @@ fn t28_22_corrupted_journal_returns_error() {
 fn t28_23_journal_sequence_is_contiguous_from_one() {
     // Write many records and verify journal sequences are 1, 2, 3, ... N
     let dir = temp_dir("seq_boundary");
-    let mut store = Store::open(&dir, test_config()).unwrap();
+    let config = test_config();
+    let mut store = Store::open(&dir, config.clone()).unwrap();
 
-    store
-        .create_dataset("seq_ds", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
-        .unwrap();
+    create_journaled_dataset(&mut store, &config, "seq_ds", "data").unwrap();
     let handle = store.open_dataset("seq_ds", "data").unwrap();
 
     let write_count = 20usize;

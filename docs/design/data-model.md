@@ -452,7 +452,7 @@ pub struct DataSetConfig {
     initial_data_segment_size: u64,
     initial_index_segment_size: u64,
     retention_window: u64, // same unit as timestamp, 0=no limit
-    enable_journal: bool,  // default true, persisted in meta
+    enable_journal: bool,  // default false, persisted in meta
     create_time: i64,      // unix milliseconds
 }
 ```

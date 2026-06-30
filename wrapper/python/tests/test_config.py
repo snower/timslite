@@ -97,10 +97,10 @@ class TestConfig:
             results = ds.query_all(1, 300)
             assert len(results) == 3
 
-    def test_create_dataset_enable_journal_false(self, tmpdir):
-        """Dataset-level enable_journal=False suppresses this dataset's records."""
+    def test_create_dataset_default_disables_journal(self, tmpdir):
+        """Dataset-level journal recording is disabled by default."""
         with timslite.Store.open(tmpdir) as store:
-            store.create_dataset("quiet", "data", enable_journal=False)
+            store.create_dataset("quiet", "data")
             inspect = store.inspect_dataset("quiet", "data")
             assert inspect.info.enable_journal is False
             assert inspect.state.has_journal is False
@@ -109,3 +109,14 @@ class TestConfig:
             ds.write(1, b"quiet")
             store.drop_dataset("quiet", "data")
             assert store.journal_query(1, 100) == []
+
+    def test_create_dataset_enable_journal_true(self, tmpdir):
+        """Dataset-level enable_journal=True records this dataset's records."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("loud", "data", enable_journal=True)
+            inspect = store.inspect_dataset("loud", "data")
+            assert inspect.info.enable_journal is True
+
+            ds = store.open_dataset("loud", "data")
+            ds.write(1, b"loud")
+            assert len(store.journal_query(1, 100)) == 2

@@ -9,7 +9,7 @@ import timslite
 def test_journal_read_query_and_queue(tmpdir):
     cfg = timslite.StoreConfig(enable_background_thread=False)
     with timslite.Store.open(tmpdir, cfg) as store:
-        store.create_dataset("journalpy", "data")
+        store.create_dataset("journalpy", "data", enable_journal=True)
         latest = store.journal_latest_sequence()
         assert latest is not None and latest >= 1
 
@@ -41,7 +41,7 @@ def test_journal_read_query_and_queue(tmpdir):
 def test_journal_queue_configured_consumers_skip_unexpired_pending(tmpdir):
     cfg = timslite.StoreConfig(enable_background_thread=False)
     with timslite.Store.open(tmpdir, cfg) as store:
-        store.create_dataset("journalpy", "data")
+        store.create_dataset("journalpy", "data", enable_journal=True)
         queue = store.open_journal_queue()
         c1 = queue.open_consumer(
             "shared",
@@ -72,7 +72,7 @@ def test_journal_queue_configured_consumers_skip_unexpired_pending(tmpdir):
 def test_journal_queue_retry_limit_drops_expired_pending(tmpdir):
     cfg = timslite.StoreConfig(enable_background_thread=False)
     with timslite.Store.open(tmpdir, cfg) as store:
-        store.create_dataset("journalpy", "data")
+        store.create_dataset("journalpy", "data", enable_journal=True)
         queue = store.open_journal_queue()
         consumer = queue.open_consumer(
             "retry",
@@ -102,7 +102,7 @@ def test_journal_queue_retry_limit_drops_expired_pending(tmpdir):
 def test_journal_queue_poll_callback_wakes_and_can_be_cleared(tmpdir):
     cfg = timslite.StoreConfig(enable_background_thread=False)
     with timslite.Store.open(tmpdir, cfg) as store:
-        store.create_dataset("journalpy", "data")
+        store.create_dataset("journalpy", "data", enable_journal=True)
         queue = store.open_journal_queue()
         consumer = queue.open_consumer("callback")
         consumer2 = queue.open_consumer("callback2")

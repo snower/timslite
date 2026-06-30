@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use timslite::{Store, StoreConfig};
+use timslite::{DataSetConfigBuilder, Store, StoreConfig};
 
 fn temp_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -75,9 +75,14 @@ fn stale_lock_file_without_os_lock_does_not_force_read_only() {
 fn read_only_journal_reads_existing_records_and_missing_journal_is_empty() {
     let dir = temp_dir("journal_existing");
     {
-        let mut writer = Store::open(&dir, StoreConfig::default()).unwrap();
+        let config = StoreConfig::default();
+        let mut writer = Store::open(&dir, config.clone()).unwrap();
         let handle = writer
-            .create_dataset("metrics", "raw", 262144, 4096, 0, 0, 0)
+            .create_dataset_with_config(
+                "metrics",
+                "raw",
+                Some(DataSetConfigBuilder::from_store(&config).enable_journal(true)),
+            )
             .unwrap();
         handle.write(1, b"one").unwrap();
         writer.close().unwrap();

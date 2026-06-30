@@ -272,7 +272,7 @@ impl PyStore {
     /// inherit from StoreConfig defaults unless overridden.
     ///
     /// Returns a Dataset object for read/write operations.
-    #[pyo3(signature = (name, dataset_type, *, data_segment_size=None, index_segment_size=None, compress_level=None, index_continuous=false, initial_data_segment_size=None, initial_index_segment_size=None, enable_journal=true))]
+    #[pyo3(signature = (name, dataset_type, *, data_segment_size=None, index_segment_size=None, compress_level=None, index_continuous=false, initial_data_segment_size=None, initial_index_segment_size=None, enable_journal=false))]
     #[allow(clippy::too_many_arguments)]
     fn create_dataset(
         &mut self,

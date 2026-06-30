@@ -407,7 +407,7 @@ impl DataSetConfig {
             initial_data_segment_size: config.initial_data_segment_size,
             initial_index_segment_size: config.initial_index_segment_size,
             retention_window: 0,
-            enable_journal: true,
+            enable_journal: false,
             create_time: 0,
         }
     }
@@ -517,7 +517,7 @@ impl DataSetConfigBuilder {
             initial_data_segment_size: Some(store.initial_data_segment_size),
             initial_index_segment_size: Some(store.initial_index_segment_size),
             retention_window: Some(0),
-            enable_journal: Some(true),
+            enable_journal: Some(false),
         }
     }
 
@@ -595,7 +595,7 @@ impl DataSetConfigBuilder {
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
             retention_window,
-            enable_journal: self.enable_journal.unwrap_or(true),
+            enable_journal: self.enable_journal.unwrap_or(false),
             create_time: 0, // Set at dataset creation
         };
         config.validate()?;
@@ -708,7 +708,7 @@ mod tests {
         assert_eq!(dataset.data_segment_size, 32 * 1024 * 1024);
         assert_eq!(dataset.compress_level, 3);
         assert_eq!(dataset.retention_window, 0);
-        assert!(dataset.enable_journal);
+        assert!(!dataset.enable_journal);
     }
 
     #[test]
@@ -729,7 +729,13 @@ mod tests {
         assert_eq!(config.initial_data_segment_size, 512 * 1024);
         assert_eq!(config.initial_index_segment_size, 8 * 1024);
         assert_eq!(config.retention_window, 0);
-        assert!(config.enable_journal);
+        assert!(!config.enable_journal);
+    }
+
+    #[test]
+    fn test_dataset_config_builder_default_disables_journal() {
+        let config = DataSetConfigBuilder::default().build().unwrap();
+        assert!(!config.enable_journal);
     }
 
     #[test]

@@ -47,7 +47,7 @@ const JOURNAL_DATASET_TYPE: &str = "logs";
 - 普通 dataset 扫描始终跳过 `.journal`。
 - `StoreConfig.enable_journal=false` 时不创建、不打开、不追加 journal, 专用 journal API 返回 `NotFound`。
 - In Store read-only mode with journal enabled, `JournalManager` opens existing `.journal/logs` read-only and supports latest/read/query only. If `.journal/logs` does not exist, the read-only journal view is empty and no directory or file is created. `open_journal_queue` is not supported in read-only mode.
-- 普通 dataset 还拥有自己的不可变 `DataSetConfig.enable_journal` 创建参数, 默认 `true`。只有 `StoreConfig.enable_journal && DataSetConfig.enable_journal` 同时为 true 时, 该 dataset 的 create/drop/write/delete/append 才写 journal。
+- 普通 dataset 还拥有自己的不可变 `DataSetConfig.enable_journal` 创建参数, 默认 `false`。只有 `StoreConfig.enable_journal && DataSetConfig.enable_journal` 同时为 true 时, 该 dataset 的 create/drop/write/delete/append 才写 journal。
 
 ### 25.3 Journal Sequence
 

@@ -217,7 +217,7 @@ class StoreConfig:
         cache_idle_timeout: int = 1800,      # seconds
         retention_check_hour: int = 0,       # UTC hour 0..=23
         enable_background_thread: bool = True,
-        enable_journal: bool = True,
+        enable_journal: bool = False,
         read_only: bool | None = None,       # None=auto, False=writable, True=read-only
     ) -> None:
         ...
