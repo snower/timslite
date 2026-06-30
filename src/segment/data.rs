@@ -6,6 +6,7 @@
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::block::{
@@ -1064,34 +1065,18 @@ impl DataSegment {
 
         if is_compressed {
             if let Some(c) = cache {
-                c.put(cache_key, block_data.clone());
+                let block_data = Arc::new(block_data);
+                let shared = c
+                    .put_shared(cache_key, Arc::clone(&block_data))
+                    .unwrap_or(block_data);
+                return HotBlockCache::extract_record_from(
+                    shared.as_slice(),
+                    entry.in_block_offset,
+                );
             }
         }
 
-        // Locate record: entry.in_block_offset points to [data_len:4]
-        let pos = entry.in_block_offset as usize;
-        if pos + RECORD_HEADER_SIZE > block_data.len() {
-            return Err(TmslError::InvalidData("record index out of bounds".into()));
-        }
-
-        let data_len = read_u32_le(
-            block_data[pos..pos + 4]
-                .try_into()
-                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
-        ) as usize;
-        let timestamp = read_i64_le(
-            block_data[pos + 4..pos + 12]
-                .try_into()
-                .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
-        );
-
-        if pos + RECORD_HEADER_SIZE + data_len > block_data.len() {
-            return Err(TmslError::InvalidData("record data out of bounds".into()));
-        }
-
-        let data =
-            block_data[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
-        Ok((timestamp, data))
+        HotBlockCache::extract_record_from(&block_data, entry.in_block_offset)
     }
 
     /// Read a record at the given index entry, with HotBlockCache support.
@@ -1115,12 +1100,20 @@ impl DataSegment {
         let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
 
         if is_compressed {
-            if hot_block.is_hit(cache_scope_id, self.file_offset, entry.block_offset) {
-                return hot_block.extract_record(entry.in_block_offset);
+            if let Some(block_data) =
+                hot_block.hit_data(cache_scope_id, self.file_offset, entry.block_offset)
+            {
+                return HotBlockCache::extract_record_from(
+                    block_data.as_slice(),
+                    entry.in_block_offset,
+                );
             }
             if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
-                hot_block.fill(cache_key, block_data.clone());
-                return hot_block.extract_record(entry.in_block_offset);
+                hot_block.fill(cache_key, &block_data);
+                return HotBlockCache::extract_record_from(
+                    block_data.as_slice(),
+                    entry.in_block_offset,
+                );
             }
         }
 
@@ -1134,35 +1127,22 @@ impl DataSegment {
         };
 
         if is_compressed {
-            hot_block.fill(cache_key.clone(), block_data.clone());
             if let Some(c) = cache {
-                c.put(cache_key, block_data.clone());
+                let block_data = Arc::new(block_data);
+                let shared = c
+                    .put_shared(cache_key.clone(), Arc::clone(&block_data))
+                    .unwrap_or(block_data);
+                if c.is_enabled() {
+                    hot_block.fill(cache_key, &shared);
+                }
+                return HotBlockCache::extract_record_from(
+                    shared.as_slice(),
+                    entry.in_block_offset,
+                );
             }
         }
 
-        let pos = entry.in_block_offset as usize;
-        if pos + RECORD_HEADER_SIZE > block_data.len() {
-            return Err(TmslError::InvalidData("record index out of bounds".into()));
-        }
-
-        let timestamp = read_i64_le(
-            block_data[pos + 4..pos + 12]
-                .try_into()
-                .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
-        );
-        let data_len = read_u32_le(
-            block_data[pos..pos + 4]
-                .try_into()
-                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
-        ) as usize;
-
-        if pos + RECORD_HEADER_SIZE + data_len > block_data.len() {
-            return Err(TmslError::InvalidData("record data out of bounds".into()));
-        }
-
-        let data =
-            block_data[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
-        Ok((timestamp, data))
+        HotBlockCache::extract_record_from(&block_data, entry.in_block_offset)
     }
 
     /// Read only the record header to get data_len.
@@ -1211,17 +1191,17 @@ impl DataSegment {
             payload.to_vec()
         };
 
-        let pos = entry.in_block_offset as usize;
-        if pos + RECORD_HEADER_SIZE > block_data.len() {
-            return Err(TmslError::InvalidData("record index out of bounds".into()));
+        if is_compressed {
+            if let Some(c) = cache {
+                let block_data = Arc::new(block_data);
+                let shared = c
+                    .put_shared(cache_key, Arc::clone(&block_data))
+                    .unwrap_or(block_data);
+                return HotBlockCache::read_data_len_from(shared.as_slice(), entry.in_block_offset);
+            }
         }
 
-        let data_len = read_u32_le(
-            block_data[pos..pos + 4]
-                .try_into()
-                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
-        );
-        Ok(data_len)
+        HotBlockCache::read_data_len_from(&block_data, entry.in_block_offset)
     }
 
     /// Read record data_len with HotBlockCache support.
@@ -1244,33 +1224,25 @@ impl DataSegment {
         let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
         let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
 
-        if is_compressed && hot_block.is_hit(cache_scope_id, self.file_offset, entry.block_offset) {
-            let pos = entry.in_block_offset as usize;
-            if pos + RECORD_HEADER_SIZE > hot_block.current_data.len() {
-                return Err(TmslError::InvalidData("record index out of bounds".into()));
+        if is_compressed {
+            if let Some(block_data) =
+                hot_block.hit_data(cache_scope_id, self.file_offset, entry.block_offset)
+            {
+                return HotBlockCache::read_data_len_from(
+                    block_data.as_slice(),
+                    entry.in_block_offset,
+                );
             }
-            let data_len = read_u32_le(
-                hot_block.current_data[pos..pos + 4]
-                    .try_into()
-                    .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
-            );
-            return Ok(data_len);
         }
 
         // Try global cache
         if is_compressed {
             if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
-                hot_block.fill(cache_key, block_data.clone());
-                let pos = entry.in_block_offset as usize;
-                if pos + RECORD_HEADER_SIZE > block_data.len() {
-                    return Err(TmslError::InvalidData("record index out of bounds".into()));
-                }
-                let data_len = read_u32_le(
-                    block_data[pos..pos + 4]
-                        .try_into()
-                        .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+                hot_block.fill(cache_key, &block_data);
+                return HotBlockCache::read_data_len_from(
+                    block_data.as_slice(),
+                    entry.in_block_offset,
                 );
-                return Ok(data_len);
             }
         }
 
@@ -1285,23 +1257,19 @@ impl DataSegment {
         };
 
         if is_compressed {
-            hot_block.fill(cache_key.clone(), block_data.clone());
             if let Some(c) = cache {
-                c.put(cache_key, block_data.clone());
+                let block_data = Arc::new(block_data);
+                let shared = c
+                    .put_shared(cache_key.clone(), Arc::clone(&block_data))
+                    .unwrap_or(block_data);
+                if c.is_enabled() {
+                    hot_block.fill(cache_key, &shared);
+                }
+                return HotBlockCache::read_data_len_from(shared.as_slice(), entry.in_block_offset);
             }
         }
 
-        let pos = entry.in_block_offset as usize;
-        if pos + RECORD_HEADER_SIZE > block_data.len() {
-            return Err(TmslError::InvalidData("record index out of bounds".into()));
-        }
-
-        let data_len = read_u32_le(
-            block_data[pos..pos + 4]
-                .try_into()
-                .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
-        );
-        Ok(data_len)
+        HotBlockCache::read_data_len_from(&block_data, entry.in_block_offset)
     }
 }
 

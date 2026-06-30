@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use crate::error::{Result, TmslError};
@@ -28,11 +28,13 @@ fn entry_footprint(data_len: usize) -> usize {
 }
 
 struct CacheEntry {
-    data: Vec<u8>,
+    data: CachedBlockData,
     last_access_at: Instant,
     access_count: u64,
     footprint: usize,
 }
+
+pub(crate) type CachedBlockData = Arc<Vec<u8>>;
 
 #[derive(Clone, Debug)]
 pub struct CacheStats {
@@ -67,7 +69,7 @@ impl BlockCache {
         self.max_memory
     }
 
-    pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>> {
+    pub fn get(&self, key: &CacheKey) -> Option<CachedBlockData> {
         if !self.is_enabled() {
             return None;
         }
@@ -77,7 +79,7 @@ impl BlockCache {
                 entry.last_access_at = Instant::now();
                 entry.access_count += 1;
                 self.cache_hit_count.fetch_add(1, Ordering::Relaxed);
-                Some(entry.data.clone())
+                Some(Arc::clone(&entry.data))
             }
             None => {
                 self.cache_miss_count.fetch_add(1, Ordering::Relaxed);
@@ -87,13 +89,21 @@ impl BlockCache {
     }
 
     pub fn put(&self, key: CacheKey, data: Vec<u8>) {
+        let _ = self.put_shared(key, Arc::new(data));
+    }
+
+    pub(crate) fn put_shared(
+        &self,
+        key: CacheKey,
+        data: CachedBlockData,
+    ) -> Option<CachedBlockData> {
         if !self.is_enabled() {
-            return;
+            return None;
         }
         let footprint = entry_footprint(data.len());
         let mut guard = self.entries.write().unwrap();
-        if guard.contains_key(&key) {
-            return;
+        if let Some(existing) = guard.get(&key) {
+            return Some(Arc::clone(&existing.data));
         }
         let target = (self.max_memory as f64 * 0.85) as usize;
         let current: usize = guard.values().map(|v| v.footprint).sum();
@@ -105,13 +115,14 @@ impl BlockCache {
         guard.insert(
             key,
             CacheEntry {
-                data,
+                data: Arc::clone(&data),
                 last_access_at: Instant::now(),
                 access_count: 0,
                 footprint,
             },
         );
         self.used_memory.fetch_add(footprint, Ordering::Relaxed);
+        Some(data)
     }
 
     pub fn invalidate(&self, key: &CacheKey) -> bool {
@@ -232,9 +243,18 @@ mod tests {
         let k = CacheKey::new(1, 0, 0);
         let d = vec![10u8; 100];
         c.put(k.clone(), d.clone());
-        assert_eq!(c.get(&k).unwrap(), d);
+        assert_eq!(c.get(&k).unwrap().as_slice(), d.as_slice());
         assert_eq!(c.stats().entry_count, 1);
         assert_eq!(c.stats().hit_count, 1);
+    }
+    #[test]
+    fn test_get_returns_shared_payload() {
+        let c = BlockCache::new(1024);
+        let k = CacheKey::new(1, 0, 0);
+        c.put(k.clone(), vec![10u8; 100]);
+        let first = c.get(&k).unwrap();
+        let second = c.get(&k).unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
     }
     #[test]
     fn test_cache_miss_count() {
@@ -308,7 +328,10 @@ mod tests {
         assert_eq!(c.invalidate_scope(1), 2);
         assert_eq!(c.stats().entry_count, 1);
         assert!(c.get(&CacheKey::new(1, 0, 0)).is_none());
-        assert_eq!(c.get(&CacheKey::new(2, 0, 0)).unwrap(), vec![3u8; 100]);
+        assert_eq!(
+            c.get(&CacheKey::new(2, 0, 0)).unwrap().as_slice(),
+            &[3u8; 100]
+        );
     }
 
     #[test]
@@ -317,7 +340,7 @@ mod tests {
         let k = CacheKey::new(1, 0, 0);
         c.put(k.clone(), vec![1u8; 10]);
         c.put(k.clone(), vec![2u8; 10]);
-        assert_eq!(c.get(&k).unwrap(), vec![1u8; 10]);
+        assert_eq!(c.get(&k).unwrap().as_slice(), &[1u8; 10]);
         assert_eq!(c.stats().entry_count, 1);
     }
 }
@@ -328,7 +351,7 @@ mod tests {
 pub struct HotBlockCache {
     pub(crate) current_key: Option<CacheKey>,
     /// Decompressed block payload: [data_len:4][ts:8][data:N]...
-    pub(crate) current_data: Vec<u8>,
+    pub(crate) current_data: Weak<Vec<u8>>,
 }
 
 const RECORD_HEADER_SIZE: usize = 12;
@@ -337,55 +360,92 @@ impl HotBlockCache {
     pub fn new() -> Self {
         Self {
             current_key: None,
-            current_data: Vec::new(),
+            current_data: Weak::new(),
         }
     }
 
     #[inline]
     pub fn is_hit(&self, cache_scope_id: u64, seg_offset: u64, block_offset: u64) -> bool {
-        self.current_key.as_ref() == Some(&CacheKey::new(cache_scope_id, seg_offset, block_offset))
+        self.hit_data(cache_scope_id, seg_offset, block_offset)
+            .is_some()
     }
 
-    pub fn fill(&mut self, key: CacheKey, data: Vec<u8>) {
+    #[inline]
+    pub fn hit_data(
+        &self,
+        cache_scope_id: u64,
+        seg_offset: u64,
+        block_offset: u64,
+    ) -> Option<CachedBlockData> {
+        if self.current_key.as_ref()
+            == Some(&CacheKey::new(cache_scope_id, seg_offset, block_offset))
+        {
+            self.current_data.upgrade()
+        } else {
+            None
+        }
+    }
+
+    pub fn fill(&mut self, key: CacheKey, data: &CachedBlockData) {
         self.current_key = Some(key);
-        self.current_data = data;
+        self.current_data = Arc::downgrade(data);
     }
 
     /// Extract a single record from the cached block payload.
     pub fn extract_record(&self, in_block_offset: u16) -> Result<(i64, Vec<u8>)> {
+        let data = self
+            .current_data
+            .upgrade()
+            .ok_or_else(|| TmslError::InvalidData("hot block: cached block expired".into()))?;
+        Self::extract_record_from(data.as_slice(), in_block_offset)
+    }
+
+    pub fn extract_record_from(block_data: &[u8], in_block_offset: u16) -> Result<(i64, Vec<u8>)> {
         let pos = in_block_offset as usize;
-        if pos + RECORD_HEADER_SIZE > self.current_data.len() {
+        if pos + RECORD_HEADER_SIZE > block_data.len() {
             return Err(TmslError::InvalidData(
                 "hot block: record index out of bounds".into(),
             ));
         }
 
         let data_len = read_u32_le(
-            self.current_data[pos..pos + 4]
+            block_data[pos..pos + 4]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("hot block: cannot read data_len".into()))?,
         ) as usize;
 
         let timestamp = read_i64_le(
-            self.current_data[pos + 4..pos + 12]
+            block_data[pos + 4..pos + 12]
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("hot block: cannot read timestamp".into()))?,
         );
 
-        if pos + RECORD_HEADER_SIZE + data_len > self.current_data.len() {
+        if pos + RECORD_HEADER_SIZE + data_len > block_data.len() {
             return Err(TmslError::InvalidData(
                 "hot block: record data out of bounds".into(),
             ));
         }
 
-        let data = self.current_data[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len]
-            .to_vec();
+        let data =
+            block_data[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
         Ok((timestamp, data))
+    }
+
+    pub fn read_data_len_from(block_data: &[u8], in_block_offset: u16) -> Result<u32> {
+        let pos = in_block_offset as usize;
+        if pos + RECORD_HEADER_SIZE > block_data.len() {
+            return Err(TmslError::InvalidData(
+                "hot block: record index out of bounds".into(),
+            ));
+        }
+        Ok(read_u32_le(block_data[pos..pos + 4].try_into().map_err(
+            |_| TmslError::InvalidData("hot block: cannot read data_len".into()),
+        )?))
     }
 
     pub fn clear(&mut self) {
         self.current_key = None;
-        self.current_data.clear();
+        self.current_data = Weak::new();
     }
 }
 
@@ -399,7 +459,7 @@ impl Default for HotBlockCache {
 mod hot_block_tests {
     use super::*;
 
-    fn make_cache() -> HotBlockCache {
+    fn test_block_data() -> Vec<u8> {
         let mut data = Vec::new();
         // record 1 at offset 0: data_len=5, ts=100, data=[1,2,3,4,5]
         data.extend_from_slice(&5u32.to_le_bytes());
@@ -409,15 +469,22 @@ mod hot_block_tests {
         data.extend_from_slice(&3u32.to_le_bytes());
         data.extend_from_slice(&200i64.to_le_bytes());
         data.extend_from_slice(&[6, 7, 8]);
+        data
+    }
 
+    fn make_cache() -> (BlockCache, HotBlockCache) {
+        let block_cache = BlockCache::new(1024);
+        let key = CacheKey::new(1, 0, 0);
+        let data = Arc::new(test_block_data());
+        let stored = block_cache.put_shared(key.clone(), data).unwrap();
         let mut cache = HotBlockCache::new();
-        cache.fill(CacheKey::new(1, 0, 0), data);
-        cache
+        cache.fill(key, &stored);
+        (block_cache, cache)
     }
 
     #[test]
     fn test_hot_block_hit_miss() {
-        let cache = make_cache();
+        let (_block_cache, cache) = make_cache();
         assert!(cache.is_hit(1, 0, 0));
         assert!(!cache.is_hit(1, 0, 100));
         assert!(!cache.is_hit(1, 100, 0));
@@ -426,7 +493,7 @@ mod hot_block_tests {
 
     #[test]
     fn test_extract_first_record() {
-        let cache = make_cache();
+        let (_block_cache, cache) = make_cache();
         let (ts, data) = cache.extract_record(0).unwrap();
         assert_eq!(ts, 100);
         assert_eq!(data, vec![1, 2, 3, 4, 5]);
@@ -434,7 +501,7 @@ mod hot_block_tests {
 
     #[test]
     fn test_extract_second_record() {
-        let cache = make_cache();
+        let (_block_cache, cache) = make_cache();
         let (ts, data) = cache.extract_record(17).unwrap();
         assert_eq!(ts, 200);
         assert_eq!(data, vec![6, 7, 8]);
@@ -442,8 +509,16 @@ mod hot_block_tests {
 
     #[test]
     fn test_extract_out_of_bounds() {
-        let cache = make_cache();
+        let (_block_cache, cache) = make_cache();
         assert!(cache.extract_record(100).is_err());
+    }
+
+    #[test]
+    fn test_extract_record_from_shared_payload() {
+        let data = test_block_data();
+        let (ts, record_data) = HotBlockCache::extract_record_from(&data, 17).unwrap();
+        assert_eq!(ts, 200);
+        assert_eq!(record_data, vec![6, 7, 8]);
     }
 
     #[test]
@@ -455,10 +530,26 @@ mod hot_block_tests {
 
     #[test]
     fn test_clear() {
-        let mut cache = make_cache();
+        let (_block_cache, mut cache) = make_cache();
         assert!(cache.is_hit(1, 0, 0));
         cache.clear();
         assert!(!cache.is_hit(1, 0, 0));
-        assert!(cache.current_data.is_empty());
+        assert!(cache.current_data.upgrade().is_none());
+    }
+
+    #[test]
+    fn test_hot_reference_expires_after_global_invalidate() {
+        let block_cache = BlockCache::new(1024);
+        let key = CacheKey::new(1, 0, 0);
+        let stored = block_cache
+            .put_shared(key.clone(), Arc::new(test_block_data()))
+            .unwrap();
+        let mut hot_cache = HotBlockCache::new();
+        hot_cache.fill(key.clone(), &stored);
+        drop(stored);
+
+        assert!(hot_cache.is_hit(1, 0, 0));
+        assert!(block_cache.invalidate(&key));
+        assert!(!hot_cache.is_hit(1, 0, 0));
     }
 }
