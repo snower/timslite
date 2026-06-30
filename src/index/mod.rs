@@ -730,8 +730,6 @@ impl TimeIndex {
             results.extend(seg.query_range_cs(start_ts, end_ts, ic));
         }
 
-        results.sort_by_key(|e| e.timestamp);
-        results.dedup_by_key(|e| e.timestamp);
         Ok(results)
     }
 
