@@ -1505,6 +1505,30 @@ impl DataSetInner {
         Ok(Some(record))
     }
 
+    pub(crate) fn try_read_entry_from_hot_cache(
+        &mut self,
+        entry: &IndexEntry,
+        hot_block: &HotBlockCache,
+    ) -> Result<Option<(i64, Vec<u8>)>> {
+        if entry.block_offset == BLOCK_OFFSET_FILLER || self.is_timestamp_expired(entry.timestamp) {
+            return Ok(None);
+        }
+        let key = self
+            .segments
+            .cache_key_for_absolute_offset(entry.block_offset);
+        let Some(block_data) = hot_block.hit_data(
+            key.cache_scope_id,
+            key.segment_file_offset,
+            key.block_offset,
+        ) else {
+            return Ok(None);
+        };
+        let record =
+            HotBlockCache::extract_record_from(block_data.as_slice(), entry.in_block_offset)?;
+        self.last_used_at = Instant::now();
+        Ok(Some(record))
+    }
+
     pub(crate) fn read_entry_data_len_with_hot_cache(
         &mut self,
         entry: &IndexEntry,
@@ -1526,6 +1550,30 @@ impl DataSetInner {
         Ok(Some(data_len))
     }
 
+    pub(crate) fn try_read_entry_data_len_from_hot_cache(
+        &mut self,
+        entry: &IndexEntry,
+        hot_block: &HotBlockCache,
+    ) -> Result<Option<u32>> {
+        if entry.block_offset == BLOCK_OFFSET_FILLER || self.is_timestamp_expired(entry.timestamp) {
+            return Ok(None);
+        }
+        let key = self
+            .segments
+            .cache_key_for_absolute_offset(entry.block_offset);
+        let Some(block_data) = hot_block.hit_data(
+            key.cache_scope_id,
+            key.segment_file_offset,
+            key.block_offset,
+        ) else {
+            return Ok(None);
+        };
+        let data_len =
+            HotBlockCache::read_data_len_from(block_data.as_slice(), entry.in_block_offset)?;
+        self.last_used_at = Instant::now();
+        Ok(Some(data_len))
+    }
+
     /// Query records in the time range [start_ts, end_ts].
     /// Filler entries (sentinel block_offset) are skipped.
     pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
@@ -1533,6 +1581,15 @@ impl DataSetInner {
         let mut result = Vec::new();
         let mut hot_block = HotBlockCache::new();
         for entry in entries {
+            if entry.block_offset == BLOCK_OFFSET_FILLER
+                || self.is_timestamp_expired(entry.timestamp)
+            {
+                continue;
+            }
+            if let Some(record) = self.try_read_entry_from_hot_cache(&entry, &hot_block)? {
+                result.push(record);
+                continue;
+            }
             if let Some(record) = self.read_entry_with_hot_cache(&entry, &mut hot_block)? {
                 result.push(record);
             }
@@ -1602,6 +1659,17 @@ impl DataSetInner {
         let entries = self.time_index.query(start_ts, end_ts)?;
         let mut hot_block = HotBlockCache::new();
         for entry in entries {
+            if entry.block_offset == BLOCK_OFFSET_FILLER
+                || self.is_timestamp_expired(entry.timestamp)
+            {
+                continue;
+            }
+            if let Some(data_len) =
+                self.try_read_entry_data_len_from_hot_cache(&entry, &hot_block)?
+            {
+                result.push((entry.timestamp, data_len));
+                continue;
+            }
             if let Some(data_len) =
                 self.read_entry_data_len_with_hot_cache(&entry, &mut hot_block)?
             {
@@ -2072,6 +2140,34 @@ mod tests {
             0,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn query_hot_cache_fast_path_reads_record_and_length() {
+        let mut ds = make_cache_dataset("query_hot_cache_fast_path_reads_record_and_length");
+        let entry = IndexEntry::new(42, 0, 0);
+        let key = ds
+            .segments
+            .cache_key_for_absolute_offset(entry.block_offset);
+        let mut block_data = Vec::new();
+        block_data.extend_from_slice(&3u32.to_le_bytes());
+        block_data.extend_from_slice(&42i64.to_le_bytes());
+        block_data.extend_from_slice(b"abc");
+
+        let shared = Arc::new(block_data);
+        let mut hot_block = HotBlockCache::new();
+        hot_block.fill(key, &shared);
+
+        assert_eq!(
+            ds.try_read_entry_from_hot_cache(&entry, &hot_block)
+                .unwrap(),
+            Some((42, b"abc".to_vec()))
+        );
+        assert_eq!(
+            ds.try_read_entry_data_len_from_hot_cache(&entry, &hot_block)
+                .unwrap(),
+            Some(3)
+        );
     }
 
     fn make_dirty_queue_dataset(name: &str, data_segment_size: u64) -> DataSetInner {
