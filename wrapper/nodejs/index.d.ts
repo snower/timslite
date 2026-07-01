@@ -163,7 +163,6 @@ export class QueryIterator implements Iterable<[bigint, Buffer]> {
   skip(count: number): void
   collectAll(): Array<[bigint, Buffer]>
   collectTake(count: number): Array<[bigint, Buffer]>
-  readonly remaining: number
 }
 
 export class QueryLengthIterator implements Iterable<[bigint, number]> {
@@ -173,7 +172,6 @@ export class QueryLengthIterator implements Iterable<[bigint, number]> {
   skip(count: number): void
   collectAll(): Array<[bigint, number]>
   collectTake(count: number): Array<[bigint, number]>
-  readonly remaining: number
 }
 
 export class Queue {

@@ -1,16 +1,15 @@
-//! Python query iterators backed by safe DataSet query snapshots.
+//! Python query iterators backed by lazy DataSet query iterators.
 
 use pyo3::prelude::*;
 
 #[pyclass(name = "QueryIterator")]
 pub struct PyQueryIterator {
-    rows: Vec<(i64, Vec<u8>)>,
-    position: usize,
+    iter: Option<timslite::QueryIterator>,
 }
 
 impl PyQueryIterator {
-    pub fn new(rows: Vec<(i64, Vec<u8>)>) -> Self {
-        Self { rows, position: 0 }
+    pub fn new(iter: timslite::QueryIterator) -> Self {
+        Self { iter: Some(iter) }
     }
 }
 
@@ -21,55 +20,68 @@ impl PyQueryIterator {
     }
 
     fn __next__(&mut self) -> PyResult<Option<(i64, Vec<u8>)>> {
-        if self.position >= self.rows.len() {
+        let Some(iter) = self.iter.as_mut() else {
             return Ok(None);
+        };
+        match iter.next_entry() {
+            Ok(Some(entry)) => Ok(Some(entry)),
+            Ok(None) => {
+                self.iter = None;
+                Ok(None)
+            }
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
         }
-        let entry = self.rows[self.position].clone();
-        self.position += 1;
-        Ok(Some(entry))
     }
 
-    fn __len__(&self) -> usize {
-        self.rows.len() - self.position
+    fn reverse(&mut self) -> PyResult<()> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(());
+        };
+        self.iter = Some(iter.reverse());
+        Ok(())
     }
 
-    fn reverse(&mut self) {
-        self.rows.reverse();
-        self.position = 0;
+    fn skip(&mut self, count: usize) -> PyResult<()> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(());
+        };
+        self.iter = Some(iter.skip(count));
+        Ok(())
     }
 
-    fn skip(&mut self, count: usize) {
-        self.position = (self.position + count).min(self.rows.len());
+    fn collect_all(&mut self) -> PyResult<Vec<(i64, Vec<u8>)>> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_all() {
+            Ok(records) => Ok(records),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
     }
 
-    fn collect_all(&mut self) -> Vec<(i64, Vec<u8>)> {
-        let result = self.rows[self.position..].to_vec();
-        self.position = self.rows.len();
-        result
-    }
-
-    fn collect_take(&mut self, count: usize) -> Vec<(i64, Vec<u8>)> {
-        let end = (self.position + count).min(self.rows.len());
-        let result = self.rows[self.position..end].to_vec();
-        self.position = end;
-        result
+    fn collect_take(&mut self, count: usize) -> PyResult<Vec<(i64, Vec<u8>)>> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_take(count) {
+            Ok(records) => Ok(records),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
     }
 
     fn close(&mut self) {
-        self.rows.clear();
-        self.position = 0;
+        self.iter = None;
     }
 }
 
 #[pyclass(name = "QueryLengthIterator")]
 pub struct PyQueryLengthIterator {
-    rows: Vec<(i64, u32)>,
-    position: usize,
+    iter: Option<timslite::QueryLengthIterator>,
 }
 
 impl PyQueryLengthIterator {
-    pub fn new(rows: Vec<(i64, u32)>) -> Self {
-        Self { rows, position: 0 }
+    pub fn new(iter: timslite::QueryLengthIterator) -> Self {
+        Self { iter: Some(iter) }
     }
 }
 
@@ -80,42 +92,56 @@ impl PyQueryLengthIterator {
     }
 
     fn __next__(&mut self) -> PyResult<Option<(i64, u32)>> {
-        if self.position >= self.rows.len() {
+        let Some(iter) = self.iter.as_mut() else {
             return Ok(None);
+        };
+        match iter.next_entry() {
+            Ok(Some(entry)) => Ok(Some(entry)),
+            Ok(None) => {
+                self.iter = None;
+                Ok(None)
+            }
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
         }
-        let entry = self.rows[self.position];
-        self.position += 1;
-        Ok(Some(entry))
     }
 
-    fn __len__(&self) -> usize {
-        self.rows.len() - self.position
+    fn reverse(&mut self) -> PyResult<()> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(());
+        };
+        self.iter = Some(iter.reverse());
+        Ok(())
     }
 
-    fn reverse(&mut self) {
-        self.rows.reverse();
-        self.position = 0;
+    fn skip(&mut self, count: usize) -> PyResult<()> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(());
+        };
+        self.iter = Some(iter.skip(count));
+        Ok(())
     }
 
-    fn skip(&mut self, count: usize) {
-        self.position = (self.position + count).min(self.rows.len());
+    fn collect_all(&mut self) -> PyResult<Vec<(i64, u32)>> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_all() {
+            Ok(records) => Ok(records),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
     }
 
-    fn collect_all(&mut self) -> Vec<(i64, u32)> {
-        let result = self.rows[self.position..].to_vec();
-        self.position = self.rows.len();
-        result
-    }
-
-    fn collect_take(&mut self, count: usize) -> Vec<(i64, u32)> {
-        let end = (self.position + count).min(self.rows.len());
-        let result = self.rows[self.position..end].to_vec();
-        self.position = end;
-        result
+    fn collect_take(&mut self, count: usize) -> PyResult<Vec<(i64, u32)>> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_take(count) {
+            Ok(records) => Ok(records),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
+        }
     }
 
     fn close(&mut self) {
-        self.rows.clear();
-        self.position = 0;
+        self.iter = None;
     }
 }

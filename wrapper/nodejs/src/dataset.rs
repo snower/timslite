@@ -99,8 +99,8 @@ impl Dataset {
     pub fn query(&self, start_ts: BigInt, end_ts: BigInt) -> napi::Result<crate::query::QueryIterator> {
         let s = types::bigint_to_i64(&start_ts)?;
         let e = types::bigint_to_i64(&end_ts)?;
-        let rows = errors::wrap(self.inner.query(s, e))?;
-        Ok(crate::query::QueryIterator::new(rows))
+        let iter = errors::wrap(self.inner.query_iter(s, e))?;
+        Ok(crate::query::QueryIterator::new(iter))
     }
 
     #[napi]
@@ -130,8 +130,8 @@ impl Dataset {
     ) -> napi::Result<crate::query::QueryLengthIterator> {
         let s = types::bigint_to_i64(&start_ts)?;
         let e = types::bigint_to_i64(&end_ts)?;
-        let rows = errors::wrap(self.inner.query_length(s, e))?;
-        Ok(crate::query::QueryLengthIterator::new(rows))
+        let iter = errors::wrap(self.inner.query_length_iter(s, e))?;
+        Ok(crate::query::QueryLengthIterator::new(iter))
     }
 
     #[napi]

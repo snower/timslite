@@ -4,203 +4,213 @@ use crate::bridge::{LengthEntry, Record};
 use crate::errors::TmslError;
 
 pub struct QueryIteratorBridge {
-    inner: Mutex<Vec<Record>>,
-    position: Mutex<usize>,
+    iter: Mutex<Option<timslite::QueryIterator>>,
 }
 
 impl QueryIteratorBridge {
-    pub fn new(records: Vec<Record>) -> Self {
+    pub fn new(iter: timslite::QueryIterator) -> Self {
         Self {
-            inner: Mutex::new(records),
-            position: Mutex::new(0),
+            iter: Mutex::new(Some(iter)),
         }
     }
 
     pub fn next(&self) -> Result<Option<Record>, TmslError> {
-        let guard = self
-            .inner
+        let mut guard = self
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        if *pos >= guard.len() {
+        let Some(iter) = guard.as_mut() else {
             return Ok(None);
+        };
+        match iter.next_entry() {
+            Ok(Some((ts, data))) => Ok(Some(Record {
+                timestamp: ts,
+                data,
+            })),
+            Ok(None) => {
+                *guard = None;
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
         }
-        let record = guard[*pos].clone();
-        *pos += 1;
-        Ok(Some(record))
     }
 
     pub fn reverse(&self) -> Result<(), TmslError> {
         let mut guard = self
-            .inner
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        guard.reverse();
-        *pos = 0;
+        let Some(iter) = guard.take() else {
+            return Ok(());
+        };
+        *guard = Some(iter.reverse());
         Ok(())
     }
 
     pub fn skip(&self, count: u32) -> Result<(), TmslError> {
-        let guard = self
-            .inner
+        let mut guard = self
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        *pos = (*pos + count as usize).min(guard.len());
+        let Some(iter) = guard.take() else {
+            return Ok(());
+        };
+        *guard = Some(iter.skip(count as usize));
         Ok(())
     }
 
     pub fn collect_all(&self) -> Result<Vec<Record>, TmslError> {
-        let guard = self
-            .inner
+        let mut guard = self
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let result = guard[*pos..].to_vec();
-        *pos = guard.len();
-        Ok(result)
+        let Some(iter) = guard.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_all() {
+            Ok(records) => Ok(records
+                .into_iter()
+                .map(|(ts, data)| Record {
+                    timestamp: ts,
+                    data,
+                })
+                .collect()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn collect_take(&self, count: u32) -> Result<Vec<Record>, TmslError> {
-        let guard = self
-            .inner
+        let mut guard = self
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let end = (*pos + count as usize).min(guard.len());
-        let result = guard[*pos..end].to_vec();
-        *pos = end;
-        Ok(result)
+        let Some(iter) = guard.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_take(count as usize) {
+            Ok(records) => Ok(records
+                .into_iter()
+                .map(|(ts, data)| Record {
+                    timestamp: ts,
+                    data,
+                })
+                .collect()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn release(&self) -> Result<(), TmslError> {
         let mut guard = self
-            .inner
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        guard.clear();
-        *pos = 0;
+        *guard = None;
         Ok(())
     }
 }
 
 pub struct QueryLengthIteratorBridge {
-    inner: Mutex<Vec<LengthEntry>>,
-    position: Mutex<usize>,
+    iter: Mutex<Option<timslite::QueryLengthIterator>>,
 }
 
 impl QueryLengthIteratorBridge {
-    pub fn new(entries: Vec<LengthEntry>) -> Self {
+    pub fn new(iter: timslite::QueryLengthIterator) -> Self {
         Self {
-            inner: Mutex::new(entries),
-            position: Mutex::new(0),
+            iter: Mutex::new(Some(iter)),
         }
     }
 
     pub fn next(&self) -> Result<Option<LengthEntry>, TmslError> {
-        let guard = self
-            .inner
+        let mut guard = self
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        if *pos >= guard.len() {
+        let Some(iter) = guard.as_mut() else {
             return Ok(None);
+        };
+        match iter.next_entry() {
+            Ok(Some((ts, len))) => Ok(Some(LengthEntry {
+                timestamp: ts,
+                length: len,
+            })),
+            Ok(None) => {
+                *guard = None;
+                Ok(None)
+            }
+            Err(e) => Err(e.into()),
         }
-        let entry = guard[*pos].clone();
-        *pos += 1;
-        Ok(Some(entry))
     }
 
     pub fn reverse(&self) -> Result<(), TmslError> {
         let mut guard = self
-            .inner
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        guard.reverse();
-        *pos = 0;
+        let Some(iter) = guard.take() else {
+            return Ok(());
+        };
+        *guard = Some(iter.reverse());
         Ok(())
     }
 
     pub fn skip(&self, count: u32) -> Result<(), TmslError> {
-        let guard = self
-            .inner
+        let mut guard = self
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        *pos = (*pos + count as usize).min(guard.len());
+        let Some(iter) = guard.take() else {
+            return Ok(());
+        };
+        *guard = Some(iter.skip(count as usize));
         Ok(())
     }
 
     pub fn collect_all(&self) -> Result<Vec<LengthEntry>, TmslError> {
-        let guard = self
-            .inner
+        let mut guard = self
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let result = guard[*pos..].to_vec();
-        *pos = guard.len();
-        Ok(result)
+        let Some(iter) = guard.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_all() {
+            Ok(entries) => Ok(entries
+                .into_iter()
+                .map(|(ts, len)| LengthEntry {
+                    timestamp: ts,
+                    length: len,
+                })
+                .collect()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn collect_take(&self, count: u32) -> Result<Vec<LengthEntry>, TmslError> {
-        let guard = self
-            .inner
+        let mut guard = self
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let end = (*pos + count as usize).min(guard.len());
-        let result = guard[*pos..end].to_vec();
-        *pos = end;
-        Ok(result)
+        let Some(iter) = guard.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_take(count as usize) {
+            Ok(entries) => Ok(entries
+                .into_iter()
+                .map(|(ts, len)| LengthEntry {
+                    timestamp: ts,
+                    length: len,
+                })
+                .collect()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub fn release(&self) -> Result<(), TmslError> {
         let mut guard = self
-            .inner
+            .iter
             .lock()
             .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        let mut pos = self
-            .position
-            .lock()
-            .map_err(|e| TmslError::Io { message: e.to_string() })?;
-        guard.clear();
-        *pos = 0;
+        *guard = None;
         Ok(())
     }
 }

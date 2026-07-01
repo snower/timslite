@@ -5,13 +5,12 @@ use crate::types;
 
 #[napi(iterator)]
 pub struct QueryIterator {
-    rows: Vec<(i64, Vec<u8>)>,
-    position: usize,
+    iter: Option<timslite::QueryIterator>,
 }
 
 impl QueryIterator {
-    pub fn new(rows: Vec<(i64, Vec<u8>)>) -> Self {
-        Self { rows, position: 0 }
+    pub fn new(iter: timslite::QueryIterator) -> Self {
+        Self { iter: Some(iter) }
     }
 }
 
@@ -21,59 +20,78 @@ impl Generator for QueryIterator {
     type Return = ();
 
     fn next(&mut self, _value: Option<Self::Next>) -> Option<Self::Yield> {
-        if self.position >= self.rows.len() {
-            return None;
+        let iter = self.iter.as_mut()?;
+        match iter.next_entry() {
+            Ok(Some((ts, data))) => Some((ts, types::vec_to_buffer(data))),
+            Ok(None) => {
+                self.iter = None;
+                None
+            }
+            Err(_) => {
+                self.iter = None;
+                None
+            }
         }
-        let (ts, data) = self.rows[self.position].clone();
-        self.position += 1;
-        Some((ts, types::vec_to_buffer(data)))
     }
 }
 
 #[napi]
 impl QueryIterator {
     #[napi]
-    pub fn reverse(&mut self) {
-        self.rows.reverse();
-        self.position = 0;
+    pub fn reverse(&mut self) -> Result<()> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(());
+        };
+        self.iter = Some(iter.reverse());
+        Ok(())
     }
 
     #[napi]
-    pub fn skip(&mut self, count: u32) {
-        self.position = (self.position + count as usize).min(self.rows.len());
+    pub fn skip(&mut self, count: u32) -> Result<()> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(());
+        };
+        self.iter = Some(iter.skip(count as usize));
+        Ok(())
     }
 
     #[napi]
-    pub fn collect_all(&mut self) -> Vec<(i64, Buffer)> {
-        let result: Vec<_> = self.rows[self.position..]
-            .iter()
-            .map(|(ts, data)| (*ts, types::vec_to_buffer(data.clone())))
-            .collect();
-        self.position = self.rows.len();
-        result
+    pub fn collect_all(&mut self) -> Result<Vec<(i64, Buffer)>> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_all() {
+            Ok(records) => Ok(records
+                .into_iter()
+                .map(|(ts, data)| (ts, types::vec_to_buffer(data)))
+                .collect()),
+            Err(e) => Err(Error::from_reason(e.to_string())),
+        }
     }
 
     #[napi]
-    pub fn collect_take(&mut self, count: u32) -> Vec<(i64, Buffer)> {
-        let end = (self.position + count as usize).min(self.rows.len());
-        let result: Vec<_> = self.rows[self.position..end]
-            .iter()
-            .map(|(ts, data)| (*ts, types::vec_to_buffer(data.clone())))
-            .collect();
-        self.position = end;
-        result
+    pub fn collect_take(&mut self, count: u32) -> Result<Vec<(i64, Buffer)>> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_take(count as usize) {
+            Ok(records) => Ok(records
+                .into_iter()
+                .map(|(ts, data)| (ts, types::vec_to_buffer(data)))
+                .collect()),
+            Err(e) => Err(Error::from_reason(e.to_string())),
+        }
     }
 }
 
 #[napi(iterator)]
 pub struct QueryLengthIterator {
-    rows: Vec<(i64, u32)>,
-    position: usize,
+    iter: Option<timslite::QueryLengthIterator>,
 }
 
 impl QueryLengthIterator {
-    pub fn new(rows: Vec<(i64, u32)>) -> Self {
-        Self { rows, position: 0 }
+    pub fn new(iter: timslite::QueryLengthIterator) -> Self {
+        Self { iter: Some(iter) }
     }
 }
 
@@ -83,40 +101,60 @@ impl Generator for QueryLengthIterator {
     type Return = ();
 
     fn next(&mut self, _value: Option<Self::Next>) -> Option<Self::Yield> {
-        if self.position >= self.rows.len() {
-            return None;
+        let iter = self.iter.as_mut()?;
+        match iter.next_entry() {
+            Ok(Some(entry)) => Some(entry),
+            Ok(None) => {
+                self.iter = None;
+                None
+            }
+            Err(_) => {
+                self.iter = None;
+                None
+            }
         }
-        let entry = self.rows[self.position];
-        self.position += 1;
-        Some(entry)
     }
 }
 
 #[napi]
 impl QueryLengthIterator {
     #[napi]
-    pub fn reverse(&mut self) {
-        self.rows.reverse();
-        self.position = 0;
+    pub fn reverse(&mut self) -> Result<()> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(());
+        };
+        self.iter = Some(iter.reverse());
+        Ok(())
     }
 
     #[napi]
-    pub fn skip(&mut self, count: u32) {
-        self.position = (self.position + count as usize).min(self.rows.len());
+    pub fn skip(&mut self, count: u32) -> Result<()> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(());
+        };
+        self.iter = Some(iter.skip(count as usize));
+        Ok(())
     }
 
     #[napi]
-    pub fn collect_all(&mut self) -> Vec<(i64, u32)> {
-        let result = self.rows[self.position..].to_vec();
-        self.position = self.rows.len();
-        result
+    pub fn collect_all(&mut self) -> Result<Vec<(i64, u32)>> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_all() {
+            Ok(records) => Ok(records),
+            Err(e) => Err(Error::from_reason(e.to_string())),
+        }
     }
 
     #[napi]
-    pub fn collect_take(&mut self, count: u32) -> Vec<(i64, u32)> {
-        let end = (self.position + count as usize).min(self.rows.len());
-        let result = self.rows[self.position..end].to_vec();
-        self.position = end;
-        result
+    pub fn collect_take(&mut self, count: u32) -> Result<Vec<(i64, u32)>> {
+        let Some(iter) = self.iter.take() else {
+            return Ok(Vec::new());
+        };
+        match iter.collect_take(count as usize) {
+            Ok(records) => Ok(records),
+            Err(e) => Err(Error::from_reason(e.to_string())),
+        }
     }
 }

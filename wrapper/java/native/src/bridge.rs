@@ -543,16 +543,8 @@ impl DatasetBridge {
         start_ts: i64,
         end_ts: i64,
     ) -> Result<Arc<QueryIteratorBridge>, TmslError> {
-        let records = self.inner.query(start_ts, end_ts)?;
-        Ok(Arc::new(QueryIteratorBridge::new(
-            records
-                .into_iter()
-                .map(|(ts, data)| Record {
-                    timestamp: ts,
-                    data,
-                })
-                .collect(),
-        )))
+        let iter = self.inner.query_iter(start_ts, end_ts)?;
+        Ok(Arc::new(QueryIteratorBridge::new(iter)))
     }
 
     pub fn query_length_iter(
@@ -560,16 +552,8 @@ impl DatasetBridge {
         start_ts: i64,
         end_ts: i64,
     ) -> Result<Arc<QueryLengthIteratorBridge>, TmslError> {
-        let entries = self.inner.query_length(start_ts, end_ts)?;
-        Ok(Arc::new(QueryLengthIteratorBridge::new(
-            entries
-                .into_iter()
-                .map(|(ts, len)| LengthEntry {
-                    timestamp: ts,
-                    length: len,
-                })
-                .collect(),
-        )))
+        let iter = self.inner.query_length_iter(start_ts, end_ts)?;
+        Ok(Arc::new(QueryLengthIteratorBridge::new(iter)))
     }
 
     pub fn flush(&self) -> Result<(), TmslError> {

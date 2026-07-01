@@ -158,8 +158,8 @@ impl PyDataset {
     /// Yields (timestamp: int, data: bytes) tuples.
     /// Implements Python iterator protocol (__iter__ / __next__).
     fn query(&mut self, start_ts: i64, end_ts: i64) -> PyResult<PyQueryIterator> {
-        let rows = wrap(self.inner.query(start_ts, end_ts))?;
-        Ok(PyQueryIterator::new(rows))
+        let iter = wrap(self.inner.query_iter(start_ts, end_ts))?;
+        Ok(PyQueryIterator::new(iter))
     }
 
     /// Query and collect all results into a list.
@@ -236,8 +236,8 @@ impl PyDataset {
     /// Yields (timestamp: int, data_len: int) tuples.
     /// Implements Python iterator protocol (__iter__ / __next__).
     fn query_length(&mut self, start_ts: i64, end_ts: i64) -> PyResult<PyQueryLengthIterator> {
-        let rows = wrap(self.inner.query_length(start_ts, end_ts))?;
-        Ok(PyQueryLengthIterator::new(rows))
+        let iter = wrap(self.inner.query_length_iter(start_ts, end_ts))?;
+        Ok(PyQueryLengthIterator::new(iter))
     }
 
     /// Query data lengths and collect all results into a list.
