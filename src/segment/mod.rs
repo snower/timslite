@@ -6,6 +6,8 @@ pub mod data;
 
 use std::collections::BTreeMap;
 use std::path::Path;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::error::Result;
@@ -16,6 +18,25 @@ pub use self::data::{DataSegment, ReadIndexEntry};
 use self::data::{DataSegment as DS, SegmentLifecycle as SL};
 
 use crate::cache::{BlockCache, CacheKey, HotBlockCache};
+
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use super::{AtomicUsize, Ordering};
+
+    static FIND_OR_OPEN_SEGMENT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn reset_find_or_open_segment_calls() {
+        FIND_OR_OPEN_SEGMENT_CALLS.store(0, Ordering::SeqCst);
+    }
+
+    pub(crate) fn find_or_open_segment_calls() -> usize {
+        FIND_OR_OPEN_SEGMENT_CALLS.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn record_find_or_open_segment() {
+        FIND_OR_OPEN_SEGMENT_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 /// Metadata for a closed data segment.
 pub(crate) struct DataSegmentMeta {
@@ -699,6 +720,9 @@ impl DataSegmentSet {
     }
 
     fn find_or_open_segment(&mut self, absolute_offset: u64) -> Result<&mut DS> {
+        #[cfg(test)]
+        test_hooks::record_find_or_open_segment();
+
         let seg_start = self.segment_offset_for(absolute_offset);
         if matches!(
             self.segments.get(&seg_start),
