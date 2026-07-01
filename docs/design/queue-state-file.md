@@ -200,7 +200,6 @@ fn flush_target(dataset: &mut DataSet, target: SegmentFlushTarget) {
         SegmentFlushTarget::QueueState { group_name } => {
             dataset.sync_queue_state_file(&group_name)
         }
-        SegmentFlushTarget::DatasetState => dataset.sync_dataset_state_file(),
     }
 }
 ```

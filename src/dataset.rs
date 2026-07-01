@@ -50,7 +50,6 @@ pub(crate) enum SegmentFlushTarget {
     Data { file_offset: u64 },
     Index { start_timestamp: i64 },
     QueueState { group_name: String },
-    DatasetState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -871,12 +870,6 @@ impl DataSetInner {
                 });
             }
         }
-        if self.dataset_state.take_flush_enqueue_marker() {
-            queue.push_back(DataSetFlushTarget {
-                dataset: self.id.clone(),
-                segment: SegmentFlushTarget::DatasetState,
-            });
-        }
     }
 
     fn enqueue_dirty_target(&mut self, segment: SegmentFlushTarget) {
@@ -890,7 +883,6 @@ impl DataSetInner {
             SegmentFlushTarget::Index { start_timestamp } => {
                 self.time_index.take_flush_enqueue_marker(*start_timestamp)
             }
-            SegmentFlushTarget::DatasetState => self.dataset_state.take_flush_enqueue_marker(),
             SegmentFlushTarget::QueueState { .. } => false,
         };
         if !should_queue {
@@ -920,8 +912,11 @@ impl DataSetInner {
         Ok(())
     }
 
-    fn enqueue_dirty_dataset_state(&mut self) {
-        self.enqueue_dirty_target(SegmentFlushTarget::DatasetState);
+    fn sync_dataset_state_if_dirty(&mut self) -> Result<()> {
+        if self.dataset_state.is_dirty() {
+            self.dataset_state.sync()?;
+        }
+        Ok(())
     }
 
     pub(crate) fn enqueue_queue_state_flush(&self, group_name: &str) {
@@ -959,7 +954,6 @@ impl DataSetInner {
                 }
                 Ok(())
             }
-            SegmentFlushTarget::DatasetState => self.dataset_state.sync(),
         }
     }
 
@@ -979,14 +973,12 @@ impl DataSetInner {
                 });
             }
         }
-        if self.dataset_state.is_dirty() {
-            targets.push(SegmentFlushTarget::DatasetState);
-        }
         targets
     }
 
     pub(crate) fn flush_dirty_segments(&mut self) -> Result<()> {
         self.flush_time_index_to_disk()?;
+        self.sync_dataset_state_if_dirty()?;
         self.enqueue_dirty_segments();
         let targets = self.dirty_flush_targets();
         for target in targets {
@@ -1006,6 +998,7 @@ impl DataSetInner {
             )
         }) {
             self.flush_time_index_to_disk()?;
+            self.sync_dataset_state_if_dirty()?;
         }
         for target in targets {
             self.sync_flush_target(target)?;
@@ -1130,7 +1123,7 @@ impl DataSetInner {
             self.last_used_at = Instant::now();
             self.enqueue_dirty_data_segment(seg_offset);
             self.enqueue_dirty_index_timestamp(timestamp)?;
-            self.enqueue_dirty_dataset_state();
+            self.sync_dataset_state_if_dirty()?;
             self.notify_queue();
             Ok(WriteOutcome {
                 index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
@@ -1155,7 +1148,7 @@ impl DataSetInner {
             self.last_used_at = Instant::now();
             self.enqueue_dirty_data_segment(seg_offset);
             self.enqueue_dirty_index_timestamp(timestamp)?;
-            self.enqueue_dirty_dataset_state();
+            self.sync_dataset_state_if_dirty()?;
             self.notify_queue();
             Ok(WriteOutcome {
                 index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
@@ -1299,7 +1292,7 @@ impl DataSetInner {
             self.enqueue_dirty_data_entry(old_entry.block_offset);
         }
         self.enqueue_dirty_index_timestamp(timestamp)?;
-        self.enqueue_dirty_dataset_state();
+        self.sync_dataset_state_if_dirty()?;
         Ok(WriteOutcome {
             index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
             branch: WriteBranch::OutOfOrder,
@@ -1412,6 +1405,7 @@ impl DataSetInner {
 
         self.last_used_at = Instant::now();
         self.enqueue_dirty_segments();
+        self.sync_dataset_state_if_dirty()?;
         Ok(DeleteOutcome {
             old_index_entry: old_entry,
         })
@@ -2056,6 +2050,7 @@ impl DataSetInner {
         }
 
         self.refresh_archived_index_timestamp_range();
+        self.sync_dataset_state_if_dirty()?;
 
         self.last_used_at = last_used_at;
         self.enqueue_dirty_segments();
@@ -2460,9 +2455,14 @@ mod tests {
 
         ds.write(200, &[0xBB; 32]).unwrap();
         let targets = ds.flush_queue_segments();
-        assert!(targets
-            .iter()
-            .any(|target| matches!(target, SegmentFlushTarget::DatasetState)));
+        assert!(targets.iter().all(|target| matches!(
+            target,
+            SegmentFlushTarget::Data { .. } | SegmentFlushTarget::Index { .. }
+        )));
+        assert!(
+            !ds.dataset_state.is_dirty(),
+            "dataset state should be synced immediately when it changes"
+        );
 
         let first = ds
             .segments

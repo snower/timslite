@@ -52,7 +52,6 @@ pub(crate) struct DatasetStateFile {
     mmap: Option<MmapMut>,
     snapshot: DatasetStateSnapshot,
     is_flushed: bool,
-    queued_for_flush: bool,
     read_only: bool,
 }
 
@@ -95,7 +94,6 @@ impl DatasetStateFile {
             mmap: Some(mmap),
             snapshot,
             is_flushed: true,
-            queued_for_flush: false,
             read_only: false,
         })
     }
@@ -132,7 +130,6 @@ impl DatasetStateFile {
             mmap: Some(mmap),
             snapshot,
             is_flushed: true,
-            queued_for_flush: false,
             read_only: false,
         })
     }
@@ -145,7 +142,6 @@ impl DatasetStateFile {
                 mmap: None,
                 snapshot: DatasetStateSnapshot::default(),
                 is_flushed: true,
-                queued_for_flush: false,
                 read_only: true,
             });
         }
@@ -164,14 +160,6 @@ impl DatasetStateFile {
 
     pub(crate) fn is_dirty(&self) -> bool {
         !self.is_flushed
-    }
-
-    pub(crate) fn take_flush_enqueue_marker(&mut self) -> bool {
-        if self.is_flushed || self.queued_for_flush {
-            return false;
-        }
-        self.queued_for_flush = true;
-        true
     }
 
     pub(crate) fn archive_data_segments(
@@ -244,7 +232,6 @@ impl DatasetStateFile {
     pub(crate) fn sync(&mut self) -> Result<()> {
         if self.read_only {
             self.is_flushed = true;
-            self.queued_for_flush = false;
             return Ok(());
         }
         if !self.is_flushed {
@@ -256,7 +243,6 @@ impl DatasetStateFile {
             mmap.flush()?;
             self.is_flushed = true;
         }
-        self.queued_for_flush = false;
         Ok(())
     }
 

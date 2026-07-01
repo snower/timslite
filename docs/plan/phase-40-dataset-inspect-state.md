@@ -20,7 +20,7 @@
 - `state` 文件保存归档 data segment 的 `total_record_count`、`total_data_size`、`total_uncompressed_size`、`total_invalid_record_count`。
 - `min_timestamp` / `max_timestamp` 不从 data segment 统计做加减推导，只在 index segment 新增/删除时维护，inspect 时叠加 active index segment 范围。
 - `state` 文件是可重建的持久化缓存，不是数据正确性的唯一真源；普通读写流程不依赖它。
-- `SegmentFlushTarget` 新增 `DatasetState`，dataset state 文件与 data/index segment、queue state file 共用 dirty flush queue。
+- dataset state 文件为低频 inspect 缓存，变更后由写入、删除或 retention reclaim 路径立即同步，不进入 dirty flush queue。
 - 不新增普通 inspect 所需的“读取全部 data segment header stats” helper；后续若需要重建 state 文件，走单独维护流程。
 - `DataSetState` 分段字段改为总数 + 打开数: `data_segments`、`open_data_segments`、`index_segments`、`open_index_segments`，不再返回关闭数。
 
@@ -58,7 +58,7 @@
   - [x] index segment rollover 时归档旧 active index timestamp 范围
   - [x] retention 删除 data/index segment 时扣减或更新 state
   - [x] delete 命中已归档 data segment 时更新 `total_invalid_record_count`
-  - [x] `SegmentFlushTarget::DatasetState` 接入 dirty flush queue
+  - [x] dataset state 文件变更后立即同步
   - [x] `DataSetState` 字段重命名为 `data_segments` / `index_segments`
 - [x] FFI / C header 更新
   - [x] `TmslDataSetState` 字段改为 `data_segments` / `index_segments`
@@ -72,7 +72,7 @@
   - [x] inspect 不打开所有历史分段
   - [x] retention 删除归档 data/index segment 后 state 更新
   - [x] delete 命中归档 data segment 后 invalid count 更新
-  - [x] dirty flush queue 同步 `DatasetState`
+  - [x] dataset state 写入路径即时同步
 - [x] 验证
   - [x] `cargo fmt -- --check`
   - [x] `cargo test -- --test-threads=1`
@@ -88,7 +88,7 @@
 - inspect 返回的 `total_*` 覆盖整个 dataset，而不是仅覆盖打开分段。
 - inspect 返回 data/index 分段总数和打开数，不再返回关闭数。
 - 普通 inspect 不打开全部历史 data/index segment。
-- dataset state file 变更通过 `SegmentFlushTarget::DatasetState` 进入统一 flush 机制。
+- dataset state file 变更由当前写入、删除或 retention reclaim 路径立即同步。
 - state file 异常不改变普通数据文件读写的正确性边界。
 
 ---
@@ -97,9 +97,9 @@
 
 > 以下为 `plan.md` 中 Phase 40 的完成任务详情, 已合并到此文档。
 
-- [x] 设计文档 — dataset state 文件、active tail 统计、`SegmentFlushTarget::DatasetState`、`DataSetState` 字段语义
+- [x] 设计文档 — dataset state 文件、active tail 统计、即时同步语义、`DataSetState` 字段语义
 - [x] 计划文档 — `docs/plan/phase-40-dataset-inspect-state.md`, `docs/plan/overview.md`, `plan.md`
-- [x] 实现 — dataset state file、rollover/retention/delete 更新、flush target 接入
+- [x] 实现 — dataset state file、rollover/retention/delete 更新、即时同步
 - [x] API 同步 — Rust/FFI/C header/Python 字段改为 `data_segments` / `index_segments`
 - [x] 测试 — state file 初始化、归档统计、retention/delete 更新、flush queue、inspect 不全量打开分段
 - [x] 验证 — fmt, cargo test, cargo check, clippy, wrapper pytest, diff hygiene
