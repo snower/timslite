@@ -5,3 +5,5 @@
 *.pyc
 *.pyd
 *.pdb
+*.dll
+*.so
