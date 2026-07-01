@@ -1,5 +1,8 @@
 package io.github.snower.timslite;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Iterator over query results. Implements AutoCloseable to release native resources.
  *
@@ -65,6 +68,100 @@ public final class QueryIterator implements AutoCloseable {
         Record current = nextRecord;
         nextRecord = advance();
         return current;
+    }
+
+    /**
+     * Reverses the iteration direction.
+     *
+     * @throws IllegalStateException if the iterator is closed
+     */
+    public void reverse() {
+        if (closed) {
+            throw new IllegalStateException("QueryIterator is closed");
+        }
+        try {
+            bridge.reverse();
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+        }
+        exhausted = false;
+        nextRecord = advance();
+    }
+
+    /**
+     * Skips the next count entries.
+     *
+     * @param count number of entries to skip
+     * @throws IllegalStateException if the iterator is closed
+     */
+    public void skip(int count) {
+        if (closed) {
+            throw new IllegalStateException("QueryIterator is closed");
+        }
+        try {
+            bridge.skip(count);
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+        }
+        nextRecord = advance();
+    }
+
+    /**
+     * Collects all remaining records into a list.
+     * The iterator is consumed and closed after this call.
+     *
+     * @return list of all remaining records
+     */
+    public List<Record> collectAll() {
+        if (closed) {
+            throw new IllegalStateException("QueryIterator is closed");
+        }
+        List<Record> result = new ArrayList<>();
+        if (nextRecord != null) {
+            result.add(nextRecord);
+            nextRecord = null;
+        }
+        try {
+            List<io.github.snower.timslite.uniffi.Record> kotlinRecords = bridge.collectAll();
+            for (io.github.snower.timslite.uniffi.Record kr : kotlinRecords) {
+                result.add(new Record(kr));
+            }
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+        }
+        exhausted = true;
+        return result;
+    }
+
+    /**
+     * Collects up to count records into a list.
+     * The iterator is consumed and closed after this call.
+     *
+     * @param count maximum number of records to collect
+     * @return list of collected records
+     */
+    public List<Record> collectTake(int count) {
+        if (closed) {
+            throw new IllegalStateException("QueryIterator is closed");
+        }
+        List<Record> result = new ArrayList<>();
+        if (nextRecord != null && count > 0) {
+            result.add(nextRecord);
+            nextRecord = null;
+            count--;
+        }
+        if (count > 0) {
+            try {
+                List<io.github.snower.timslite.uniffi.Record> kotlinRecords = bridge.collectTake(count);
+                for (io.github.snower.timslite.uniffi.Record kr : kotlinRecords) {
+                    result.add(new Record(kr));
+                }
+            } catch (io.github.snower.timslite.uniffi.TmslException e) {
+                throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+            }
+        }
+        exhausted = true;
+        return result;
     }
 
     /** Closes this iterator and releases native resources. */

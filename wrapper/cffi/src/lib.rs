@@ -109,6 +109,14 @@ pub struct TmslLengthEntry {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TmslDataEntry {
+    pub timestamp: i64,
+    pub data: *mut c_uchar,
+    pub data_len: usize,
+}
+
+#[repr(C)]
 pub struct TmslDataSetInfo {
     pub name: *mut c_char,
     pub dataset_type: *mut c_char,
@@ -167,12 +175,16 @@ struct FfiDataset {
 }
 
 struct FfiDataIter {
+    iter: Option<timslite::QueryIterator>,
+}
+
+struct FfiJournalIter {
     rows: Vec<(i64, Vec<u8>)>,
     position: usize,
 }
 
 struct FfiLengthIter {
-    iter: timslite::QueryLengthIterator,
+    iter: Option<timslite::QueryLengthIterator>,
 }
 
 struct FfiQueue {
@@ -1170,8 +1182,8 @@ pub extern "C" fn tmsl_dataset_query(
 ) -> *mut c_void {
     run_ptr(err_buf, err_buf_len, || {
         with_dataset(dataset, |dataset| {
-            let rows = dataset.query(start_ts, end_ts)?;
-            Ok(Box::into_raw(Box::new(FfiDataIter { rows, position: 0 })) as *mut c_void)
+            let iter = dataset.query_iter(start_ts, end_ts)?;
+            Ok(Box::into_raw(Box::new(FfiDataIter { iter: Some(iter) })) as *mut c_void)
         })
     })
 }
@@ -1189,17 +1201,18 @@ pub extern "C" fn tmsl_iter_next(
         if iter.is_null() || out_ts.is_null() {
             return Err(invalid_data("null pointer"));
         }
-        let iter = unsafe { &mut *(iter as *mut FfiDataIter) };
-        if iter.position >= iter.rows.len() {
-            return Ok(1);
+        let ffi_iter = unsafe { &mut *(iter as *mut FfiDataIter) };
+        match ffi_iter.iter.as_mut().and_then(|iter| iter.next_entry().transpose()) {
+            Some(Ok((ts, data))) => {
+                unsafe {
+                    *out_ts = ts;
+                }
+                write_alloc_bytes(&data, out_data, out_data_len)?;
+                Ok(0)
+            }
+            Some(Err(e)) => Err(e),
+            None => Ok(1),
         }
-        let (ts, data) = &iter.rows[iter.position];
-        iter.position += 1;
-        unsafe {
-            *out_ts = *ts;
-        }
-        write_alloc_bytes(data, out_data, out_data_len)?;
-        Ok(0)
     })
 }
 
@@ -1337,7 +1350,7 @@ pub extern "C" fn tmsl_dataset_query_length_iter(
     run_ptr(err_buf, err_buf_len, || {
         with_dataset(dataset, |dataset| {
             let iter = dataset.query_length_iter(start_ts, end_ts)?;
-            Ok(Box::into_raw(Box::new(FfiLengthIter { iter })) as *mut c_void)
+            Ok(Box::into_raw(Box::new(FfiLengthIter { iter: Some(iter) })) as *mut c_void)
         })
     })
 }
@@ -1354,15 +1367,16 @@ pub extern "C" fn tmsl_length_iter_next(
         if iter.is_null() || out_ts.is_null() || out_len.is_null() {
             return Err(invalid_data("null pointer"));
         }
-        let iter = unsafe { &mut *(iter as *mut FfiLengthIter) };
-        match iter.iter.next_entry()? {
-            Some((ts, len)) => {
+        let ffi_iter = unsafe { &mut *(iter as *mut FfiLengthIter) };
+        match ffi_iter.iter.as_mut().and_then(|iter| iter.next_entry().transpose()) {
+            Some(Ok((ts, len))) => {
                 unsafe {
                     *out_ts = ts;
                     *out_len = len;
                 }
                 Ok(0)
             }
+            Some(Err(e)) => Err(e),
             None => Ok(1),
         }
     })
@@ -1375,6 +1389,287 @@ pub extern "C" fn tmsl_length_iter_close(iter: *mut c_void) {
             drop(Box::from_raw(iter as *mut FfiLengthIter));
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_iter_reverse(iter: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let ffi_iter = unsafe { &mut *(iter as *mut FfiDataIter) };
+        if let Some(iter) = ffi_iter.iter.take() {
+            ffi_iter.iter = Some(iter.reverse());
+        }
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_iter_skip(iter: *mut c_void, count: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let ffi_iter = unsafe { &mut *(iter as *mut FfiDataIter) };
+        if let Some(iter) = ffi_iter.iter.take() {
+            ffi_iter.iter = Some(iter.skip(count));
+        }
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_iter_collect_all(
+    iter: *mut c_void,
+    out_array: *mut *mut TmslDataEntry,
+    out_array_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() || out_array.is_null() || out_array_len.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let ffi_iter = unsafe { Box::from_raw(iter as *mut FfiDataIter) };
+        let Some(iter) = ffi_iter.iter else {
+            unsafe {
+                *out_array = ptr::null_mut();
+                *out_array_len = 0;
+            }
+            return Ok(0);
+        };
+        let rows = iter.collect_all()?;
+        if rows.is_empty() {
+            unsafe {
+                *out_array = ptr::null_mut();
+                *out_array_len = 0;
+            }
+            return Ok(0);
+        }
+        let count = rows.len();
+        let bytes = count * std::mem::size_of::<TmslDataEntry>();
+        let array = unsafe { malloc(bytes) }.cast::<TmslDataEntry>();
+        if array.is_null() {
+            return Err(invalid_data("malloc failed"));
+        }
+        for (idx, (timestamp, data)) in rows.into_iter().enumerate() {
+            let mut data_ptr: *mut c_uchar = ptr::null_mut();
+            let mut data_len: usize = 0;
+            write_alloc_bytes(&data, &mut data_ptr, &mut data_len)?;
+            unsafe {
+                *array.add(idx) = TmslDataEntry {
+                    timestamp,
+                    data: data_ptr,
+                    data_len,
+                };
+            }
+        }
+        unsafe {
+            *out_array = array;
+            *out_array_len = count;
+        }
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_iter_collect_take(
+    iter: *mut c_void,
+    count: usize,
+    out_array: *mut *mut TmslDataEntry,
+    out_array_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() || out_array.is_null() || out_array_len.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let ffi_iter = unsafe { Box::from_raw(iter as *mut FfiDataIter) };
+        let Some(iter) = ffi_iter.iter else {
+            unsafe {
+                *out_array = ptr::null_mut();
+                *out_array_len = 0;
+            }
+            return Ok(0);
+        };
+        let rows = iter.collect_take(count)?;
+        if rows.is_empty() {
+            unsafe {
+                *out_array = ptr::null_mut();
+                *out_array_len = 0;
+            }
+            return Ok(0);
+        }
+        let count = rows.len();
+        let bytes = count * std::mem::size_of::<TmslDataEntry>();
+        let array = unsafe { malloc(bytes) }.cast::<TmslDataEntry>();
+        if array.is_null() {
+            return Err(invalid_data("malloc failed"));
+        }
+        for (idx, (timestamp, data)) in rows.into_iter().enumerate() {
+            let mut data_ptr: *mut c_uchar = ptr::null_mut();
+            let mut data_len: usize = 0;
+            write_alloc_bytes(&data, &mut data_ptr, &mut data_len)?;
+            unsafe {
+                *array.add(idx) = TmslDataEntry {
+                    timestamp,
+                    data: data_ptr,
+                    data_len,
+                };
+            }
+        }
+        unsafe {
+            *out_array = array;
+            *out_array_len = count;
+        }
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_data_entry_array_free(array: *mut TmslDataEntry, len: usize) {
+    if !array.is_null() {
+        unsafe {
+            for i in 0..len {
+                let entry = &*array.add(i);
+                if !entry.data.is_null() {
+                    free(entry.data as *mut c_void);
+                }
+            }
+            free(array as *mut c_void);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_length_iter_reverse(iter: *mut c_void, err_buf: *mut c_char, err_buf_len: usize) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let ffi_iter = unsafe { &mut *(iter as *mut FfiLengthIter) };
+        if let Some(iter) = ffi_iter.iter.take() {
+            ffi_iter.iter = Some(iter.reverse());
+        }
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_length_iter_skip(iter: *mut c_void, count: usize, err_buf: *mut c_char, err_buf_len: usize) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let ffi_iter = unsafe { &mut *(iter as *mut FfiLengthIter) };
+        if let Some(iter) = ffi_iter.iter.take() {
+            ffi_iter.iter = Some(iter.skip(count));
+        }
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_length_iter_collect_all(
+    iter: *mut c_void,
+    out_array: *mut *mut TmslLengthEntry,
+    out_array_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() || out_array.is_null() || out_array_len.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let ffi_iter = unsafe { Box::from_raw(iter as *mut FfiLengthIter) };
+        let Some(iter) = ffi_iter.iter else {
+            unsafe {
+                *out_array = ptr::null_mut();
+                *out_array_len = 0;
+            }
+            return Ok(0);
+        };
+        let rows = iter.collect_all()?;
+        if rows.is_empty() {
+            unsafe {
+                *out_array = ptr::null_mut();
+                *out_array_len = 0;
+            }
+            return Ok(0);
+        }
+        let count = rows.len();
+        let bytes = count * std::mem::size_of::<TmslLengthEntry>();
+        let array = unsafe { malloc(bytes) }.cast::<TmslLengthEntry>();
+        if array.is_null() {
+            return Err(invalid_data("malloc failed"));
+        }
+        for (idx, (timestamp, data_len)) in rows.into_iter().enumerate() {
+            unsafe {
+                *array.add(idx) = TmslLengthEntry {
+                    timestamp,
+                    data_len,
+                };
+            }
+        }
+        unsafe {
+            *out_array = array;
+            *out_array_len = count;
+        }
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn tmsl_length_iter_collect_take(
+    iter: *mut c_void,
+    count: usize,
+    out_array: *mut *mut TmslLengthEntry,
+    out_array_len: *mut usize,
+    err_buf: *mut c_char,
+    err_buf_len: usize,
+) -> c_int {
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() || out_array.is_null() || out_array_len.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let ffi_iter = unsafe { Box::from_raw(iter as *mut FfiLengthIter) };
+        let Some(iter) = ffi_iter.iter else {
+            unsafe {
+                *out_array = ptr::null_mut();
+                *out_array_len = 0;
+            }
+            return Ok(0);
+        };
+        let rows = iter.collect_take(count)?;
+        if rows.is_empty() {
+            unsafe {
+                *out_array = ptr::null_mut();
+                *out_array_len = 0;
+            }
+            return Ok(0);
+        }
+        let count = rows.len();
+        let bytes = count * std::mem::size_of::<TmslLengthEntry>();
+        let array = unsafe { malloc(bytes) }.cast::<TmslLengthEntry>();
+        if array.is_null() {
+            return Err(invalid_data("malloc failed"));
+        }
+        for (idx, (timestamp, data_len)) in rows.into_iter().enumerate() {
+            unsafe {
+                *array.add(idx) = TmslLengthEntry {
+                    timestamp,
+                    data_len,
+                };
+            }
+        }
+        unsafe {
+            *out_array = array;
+            *out_array_len = count;
+        }
+        Ok(0)
+    })
 }
 
 #[no_mangle]
@@ -1706,7 +2001,7 @@ pub extern "C" fn tmsl_journal_query(
     run_ptr(err_buf, err_buf_len, || {
         with_store_mut(store, |store| {
             let rows = store.journal_query(start_sequence, end_sequence)?;
-            Ok(Box::into_raw(Box::new(FfiDataIter { rows, position: 0 })) as *mut c_void)
+            Ok(Box::into_raw(Box::new(FfiJournalIter { rows, position: 0 })) as *mut c_void)
         })
     })
 }
@@ -1720,19 +2015,31 @@ pub extern "C" fn tmsl_journal_iter_next(
     err_buf: *mut c_char,
     err_buf_len: usize,
 ) -> c_int {
-    tmsl_iter_next(
-        iter,
-        out_sequence,
-        out_data,
-        out_data_len,
-        err_buf,
-        err_buf_len,
-    )
+    run_int(err_buf, err_buf_len, || {
+        if iter.is_null() || out_sequence.is_null() {
+            return Err(invalid_data("null pointer"));
+        }
+        let iter = unsafe { &mut *(iter as *mut FfiJournalIter) };
+        if iter.position >= iter.rows.len() {
+            return Ok(1);
+        }
+        let (ts, data) = &iter.rows[iter.position];
+        iter.position += 1;
+        unsafe {
+            *out_sequence = *ts;
+        }
+        write_alloc_bytes(data, out_data, out_data_len)?;
+        Ok(0)
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn tmsl_journal_iter_close(iter: *mut c_void) {
-    tmsl_iter_close(iter);
+    if !iter.is_null() {
+        unsafe {
+            drop(Box::from_raw(iter as *mut FfiJournalIter));
+        }
+    }
 }
 
 #[no_mangle]

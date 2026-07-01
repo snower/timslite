@@ -1,5 +1,8 @@
 package io.github.snower.timslite;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Iterator over query-length results. Implements AutoCloseable to release native resources.
  *
@@ -65,6 +68,100 @@ public final class QueryLengthIterator implements AutoCloseable {
         LengthEntry current = nextEntry;
         nextEntry = advance();
         return current;
+    }
+
+    /**
+     * Reverses the iteration direction.
+     *
+     * @throws IllegalStateException if the iterator is closed
+     */
+    public void reverse() {
+        if (closed) {
+            throw new IllegalStateException("QueryLengthIterator is closed");
+        }
+        try {
+            bridge.reverse();
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+        }
+        exhausted = false;
+        nextEntry = advance();
+    }
+
+    /**
+     * Skips the next count entries.
+     *
+     * @param count number of entries to skip
+     * @throws IllegalStateException if the iterator is closed
+     */
+    public void skip(int count) {
+        if (closed) {
+            throw new IllegalStateException("QueryLengthIterator is closed");
+        }
+        try {
+            bridge.skip(count);
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+        }
+        nextEntry = advance();
+    }
+
+    /**
+     * Collects all remaining length entries into a list.
+     * The iterator is consumed and closed after this call.
+     *
+     * @return list of all remaining entries
+     */
+    public List<LengthEntry> collectAll() {
+        if (closed) {
+            throw new IllegalStateException("QueryLengthIterator is closed");
+        }
+        List<LengthEntry> result = new ArrayList<>();
+        if (nextEntry != null) {
+            result.add(nextEntry);
+            nextEntry = null;
+        }
+        try {
+            List<io.github.snower.timslite.uniffi.LengthEntry> kotlinEntries = bridge.collectAll();
+            for (io.github.snower.timslite.uniffi.LengthEntry ke : kotlinEntries) {
+                result.add(new LengthEntry(ke));
+            }
+        } catch (io.github.snower.timslite.uniffi.TmslException e) {
+            throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+        }
+        exhausted = true;
+        return result;
+    }
+
+    /**
+     * Collects up to count length entries into a list.
+     * The iterator is consumed and closed after this call.
+     *
+     * @param count maximum number of entries to collect
+     * @return list of collected entries
+     */
+    public List<LengthEntry> collectTake(int count) {
+        if (closed) {
+            throw new IllegalStateException("QueryLengthIterator is closed");
+        }
+        List<LengthEntry> result = new ArrayList<>();
+        if (nextEntry != null && count > 0) {
+            result.add(nextEntry);
+            nextEntry = null;
+            count--;
+        }
+        if (count > 0) {
+            try {
+                List<io.github.snower.timslite.uniffi.LengthEntry> kotlinEntries = bridge.collectTake(count);
+                for (io.github.snower.timslite.uniffi.LengthEntry ke : kotlinEntries) {
+                    result.add(new LengthEntry(ke));
+                }
+            } catch (io.github.snower.timslite.uniffi.TmslException e) {
+                throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+            }
+        }
+        exhausted = true;
+        return result;
     }
 
     /** Closes this iterator and releases native resources. */

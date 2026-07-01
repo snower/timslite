@@ -94,6 +94,12 @@ typedef struct TmslLengthEntry {
     uint32_t data_len;
 } TmslLengthEntry;
 
+typedef struct TmslDataEntry {
+    int64_t timestamp;
+    unsigned char* data;
+    size_t data_len;
+} TmslDataEntry;
+
 /**
  * Fill a store config struct with default values.
  * @param out_config   Output config pointer.
@@ -509,6 +515,59 @@ void tmsl_iter_free_data(unsigned char* data);
  */
 void tmsl_iter_close(void* iter);
 
+/**
+ * Reverse the iteration direction of a query iterator.
+ * @param iter         Opaque iterator pointer.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_iter_reverse(void* iter, char* err_buf, size_t err_buf_len);
+
+/**
+ * Skip the next count entries in the iteration.
+ * @param iter         Opaque iterator pointer.
+ * @param count        Number of entries to skip.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_iter_skip(void* iter, size_t count, char* err_buf, size_t err_buf_len);
+
+/**
+ * Collect all remaining entries from the iterator into an array.
+ * The iterator is consumed and must not be used after this call.
+ * @param iter         Opaque iterator pointer.
+ * @param out_array    Output: pointer to malloc'd array of TmslDataEntry.
+ * @param out_array_len Output: number of entries in the array.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error. Caller must free with tmsl_data_entry_array_free.
+ */
+int tmsl_iter_collect_all(void* iter, TmslDataEntry** out_array, size_t* out_array_len,
+                          char* err_buf, size_t err_buf_len);
+
+/**
+ * Collect up to count entries from the iterator into an array.
+ * The iterator is consumed and must not be used after this call.
+ * @param iter         Opaque iterator pointer.
+ * @param count        Maximum number of entries to collect.
+ * @param out_array    Output: pointer to malloc'd array of TmslDataEntry.
+ * @param out_array_len Output: number of entries in the array.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error. Caller must free with tmsl_data_entry_array_free.
+ */
+int tmsl_iter_collect_take(void* iter, size_t count, TmslDataEntry** out_array, size_t* out_array_len,
+                           char* err_buf, size_t err_buf_len);
+
+/**
+ * Free an array of TmslDataEntry returned by tmsl_iter_collect_all or tmsl_iter_collect_take.
+ * @param array        Pointer to the array.
+ * @param len          Number of entries in the array.
+ */
+void tmsl_data_entry_array_free(TmslDataEntry* array, size_t len);
+
 /* Lightweight Read Operations */
 
 /**
@@ -606,6 +665,52 @@ int tmsl_length_iter_next(void* iter, int64_t* out_ts, uint32_t* out_len,
  * @param iter         Opaque length iterator pointer.
  */
 void tmsl_length_iter_close(void* iter);
+
+/**
+ * Reverse the iteration direction of a query length iterator.
+ * @param iter         Opaque iterator pointer.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_length_iter_reverse(void* iter, char* err_buf, size_t err_buf_len);
+
+/**
+ * Skip the next count entries in the length iteration.
+ * @param iter         Opaque iterator pointer.
+ * @param count        Number of entries to skip.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error.
+ */
+int tmsl_length_iter_skip(void* iter, size_t count, char* err_buf, size_t err_buf_len);
+
+/**
+ * Collect all remaining length entries from the iterator into an array.
+ * The iterator is consumed and must not be used after this call.
+ * @param iter         Opaque iterator pointer.
+ * @param out_array    Output: pointer to malloc'd array of TmslLengthEntry.
+ * @param out_array_len Output: number of entries in the array.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error. Caller frees with tmsl_data_free.
+ */
+int tmsl_length_iter_collect_all(void* iter, TmslLengthEntry** out_array, size_t* out_array_len,
+                                 char* err_buf, size_t err_buf_len);
+
+/**
+ * Collect up to count length entries from the iterator into an array.
+ * The iterator is consumed and must not be used after this call.
+ * @param iter         Opaque iterator pointer.
+ * @param count        Maximum number of entries to collect.
+ * @param out_array    Output: pointer to malloc'd array of TmslLengthEntry.
+ * @param out_array_len Output: number of entries in the array.
+ * @param err_buf      Buffer for error message.
+ * @param err_buf_len  Length of error buffer.
+ * @return 0 on success, -1 on error. Caller frees with tmsl_data_free.
+ */
+int tmsl_length_iter_collect_take(void* iter, size_t count, TmslLengthEntry** out_array, size_t* out_array_len,
+                                  char* err_buf, size_t err_buf_len);
 
 /* Queue API */
 

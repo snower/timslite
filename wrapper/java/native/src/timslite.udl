@@ -227,11 +227,27 @@ interface DatasetBridge {
 interface QueryIteratorBridge {
     [Throws=TmslError]
     Record? next();
+    [Throws=TmslError]
+    void reverse();
+    [Throws=TmslError]
+    void skip(u32 count);
+    [Throws=TmslError]
+    sequence<Record> collect_all();
+    [Throws=TmslError]
+    sequence<Record> collect_take(u32 count);
 };
 
 interface QueryLengthIteratorBridge {
     [Throws=TmslError]
     LengthEntry? next();
+    [Throws=TmslError]
+    void reverse();
+    [Throws=TmslError]
+    void skip(u32 count);
+    [Throws=TmslError]
+    sequence<LengthEntry> collect_all();
+    [Throws=TmslError]
+    sequence<LengthEntry> collect_take(u32 count);
 };
 
 interface QueueBridge {
