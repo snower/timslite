@@ -879,6 +879,51 @@ impl DataSetInner {
         }
     }
 
+    fn enqueue_dirty_target(&mut self, segment: SegmentFlushTarget) {
+        let Some(queue) = self.runtime_context.flush_queue.as_ref() else {
+            return;
+        };
+        let should_queue = match &segment {
+            SegmentFlushTarget::Data { file_offset } => {
+                self.segments.take_flush_enqueue_marker(*file_offset)
+            }
+            SegmentFlushTarget::Index { start_timestamp } => {
+                self.time_index.take_flush_enqueue_marker(*start_timestamp)
+            }
+            SegmentFlushTarget::DatasetState => self.dataset_state.take_flush_enqueue_marker(),
+            SegmentFlushTarget::QueueState { .. } => false,
+        };
+        if !should_queue {
+            return;
+        }
+
+        let mut queue = queue.lock().unwrap();
+        queue.push_back(DataSetFlushTarget {
+            dataset: self.id.clone(),
+            segment,
+        });
+    }
+
+    fn enqueue_dirty_data_segment(&mut self, file_offset: u64) {
+        self.enqueue_dirty_target(SegmentFlushTarget::Data { file_offset });
+    }
+
+    fn enqueue_dirty_data_entry(&mut self, block_offset: u64) {
+        self.enqueue_dirty_data_segment(self.data_segment_offset_for(block_offset));
+    }
+
+    fn enqueue_dirty_index_timestamp(&mut self, timestamp: i64) -> Result<()> {
+        let start_timestamp = self
+            .time_index
+            .flush_target_start_for_timestamp(timestamp)?;
+        self.enqueue_dirty_target(SegmentFlushTarget::Index { start_timestamp });
+        Ok(())
+    }
+
+    fn enqueue_dirty_dataset_state(&mut self) {
+        self.enqueue_dirty_target(SegmentFlushTarget::DatasetState);
+    }
+
     pub(crate) fn enqueue_queue_state_flush(&self, group_name: &str) {
         let Some(queue) = self.runtime_context.flush_queue.as_ref() else {
             return;
@@ -1083,7 +1128,9 @@ impl DataSetInner {
             }
             self.latest_written_timestamp = Some(timestamp);
             self.last_used_at = Instant::now();
-            self.enqueue_dirty_segments();
+            self.enqueue_dirty_data_segment(seg_offset);
+            self.enqueue_dirty_index_timestamp(timestamp)?;
+            self.enqueue_dirty_dataset_state();
             self.notify_queue();
             Ok(WriteOutcome {
                 index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
@@ -1106,7 +1153,9 @@ impl DataSetInner {
             }
             self.latest_written_timestamp = Some(timestamp);
             self.last_used_at = Instant::now();
-            self.enqueue_dirty_segments();
+            self.enqueue_dirty_data_segment(seg_offset);
+            self.enqueue_dirty_index_timestamp(timestamp)?;
+            self.enqueue_dirty_dataset_state();
             self.notify_queue();
             Ok(WriteOutcome {
                 index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
@@ -1194,7 +1243,7 @@ impl DataSetInner {
             self.segments
                 .append_to_last_record(entry.block_offset, entry.in_block_offset, data)?;
         self.last_used_at = Instant::now();
-        self.enqueue_dirty_segments();
+        self.enqueue_dirty_data_entry(entry.block_offset);
         Ok(Some(AppendOutcome {
             index_entry: entry,
             data_offset: actual_offset,
@@ -1245,7 +1294,12 @@ impl DataSetInner {
 
         // latest_written_timestamp unchanged
         self.last_used_at = Instant::now();
-        self.enqueue_dirty_segments();
+        self.enqueue_dirty_data_segment(seg_offset);
+        if old_entry.block_offset != BLOCK_OFFSET_FILLER {
+            self.enqueue_dirty_data_entry(old_entry.block_offset);
+        }
+        self.enqueue_dirty_index_timestamp(timestamp)?;
+        self.enqueue_dirty_dataset_state();
         Ok(WriteOutcome {
             index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
             branch: WriteBranch::OutOfOrder,
@@ -1279,7 +1333,7 @@ impl DataSetInner {
                         // latest_written_timestamp unchanged; index unchanged.
                         self.invalidate_cache_for_entry(&entry, cache);
                         self.last_used_at = Instant::now();
-                        self.enqueue_dirty_segments();
+                        self.enqueue_dirty_data_entry(entry.block_offset);
                         Ok(WriteOutcome {
                             index_entry: entry,
                             branch: WriteBranch::Correction,
@@ -2345,6 +2399,55 @@ mod tests {
             .time_index
             .open_index_segments()
             .all(|seg| seg.is_flushed));
+    }
+
+    #[test]
+    fn test_same_timestamp_append_enqueues_only_touched_data_segment() {
+        let mut ds = make_dirty_queue_dataset("dirty_queue_append_latest_precise", 4096);
+
+        ds.write(100, b"first").unwrap();
+        ds.flush().unwrap();
+        assert_eq!(ds.flush_queue_len(), 0);
+
+        let index_seg = ds.time_index.open_index_segments_mut().next().unwrap();
+        index_seg
+            .append_entry(&IndexEntry::new(101, BLOCK_OFFSET_FILLER, 0))
+            .unwrap();
+
+        ds.append(100, b"_tail").unwrap();
+
+        let targets = ds.flush_queue_segments();
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(
+            targets[0],
+            SegmentFlushTarget::Data { file_offset: 0 }
+        ));
+    }
+
+    #[test]
+    fn test_precise_enqueue_without_runtime_queue_does_not_consume_marker() {
+        let dir = temp_dir("dirty_queue_late_runtime_context");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSetInner::create(id, dir, 4096, 512, 0, 0, 4096, 512, 0).unwrap();
+
+        ds.write(100, b"first").unwrap();
+        ds.set_runtime_context(DataSetRuntimeContext::new(
+            None,
+            None,
+            Some(Default::default()),
+        ));
+        ds.write(200, b"second").unwrap();
+
+        let targets = ds.flush_queue_segments();
+        assert!(targets
+            .iter()
+            .any(|target| matches!(target, SegmentFlushTarget::Data { .. })));
+        assert!(targets
+            .iter()
+            .any(|target| matches!(target, SegmentFlushTarget::Index { .. })));
     }
 
     #[test]

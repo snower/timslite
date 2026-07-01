@@ -158,6 +158,13 @@ impl DataSegmentSet {
         self.segments.len()
     }
 
+    pub(crate) fn take_flush_enqueue_marker(&mut self, file_offset: u64) -> bool {
+        match self.segments.get_mut(&file_offset) {
+            Some(DataSegmentEntry::Open(seg)) => seg.take_flush_enqueue_marker(),
+            _ => false,
+        }
+    }
+
     pub(crate) fn set_cache_scope_id(&mut self, cache_scope_id: u64) {
         self.cache_scope_id = cache_scope_id;
     }

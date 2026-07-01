@@ -255,6 +255,8 @@ DataSet::write(timestamp, data):
 4. 回填逻辑空洞: 只创建目标 timestamp 所属分段, 并物化该分段内必要前缀。
 5. `time_step` 固定为 1 个 timestamp 单位; 调用方通常以秒为单位写入时, filler 即按秒递增。
 
+**flush queue 入队规则**: `write` / `append` 成功后只 enqueue 本次实际触达的分段, 不遍历所有 open data/index segment。data target 来自本次写入返回的 `seg_offset` 或旧 `block_offset` 推导的 data segment 起点; index target 由 `TimeIndex` 按 timestamp 和当前索引模式计算真实 `start_timestamp`。同时间戳 append 只修改 data segment, 不 enqueue index target。连续模式跨分段正序写入时, 上一个 edge index segment 在填充尾部 filler 后直接 `sync()`, 当前 timestamp 所在 index segment 作为 dirty target 入队。
+
 **原地覆盖策略 (In-Place Overwrite, 支持变长)**:
 
 1. **前提**: 最新写入的记录必须仍位于 **最新数据段** 的 **最后一个 pending raw block (`flags=0`)** 的最后一条位置。

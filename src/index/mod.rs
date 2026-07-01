@@ -80,6 +80,13 @@ impl TimeIndex {
         self.index_segments.len()
     }
 
+    pub(crate) fn take_flush_enqueue_marker(&mut self, start_timestamp: i64) -> bool {
+        match self.index_segments.get_mut(&start_timestamp) {
+            Some(IndexSegmentEntryState::Open(seg)) => seg.take_flush_enqueue_marker(),
+            _ => false,
+        }
+    }
+
     fn segment_timestamp_range(entry: &IndexSegmentEntryState) -> Option<(i64, i64)> {
         match entry {
             IndexSegmentEntryState::Open(seg) => {
@@ -349,7 +356,6 @@ impl TimeIndex {
         }
 
         self.append_continuous_entry_to_disk(&real_entry)?;
-        self.remove_pure_filler_segments();
         Ok(())
     }
 
@@ -399,6 +405,16 @@ impl TimeIndex {
         let capacity = self.segment_capacity()? as i64;
         let ordinal = (timestamp - base) / capacity;
         Ok(base + ordinal * capacity)
+    }
+
+    pub(crate) fn flush_target_start_for_timestamp(&self, timestamp: i64) -> Result<i64> {
+        if self.index_continuous {
+            return self.segment_start_for(timestamp);
+        }
+        self.segment_start_candidate_for_ts(timestamp)
+            .ok_or_else(|| {
+                TmslError::NotFound(format!("no index segment for timestamp {}", timestamp))
+            })
     }
 
     fn entry_index_for(&self, timestamp: i64) -> Result<usize> {
@@ -525,7 +541,6 @@ impl TimeIndex {
         self.push_filler_range(segment_start + materialized_count as i64, timestamp - 1)?;
         let entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
         self.append_continuous_entry_to_disk(&entry)?;
-        self.remove_pure_filler_segments();
 
         Ok(IndexEntry::new(
             timestamp,
@@ -1204,6 +1219,59 @@ mod tests {
         let entry = reopened.find_exact(100).unwrap();
         assert_eq!(entry.block_offset, 2048);
         assert_eq!(entry.in_block_offset, 7);
+    }
+
+    #[test]
+    fn test_sparse_continuous_add_does_not_cleanup_pure_filler_segments() {
+        let sub = fresh_subdir("sparse_continuous_add_no_inline_cleanup");
+        let mut idx = TimeIndex::new(&sub, 512, 512, true).unwrap();
+
+        idx.ensure_base_timestamp(100).unwrap();
+        let capacity = idx.segment_capacity().unwrap() as i64;
+        idx.push_filler_range(100 + capacity, 100 + capacity + 1)
+            .unwrap();
+        assert!(idx.index_segments.contains_key(&(100 + capacity)));
+
+        idx.add_sparse_continuous_entry(None, 100 + capacity * 2, 2048, 7)
+            .unwrap();
+
+        assert!(
+            idx.index_segments.contains_key(&(100 + capacity)),
+            "index writes must not run pure-filler cleanup inline"
+        );
+    }
+
+    #[test]
+    fn test_sparse_continuous_add_flushes_previous_edge_segment() {
+        let sub = fresh_subdir("sparse_continuous_add_flushes_previous_edge");
+        let mut idx = TimeIndex::new(&sub, 512, 512, true).unwrap();
+
+        idx.add_sparse_continuous_entry(None, 100, 1000, 0).unwrap();
+        idx.sync_segment(100).unwrap();
+        let capacity = idx.segment_capacity().unwrap() as i64;
+        let target_ts = 100 + capacity * 2 + 1;
+
+        idx.add_sparse_continuous_entry(Some(100), target_ts, 2000, 0)
+            .unwrap();
+
+        let previous = match idx.index_segments.get(&100).unwrap() {
+            IndexSegmentEntryState::Open(seg) => seg,
+            IndexSegmentEntryState::Closed(_) => unreachable!(),
+        };
+        assert!(
+            previous.is_flushed,
+            "previous edge segment should be flushed after filler completion"
+        );
+
+        let target_start = idx.segment_start_for(target_ts).unwrap();
+        let target = match idx.index_segments.get(&target_start).unwrap() {
+            IndexSegmentEntryState::Open(seg) => seg,
+            IndexSegmentEntryState::Closed(_) => unreachable!(),
+        };
+        assert!(
+            !target.is_flushed,
+            "target segment remains dirty for normal enqueue"
+        );
     }
 
     #[test]

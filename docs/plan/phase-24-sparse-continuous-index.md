@@ -59,7 +59,7 @@ entry_index      = ts - segment_start
 - [x] 实现逻辑空洞回填: 按需创建目标 index segment 并物化必要前缀。
 - [x] 更新 `find_entry` / `find_and_delete_entry` / `query_range_indices` 对缺失 segment 和 `entry_index >= wrote_count` 返回 None/skip。
 - [x] 调整 reopen 恢复逻辑: 从首个数值 index segment 文件名恢复 `base_timestamp`, 从已物化 entry 恢复 `latest_written_timestamp`。
-- [x] 保留 `remove_pure_filler_segments()` 作为兼容清理, 不再依赖它处理大 gap。
+- [x] 保留 `remove_pure_filler_segments()` 作为 flush/maintenance 兼容清理, 不在 `TimeIndex` 写入或更新热路径执行, 也不依赖它处理大 gap。
 
 ## 24.6 测试计划
 
