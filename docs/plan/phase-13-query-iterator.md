@@ -212,6 +212,17 @@ pub use query::hot_block::HotBlockCache;
 - [ ] `cargo clippy -- -D warnings` clean
 - [ ] `cargo test -- --test-threads=1` 全部通过 (新增至少 5 项测试)
 
+## 13.9 迭代器链式控制扩展
+
+已完成的 dataset-managed iterator 模型继续作为边界, 在其上增加 Rust public iterator 控制 API:
+
+- [x] `IndexQueryIterator` 支持正向和反向推进, 反向从更大 timestamp 向更小 timestamp 读取。
+- [x] `IndexQueryIterator` 支持索引层 `skip(n)`, 只按非 filler entry 计数, 不读取被跳过记录的数据段。
+- [x] `QueryIterator` 支持 `reverse()`、优化 `skip(n)`、`collect_take(n)` 链式调用。
+- [x] `QueryLengthIterator` 支持 `reverse()`、优化 `skip(n)`、`collect_take(n)` 链式调用。
+- [x] 标准 iterator adapter 语义保持自然分流: 原始 `QueryIterator.skip(n)` 走索引层优化; `QueryIterator.map(...).skip(n)` 等 adapter 链走标准库 `Iterator::skip()`。
+- [x] 回归测试覆盖正向 skip、反向 skip、`skip().reverse()`、`reverse().skip()`、`collect_take()`、continuous sparse filler 和 deleted/filler entry。
+
 ---
 
 **导航**: [← Phase 12](phase-12-lazy-allocation.md)

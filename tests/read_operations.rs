@@ -786,3 +786,35 @@ fn query_length_iter_skips_entry_deleted_after_iterator_creation() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn query_length_iter_reverse_skip_and_collect_take_chain() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(10, b"aa").unwrap();
+    ds.write(20, b"bbbb").unwrap();
+    ds.write(30, b"cccccc").unwrap();
+    ds.write(40, b"dddddddd").unwrap();
+    ds.write(50, b"eeeeeeeeee").unwrap();
+    ds.delete(40).unwrap();
+
+    let rows = ds
+        .query_length_iter(10, 50)
+        .unwrap()
+        .reverse()
+        .skip(1)
+        .collect_take(2)
+        .unwrap();
+
+    assert_eq!(rows, vec![(30, 6), (20, 4)]);
+
+    store.close().unwrap();
+}

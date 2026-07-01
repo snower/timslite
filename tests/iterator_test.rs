@@ -1,4 +1,4 @@
-﻿//! Iterator tests: cross-segment, cross-block queries.
+//! Iterator tests: cross-segment, cross-block queries.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -685,6 +685,107 @@ fn public_query_iter_skips_entry_deleted_after_iterator_creation() {
 
     assert_eq!(iter.next().unwrap().unwrap(), (3, b"three".to_vec()));
     assert!(iter.next().is_none());
+
+    store.close().unwrap();
+}
+
+#[test]
+fn public_query_iter_reverse_skip_and_collect_take_chain() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(10, b"ten").unwrap();
+    ds.write(20, b"twenty").unwrap();
+    ds.write(30, b"thirty").unwrap();
+    ds.write(40, b"forty").unwrap();
+    ds.write(50, b"fifty").unwrap();
+    ds.delete(40).unwrap();
+
+    let rows = ds
+        .query_iter(10, 50)
+        .unwrap()
+        .reverse()
+        .skip(1)
+        .collect_take(2)
+        .unwrap();
+
+    assert_eq!(
+        rows,
+        vec![(30, b"thirty".to_vec()), (20, b"twenty".to_vec()),]
+    );
+
+    store.close().unwrap();
+}
+
+#[test]
+fn public_query_iter_skip_then_reverse_keeps_skip_on_low_side() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 1, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(10, b"ten").unwrap();
+    ds.write(20, b"twenty").unwrap();
+    ds.write(30, b"thirty").unwrap();
+    ds.write(40, b"forty").unwrap();
+
+    let rows = ds
+        .query_iter(10, 40)
+        .unwrap()
+        .skip(1)
+        .reverse()
+        .collect_all()
+        .unwrap();
+
+    assert_eq!(
+        rows,
+        vec![
+            (40, b"forty".to_vec()),
+            (30, b"thirty".to_vec()),
+            (20, b"twenty".to_vec()),
+        ]
+    );
+
+    store.close().unwrap();
+}
+
+#[test]
+fn public_query_iter_standard_skip_after_adapter_still_works() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let config = StoreConfig::builder().enable_journal(false).build();
+    let mut store = Store::open(&dir, config).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(10, b"ten").unwrap();
+    ds.write(20, b"twenty").unwrap();
+    ds.write(30, b"thirty").unwrap();
+
+    let timestamps = ds
+        .query_iter(10, 30)
+        .unwrap()
+        .map(|row| row.map(|(timestamp, _)| timestamp))
+        .skip(1)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(timestamps, vec![20, 30]);
 
     store.close().unwrap();
 }

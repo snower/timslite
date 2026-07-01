@@ -191,8 +191,14 @@ impl IndexSegment {
 | `find_exact` | 二分查找 O(log n) | 直接计算 O(1) |
 | `find_entry_index` | 二分查找 O(log n) | 直接计算 O(1) |
 | `query_range` | O(log n + k) | O(1 + k) |
+| `next_query_entry_at_or_after` | O(log n + 扫描到下一 entry) | O(1 + 扫描到下一 entry) |
+| `next_query_entry_at_or_before` | O(log n + 扫描到上一 entry) | O(1 + 扫描到上一 entry) |
 
 其中 `k` = 查询范围内条目数, `n` = 段内总条目数。
+
+`IndexQueryIterator::skip(n)` 复用上述单步推进函数在索引层跳过非 filler entry。它不会读取 data segment, 但为了忽略 filler/deleted entry 仍需要扫描 index entry; 当前 index segment 不维护真实 entry 前缀计数, 因此 skip 的性能收益来自避免被跳过记录的 data segment 读取、block 解压和重复 dataset read 流程, 而不是完全跳过索引扫描。
+
+反向查询使用 `BTreeMap` 的有序 segment registry 从高 timestamp 侧定位候选 segment: 首个候选为 `range(..=end_ts).next_back()`, 后续通过前一个 segment key 向前推进。segment 内使用 `upper_bound_cs(end_ts) - 1` 作为反向起点, 并按 entry index 递减读取到 `start_ts` 边界。
 
 ### 7.6.1 TimeIndex 分段注册表与定位
 

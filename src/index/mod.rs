@@ -223,6 +223,13 @@ impl TimeIndex {
             .map(|(key, _)| *key)
     }
 
+    fn last_segment_key_for_range(&self, _start_ts: i64, end_ts: i64) -> Option<i64> {
+        self.index_segments
+            .range(..=end_ts)
+            .next_back()
+            .map(|(key, _)| *key)
+    }
+
     fn next_segment_key_after(&self, segment_start_timestamp: i64) -> Option<i64> {
         self.index_segments
             .range((
@@ -230,6 +237,13 @@ impl TimeIndex {
                 std::ops::Bound::Unbounded,
             ))
             .next()
+            .map(|(key, _)| *key)
+    }
+
+    fn previous_segment_key_before(&self, segment_start_timestamp: i64) -> Option<i64> {
+        self.index_segments
+            .range(..segment_start_timestamp)
+            .next_back()
             .map(|(key, _)| *key)
     }
 
@@ -790,6 +804,73 @@ impl TimeIndex {
             }
 
             key = next_key;
+        }
+
+        Ok(None)
+    }
+
+    pub(crate) fn next_query_entry_at_or_before(
+        &mut self,
+        start_ts: i64,
+        end_ts: i64,
+        cursor: Option<IndexEntryPosition>,
+    ) -> Result<Option<(IndexEntryPosition, IndexEntry)>> {
+        if start_ts > end_ts {
+            return Ok(None);
+        }
+
+        let ic = self.index_continuous;
+        let mut key = match cursor {
+            Some(cursor)
+                if self
+                    .index_segments
+                    .contains_key(&cursor.segment_start_timestamp) =>
+            {
+                Some(cursor.segment_start_timestamp)
+            }
+            Some(cursor) => self.previous_segment_key_before(cursor.segment_start_timestamp),
+            None => self.last_segment_key_for_range(start_ts, end_ts),
+        };
+
+        while let Some(segment_start_timestamp) = key {
+            let previous_key = self.previous_segment_key_before(segment_start_timestamp);
+            let before_cursor_index = cursor
+                .filter(|cursor| cursor.segment_start_timestamp == segment_start_timestamp)
+                .and_then(|cursor| cursor.entry_index.checked_sub(1));
+
+            let seg = self.open_index_segment(segment_start_timestamp)?;
+            seg.ensure_open()?;
+            let lower_bound = seg.lower_bound_cs(start_ts, ic);
+            let upper_bound = seg.upper_bound_cs(end_ts, ic);
+            if lower_bound >= upper_bound {
+                key = previous_key;
+                continue;
+            }
+            let last_index =
+                before_cursor_index.map_or(upper_bound - 1, |index| index.min(upper_bound - 1));
+            if last_index < lower_bound {
+                key = previous_key;
+                continue;
+            }
+
+            for entry_index in (lower_bound..=last_index).rev() {
+                let entry = seg.read_entry_at_index(entry_index)?;
+                if entry.timestamp > end_ts {
+                    continue;
+                }
+                if entry.timestamp < start_ts {
+                    return Ok(None);
+                }
+                return Ok(Some((
+                    IndexEntryPosition {
+                        segment_start_timestamp,
+                        entry_index,
+                    },
+                    entry,
+                )));
+            }
+
+            key = previous_key;
         }
 
         Ok(None)

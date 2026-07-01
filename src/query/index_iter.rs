@@ -6,42 +6,161 @@ use std::sync::{Arc, Mutex};
 
 pub(crate) struct IndexQueryIterator {
     dataset: Arc<Mutex<DataSetInner>>,
-    next_ts: Option<i64>,
+    start_ts: i64,
     end_ts: i64,
     cursor: Option<IndexEntryPosition>,
+    direction: QueryDirection,
+    pending_skip_low: usize,
+    pending_skip_high: usize,
+    done: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueryDirection {
+    Forward,
+    Reverse,
 }
 
 impl IndexQueryIterator {
     pub(crate) fn new(dataset: Arc<Mutex<DataSetInner>>, start_ts: i64, end_ts: i64) -> Self {
         Self {
             dataset,
-            next_ts: (start_ts <= end_ts).then_some(start_ts),
+            start_ts,
             end_ts,
             cursor: None,
+            direction: QueryDirection::Forward,
+            pending_skip_low: 0,
+            pending_skip_high: 0,
+            done: start_ts > end_ts,
         }
     }
 
-    pub(crate) fn next_entry(&mut self) -> Result<Option<IndexEntry>> {
-        let Some(next_ts) = self.next_ts else {
-            return Ok(None);
+    pub(crate) fn reverse(mut self) -> Self {
+        self.direction = match self.direction {
+            QueryDirection::Forward => QueryDirection::Reverse,
+            QueryDirection::Reverse => QueryDirection::Forward,
         };
+        self.cursor = None;
+        self
+    }
+
+    pub(crate) fn skip(mut self, count: usize) -> Self {
+        match self.direction {
+            QueryDirection::Forward => {
+                self.pending_skip_low = self.pending_skip_low.saturating_add(count);
+            }
+            QueryDirection::Reverse => {
+                self.pending_skip_high = self.pending_skip_high.saturating_add(count);
+            }
+        }
+        self.cursor = None;
+        self
+    }
+
+    pub(crate) fn next_entry(&mut self) -> Result<Option<IndexEntry>> {
+        self.apply_pending_skips()?;
+        if self.done {
+            return Ok(None);
+        }
 
         let next = {
             let mut inner = self
                 .dataset
                 .lock()
                 .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            inner.next_query_index_entry_from_position(next_ts, self.end_ts, self.cursor)?
+            match self.direction {
+                QueryDirection::Forward => inner.next_query_index_entry_from_position(
+                    self.start_ts,
+                    self.end_ts,
+                    self.cursor,
+                )?,
+                QueryDirection::Reverse => inner.previous_query_index_entry_from_position(
+                    self.start_ts,
+                    self.end_ts,
+                    self.cursor,
+                )?,
+            }
         };
 
         let Some((cursor, entry)) = next else {
-            self.next_ts = None;
+            self.done = true;
             return Ok(None);
         };
 
         self.cursor = Some(cursor);
-        self.next_ts = entry.timestamp.checked_add(1);
+        match self.direction {
+            QueryDirection::Forward => {
+                if let Some(next) = entry.timestamp.checked_add(1) {
+                    self.start_ts = next;
+                } else {
+                    self.done = true;
+                }
+            }
+            QueryDirection::Reverse => {
+                if let Some(previous) = entry.timestamp.checked_sub(1) {
+                    self.end_ts = previous;
+                } else {
+                    self.done = true;
+                }
+            }
+        }
         Ok(Some(entry))
+    }
+
+    fn apply_pending_skips(&mut self) -> Result<()> {
+        if self.done {
+            self.pending_skip_low = 0;
+            self.pending_skip_high = 0;
+            return Ok(());
+        }
+
+        if self.pending_skip_low > 0 {
+            let count = std::mem::take(&mut self.pending_skip_low);
+            let next_start = {
+                let mut inner = self
+                    .dataset
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+                inner.skip_query_index_entries_forward(self.start_ts, self.end_ts, count)?
+            };
+            match next_start {
+                Some(next_start) => {
+                    self.start_ts = next_start;
+                    self.cursor = None;
+                }
+                None => {
+                    self.done = true;
+                    self.pending_skip_high = 0;
+                    return Ok(());
+                }
+            }
+        }
+
+        if self.pending_skip_high > 0 {
+            let count = std::mem::take(&mut self.pending_skip_high);
+            let next_end = {
+                let mut inner = self
+                    .dataset
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+                inner.skip_query_index_entries_reverse(self.start_ts, self.end_ts, count)?
+            };
+            match next_end {
+                Some(next_end) => {
+                    self.end_ts = next_end;
+                    self.cursor = None;
+                }
+                None => {
+                    self.done = true;
+                }
+            }
+        }
+
+        if self.start_ts > self.end_ts {
+            self.done = true;
+        }
+
+        Ok(())
     }
 }
 

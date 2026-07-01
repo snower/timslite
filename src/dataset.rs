@@ -1484,6 +1484,99 @@ impl DataSetInner {
             .next_query_entry_at_or_after(start_ts, end_ts, cursor)
     }
 
+    pub(crate) fn previous_query_index_entry_from_position(
+        &mut self,
+        start_ts: i64,
+        end_ts: i64,
+        cursor: Option<IndexEntryPosition>,
+    ) -> Result<Option<(IndexEntryPosition, IndexEntry)>> {
+        self.ensure_open()?;
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
+        if start_ts > end_ts {
+            return Ok(None);
+        }
+        self.time_index
+            .next_query_entry_at_or_before(start_ts, end_ts, cursor)
+    }
+
+    pub(crate) fn skip_query_index_entries_forward(
+        &mut self,
+        next_ts: i64,
+        end_ts: i64,
+        count: usize,
+    ) -> Result<Option<i64>> {
+        self.ensure_open()?;
+        let (mut next_ts, end_ts) = self.clamp_query_range(next_ts, end_ts);
+        if next_ts > end_ts {
+            return Ok(None);
+        }
+        if count == 0 {
+            return Ok(Some(next_ts));
+        }
+
+        let mut skipped = 0usize;
+        let mut cursor = None;
+        loop {
+            let Some((position, entry)) = self
+                .time_index
+                .next_query_entry_at_or_after(next_ts, end_ts, cursor)?
+            else {
+                return Ok(None);
+            };
+            cursor = Some(position);
+            next_ts = match entry.timestamp.checked_add(1) {
+                Some(next) => next,
+                None => return Ok(None),
+            };
+            if entry.is_filler() {
+                continue;
+            }
+            skipped += 1;
+            if skipped == count {
+                return Ok(Some(next_ts));
+            }
+        }
+    }
+
+    pub(crate) fn skip_query_index_entries_reverse(
+        &mut self,
+        start_ts: i64,
+        end_ts: i64,
+        count: usize,
+    ) -> Result<Option<i64>> {
+        self.ensure_open()?;
+        let (start_ts, mut end_ts) = self.clamp_query_range(start_ts, end_ts);
+        if start_ts > end_ts {
+            return Ok(None);
+        }
+        if count == 0 {
+            return Ok(Some(end_ts));
+        }
+
+        let mut skipped = 0usize;
+        let mut cursor = None;
+        loop {
+            let Some((position, entry)) = self
+                .time_index
+                .next_query_entry_at_or_before(start_ts, end_ts, cursor)?
+            else {
+                return Ok(None);
+            };
+            cursor = Some(position);
+            end_ts = match entry.timestamp.checked_sub(1) {
+                Some(previous) => previous,
+                None => return Ok(None),
+            };
+            if entry.is_filler() {
+                continue;
+            }
+            skipped += 1;
+            if skipped == count {
+                return Ok(Some(end_ts));
+            }
+        }
+    }
+
     pub(crate) fn read_entry_with_hot_cache(
         &mut self,
         entry: &IndexEntry,

@@ -104,6 +104,7 @@ pub fn query_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryIterator>
 - 支持 HotBlockCache（查询级 block 缓存）
 - iterator 持有 dataset 和 timestamp cursor, 每次推进时通过当前 TimeIndex 查下一条 entry
 - 通过 Store 创建时自动注入 `Arc<BlockCache>`
+- 支持 `reverse().skip(n).collect_take(m)` 等链式控制; 只要 receiver 仍是原始 `QueryIterator`, `skip` 使用索引层跳过非 filler entry, 不读取被跳过记录的数据段。若前面已经调用 `filter`、`map` 等标准 iterator adapter, 后续 `.skip()` 使用标准库 adapter 语义。
 
 **相关文档**: [查询迭代器](query-iterator.md)
 
@@ -260,6 +261,7 @@ pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengt
 - 支持 HotBlockCache（需读取 block 获取 record header）
 - 通过 Store 创建时自动注入 `Arc<BlockCache>`
 - public Rust wrapper 持有 dataset 和 timestamp cursor, 每次推进时通过当前 `TimeIndex` 查下一条 entry 并读取 record header; 创建 iterator 时不预先收集全部 `(timestamp, data_len)`。
+- 支持与 `QueryIterator` 相同的 `reverse()`、优化 `skip(n)`、`collect_all()` 和 `collect_take(n)` 链式 API。优化 `skip` 只扫描索引并按非 filler entry 计数, 不读取被跳过记录的 record header。
 
 **与 query_iter 的区别**:
 - `query_iter` 返回完整数据 `(i64, Vec<u8>)`
@@ -324,7 +326,19 @@ impl Iterator for QueryLengthIterator {
 
 **复用**: `QueryLengthIterator` 与 `QueryIterator` 复用 dataset-managed timestamp cursor 和 `HotBlockCache`; public wrapper 持有 dataset `Arc<Mutex<...>>`, 避免退化为 `query_length()` snapshot。
 
-### 4.3 索引查询优化
+### 4.3 QueryIterator / QueryLengthIterator 链式控制
+
+两个 public Rust iterator 都提供:
+
+```rust
+pub fn reverse(self) -> Self;
+pub fn skip(self, count: usize) -> Self;
+pub fn collect_take(self, count: usize) -> Result<Vec<_>>;
+```
+
+`reverse()` 切换 `IndexQueryIterator` 的推进方向。`skip()` 是惰性索引跳过: 根据当前方向把跳过数量记录到低 timestamp 侧或高 timestamp 侧, 第一次读取时通过 `TimeIndex` 扫描 index entry 并只按非 filler entry 计数推进边界。`collect_take()` 最多读取指定数量的实际结果; 如果跳过后不足 `count` 条, 返回已有结果。
+
+### 4.4 索引查询优化
 
 `query_exist` 使用 `TimeIndex::query()` 获取 retention 可见范围内的 entry，并跳过 filler/deleted entry。对于大范围查询，可考虑:
 - 当前实现: bitmap 最大 4MiB，一次性加载可见范围内的 entry 到内存

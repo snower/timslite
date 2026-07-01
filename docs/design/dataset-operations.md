@@ -502,13 +502,18 @@ DataSet::delete(timestamp):
 查询 [start_ts, end_ts] → QueryIterator (惰性)
     │
     ├─ 1. QueryIterator::new(dataset Arc, start_ts, end_ts)
-    │      → 持有 dataset、next_ts、end_ts、HotBlockCache
+    │      → 持有 dataset、range bounds、direction、pending skip、HotBlockCache
+    │
+    ├─ 可选链式控制:
+    │      ├─ reverse() 切换为从高 timestamp 向低 timestamp 推进
+    │      ├─ skip(n) 在索引层跳过 n 条非 filler entry, 不读取 data segment
+    │      └─ collect_take(n) 最多读取 n 条实际结果
     │
     └─ 调用 next() 时:
            ├─ 2. DataSetInner::next_query_index_entry(next_ts, end_ts)
            │      ├─ 通过当前 TimeIndex 查找下一条可见 IndexEntry
-           │      ├─ next_ts = entry.timestamp + 1
-           │      └─ 跳过 filler/deleted entries (block_offset == 0xFFFFFFFFFFFFFFFF)
+           │      ├─ 正向时推进到 entry.timestamp + 1, 反向时推进到 entry.timestamp - 1
+           │      └─ filler/deleted entries (block_offset == 0xFFFFFFFFFFFFFFFF) 不作为 skip 计数, 读取阶段继续跳过
            │
            ├─ 3. 检查 HotBlockCache (无锁, 查询级局部缓存)
            │      ├─ Hit (同一个 data segment 且同一个段内 block offset)
@@ -533,6 +538,7 @@ DataSet::delete(timestamp):
 
 > **关键改进**:
 > - **索引 timestamp cursor**: iterator 不持有 segment source 列表; 每次推进都通过 dataset 当前 `TimeIndex` 查下一条可见 `IndexEntry`
+> - **方向与跳过**: `reverse()` 只调整 `IndexQueryIterator` 推进方向; `skip()` 避免被跳过记录的数据段读取, 但仍扫描 index entry 以过滤 filler/deleted entry
 > - **数据惰性化**: `DataSet::query_iter()` 与 FFI iterator 按需读取 record; `DataSet::query()` 作为兼容便利方法仍会 collect 成 `Vec`
 > - **HotBlockCache**: 读取循环中保持最后解压的 Block, 同 Block 内连续读取跳过 mmap+解压
 > - **无锁热点**: HotBlockCache 属于单个 QueryIterator 实例, 不涉及全局锁竞争

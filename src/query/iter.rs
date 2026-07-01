@@ -23,6 +23,18 @@ impl QueryIterator {
         }
     }
 
+    pub fn reverse(mut self) -> Self {
+        self.index_iter = self.index_iter.reverse();
+        self.hot_block = HotBlockCache::new();
+        self
+    }
+
+    pub fn skip(mut self, count: usize) -> Self {
+        self.index_iter = self.index_iter.skip(count);
+        self.hot_block = HotBlockCache::new();
+        self
+    }
+
     pub fn next_entry(&mut self) -> Result<Option<(i64, Vec<u8>)>> {
         loop {
             let Some(entry) = self.index_iter.next_entry()? else {
@@ -41,6 +53,17 @@ impl QueryIterator {
     pub fn collect_all(mut self) -> Result<Vec<(i64, Vec<u8>)>> {
         let mut records = Vec::new();
         while let Some(record) = self.next_entry()? {
+            records.push(record);
+        }
+        Ok(records)
+    }
+
+    pub fn collect_take(mut self, count: usize) -> Result<Vec<(i64, Vec<u8>)>> {
+        let mut records = Vec::new();
+        for _ in 0..count {
+            let Some(record) = self.next_entry()? else {
+                break;
+            };
             records.push(record);
         }
         Ok(records)
