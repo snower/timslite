@@ -256,6 +256,11 @@ class QueryTest {
                     assertEquals(200L, r4.getTimestamp());
                     assertArrayEquals(new byte[]{2}, r4.getData());
 
+                    Record r5 = iter.next();
+                    assertNotNull(r5);
+                    assertEquals(100L, r5.getTimestamp());
+                    assertArrayEquals(new byte[]{1}, r5.getData());
+
                     assertFalse(iter.hasNext());
                 } finally {
                     iter.close();
@@ -288,13 +293,18 @@ class QueryTest {
 
                     Record r1 = iter.next();
                     assertNotNull(r1);
-                    assertEquals(400L, r1.getTimestamp());
-                    assertArrayEquals(new byte[]{4}, r1.getData());
+                    assertEquals(300L, r1.getTimestamp());
+                    assertArrayEquals(new byte[]{3}, r1.getData());
 
                     Record r2 = iter.next();
                     assertNotNull(r2);
-                    assertEquals(500L, r2.getTimestamp());
-                    assertArrayEquals(new byte[]{5}, r2.getData());
+                    assertEquals(400L, r2.getTimestamp());
+                    assertArrayEquals(new byte[]{4}, r2.getData());
+
+                    Record r3 = iter.next();
+                    assertNotNull(r3);
+                    assertEquals(500L, r3.getTimestamp());
+                    assertArrayEquals(new byte[]{5}, r3.getData());
 
                     assertFalse(iter.hasNext());
                 } finally {
@@ -418,6 +428,11 @@ class QueryTest {
                     assertEquals(400L, r4.getTimestamp());
                     assertArrayEquals(new byte[]{4}, r4.getData());
 
+                    Record r5 = iter.next();
+                    assertNotNull(r5);
+                    assertEquals(300L, r5.getTimestamp());
+                    assertArrayEquals(new byte[]{3}, r5.getData());
+
                     assertFalse(iter.hasNext());
                 } finally {
                     iter.close();
@@ -497,6 +512,11 @@ class QueryTest {
                     assertEquals(200L, e4.getTimestamp());
                     assertEquals(2, e4.getLength());
 
+                    LengthEntry e5 = iter.next();
+                    assertNotNull(e5);
+                    assertEquals(100L, e5.getTimestamp());
+                    assertEquals(3, e5.getLength());
+
                     assertFalse(iter.hasNext());
                 } finally {
                     iter.close();
@@ -529,13 +549,18 @@ class QueryTest {
 
                     LengthEntry e1 = iter.next();
                     assertNotNull(e1);
-                    assertEquals(400L, e1.getTimestamp());
-                    assertEquals(1, e1.getLength());
+                    assertEquals(300L, e1.getTimestamp());
+                    assertEquals(4, e1.getLength());
 
                     LengthEntry e2 = iter.next();
                     assertNotNull(e2);
-                    assertEquals(500L, e2.getTimestamp());
-                    assertEquals(2, e2.getLength());
+                    assertEquals(400L, e2.getTimestamp());
+                    assertEquals(1, e2.getLength());
+
+                    LengthEntry e3 = iter.next();
+                    assertNotNull(e3);
+                    assertEquals(500L, e3.getTimestamp());
+                    assertEquals(2, e3.getLength());
 
                     assertFalse(iter.hasNext());
                 } finally {

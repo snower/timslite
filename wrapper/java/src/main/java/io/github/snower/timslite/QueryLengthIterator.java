@@ -26,7 +26,7 @@ public final class QueryLengthIterator implements AutoCloseable {
         this.bridge = bridge;
         this.exhausted = false;
         this.closed = false;
-        this.nextEntry = advance();
+        this.nextEntry = null;
     }
 
     private LengthEntry advance() {
@@ -52,21 +52,30 @@ public final class QueryLengthIterator implements AutoCloseable {
      * @return whether {@link #next()} will return an entry
      */
     public boolean hasNext() {
-        return !closed && !exhausted && nextEntry != null;
+        if (closed || exhausted) {
+            return false;
+        }
+        if (nextEntry == null) {
+            nextEntry = advance();
+        }
+        return nextEntry != null;
     }
 
     /**
      * Returns the next length entry in the iteration.
      *
-     * @return the next entry
+     * @return the next entry, or {@code null} if exhausted
      * @throws IllegalStateException if the iterator is closed
      */
     public LengthEntry next() {
         if (closed) {
             throw new IllegalStateException("QueryLengthIterator is closed");
         }
+        if (nextEntry == null) {
+            nextEntry = advance();
+        }
         LengthEntry current = nextEntry;
-        nextEntry = advance();
+        nextEntry = null;
         return current;
     }
 
@@ -107,7 +116,7 @@ public final class QueryLengthIterator implements AutoCloseable {
             }
             throw e;
         }
-        nextEntry = advance();
+        nextEntry = null;
     }
 
     /**

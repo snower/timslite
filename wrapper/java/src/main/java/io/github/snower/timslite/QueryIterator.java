@@ -26,7 +26,7 @@ public final class QueryIterator implements AutoCloseable {
         this.bridge = bridge;
         this.exhausted = false;
         this.closed = false;
-        this.nextRecord = advance();
+        this.nextRecord = null;
     }
 
     private Record advance() {
@@ -52,21 +52,30 @@ public final class QueryIterator implements AutoCloseable {
      * @return whether {@link #next()} will return a record
      */
     public boolean hasNext() {
-        return !closed && !exhausted && nextRecord != null;
+        if (closed || exhausted) {
+            return false;
+        }
+        if (nextRecord == null) {
+            nextRecord = advance();
+        }
+        return nextRecord != null;
     }
 
     /**
      * Returns the next record in the iteration.
      *
-     * @return the next record
+     * @return the next record, or {@code null} if exhausted
      * @throws IllegalStateException if the iterator is closed
      */
     public Record next() {
         if (closed) {
             throw new IllegalStateException("QueryIterator is closed");
         }
+        if (nextRecord == null) {
+            nextRecord = advance();
+        }
         Record current = nextRecord;
-        nextRecord = advance();
+        nextRecord = null;
         return current;
     }
 
@@ -107,7 +116,7 @@ public final class QueryIterator implements AutoCloseable {
             }
             throw e;
         }
-        nextRecord = advance();
+        nextRecord = null;
     }
 
     /**
