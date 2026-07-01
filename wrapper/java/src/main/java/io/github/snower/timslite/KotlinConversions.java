@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap;
 final class KotlinConversions {
     private static final Method UBYTE_BOX;
     private static final Method UBYTE_UNBOX;
+    private static final Method UINT_BOX;
     private static final Method UINT_UNBOX;
     private static final Method ULONG_UNBOX;
 
@@ -26,6 +27,7 @@ final class KotlinConversions {
         try {
             UBYTE_BOX = kotlin.UByte.class.getDeclaredMethod("box-impl", byte.class);
             UBYTE_UNBOX = kotlin.UByte.class.getDeclaredMethod("unbox-impl");
+            UINT_BOX = kotlin.UInt.class.getDeclaredMethod("box-impl", int.class);
             UINT_UNBOX = kotlin.UInt.class.getDeclaredMethod("unbox-impl");
             ULONG_UNBOX = kotlin.ULong.class.getDeclaredMethod("unbox-impl");
         } catch (NoSuchMethodException e) {
@@ -60,6 +62,14 @@ final class KotlinConversions {
             }
         }
         return result;
+    }
+
+    static kotlin.UInt toUInt(int value) {
+        try {
+            return (kotlin.UInt) UINT_BOX.invoke(null, value);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     // ---- Mangled getter access ----
@@ -174,5 +184,46 @@ final class KotlinConversions {
         }
         throw new RuntimeException(
             "Method not found: " + methodName + " in interfaces of " + implClass.getName());
+    }
+
+    @SuppressWarnings("unchecked")
+    static <T> List<T> callCollectTake(Object bridge, int count) {
+        String key = "collectTake-WZ4Q5Ns#" + bridge.getClass().getName();
+        try {
+            Method m = METHOD_CACHE.get(key);
+            if (m == null) {
+                m = findInterfaceMethod(bridge.getClass(), "collectTake-WZ4Q5Ns", int.class);
+                METHOD_CACHE.put(key, m);
+            }
+            return (List<T>) m.invoke(bridge, count);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof io.github.snower.timslite.uniffi.TmslException) {
+                throw new RuntimeException(cause);
+            }
+            throw new RuntimeException(cause);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    static void callSkip(Object bridge, int count) {
+        String key = "skip-WZ4Q5Ns#" + bridge.getClass().getName();
+        try {
+            Method m = METHOD_CACHE.get(key);
+            if (m == null) {
+                m = findInterfaceMethod(bridge.getClass(), "skip-WZ4Q5Ns", int.class);
+                METHOD_CACHE.put(key, m);
+            }
+            m.invoke(bridge, count);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof io.github.snower.timslite.uniffi.TmslException) {
+                throw new RuntimeException(cause);
+            }
+            throw new RuntimeException(cause);
+        } catch (IllegalAccessException e) {
+            throw new RuntimeException(e);
+        }
     }
 }

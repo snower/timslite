@@ -99,9 +99,13 @@ public final class QueryLengthIterator implements AutoCloseable {
             throw new IllegalStateException("QueryLengthIterator is closed");
         }
         try {
-            bridge.skip(count);
-        } catch (io.github.snower.timslite.uniffi.TmslException e) {
-            throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+            KotlinConversions.callSkip(bridge, count);
+        } catch (RuntimeException e) {
+            if (e.getCause() instanceof io.github.snower.timslite.uniffi.TmslException) {
+                throw io.github.snower.timslite.errors.TmslException.fromUniFFI(
+                    (io.github.snower.timslite.uniffi.TmslException) e.getCause());
+            }
+            throw e;
         }
         nextEntry = advance();
     }
@@ -152,12 +156,17 @@ public final class QueryLengthIterator implements AutoCloseable {
         }
         if (count > 0) {
             try {
-                List<io.github.snower.timslite.uniffi.LengthEntry> kotlinEntries = bridge.collectTake(count);
+                List<io.github.snower.timslite.uniffi.LengthEntry> kotlinEntries =
+                    KotlinConversions.callCollectTake(bridge, count);
                 for (io.github.snower.timslite.uniffi.LengthEntry ke : kotlinEntries) {
                     result.add(new LengthEntry(ke));
                 }
-            } catch (io.github.snower.timslite.uniffi.TmslException e) {
-                throw io.github.snower.timslite.errors.TmslException.fromUniFFI(e);
+            } catch (RuntimeException e) {
+                if (e.getCause() instanceof io.github.snower.timslite.uniffi.TmslException) {
+                    throw io.github.snower.timslite.errors.TmslException.fromUniFFI(
+                        (io.github.snower.timslite.uniffi.TmslException) e.getCause());
+                }
+                throw e;
             }
         }
         exhausted = true;

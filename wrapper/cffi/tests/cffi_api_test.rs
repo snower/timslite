@@ -337,3 +337,350 @@ fn cffi_dataset_write_now_and_append_now() {
     tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len());
     tmsl_store_close(store, err.as_mut_ptr(), err.len());
 }
+
+unsafe fn setup_iter_dataset(dir: &std::path::Path) -> (*mut c_void, *mut c_void) {
+    let dir = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+    let name = CString::new("iterds").unwrap();
+    let kind = CString::new("sensor").unwrap();
+    let mut err = err_buf();
+
+    let store = tmsl_store_open(dir.as_ptr(), err.as_mut_ptr(), err.len());
+    assert!(!store.is_null(), "store open failed");
+
+    let dataset = tmsl_dataset_create(
+        store,
+        name.as_ptr(),
+        kind.as_ptr(),
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+        err.as_mut_ptr(),
+        err.len(),
+    );
+    assert!(!dataset.is_null(), "dataset create failed");
+
+    for ts in [100i64, 200, 300, 400, 500] {
+        let payload = format!("val_{ts}");
+        assert_eq!(
+            tmsl_dataset_write(
+                dataset,
+                ts,
+                payload.as_ptr(),
+                payload.len(),
+                err.as_mut_ptr(),
+                err.len(),
+            ),
+            0,
+            "write at {ts} failed"
+        );
+    }
+    (store, dataset)
+}
+
+#[test]
+fn cffi_query_iter_reverse() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+    assert_eq!(unsafe { tmsl_iter_reverse(iter, err.as_mut_ptr(), err.len()) }, 0);
+
+    let mut collected = Vec::new();
+    loop {
+        let mut ts: i64 = 0;
+        let mut data: *mut c_uchar = ptr::null_mut();
+        let mut data_len: usize = 0;
+        let rc = unsafe {
+            tmsl_iter_next(iter, &mut ts, &mut data, &mut data_len, err.as_mut_ptr(), err.len())
+        };
+        if rc == 1 {
+            break;
+        }
+        assert_eq!(rc, 0);
+        let slice = unsafe { std::slice::from_raw_parts(data, data_len) };
+        collected.push((ts, String::from_utf8_lossy(slice).into_owned()));
+        unsafe { tmsl_data_free(data.cast::<c_void>()) };
+    }
+    unsafe { tmsl_iter_close(iter) };
+
+    assert_eq!(collected.len(), 5);
+    assert_eq!(collected[0].0, 500);
+    assert_eq!(collected[4].0, 100);
+    assert_eq!(collected[0].1, "val_500");
+    assert_eq!(collected[4].1, "val_100");
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}
+
+#[test]
+fn cffi_query_iter_skip() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+    assert_eq!(unsafe { tmsl_iter_skip(iter, 2, err.as_mut_ptr(), err.len()) }, 0);
+
+    let mut collected = Vec::new();
+    loop {
+        let mut ts: i64 = 0;
+        let mut data: *mut c_uchar = ptr::null_mut();
+        let mut data_len: usize = 0;
+        let rc = unsafe {
+            tmsl_iter_next(iter, &mut ts, &mut data, &mut data_len, err.as_mut_ptr(), err.len())
+        };
+        if rc == 1 {
+            break;
+        }
+        assert_eq!(rc, 0);
+        let slice = unsafe { std::slice::from_raw_parts(data, data_len) };
+        collected.push((ts, String::from_utf8_lossy(slice).into_owned()));
+        unsafe { tmsl_data_free(data.cast::<c_void>()) };
+    }
+    unsafe { tmsl_iter_close(iter) };
+
+    assert_eq!(collected.len(), 3);
+    assert_eq!(collected[0].0, 300);
+    assert_eq!(collected[1].0, 400);
+    assert_eq!(collected[2].0, 500);
+    assert_eq!(collected[0].1, "val_300");
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}
+
+#[test]
+fn cffi_query_iter_collect_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+
+    let mut entries: *mut TmslDataEntry = ptr::null_mut();
+    let mut count: usize = 0;
+    assert_eq!(
+        unsafe { tmsl_iter_collect_all(iter, &mut entries, &mut count, err.as_mut_ptr(), err.len()) },
+        0
+    );
+    assert_eq!(count, 5);
+    assert!(!entries.is_null());
+
+    for i in 0..count {
+        let entry = unsafe { &*entries.add(i) };
+        let expected_ts = 100 + (i as i64) * 100;
+        assert_eq!(entry.timestamp, expected_ts);
+        let slice = unsafe { std::slice::from_raw_parts(entry.data, entry.data_len) };
+        let expected = format!("val_{expected_ts}");
+        assert_eq!(slice, expected.as_bytes());
+    }
+
+    unsafe { tmsl_data_entry_array_free(entries, count) };
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}
+
+#[test]
+fn cffi_query_iter_collect_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+
+    let mut entries: *mut TmslDataEntry = ptr::null_mut();
+    let mut count: usize = 0;
+    assert_eq!(
+        unsafe { tmsl_iter_collect_take(iter, 3, &mut entries, &mut count, err.as_mut_ptr(), err.len()) },
+        0
+    );
+    assert_eq!(count, 3);
+    assert!(!entries.is_null());
+
+    for i in 0..count {
+        let entry = unsafe { &*entries.add(i) };
+        let expected_ts = 100 + (i as i64) * 100;
+        assert_eq!(entry.timestamp, expected_ts);
+    }
+
+    unsafe { tmsl_data_entry_array_free(entries, count) };
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}
+
+#[test]
+fn cffi_query_iter_skip_and_reverse() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+    assert_eq!(unsafe { tmsl_iter_skip(iter, 2, err.as_mut_ptr(), err.len()) }, 0);
+    assert_eq!(unsafe { tmsl_iter_reverse(iter, err.as_mut_ptr(), err.len()) }, 0);
+
+    let mut collected_ts = Vec::new();
+    loop {
+        let mut ts: i64 = 0;
+        let mut data: *mut c_uchar = ptr::null_mut();
+        let mut data_len: usize = 0;
+        let rc = unsafe {
+            tmsl_iter_next(iter, &mut ts, &mut data, &mut data_len, err.as_mut_ptr(), err.len())
+        };
+        if rc == 1 {
+            break;
+        }
+        assert_eq!(rc, 0);
+        collected_ts.push(ts);
+        unsafe { tmsl_data_free(data.cast::<c_void>()) };
+    }
+    unsafe { tmsl_iter_close(iter) };
+
+    assert_eq!(collected_ts, vec![500, 400, 300]);
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}
+
+#[test]
+fn cffi_length_iter_reverse() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query_length_iter(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+    assert_eq!(unsafe { tmsl_length_iter_reverse(iter, err.as_mut_ptr(), err.len()) }, 0);
+
+    let mut collected = Vec::new();
+    loop {
+        let mut ts: i64 = 0;
+        let mut data_len: u32 = 0;
+        let rc = unsafe {
+            tmsl_length_iter_next(iter, &mut ts, &mut data_len, err.as_mut_ptr(), err.len())
+        };
+        if rc == 1 {
+            break;
+        }
+        assert_eq!(rc, 0);
+        collected.push((ts, data_len));
+    }
+    unsafe { tmsl_length_iter_close(iter) };
+
+    assert_eq!(collected.len(), 5);
+    assert_eq!(collected[0].0, 500);
+    assert_eq!(collected[4].0, 100);
+    for (_, len) in &collected {
+        assert!(*len > 0);
+    }
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}
+
+#[test]
+fn cffi_length_iter_skip() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query_length_iter(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+    assert_eq!(unsafe { tmsl_length_iter_skip(iter, 2, err.as_mut_ptr(), err.len()) }, 0);
+
+    let mut collected_ts = Vec::new();
+    loop {
+        let mut ts: i64 = 0;
+        let mut data_len: u32 = 0;
+        let rc = unsafe {
+            tmsl_length_iter_next(iter, &mut ts, &mut data_len, err.as_mut_ptr(), err.len())
+        };
+        if rc == 1 {
+            break;
+        }
+        assert_eq!(rc, 0);
+        collected_ts.push(ts);
+    }
+    unsafe { tmsl_length_iter_close(iter) };
+
+    assert_eq!(collected_ts, vec![300, 400, 500]);
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}
+
+#[test]
+fn cffi_length_iter_collect_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query_length_iter(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+
+    let mut entries: *mut TmslLengthEntry = ptr::null_mut();
+    let mut count: usize = 0;
+    assert_eq!(
+        unsafe {
+            tmsl_length_iter_collect_all(iter, &mut entries, &mut count, err.as_mut_ptr(), err.len())
+        },
+        0
+    );
+    assert_eq!(count, 5);
+    assert!(!entries.is_null());
+
+    for i in 0..count {
+        let entry = unsafe { &*entries.add(i) };
+        let expected_ts = 100 + (i as i64) * 100;
+        assert_eq!(entry.timestamp, expected_ts);
+        assert!(entry.data_len > 0);
+    }
+
+    // TmslLengthEntry has no inner heap allocs — free with tmsl_data_free
+    unsafe { tmsl_data_free(entries.cast::<c_void>()) };
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}
+
+#[test]
+fn cffi_length_iter_collect_take() {
+    let dir = tempfile::tempdir().unwrap();
+    let (store, dataset) = unsafe { setup_iter_dataset(dir.path()) };
+    let mut err = err_buf();
+
+    let iter = tmsl_dataset_query_length_iter(dataset, 100, 500, err.as_mut_ptr(), err.len());
+    assert!(!iter.is_null());
+
+    let mut entries: *mut TmslLengthEntry = ptr::null_mut();
+    let mut count: usize = 0;
+    assert_eq!(
+        unsafe {
+            tmsl_length_iter_collect_take(iter, 3, &mut entries, &mut count, err.as_mut_ptr(), err.len())
+        },
+        0
+    );
+    assert_eq!(count, 3);
+    assert!(!entries.is_null());
+
+    for i in 0..count {
+        let entry = unsafe { &*entries.add(i) };
+        let expected_ts = 100 + (i as i64) * 100;
+        assert_eq!(entry.timestamp, expected_ts);
+    }
+
+    unsafe { tmsl_data_free(entries.cast::<c_void>()) };
+
+    unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
+    unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
+}

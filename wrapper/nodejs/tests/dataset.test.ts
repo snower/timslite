@@ -376,6 +376,224 @@ describe("dataset", () => {
     });
   });
 
+  describe("query iterator methods", () => {
+    it("query iterator reverse", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 5n);
+        iter.reverse();
+        const results: [number, Buffer][] = [];
+        for (const [ts, data] of iter) {
+          results.push([ts, Buffer.from(data)]);
+        }
+        assert.equal(results.length, 5);
+        assert.equal(results[0][0], 5);
+        assert.equal(results[1][0], 4);
+        assert.equal(results[2][0], 3);
+        assert.equal(results[3][0], 2);
+        assert.equal(results[4][0], 1);
+        assert.deepEqual(results[0][1], Buffer.from("r5"));
+        assert.deepEqual(results[4][1], Buffer.from("r1"));
+        ds.close();
+      });
+    });
+
+    it("query iterator skip", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 5n);
+        iter.skip(2);
+        const results: [number, Buffer][] = [];
+        for (const [ts, data] of iter) {
+          results.push([ts, Buffer.from(data)]);
+        }
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 3);
+        assert.equal(results[1][0], 4);
+        assert.equal(results[2][0], 5);
+        assert.deepEqual(results[0][1], Buffer.from("r3"));
+        ds.close();
+      });
+    });
+
+    it("query iterator collectAll", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 5n);
+        const results = iter.collectAll();
+        assert.equal(results.length, 5);
+        assert.equal(results[0][0], 1);
+        assert.equal(results[4][0], 5);
+        assert.deepEqual(results[0][1], Buffer.from("r1"));
+        assert.deepEqual(results[4][1], Buffer.from("r5"));
+        ds.close();
+      });
+    });
+
+    it("query iterator collectTake", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 5n);
+        const results = iter.collectTake(3);
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 1);
+        assert.equal(results[1][0], 2);
+        assert.equal(results[2][0], 3);
+        assert.deepEqual(results[0][1], Buffer.from("r1"));
+        assert.deepEqual(results[2][1], Buffer.from("r3"));
+        ds.close();
+      });
+    });
+
+    it("query iterator skip and reverse", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 5n);
+        iter.skip(2);
+        iter.reverse();
+        const results: [number, Buffer][] = [];
+        for (const [ts, data] of iter) {
+          results.push([ts, Buffer.from(data)]);
+        }
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 5);
+        assert.equal(results[1][0], 4);
+        assert.equal(results[2][0], 3);
+        assert.deepEqual(results[0][1], Buffer.from("r5"));
+        assert.deepEqual(results[2][1], Buffer.from("r3"));
+        ds.close();
+      });
+    });
+
+    it("query iterator skip more than available", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 3n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 3n);
+        iter.skip(100);
+        const results = iter.collectAll();
+        assert.equal(results.length, 0);
+        ds.close();
+      });
+    });
+
+    it("query length iterator reverse", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.queryLength(1n, 5n);
+        iter.reverse();
+        const results: [number, number][] = [];
+        for (const [ts, len] of iter) {
+          results.push([ts, len]);
+        }
+        assert.equal(results.length, 5);
+        assert.equal(results[0][0], 5);
+        assert.equal(results[1][0], 4);
+        assert.equal(results[2][0], 3);
+        assert.equal(results[3][0], 2);
+        assert.equal(results[4][0], 1);
+        for (const [, len] of results) {
+          assert(typeof len === "number");
+          assert(len > 0);
+        }
+        ds.close();
+      });
+    });
+
+    it("query length iterator skip", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.queryLength(1n, 5n);
+        iter.skip(2);
+        const results: [number, number][] = [];
+        for (const [ts, len] of iter) {
+          results.push([ts, len]);
+        }
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 3);
+        assert.equal(results[1][0], 4);
+        assert.equal(results[2][0], 5);
+        for (const [, len] of results) {
+          assert(typeof len === "number");
+          assert(len > 0);
+        }
+        ds.close();
+      });
+    });
+
+    it("query length iterator collectAll", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.queryLength(1n, 5n);
+        const results = iter.collectAll();
+        assert.equal(results.length, 5);
+        assert.equal(results[0][0], 1);
+        assert.equal(results[4][0], 5);
+        for (const [, len] of results) {
+          assert(typeof len === "number");
+          assert(len > 0);
+        }
+        ds.close();
+      });
+    });
+
+    it("query length iterator collectTake", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.queryLength(1n, 5n);
+        const results = iter.collectTake(3);
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 1);
+        assert.equal(results[1][0], 2);
+        assert.equal(results[2][0], 3);
+        for (const [, len] of results) {
+          assert(typeof len === "number");
+          assert(len > 0);
+        }
+        ds.close();
+      });
+    });
+  });
+
   describe("flush and inspect", () => {
     it("flush does not throw", () => {
       withStore((store) => {

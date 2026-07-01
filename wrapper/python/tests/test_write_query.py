@@ -236,3 +236,225 @@ class TestExtendedAPI:
             # append to ts=10 which is not the latest — should fail
             with pytest.raises(Exception):
                 ds.append(10, b"should_fail")
+
+
+class TestQueryIteratorMethods:
+    """Tests for reverse(), skip(), collect_all(), collect_take() on QueryIterator and QueryLengthIterator."""
+
+    def _write_records(self, ds, count=5):
+        """Helper: write `count` records with timestamps 1..count."""
+        for i in range(1, count + 1):
+            ds.write(i, f"rec_{i}".encode())
+
+    def test_query_reverse(self, tmpdir):
+        """reverse() yields entries in descending timestamp order."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_rev", "data")
+            ds = store.open_dataset("q_rev", "data")
+            self._write_records(ds, 5)
+            it = ds.query(1, 5)
+            it.reverse()
+            collected = list(it)
+            assert len(collected) == 5
+            timestamps = [ts for ts, _ in collected]
+            assert timestamps == [5, 4, 3, 2, 1]
+            for ts, data in collected:
+                assert data == f"rec_{ts}".encode()
+
+    def test_query_skip(self, tmpdir):
+        """skip(2) skips the first 2 entries, returning the rest."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_skip", "data")
+            ds = store.open_dataset("q_skip", "data")
+            self._write_records(ds, 5)
+            it = ds.query(1, 5)
+            it.skip(2)
+            collected = list(it)
+            assert len(collected) == 3
+            timestamps = [ts for ts, _ in collected]
+            assert timestamps == [3, 4, 5]
+
+    def test_query_collect_all(self, tmpdir):
+        """collect_all() returns all entries as a list of (timestamp, data) tuples."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_ca", "data")
+            ds = store.open_dataset("q_ca", "data")
+            self._write_records(ds, 5)
+            it = ds.query(1, 5)
+            collected = it.collect_all()
+            assert len(collected) == 5
+            for i, (ts, data) in enumerate(collected, 1):
+                assert ts == i
+                assert data == f"rec_{i}".encode()
+
+    def test_query_collect_take(self, tmpdir):
+        """collect_take(3) returns at most 3 entries."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_ct", "data")
+            ds = store.open_dataset("q_ct", "data")
+            self._write_records(ds, 5)
+            it = ds.query(1, 5)
+            collected = it.collect_take(3)
+            assert len(collected) == 3
+            timestamps = [ts for ts, _ in collected]
+            assert timestamps == [1, 2, 3]
+
+    def test_query_skip_and_reverse(self, tmpdir):
+        """skip(1) then reverse() skips 1 from the front, then reverses remaining."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_sr", "data")
+            ds = store.open_dataset("q_sr", "data")
+            self._write_records(ds, 5)
+            it = ds.query(1, 5)
+            it.skip(1)
+            it.reverse()
+            collected = list(it)
+            assert len(collected) == 4
+            timestamps = [ts for ts, _ in collected]
+            assert timestamps == [5, 4, 3, 2]
+
+    def test_query_skip_more_than_available(self, tmpdir):
+        """skip() more entries than exist yields an empty iterator."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_sma", "data")
+            ds = store.open_dataset("q_sma", "data")
+            self._write_records(ds, 3)
+            it = ds.query(1, 3)
+            it.skip(10)
+            collected = list(it)
+            assert collected == []
+
+    def test_query_collect_all_empty(self, tmpdir):
+        """collect_all() on an empty range returns an empty list."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_cae", "data")
+            ds = store.open_dataset("q_cae", "data")
+            ds.write(100, b"data")
+            it = ds.query(1, 50)
+            collected = it.collect_all()
+            assert collected == []
+
+    def test_query_collect_take_more_than_available(self, tmpdir):
+        """collect_take(N) where N > total entries returns all entries."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_ctm", "data")
+            ds = store.open_dataset("q_ctm", "data")
+            self._write_records(ds, 3)
+            it = ds.query(1, 3)
+            collected = it.collect_take(100)
+            assert len(collected) == 3
+            for i, (ts, data) in enumerate(collected, 1):
+                assert ts == i
+                assert data == f"rec_{i}".encode()
+
+    def test_query_length_reverse(self, tmpdir):
+        """reverse() on QueryLengthIterator yields entries in descending order."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("ql_rev", "data")
+            ds = store.open_dataset("ql_rev", "data")
+            self._write_records(ds, 5)
+            it = ds.query_length(1, 5)
+            it.reverse()
+            collected = list(it)
+            assert len(collected) == 5
+            timestamps = [ts for ts, _ in collected]
+            assert timestamps == [5, 4, 3, 2, 1]
+            for ts, length in collected:
+                assert length > 0
+
+    def test_query_length_skip(self, tmpdir):
+        """skip(2) on QueryLengthIterator skips first 2 entries."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("ql_skip", "data")
+            ds = store.open_dataset("ql_skip", "data")
+            self._write_records(ds, 5)
+            it = ds.query_length(1, 5)
+            it.skip(2)
+            collected = list(it)
+            assert len(collected) == 3
+            timestamps = [ts for ts, _ in collected]
+            assert timestamps == [3, 4, 5]
+
+    def test_query_length_collect_all(self, tmpdir):
+        """collect_all() on QueryLengthIterator returns all (timestamp, length) entries."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("ql_ca", "data")
+            ds = store.open_dataset("ql_ca", "data")
+            self._write_records(ds, 5)
+            it = ds.query_length(1, 5)
+            collected = it.collect_all()
+            assert len(collected) == 5
+            for i, (ts, length) in enumerate(collected, 1):
+                assert ts == i
+                assert length > 0
+
+    def test_query_length_collect_take(self, tmpdir):
+        """collect_take(3) on QueryLengthIterator returns at most 3 entries."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("ql_ct", "data")
+            ds = store.open_dataset("ql_ct", "data")
+            self._write_records(ds, 5)
+            it = ds.query_length(1, 5)
+            collected = it.collect_take(3)
+            assert len(collected) == 3
+            timestamps = [ts for ts, _ in collected]
+            assert timestamps == [1, 2, 3]
+
+    def test_query_length_skip_more_than_available(self, tmpdir):
+        """skip() more than available on QueryLengthIterator yields empty."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("ql_sma", "data")
+            ds = store.open_dataset("ql_sma", "data")
+            self._write_records(ds, 3)
+            it = ds.query_length(1, 3)
+            it.skip(10)
+            collected = list(it)
+            assert collected == []
+
+    def test_query_length_collect_all_empty(self, tmpdir):
+        """collect_all() on QueryLengthIterator for empty range returns []."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("ql_cae", "data")
+            ds = store.open_dataset("ql_cae", "data")
+            ds.write(100, b"data")
+            it = ds.query_length(1, 50)
+            collected = it.collect_all()
+            assert collected == []
+
+    def test_query_reverse_then_collect_take(self, tmpdir):
+        """reverse() then collect_take(2) returns last 2 entries in descending order."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_rct", "data")
+            ds = store.open_dataset("q_rct", "data")
+            self._write_records(ds, 5)
+            it = ds.query(1, 5)
+            it.reverse()
+            collected = it.collect_take(2)
+            assert len(collected) == 2
+            assert collected[0] == (5, b"rec_5")
+            assert collected[1] == (4, b"rec_4")
+
+    def test_query_collect_all_twice_returns_empty(self, tmpdir):
+        """Second collect_all() after exhaustion returns empty list (iterator consumed)."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_cat", "data")
+            ds = store.open_dataset("q_cat", "data")
+            self._write_records(ds, 3)
+            it = ds.query(1, 3)
+            first = it.collect_all()
+            assert len(first) == 3
+            second = it.collect_all()
+            assert second == []
+
+    def test_query_skip_then_collect_all(self, tmpdir):
+        """skip(2) then collect_all() returns remaining entries."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("q_sca", "data")
+            ds = store.open_dataset("q_sca", "data")
+            self._write_records(ds, 5)
+            it = ds.query(1, 5)
+            it.skip(2)
+            collected = it.collect_all()
+            assert len(collected) == 3
+            timestamps = [ts for ts, _ in collected]
+            assert timestamps == [3, 4, 5]

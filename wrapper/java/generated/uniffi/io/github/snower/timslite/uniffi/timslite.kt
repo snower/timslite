@@ -676,9 +676,25 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_timslite_java_checksum_method_journalqueueconsumerbridge_poll(
     ): Int
+    external fun uniffi_timslite_java_checksum_method_queryiteratorbridge_collect_all(
+    ): Int
+    external fun uniffi_timslite_java_checksum_method_queryiteratorbridge_collect_take(
+    ): Int
     external fun uniffi_timslite_java_checksum_method_queryiteratorbridge_next(
     ): Int
+    external fun uniffi_timslite_java_checksum_method_queryiteratorbridge_reverse(
+    ): Int
+    external fun uniffi_timslite_java_checksum_method_queryiteratorbridge_skip(
+    ): Int
+    external fun uniffi_timslite_java_checksum_method_querylengthiteratorbridge_collect_all(
+    ): Int
+    external fun uniffi_timslite_java_checksum_method_querylengthiteratorbridge_collect_take(
+    ): Int
     external fun uniffi_timslite_java_checksum_method_querylengthiteratorbridge_next(
+    ): Int
+    external fun uniffi_timslite_java_checksum_method_querylengthiteratorbridge_reverse(
+    ): Int
+    external fun uniffi_timslite_java_checksum_method_querylengthiteratorbridge_skip(
     ): Int
     external fun uniffi_timslite_java_checksum_method_queuebridge_drop_consumer(
     ): Int
@@ -806,14 +822,30 @@ external fun uniffi_timslite_java_fn_clone_queryiteratorbridge(`handle`: Long,un
 ): Long
 external fun uniffi_timslite_java_fn_free_queryiteratorbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+external fun uniffi_timslite_java_fn_method_queryiteratorbridge_collect_all(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_timslite_java_fn_method_queryiteratorbridge_collect_take(`ptr`: Long,`count`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun uniffi_timslite_java_fn_method_queryiteratorbridge_next(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+external fun uniffi_timslite_java_fn_method_queryiteratorbridge_reverse(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_timslite_java_fn_method_queryiteratorbridge_skip(`ptr`: Long,`count`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 external fun uniffi_timslite_java_fn_clone_querylengthiteratorbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 external fun uniffi_timslite_java_fn_free_querylengthiteratorbridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+external fun uniffi_timslite_java_fn_method_querylengthiteratorbridge_collect_all(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+external fun uniffi_timslite_java_fn_method_querylengthiteratorbridge_collect_take(`ptr`: Long,`count`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 external fun uniffi_timslite_java_fn_method_querylengthiteratorbridge_next(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+external fun uniffi_timslite_java_fn_method_querylengthiteratorbridge_reverse(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+external fun uniffi_timslite_java_fn_method_querylengthiteratorbridge_skip(`ptr`: Long,`count`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 external fun uniffi_timslite_java_fn_clone_queuebridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
 external fun uniffi_timslite_java_fn_free_queuebridge(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
@@ -1061,10 +1093,34 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_timslite_java_checksum_method_journalqueueconsumerbridge_poll() != 21813) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_timslite_java_checksum_method_queryiteratorbridge_collect_all() != 13641) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_timslite_java_checksum_method_queryiteratorbridge_collect_take() != 16044) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_timslite_java_checksum_method_queryiteratorbridge_next() != 56324) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_timslite_java_checksum_method_queryiteratorbridge_reverse() != 57410) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_timslite_java_checksum_method_queryiteratorbridge_skip() != 47549) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_timslite_java_checksum_method_querylengthiteratorbridge_collect_all() != 57235) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_timslite_java_checksum_method_querylengthiteratorbridge_collect_take() != 43951) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_timslite_java_checksum_method_querylengthiteratorbridge_next() != 29836) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_timslite_java_checksum_method_querylengthiteratorbridge_reverse() != 29952) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_timslite_java_checksum_method_querylengthiteratorbridge_skip() != 41202) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_timslite_java_checksum_method_queuebridge_drop_consumer() != 35857) {
@@ -2580,7 +2636,15 @@ public object FfiConverterTypeJournalQueueConsumerBridge: FfiConverter<JournalQu
 
 public interface QueryIteratorBridgeInterface {
     
+    fun `collectAll`(): List<Record>
+    
+    fun `collectTake`(`count`: kotlin.UInt): List<Record>
+    
     fun `next`(): Record?
+    
+    fun `reverse`()
+    
+    fun `skip`(`count`: kotlin.UInt)
     
     companion object
 }
@@ -2682,6 +2746,34 @@ open class QueryIteratorBridge: Disposable, AutoCloseable, QueryIteratorBridgeIn
     }
 
     
+    @Throws(TmslException::class)override fun `collectAll`(): List<Record> {
+            return FfiConverterSequenceTypeRecord.lift(
+    callWithHandle {
+    uniffiRustCallWithError(TmslException) { _status ->
+    UniffiLib.uniffi_timslite_java_fn_method_queryiteratorbridge_collect_all(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(TmslException::class)override fun `collectTake`(`count`: kotlin.UInt): List<Record> {
+            return FfiConverterSequenceTypeRecord.lift(
+    callWithHandle {
+    uniffiRustCallWithError(TmslException) { _status ->
+    UniffiLib.uniffi_timslite_java_fn_method_queryiteratorbridge_collect_take(
+        it,
+        FfiConverterUInt.lower(`count`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(TmslException::class)override fun `next`(): Record? {
             return FfiConverterOptionalTypeRecord.lift(
     callWithHandle {
@@ -2693,6 +2785,32 @@ open class QueryIteratorBridge: Disposable, AutoCloseable, QueryIteratorBridgeIn
     }
     )
     }
+    
+
+    
+    @Throws(TmslException::class)override fun `reverse`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(TmslException) { _status ->
+    UniffiLib.uniffi_timslite_java_fn_method_queryiteratorbridge_reverse(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    @Throws(TmslException::class)override fun `skip`(`count`: kotlin.UInt)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(TmslException) { _status ->
+    UniffiLib.uniffi_timslite_java_fn_method_queryiteratorbridge_skip(
+        it,
+        FfiConverterUInt.lower(`count`),_status)
+}
+    }
+    
     
 
     
@@ -2831,7 +2949,15 @@ public object FfiConverterTypeQueryIteratorBridge: FfiConverter<QueryIteratorBri
 
 public interface QueryLengthIteratorBridgeInterface {
     
+    fun `collectAll`(): List<LengthEntry>
+    
+    fun `collectTake`(`count`: kotlin.UInt): List<LengthEntry>
+    
     fun `next`(): LengthEntry?
+    
+    fun `reverse`()
+    
+    fun `skip`(`count`: kotlin.UInt)
     
     companion object
 }
@@ -2933,6 +3059,34 @@ open class QueryLengthIteratorBridge: Disposable, AutoCloseable, QueryLengthIter
     }
 
     
+    @Throws(TmslException::class)override fun `collectAll`(): List<LengthEntry> {
+            return FfiConverterSequenceTypeLengthEntry.lift(
+    callWithHandle {
+    uniffiRustCallWithError(TmslException) { _status ->
+    UniffiLib.uniffi_timslite_java_fn_method_querylengthiteratorbridge_collect_all(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(TmslException::class)override fun `collectTake`(`count`: kotlin.UInt): List<LengthEntry> {
+            return FfiConverterSequenceTypeLengthEntry.lift(
+    callWithHandle {
+    uniffiRustCallWithError(TmslException) { _status ->
+    UniffiLib.uniffi_timslite_java_fn_method_querylengthiteratorbridge_collect_take(
+        it,
+        FfiConverterUInt.lower(`count`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(TmslException::class)override fun `next`(): LengthEntry? {
             return FfiConverterOptionalTypeLengthEntry.lift(
     callWithHandle {
@@ -2944,6 +3098,32 @@ open class QueryLengthIteratorBridge: Disposable, AutoCloseable, QueryLengthIter
     }
     )
     }
+    
+
+    
+    @Throws(TmslException::class)override fun `reverse`()
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(TmslException) { _status ->
+    UniffiLib.uniffi_timslite_java_fn_method_querylengthiteratorbridge_reverse(
+        it,
+        _status)
+}
+    }
+    
+    
+
+    
+    @Throws(TmslException::class)override fun `skip`(`count`: kotlin.UInt)
+        = 
+    callWithHandle {
+    uniffiRustCallWithError(TmslException) { _status ->
+    UniffiLib.uniffi_timslite_java_fn_method_querylengthiteratorbridge_skip(
+        it,
+        FfiConverterUInt.lower(`count`),_status)
+}
+    }
+    
     
 
     
