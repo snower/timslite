@@ -11,6 +11,7 @@ use timslite::{Store, StoreConfig};
 const WRITE_COUNT: u64 = 400_000;
 const READ_SEQUENTIAL_COUNT: u64 = 300_000;
 const READ_RANDOM_COUNT: u64 = 200_000;
+const QUERY_TOTAL_RECORDS: u64 = 1_000_000;
 const WRITE_THREADS: usize = 4;
 const READ_THREADS: usize = 4;
 
@@ -125,6 +126,90 @@ fn main() {
     }
     metrics.read_random_duration = start.elapsed();
     metrics.read_random_ops = READ_RANDOM_COUNT;
+
+    // query benchmark
+    let start = Instant::now();
+    let mut join_handles = vec![];
+    let records_per_thread = QUERY_TOTAL_RECORDS / READ_THREADS as u64;
+
+    for _ in 0..READ_THREADS {
+        let dataset = dataset.clone();
+        let jh = thread::spawn(move || {
+            let mut rng = rand::thread_rng();
+            let mut bytes_read = 0u64;
+            let mut records_read = 0u64;
+            let mut ops = 0u64;
+            while records_read < records_per_thread {
+                let batch_size = rng.gen_range(5..=2000) as i64;
+                let max_start = WRITE_COUNT as i64 - batch_size;
+                let start_ts = if max_start <= 1 {
+                    1
+                } else {
+                    rng.gen_range(1..=max_start)
+                };
+                let end_ts = start_ts + batch_size - 1;
+                let results = dataset.query(start_ts, end_ts).unwrap();
+                let count = results.len() as u64;
+                let bytes: u64 = results.iter().map(|(_, d)| d.len() as u64).sum();
+                records_read += count;
+                bytes_read += bytes;
+                ops += 1;
+            }
+            (records_read, bytes_read, ops)
+        });
+        join_handles.push(jh);
+    }
+
+    for jh in join_handles {
+        let (records, bytes, ops) = jh.join().unwrap();
+        metrics.query_records += records;
+        metrics.query_bytes += bytes;
+        metrics.query_ops += ops;
+    }
+    metrics.query_duration = start.elapsed();
+
+    // query_iter benchmark (30% reverse)
+    let start = Instant::now();
+    let mut join_handles = vec![];
+    let records_per_thread = QUERY_TOTAL_RECORDS / READ_THREADS as u64;
+
+    for _ in 0..READ_THREADS {
+        let dataset = dataset.clone();
+        let jh = thread::spawn(move || {
+            let mut rng = rand::thread_rng();
+            let mut bytes_read = 0u64;
+            let mut records_read = 0u64;
+            let mut ops = 0u64;
+            while records_read < records_per_thread {
+                let batch_size = rng.gen_range(5..=2000) as i64;
+                let max_start = WRITE_COUNT as i64 - batch_size;
+                let start_ts = if max_start <= 1 {
+                    1
+                } else {
+                    rng.gen_range(1..=max_start)
+                };
+                let end_ts = start_ts + batch_size - 1;
+                let iter = dataset.query_iter(start_ts, end_ts).unwrap();
+                let iter = if rng.gen_bool(0.3) { iter.reverse() } else { iter };
+                let results = iter.collect_all().unwrap();
+                let count = results.len() as u64;
+                let bytes: u64 = results.iter().map(|(_, d)| d.len() as u64).sum();
+                records_read += count;
+                bytes_read += bytes;
+                ops += 1;
+            }
+            (records_read, bytes_read, ops)
+        });
+        join_handles.push(jh);
+    }
+
+    for jh in join_handles {
+        let (records, bytes, ops) = jh.join().unwrap();
+        metrics.query_iter_records += records;
+        metrics.query_iter_bytes += bytes;
+        metrics.query_iter_ops += ops;
+    }
+    metrics.query_iter_duration = start.elapsed();
 
     let inspect_result = store.inspect_dataset("bench_data", "logs").unwrap();
     metrics.total_data_size = inspect_result.state.total_data_size;

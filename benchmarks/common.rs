@@ -85,6 +85,14 @@ pub struct BenchmarkMetrics {
     pub read_random_ops: u64,
     pub read_random_bytes: u64,
     pub read_random_duration: Duration,
+    pub query_ops: u64,
+    pub query_records: u64,
+    pub query_bytes: u64,
+    pub query_duration: Duration,
+    pub query_iter_ops: u64,
+    pub query_iter_records: u64,
+    pub query_iter_bytes: u64,
+    pub query_iter_duration: Duration,
     pub total_data_size: u64,
     pub total_uncompressed_size: u64,
 }
@@ -141,6 +149,34 @@ impl BenchmarkMetrics {
         self.read_random_bytes as f64 / self.read_random_duration.as_secs_f64()
     }
 
+    pub fn query_records_per_sec(&self) -> f64 {
+        if self.query_duration.as_secs_f64() == 0.0 {
+            return 0.0;
+        }
+        self.query_records as f64 / self.query_duration.as_secs_f64()
+    }
+
+    pub fn query_bytes_per_sec(&self) -> f64 {
+        if self.query_duration.as_secs_f64() == 0.0 {
+            return 0.0;
+        }
+        self.query_bytes as f64 / self.query_duration.as_secs_f64()
+    }
+
+    pub fn query_iter_records_per_sec(&self) -> f64 {
+        if self.query_iter_duration.as_secs_f64() == 0.0 {
+            return 0.0;
+        }
+        self.query_iter_records as f64 / self.query_iter_duration.as_secs_f64()
+    }
+
+    pub fn query_iter_bytes_per_sec(&self) -> f64 {
+        if self.query_iter_duration.as_secs_f64() == 0.0 {
+            return 0.0;
+        }
+        self.query_iter_bytes as f64 / self.query_iter_duration.as_secs_f64()
+    }
+
     /// Calculate compression ratio.
     pub fn compression_ratio(&self) -> f64 {
         if self.total_data_size == 0 {
@@ -188,6 +224,35 @@ impl BenchmarkMetrics {
         println!(
             "  Bandwidth: {:.2} KB/sec",
             self.read_random_bytes_per_sec() / 1024.0
+        );
+
+        println!("\nQuery Performance (batch query):");
+        println!("  Operations: {} queries", self.query_ops);
+        println!("  Records: {}", self.query_records);
+        println!("  Duration: {:.3}s", self.query_duration.as_secs_f64());
+        println!(
+            "  Throughput: {:.2} records/sec",
+            self.query_records_per_sec()
+        );
+        println!(
+            "  Bandwidth: {:.2} KB/sec",
+            self.query_bytes_per_sec() / 1024.0
+        );
+
+        println!("\nQuery Performance (query_iter):");
+        println!("  Operations: {} queries", self.query_iter_ops);
+        println!("  Records: {}", self.query_iter_records);
+        println!(
+            "  Duration: {:.3}s",
+            self.query_iter_duration.as_secs_f64()
+        );
+        println!(
+            "  Throughput: {:.2} records/sec",
+            self.query_iter_records_per_sec()
+        );
+        println!(
+            "  Bandwidth: {:.2} KB/sec",
+            self.query_iter_bytes_per_sec() / 1024.0
         );
 
         println!("\nStorage Efficiency:");
