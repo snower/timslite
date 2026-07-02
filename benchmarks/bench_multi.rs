@@ -1,4 +1,4 @@
-﻿mod common;
+mod common;
 
 use common::{create_temp_dir, BenchmarkMetrics, LogData};
 use rand::Rng;
@@ -190,7 +190,11 @@ fn main() {
                 };
                 let end_ts = start_ts + batch_size - 1;
                 let iter = dataset.query_iter(start_ts, end_ts).unwrap();
-                let iter = if rng.gen_bool(0.3) { iter.reverse() } else { iter };
+                let iter = if rng.gen_bool(0.3) {
+                    iter.reverse()
+                } else {
+                    iter
+                };
                 let results = iter.collect_all().unwrap();
                 let count = results.len() as u64;
                 let bytes: u64 = results.iter().map(|(_, d)| d.len() as u64).sum();

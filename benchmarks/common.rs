@@ -1,4 +1,4 @@
-﻿use rand::Rng;
+use rand::Rng;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -242,10 +242,7 @@ impl BenchmarkMetrics {
         println!("\nQuery Performance (query_iter):");
         println!("  Operations: {} queries", self.query_iter_ops);
         println!("  Records: {}", self.query_iter_records);
-        println!(
-            "  Duration: {:.3}s",
-            self.query_iter_duration.as_secs_f64()
-        );
+        println!("  Duration: {:.3}s", self.query_iter_duration.as_secs_f64());
         println!(
             "  Throughput: {:.2} records/sec",
             self.query_iter_records_per_sec()
