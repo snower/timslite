@@ -5,7 +5,10 @@
 
 pub mod segment;
 
-use std::collections::BTreeMap;
+use std::collections::{
+    btree_map::{Entry, OccupiedEntry},
+    BTreeMap,
+};
 use std::path::Path;
 
 pub use self::segment::INDEX_ENTRY_SIZE;
@@ -178,30 +181,34 @@ impl TimeIndex {
     }
 
     fn open_index_segment(&mut self, start_timestamp: i64) -> Result<&mut IndexSegment> {
-        if !self.index_segments.contains_key(&start_timestamp) {
-            return Err(TmslError::NotFound(format!(
+        match self.index_segments.entry(start_timestamp) {
+            Entry::Occupied(entry) => {
+                Self::open_occupied_index_segment(entry, self.segment_size, self.dirty_sink.clone())
+            }
+            Entry::Vacant(_) => Err(TmslError::NotFound(format!(
                 "no index segment at {}",
                 start_timestamp
-            )));
+            ))),
         }
-        let needs_open = matches!(
-            self.index_segments.get(&start_timestamp),
-            Some(IndexSegmentEntryState::Closed(_))
-        );
-        if needs_open {
-            let Some(IndexSegmentEntryState::Closed(meta)) =
-                self.index_segments.remove(&start_timestamp)
-            else {
-                unreachable!();
-            };
-            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
-            seg.set_dirty_sink(self.dirty_sink.clone());
-            self.index_segments
-                .insert(start_timestamp, IndexSegmentEntryState::Open(seg));
+    }
+
+    fn open_occupied_index_segment(
+        entry: OccupiedEntry<'_, i64, IndexSegmentEntryState>,
+        segment_size: u64,
+        dirty_sink: Option<SegmentDirtySink>,
+    ) -> Result<&mut IndexSegment> {
+        let start_timestamp = *entry.key();
+        let entry = entry.into_mut();
+        if let IndexSegmentEntryState::Closed(meta) = entry {
+            let path = meta.path.clone();
+            let meta_start = meta.start_timestamp;
+            let mut seg = IndexSegment::open(&path, meta_start, segment_size)?;
+            seg.set_dirty_sink(dirty_sink);
+            *entry = IndexSegmentEntryState::Open(seg);
         }
-        match self.index_segments.get_mut(&start_timestamp) {
-            Some(IndexSegmentEntryState::Open(seg)) => Ok(seg),
-            _ => Err(TmslError::NotFound(format!(
+        match entry {
+            IndexSegmentEntryState::Open(seg) => Ok(seg),
+            IndexSegmentEntryState::Closed(_) => Err(TmslError::NotFound(format!(
                 "no index segment at {}",
                 start_timestamp
             ))),
@@ -505,10 +512,11 @@ impl TimeIndex {
         let Some(segment_start) = segment_start else {
             return Ok(None);
         };
-        if !self.index_segments.contains_key(&segment_start) {
-            return Ok(None);
-        }
-        let seg = self.open_index_segment(segment_start)?;
+        let seg = match self.open_index_segment(segment_start) {
+            Ok(seg) => seg,
+            Err(TmslError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
         Ok(seg.find_exact_cs(timestamp, ic))
     }
 
@@ -550,20 +558,43 @@ impl TimeIndex {
             self.segment_start_candidate_for_ts(timestamp)
         };
         if let Some(segment_start) = segment_start {
-            if self.index_segments.contains_key(&segment_start) {
-                let seg = self.open_index_segment(segment_start)?;
-                if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
-                    let old = seg
-                        .find_exact_cs(timestamp, ic)
-                        .expect("entry exists after find_entry_index_cs");
-                    seg.ensure_open()?;
-                    seg.overwrite_entry(idx, &new_entry)?;
-                    return Ok(old);
+            let seg = match self.open_index_segment(segment_start) {
+                Ok(seg) => seg,
+                Err(TmslError::NotFound(_)) => {
+                    return self.upsert_or_not_found(
+                        ic,
+                        timestamp,
+                        new_block_offset,
+                        new_in_block_offset,
+                        archived_range_sink,
+                    )
                 }
+                Err(e) => return Err(e),
+            };
+            if let Some((idx, old)) = seg.find_entry_index_and_entry_cs(timestamp, ic, None) {
+                seg.overwrite_entry(idx, &new_entry)?;
+                return Ok(old);
             }
         }
 
-        if ic {
+        self.upsert_or_not_found(
+            ic,
+            timestamp,
+            new_block_offset,
+            new_in_block_offset,
+            archived_range_sink,
+        )
+    }
+
+    fn upsert_or_not_found(
+        &mut self,
+        index_continuous: bool,
+        timestamp: i64,
+        new_block_offset: u64,
+        new_in_block_offset: u16,
+        archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<IndexEntry> {
+        if index_continuous {
             return self.upsert_sparse_continuous_entry(
                 timestamp,
                 new_block_offset,
@@ -622,22 +653,25 @@ impl TimeIndex {
             self.segment_start_candidate_for_ts(timestamp)
         };
         if let Some(segment_start) = segment_start {
-            if self.index_segments.contains_key(&segment_start) {
-                let seg = self.open_index_segment(segment_start)?;
-                if let Some(idx) = seg.find_entry_index_cs(timestamp, ic, None) {
-                    let old = seg
-                        .find_exact_cs(timestamp, ic)
-                        .expect("entry exists after find_entry_index_cs");
-                    if old.is_filler() {
-                        return Err(TmslError::NotFound(format!(
-                            "no real data at timestamp {} (filler)",
-                            timestamp
-                        )));
-                    }
-                    seg.ensure_open()?;
-                    seg.overwrite_entry(idx, &sentinel)?;
-                    return Ok(old);
+            let seg = match self.open_index_segment(segment_start) {
+                Ok(seg) => seg,
+                Err(TmslError::NotFound(_)) => {
+                    return Err(TmslError::NotFound(format!(
+                        "no entry at timestamp {} to delete",
+                        timestamp
+                    )));
                 }
+                Err(e) => return Err(e),
+            };
+            if let Some((idx, old)) = seg.find_entry_index_and_entry_cs(timestamp, ic, None) {
+                if old.is_filler() {
+                    return Err(TmslError::NotFound(format!(
+                        "no real data at timestamp {} (filler)",
+                        timestamp
+                    )));
+                }
+                seg.overwrite_entry(idx, &sentinel)?;
+                return Ok(old);
             }
         }
 
@@ -769,7 +803,10 @@ impl TimeIndex {
         seg.set_dirty_sink(self.dirty_sink.clone());
         self.index_segments
             .insert(segment_start, IndexSegmentEntryState::Open(seg));
-        self.open_index_segment(segment_start)
+        match self.index_segments.get_mut(&segment_start) {
+            Some(IndexSegmentEntryState::Open(seg)) => Ok(seg),
+            _ => unreachable!(),
+        }
     }
 
     fn refresh_archived_range_before_segment_create(

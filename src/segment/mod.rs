@@ -4,7 +4,7 @@
 
 pub mod data;
 
-use std::collections::BTreeMap;
+use std::collections::{btree_map::Entry, BTreeMap};
 use std::path::Path;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -281,28 +281,25 @@ impl DataSegmentSet {
 
     /// Lazy open a segment by its file_offset.
     pub fn lazy_open(&mut self, file_offset: u64) -> Result<&mut DS> {
-        if !self.segments.contains_key(&file_offset) {
-            return Err(crate::error::TmslError::NotFound(format!(
-                "no segment at offset {}",
-                file_offset
-            )));
-        }
-        let needs_open = matches!(
-            self.segments.get(&file_offset),
-            Some(DataSegmentEntry::Closed(_))
-        );
-        if needs_open {
-            let Some(DataSegmentEntry::Closed(meta)) = self.segments.remove(&file_offset) else {
-                unreachable!();
-            };
-            let mut seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
+        let entry = match self.segments.entry(file_offset) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(_) => {
+                return Err(crate::error::TmslError::NotFound(format!(
+                    "no segment at offset {}",
+                    file_offset
+                )));
+            }
+        };
+        if let DataSegmentEntry::Closed(meta) = entry {
+            let path = meta.path.clone();
+            let meta_offset = meta.file_offset;
+            let mut seg = DS::open(&path, meta_offset, self.segment_size)?;
             seg.set_dirty_sink(self.dirty_sink.clone());
-            self.segments
-                .insert(file_offset, DataSegmentEntry::Open(seg));
+            *entry = DataSegmentEntry::Open(seg);
         }
-        match self.segments.get_mut(&file_offset) {
-            Some(DataSegmentEntry::Open(seg)) => Ok(seg),
-            _ => Err(crate::error::TmslError::NotFound(format!(
+        match entry {
+            DataSegmentEntry::Open(seg) => Ok(seg),
+            DataSegmentEntry::Closed(_) => Err(crate::error::TmslError::NotFound(format!(
                 "no segment at offset {}",
                 file_offset
             ))),
@@ -621,22 +618,23 @@ impl DataSegmentSet {
     /// if it is currently closed, then closes it again after the increment.
     pub fn increment_invalid_record_count(&mut self, absolute_offset: u64) -> Result<bool> {
         let seg_start = self.segment_offset_for(absolute_offset);
-        if let Some(DataSegmentEntry::Open(seg)) = self.segments.get_mut(&seg_start) {
-            seg.increment_invalid_record_count()?;
-            return Ok(false);
+        match self.segments.get_mut(&seg_start) {
+            Some(DataSegmentEntry::Open(seg)) => {
+                seg.increment_invalid_record_count()?;
+                Ok(false)
+            }
+            Some(DataSegmentEntry::Closed(meta)) => {
+                let mut seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
+                seg.increment_invalid_record_count()?;
+                meta.invalid_record_count = seg.invalid_record_count;
+                seg.idle_close(self.compress_level)?;
+                Ok(true)
+            }
+            None => Err(TmslError::NotFound(format!(
+                "no segment contains offset {}",
+                absolute_offset
+            ))),
         }
-        // Closed segments — open briefly, increment, then idle_close back.
-        if let Some(DataSegmentEntry::Closed(meta)) = self.segments.get_mut(&seg_start) {
-            let mut seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
-            seg.increment_invalid_record_count()?;
-            meta.invalid_record_count = seg.invalid_record_count;
-            seg.idle_close(self.compress_level)?;
-            return Ok(true);
-        }
-        Err(TmslError::NotFound(format!(
-            "no segment contains offset {}",
-            absolute_offset
-        )))
     }
 
     // ─── Read operations ─────────────────────────────────────────────────
@@ -717,15 +715,6 @@ impl DataSegmentSet {
         test_hooks::record_find_or_open_segment();
 
         let seg_start = self.segment_offset_for(absolute_offset);
-        if matches!(
-            self.segments.get(&seg_start),
-            Some(DataSegmentEntry::Open(_))
-        ) {
-            return match self.segments.get_mut(&seg_start) {
-                Some(DataSegmentEntry::Open(seg)) => Ok(seg),
-                _ => unreachable!(),
-            };
-        }
         self.lazy_open(seg_start).map_err(|_| {
             crate::error::TmslError::NotFound(format!(
                 "no segment contains offset {}",

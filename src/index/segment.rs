@@ -341,6 +341,18 @@ impl IndexSegment {
         IndexEntry::timestamp_from_delta_opt(segment_start_timestamp, delta)
     }
 
+    fn read_entry_at_pos(
+        segment_start_timestamp: i64,
+        mmap: &[u8],
+        pos: usize,
+    ) -> Option<IndexEntry> {
+        if pos + INDEX_ENTRY_SIZE > mmap.len() {
+            return None;
+        }
+        let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().ok()?;
+        IndexEntry::from_bytes_for_segment(segment_start_timestamp, &buf).ok()
+    }
+
     /// Binary search: find the first entry with timestamp >= target_ts.
     pub fn lower_bound(&self, target_ts: i64) -> usize {
         let mmap = self.mmap.as_ref().expect("index segment must be open");
@@ -509,6 +521,57 @@ impl IndexSegment {
         } else {
             self.find_entry_index(target_ts)
         }
+    }
+
+    pub(crate) fn find_entry_index_and_entry_cs(
+        &self,
+        target_ts: i64,
+        index_continuous: bool,
+        wrote_count: Option<usize>,
+    ) -> Option<(usize, IndexEntry)> {
+        let mmap = self.mmap.as_ref()?;
+        if index_continuous {
+            let wc = wrote_count.unwrap_or(self.wrote_count);
+            if wc == 0 {
+                return None;
+            }
+            let end_ts = self.start_timestamp + wc as i64;
+            if target_ts < self.start_timestamp || target_ts >= end_ts {
+                return None;
+            }
+            let entry_index = (target_ts - self.start_timestamp) as usize;
+            let pos = self.header_size as usize + entry_index * INDEX_ENTRY_SIZE;
+            let ts = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos)?;
+            if ts != target_ts {
+                return None;
+            }
+            return Self::read_entry_at_pos(self.start_timestamp, mmap, pos)
+                .map(|entry| (entry_index, entry));
+        }
+
+        if self.wrote_count == 0 {
+            return None;
+        }
+        let (mut lo, mut hi) = (0usize, self.wrote_count - 1);
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2;
+            let pos = self.header_size as usize + mid * INDEX_ENTRY_SIZE;
+            let ts = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos)?;
+            match ts.cmp(&target_ts) {
+                std::cmp::Ordering::Equal => {
+                    return Self::read_entry_at_pos(self.start_timestamp, mmap, pos)
+                        .map(|entry| (mid, entry));
+                }
+                std::cmp::Ordering::Less => lo = mid + 1,
+                std::cmp::Ordering::Greater => {
+                    if mid == 0 {
+                        break;
+                    }
+                    hi = mid - 1;
+                }
+            }
+        }
+        None
     }
 
     /// Overwrite an entry at the given index. Only valid for open segments.
@@ -927,6 +990,27 @@ mod tests {
         // Verify out of range error
         let result = seg.overwrite_entry(5, &IndexEntry::new(999, 0, 0));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_segment_finds_index_and_entry_together() {
+        let dir = temp_dir();
+        let sub = dir.join("find_index_and_entry");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut seg = IndexSegment::create(&sub, 0, 4096, 4096).unwrap();
+        seg.append_entry(&IndexEntry::new(100, 10, 1)).unwrap();
+        seg.append_entry(&IndexEntry::new(110, 20, 2)).unwrap();
+        seg.append_entry(&IndexEntry::new(120, 30, 3)).unwrap();
+
+        let (idx, entry) = seg.find_entry_index_and_entry_cs(110, false, None).unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(entry, IndexEntry::new(110, 20, 2));
+
+        assert!(seg
+            .find_entry_index_and_entry_cs(115, false, None)
+            .is_none());
     }
 
     proptest::proptest! {
