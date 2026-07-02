@@ -1013,8 +1013,10 @@ mod tests {
 
     #[test]
     fn test_store_config_validate_retention_check_hour_over_23() {
-        let mut cfg = StoreConfig::default();
-        cfg.retention_check_hour = 24;
+        let cfg = StoreConfig {
+            retention_check_hour: 24,
+            ..Default::default()
+        };
         let result = cfg.validate();
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
