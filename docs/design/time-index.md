@@ -152,7 +152,7 @@ impl IndexSegment {
 - 创建、打开、成功 `sync()` 后 `is_flushed=true`。
 - `append_entry()` / `overwrite_entry()` 写 mmap 后置 `is_flushed=false`。
 - dirty 状态首次从 true 变 false 后, `DataSet` 根据本次写入/更新的 timestamp 计算精确 `{ dataset_key, Index { start_timestamp } }` target 并加入 Store 级共享 `flush_queue`; 写路径不遍历所有 open index segment。
-- `TimeIndex::add_entry()` / `update_entry()` 直接写 mmap-backed index segment, 不再维护 in-memory index buffer, 也不在写入/更新热路径执行 pure-filler cleanup; `flush_to_disk()` 仅作为连续模式 pure-filler segment cleanup hook 保留。
+- `TimeIndex::add_entry()` / `update_entry()` 直接写 mmap-backed index segment, 不再维护 in-memory index buffer; 写入、更新和 flush 路径均不执行 pure-filler cleanup, 现阶段保留已有 pure-filler segment。
 - 创建新的 index segment 前, 对前一个已经完结或跨 grid 的 index segment 直接 `sync()`。
 
 ### 7.5 索引文件布局

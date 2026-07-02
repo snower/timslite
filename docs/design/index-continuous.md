@@ -198,7 +198,7 @@ validate entry.timestamp == ts
 - `TimeIndex::upsert_sparse_continuous_entry(timestamp, block_offset, in_block_offset) -> Option<old_entry>` (`block_offset` 为数据区逻辑全局 offset)
 - `IndexSegment::materialize_until(timestamp, real_entry)`
 
-现有 `remove_pure_filler_segments()` 只能作为兼容清理, 不能作为大 gap 的主要策略。新设计必须在写入前跳过中间完整空 segment。
+现阶段不执行 pure-filler segment cleanup。连续索引必须在写入前跳过中间完整空 segment, flush 路径不再删除已存在的 pure-filler segment。
 
 ---
 

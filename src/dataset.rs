@@ -824,15 +824,6 @@ impl DataSetInner {
         Ok(())
     }
 
-    fn flush_time_index_to_disk(&mut self) -> Result<()> {
-        let index_segments_before = self.time_index.total_len();
-        self.time_index.flush_to_disk()?;
-        if self.time_index.total_len() != index_segments_before {
-            self.refresh_archived_index_timestamp_range()?;
-        }
-        Ok(())
-    }
-
     fn inspect_timestamp_range(&self) -> (Option<i64>, Option<i64>) {
         let archived = self.dataset_state.snapshot();
         let mut min_ts =
@@ -923,7 +914,6 @@ impl DataSetInner {
     }
 
     pub(crate) fn flush_dirty_segments(&mut self) -> Result<()> {
-        self.flush_time_index_to_disk()?;
         self.segments.sync_all()?;
         self.time_index.sync_all()?;
         self.dataset_state.sync()?;
@@ -934,12 +924,6 @@ impl DataSetInner {
         &mut self,
         targets: Vec<SegmentFlushTarget>,
     ) -> Result<()> {
-        if targets
-            .iter()
-            .any(|target| matches!(target, SegmentFlushTarget::Index { .. }))
-        {
-            self.flush_time_index_to_disk()?;
-        }
         for target in targets {
             self.sync_flush_target(target)?;
         }
@@ -1787,10 +1771,7 @@ impl DataSetInner {
             self.flush_dirty_segments()?;
             self.remove_queued_flush_targets_for_self();
         } else {
-            self.flush_time_index_to_disk()?;
-            self.segments.sync_all()?;
-            self.time_index.sync_all()?;
-            self.dataset_state.sync()?;
+            self.flush_dirty_segments()?;
         }
         // Flush queue state files if open
         if let Some(ref inner) = self.queue_inner {
@@ -2811,6 +2792,44 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, first_ts);
         assert_eq!(entries[1].0, second_ts);
+    }
+
+    #[test]
+    fn test_flush_keeps_existing_pure_filler_index_segments() {
+        let dir = temp_dir("continuous_flush_keeps_pure_filler");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let index_segment_size = 512;
+        let capacity = ((index_segment_size - crate::INDEX_HEADER_SIZE)
+            / crate::INDEX_ENTRY_SIZE as u64) as i64;
+        let first_ts = 10;
+        let filler_start = first_ts + capacity;
+        let mut ds = DataSetInner::create(
+            id,
+            dir,
+            64 * 1024 * 1024,
+            index_segment_size,
+            6,
+            1,
+            256 * 1024,
+            128,
+            0,
+        )
+        .unwrap();
+
+        ds.write(first_ts, b"first").unwrap();
+        ds.time_index.add_filler_entry(filler_start).unwrap();
+        ds.time_index.add_filler_entry(filler_start + 1).unwrap();
+        assert!(ds.time_index.index_segments.contains_key(&filler_start));
+
+        ds.flush().unwrap();
+
+        assert!(
+            ds.time_index.index_segments.contains_key(&filler_start),
+            "flush must not run pure-filler index cleanup"
+        );
     }
 
     #[test]

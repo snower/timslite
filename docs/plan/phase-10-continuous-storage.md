@@ -56,8 +56,8 @@ const META_INDEX_CONTINUOUS: u8 = 0x05; // u8: 0=非连续, 1=连续
 
 ## 10.6 Index Segment 跳过规则
 
-- `TimeIndex::flush_to_disk()`: flush 完成后调用 `remove_pure_filler_segments()`
-- 仅含 filler 的 segment: close + delete 文件 + 从 vec 移除
+- flush 路径不执行 pure-filler cleanup
+- 仅含 filler 的 segment: 现阶段保留, 后续如需清理再单独设计
 - Filler 识别: `block_offset == BLOCK_OFFSET_FILLER (0xFFFFFFFFFFFFFFFF)`
 
 ## 10.7 读取时 Filler 过滤

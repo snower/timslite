@@ -26,7 +26,7 @@ pub(crate) struct IndexEntryPosition {
     pub entry_index: usize,
 }
 
-// ─── TimeIndex ─────────────────────────────────────────────────────────────
+// 鈹€鈹€鈹€ TimeIndex 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 pub struct TimeIndex {
     pub base_dir: std::path::PathBuf,
@@ -589,15 +589,6 @@ impl TimeIndex {
         )))
     }
 
-    /// Preserve the old flush hook as an index cleanup point.
-    pub fn flush_to_disk(&mut self) -> Result<()> {
-        if self.index_continuous {
-            self.remove_pure_filler_segments();
-        }
-
-        Ok(())
-    }
-
     fn append_with_expansion(seg: &mut IndexSegment, entry: &IndexEntry) -> Result<()> {
         loop {
             match seg.append_entry(entry) {
@@ -651,57 +642,6 @@ impl TimeIndex {
             )),
             other => other,
         })
-    }
-
-    /// Remove segments that contain only filler entries (no real data).
-    /// Used in continuous mode to avoid creating segments filled entirely
-    /// with filler entries that span no real data.
-    fn remove_pure_filler_segments(&mut self) {
-        let mut to_remove = Vec::new();
-
-        for (key, entry) in self.index_segments.iter_mut() {
-            let remove = match entry {
-                IndexSegmentEntryState::Open(seg) => {
-                    if seg.wrote_count == 0 {
-                        false
-                    } else {
-                        let all_filler = seg
-                            .query_range(i64::MIN, i64::MAX)
-                            .iter()
-                            .all(|e| e.block_offset == BLOCK_OFFSET_FILLER);
-                        if all_filler {
-                            let _ = seg.idle_close();
-                            let _ = std::fs::remove_file(&seg.path);
-                            log::debug!("[index] removed pure-filler segment: {:?}", seg.path);
-                        }
-                        all_filler
-                    }
-                }
-                IndexSegmentEntryState::Closed(meta) => {
-                    match IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size) {
-                        Ok(seg) if seg.wrote_count > 0 => {
-                            let all_filler = seg
-                                .query_range(i64::MIN, i64::MAX)
-                                .iter()
-                                .all(|e| e.block_offset == BLOCK_OFFSET_FILLER);
-                            if all_filler {
-                                let _ = std::fs::remove_file(&meta.path);
-                                log::debug!("[index] removed pure-filler segment: {:?}", meta.path);
-                            }
-                            all_filler
-                        }
-                        _ => false,
-                    }
-                }
-            };
-            if remove {
-                to_remove.push(*key);
-            }
-        }
-
-        for key in to_remove {
-            self.index_segments.remove(&key);
-        }
     }
 
     /// Get or create a segment for the given timestamp.
@@ -891,7 +831,7 @@ impl TimeIndex {
         Ok(None)
     }
 
-    // ─── Lifecycle management ────────────────────────────────────────────
+    // 鈹€鈹€鈹€ Lifecycle management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     pub fn sync_all(&mut self) -> Result<()> {
         for seg in self.open_index_segments_mut() {
@@ -1176,7 +1116,7 @@ mod tests {
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
         }
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
         assert_eq!(
             idx.open_index_segments()
                 .map(|seg| seg.start_timestamp)
@@ -1292,7 +1232,7 @@ mod tests {
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
         }
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
         idx.idle_close_all().unwrap();
         let meta = missing_meta(&sub, 50);
         idx.index_segments
@@ -1309,7 +1249,7 @@ mod tests {
         let mut idx = TimeIndex::new(&sub, 200, 200, false).unwrap();
         idx.add_entry(100, 1000, 1).unwrap();
         idx.add_entry(101, 1001, 1).unwrap();
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
         idx.idle_close_all().unwrap();
         let meta = missing_meta(&sub, 0);
         idx.index_segments
@@ -1334,7 +1274,7 @@ mod tests {
 
         idx.add_entry(0, 100, 0).unwrap();
         idx.add_entry(u32::MAX as i64 + 1, 200, 0).unwrap();
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
 
         assert_eq!(idx.total_len(), 2);
         assert!(idx.index_segments.contains_key(&0));
@@ -1360,11 +1300,11 @@ mod tests {
         assert_eq!(seg.lower_bound_cs(100, false), 10);
 
         // Continuous mode (entries are contiguous from 0): O(1)
-        // Continuous: range [0..9], target 25 → out of range → wrote_count
+        // Continuous: range [0..9], target 25 鈫?out of range 鈫?wrote_count
         assert_eq!(seg.lower_bound_cs(9, true), 9);
-        assert_eq!(seg.lower_bound_cs(10, true), 10); // out of range → wrote_count
+        assert_eq!(seg.lower_bound_cs(10, true), 10); // out of range 鈫?wrote_count
         assert_eq!(seg.lower_bound_cs(-5, true), 0);
-        assert_eq!(seg.lower_bound_cs(25, true), 10); // out of range → wrote_count
+        assert_eq!(seg.lower_bound_cs(25, true), 10); // out of range 鈫?wrote_count
     }
 
     #[test]
@@ -1535,7 +1475,7 @@ mod tests {
             idx.add_entry(2000 + i, i as u64 * 300, (i * 7) as u16)
                 .unwrap();
         }
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
 
         // Load fresh
         let mut idx2 = TimeIndex::load_existing(&dir, 4096, 4096, false).unwrap();
@@ -1545,36 +1485,26 @@ mod tests {
     }
 
     #[test]
-    fn test_time_index_pure_filler_segments_removed() {
-        // This tests that when we add ONLY filler entries (no real data),
-        // the segments are removed during flush.
-        let dir = temp_dir();
-        let sub = dir.join("pure_filler");
-        let _ = fs::remove_dir_all(&sub);
-        fs::create_dir_all(&sub).unwrap();
+    fn test_time_index_sync_keeps_pure_filler_segments() {
+        let sub = fresh_subdir("pure_filler_retained");
+        let mut idx = TimeIndex::new(&sub, 512, 512, true).unwrap();
 
-        let mut idx = TimeIndex::new(&sub, 4096, 4096, true).unwrap();
+        idx.ensure_base_timestamp(1000).unwrap();
+        let capacity = idx.segment_capacity().unwrap() as i64;
+        let filler_start = 1000 + capacity;
+        idx.push_filler_range(filler_start, filler_start + 2)
+            .unwrap();
+        assert!(idx.index_segments.contains_key(&filler_start));
 
-        // Add only filler entries (more than one segment worth)
-        for i in 0..100 {
-            idx.add_filler_entry(1000 + i).unwrap();
-        }
-        // Add one real entry at the end
-        idx.add_entry(1100, 999, 0).unwrap();
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
 
-        // Count files in directory
-        let file_count = fs::read_dir(&sub)
-            .unwrap()
-            .filter(|e| e.as_ref().unwrap().path().is_file())
-            .count();
-
-        // There should be only 1 segment file (the one with the real entry)
-        assert!(file_count >= 1);
-
-        // Verify the real entry is queryable
-        let entries = idx.query(1100, 1100).unwrap();
-        assert_eq!(entries.len(), 1);
+        assert!(
+            idx.index_segments.contains_key(&filler_start),
+            "index sync must not remove pure-filler segments"
+        );
+        let entries = idx.query(filler_start, filler_start + 1).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().all(IndexEntry::is_filler));
     }
 
     #[test]
@@ -1592,7 +1522,7 @@ mod tests {
         assert_eq!(idx.timestamp_range_snapshot(), Some((100, 200)));
 
         // Flush to disk and check range across segments
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
         assert_eq!(idx.timestamp_range_snapshot(), Some((100, 200)));
 
         // Add more entries after flush
@@ -1605,17 +1535,17 @@ mod tests {
         let sub = fresh_subdir("archived_ts_range");
         let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
 
-        // Single segment — nothing is archived (the only segment is active)
+        // Single segment 鈥?nothing is archived (the only segment is active)
         idx.add_entry(100, 100, 0).unwrap();
         idx.add_entry(101, 101, 0).unwrap();
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
         assert_eq!(idx.archived_timestamp_range_snapshot(), None);
 
         // Force second segment by writing beyond first segment capacity
         for ts in 102..107 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
         }
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
 
         // Now first segment should be archived
         let archived = idx.archived_timestamp_range_snapshot();
@@ -1639,8 +1569,8 @@ mod tests {
         idx.add_entry(102, 102, 0).unwrap();
         assert_eq!(idx.active_timestamp_range_snapshot(), Some((100, 102)));
 
-        // Flush to disk — active timestamp range should still be correct
-        idx.flush_to_disk().unwrap();
+        // Flush to disk 鈥?active timestamp range should still be correct
+        idx.sync_all().unwrap();
         let range = idx.active_timestamp_range_snapshot();
         assert!(range.is_some());
         let (min, max) = range.unwrap();
@@ -1657,7 +1587,7 @@ mod tests {
         idx.add_entry(100, 100, 0).unwrap();
         idx.add_entry(101, 101, 0).unwrap();
         idx.add_entry(102, 102, 0).unwrap();
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
         assert_eq!(idx.open_len(), 1);
         assert_eq!(idx.closed_len(), 0);
 
@@ -1680,7 +1610,7 @@ mod tests {
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
         }
-        idx.flush_to_disk().unwrap();
+        idx.sync_all().unwrap();
 
         // Verify range before closing
         let range = idx.timestamp_range_snapshot();
