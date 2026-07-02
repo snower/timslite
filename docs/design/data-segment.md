@@ -375,7 +375,7 @@ impl DataSegment {
 - idle-close: 遍历 registry, 将 `Open` sync+unmap 后替换为 `Closed`。
 - 新建 segment: 以新 `file_offset` 插入 `Open` entry。
 
-最高 `file_offset` 的 data segment 是 inspect 统计中的 active tail segment。active tail 的判定只看 `file_offset`，不看 `Open` / `Closed` 生命周期状态；即使它已被 idle-close, 仍然是当前可能继续追加写入的尾段。创建下一 data segment 时, 旧 active tail 才进入 dataset state 文件的归档统计。
+最高 `file_offset` 的 data segment 是 inspect 统计中的 active tail segment。active tail 的判定只看 `file_offset`，不看 `Open` / `Closed` 生命周期状态；即使它已被 idle-close, 仍然是当前可能继续追加写入的尾段。`DataSegmentSet` 创建下一 data segment 前, 旧 active tail 才通过窄 state sink 进入 dataset state 文件的归档统计。
 
 `DataSegmentMeta` 只承担 lazy-open、路由和段级过滤所需的元数据缓存，不扩展为保存整个 dataset inspect 汇总。归档分段的 `record_count`、`data_wrote_position`、`uncompressed_size`、`invalid_record_count` 汇总由 `{dataset_dir}/state` 文件保存；普通 inspect 不需要打开所有历史 data segment。
 

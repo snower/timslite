@@ -154,6 +154,7 @@ impl IndexSegment {
 - `TimeIndex` 安装 Store 级 dirty sink 后, dirty 状态首次从 true 变 false 时, `IndexSegment` 用自身 `start_timestamp` 将精确 `{ dataset_key, Index { start_timestamp } }` target 加入 Store 级共享 `flush_queue`; 写路径不遍历所有 open index segment。
 - `TimeIndex::add_entry()` / `update_entry()` 直接写 mmap-backed index segment, 不再维护 in-memory index buffer; 写入、更新和 flush 路径均不执行 pure-filler cleanup, 现阶段保留已有 pure-filler segment。
 - 创建新的 index segment 前, 对前一个已经完结或跨 grid 的 index segment 直接 `sync()`。
+- `TimeIndex` 创建新 index segment 前, 通过窄 state sink 将当前已有 index segment 的 timestamp 范围同步到 dataset state; 这等价于创建后计算排除新 active segment 的 archived timestamp range。
 
 ### 7.5 索引文件布局
 

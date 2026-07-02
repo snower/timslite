@@ -68,6 +68,15 @@ pub(crate) struct SegmentStats {
     pub max_timestamp: i64,
 }
 
+pub(crate) trait DataSegmentArchiveSink {
+    fn archived_until_offset(&self) -> u64;
+    fn archive_data_segments(
+        &mut self,
+        archived_until_offset: u64,
+        segments: &[SegmentStats],
+    ) -> Result<()>;
+}
+
 impl DataSegmentMeta {
     pub(crate) fn stats(&self) -> SegmentStats {
         SegmentStats {
@@ -159,10 +168,6 @@ impl DataSegmentSet {
 
     pub(crate) fn set_cache_scope_id(&mut self, cache_scope_id: u64) {
         self.cache_scope_id = cache_scope_id;
-    }
-
-    pub(crate) fn active_tail_offset(&self) -> Option<u64> {
-        self.segments.last_key_value().map(|(offset, _)| *offset)
     }
 
     pub(crate) fn active_tail_stats(&self) -> Option<SegmentStats> {
@@ -384,6 +389,15 @@ impl DataSegmentSet {
 
     /// Append a record. Returns (segment_offset, block_relative_offset, in_block_offset).
     pub fn append(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u64, u16)> {
+        self.append_with_archive_sink(timestamp, data, None)
+    }
+
+    pub(crate) fn append_with_archive_sink(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        mut archive_sink: Option<&mut dyn DataSegmentArchiveSink>,
+    ) -> Result<(u64, u64, u16)> {
         // Get current segment for writing
         let segment_size = self.segment_size;
         let current_offset = if self.segments.is_empty() {
@@ -416,6 +430,7 @@ impl DataSegmentSet {
                 {
                     last.sync()?;
                 }
+                self.archive_before_segment_create(current_offset, &mut archive_sink)?;
                 // Create new segment with initial_size
                 let file_name = format!("{:020}", current_offset);
                 let path = self.base_dir.join(&file_name);
@@ -460,6 +475,7 @@ impl DataSegmentSet {
                     let new_offset = self.next_offset;
                     let file_name = format!("{:020}", new_offset);
                     let path = self.base_dir.join(&file_name);
+                    self.archive_before_segment_create(new_offset, &mut archive_sink)?;
                     let mut new_seg = DataSegment::create_with_compression(
                         &path,
                         new_offset,
@@ -496,6 +512,22 @@ impl DataSegmentSet {
 
         self.last_used_at = Instant::now();
         Ok((written_segment_offset, block_rel_off, in_block_off))
+    }
+
+    fn archive_before_segment_create(
+        &self,
+        active_tail_offset: u64,
+        archive_sink: &mut Option<&mut dyn DataSegmentArchiveSink>,
+    ) -> Result<()> {
+        let Some(sink) = archive_sink.as_mut() else {
+            return Ok(());
+        };
+        let archived_until = sink.archived_until_offset();
+        if active_tail_offset <= archived_until {
+            return Ok(());
+        }
+        let stats = self.archivable_stats(archived_until, active_tail_offset);
+        sink.archive_data_segments(active_tail_offset, &stats)
     }
 
     /// Get the segment size configuration.
@@ -780,6 +812,28 @@ mod tests {
     use std::fs;
     use std::sync::{Arc, Mutex};
 
+    #[derive(Default)]
+    struct CaptureArchiveSink {
+        archived_until_offset: u64,
+        calls: Vec<(u64, Vec<SegmentStats>)>,
+    }
+
+    impl DataSegmentArchiveSink for CaptureArchiveSink {
+        fn archived_until_offset(&self) -> u64 {
+            self.archived_until_offset
+        }
+
+        fn archive_data_segments(
+            &mut self,
+            archived_until_offset: u64,
+            segments: &[SegmentStats],
+        ) -> Result<()> {
+            self.archived_until_offset = archived_until_offset;
+            self.calls.push((archived_until_offset, segments.to_vec()));
+            Ok(())
+        }
+    }
+
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("timslite_segment_set_{}", name));
         let _ = fs::remove_dir_all(&dir);
@@ -845,6 +899,40 @@ mod tests {
             queue[0].segment,
             SegmentFlushTarget::Data { file_offset: 0 }
         ));
+    }
+
+    #[test]
+    fn test_data_segment_set_archive_sink_runs_before_new_segment_create() {
+        let dir = temp_dir("archive_sink_before_data_create");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir,
+            256,
+            256,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+        let mut sink = CaptureArchiveSink::default();
+
+        set.append_with_archive_sink(100, &[0u8; 100], Some(&mut sink))
+            .unwrap();
+        assert!(sink.calls.is_empty());
+
+        for ts in 101..120 {
+            set.append_with_archive_sink(ts, &[ts as u8; 100], Some(&mut sink))
+                .unwrap();
+            if !sink.calls.is_empty() {
+                break;
+            }
+        }
+
+        assert_eq!(sink.calls.len(), 1);
+        let (archived_until, stats) = &sink.calls[0];
+        assert_eq!(*archived_until, 256);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].file_offset, 0);
+        assert!(stats[0].record_count > 0);
+        assert!(set.segments.contains_key(&256));
     }
 
     #[test]

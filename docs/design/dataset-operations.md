@@ -257,6 +257,8 @@ DataSet::write(timestamp, data):
 
 **flush queue 入队规则**: `DataSetRuntimeContext` 为 `DataSegmentSet` / `TimeIndex` 安装 Store 级 dirty sink。实际触达 data/index segment 的 mmap 写入路径将该 segment 首次 dirty transition 直接入队, 不由 `DataSet` 在 `write` / `append` 成功后统一补 enqueue, 也不遍历所有 open data/index segment。data target 使用 `DataSegment.file_offset`; index target 使用 `IndexSegment.start_timestamp`。同时间戳 append 只修改 data segment, 因此不产生 index target。连续模式跨分段正序写入时, 上一个 edge index segment 在填充尾部 filler 后直接 `sync()`, 当前 timestamp 所在 index segment 在写入时作为 dirty target 入队。
 
+**dataset state 归档规则**: `DataSet` 只把 dataset state 作为窄 sink 传给 `DataSegmentSet` / `TimeIndex`。`DataSegmentSet` 在创建下一 data segment 前归档旧 active tail 统计; `TimeIndex` 在创建下一 index segment 前刷新已归档 timestamp range。`write` / `append` 成功路径不再统一执行 archive/refresh 检查。
+
 **原地覆盖策略 (In-Place Overwrite, 支持变长)**:
 
 1. **前提**: 最新写入的记录必须仍位于 **最新数据段** 的 **最后一个 pending raw block (`flags=0`)** 的最后一条位置。

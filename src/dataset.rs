@@ -16,7 +16,7 @@ use crate::dataset_state::DatasetStateFile;
 use crate::error::{Result, TmslError};
 use crate::header::{TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
 use crate::index::segment::{last_entry_timestamp, IndexEntry, IndexSegment, BLOCK_OFFSET_FILLER};
-use crate::index::{IndexEntryPosition, TimeIndex};
+use crate::index::{ArchivedIndexTimestampRangeSink, IndexEntryPosition, TimeIndex};
 use crate::meta::DataSetMeta;
 use crate::query::hot_block::HotBlockCache;
 use crate::query::iter::QueryIterator;
@@ -26,8 +26,8 @@ use crate::queue::{
     QueueNotifier,
 };
 use crate::segment::data::MAX_RECORD_DATA_SIZE;
-use crate::segment::DataSegmentSet;
 use crate::segment::ReadIndexEntry;
+use crate::segment::{DataSegmentArchiveSink, DataSegmentSet, SegmentStats};
 
 type QueueCondvarPair = Arc<QueueNotifier>;
 
@@ -44,6 +44,29 @@ fn current_unix_seconds() -> Result<i64> {
         ));
     }
     Ok(seconds as i64)
+}
+
+impl DataSegmentArchiveSink for DatasetStateFile {
+    fn archived_until_offset(&self) -> u64 {
+        DatasetStateFile::archived_until_offset(self)
+    }
+
+    fn archive_data_segments(
+        &mut self,
+        archived_until_offset: u64,
+        segments: &[SegmentStats],
+    ) -> Result<()> {
+        DatasetStateFile::archive_data_segments(self, archived_until_offset, segments)
+    }
+}
+
+impl ArchivedIndexTimestampRangeSink for DatasetStateFile {
+    fn set_archived_index_timestamp_range(&mut self, range: Option<(i64, i64)>) -> Result<()> {
+        match range {
+            Some((min_ts, max_ts)) => self.set_timestamp_range(min_ts, max_ts),
+            None => self.set_timestamp_range(TIMESTAMP_MIN_SENTINEL, TIMESTAMP_MAX_SENTINEL),
+        }
+    }
 }
 
 pub(crate) trait DataSetJournalSink: Send + Sync {
@@ -848,22 +871,6 @@ impl DataSetInner {
         (block_offset / self.config.data_segment_size) * self.config.data_segment_size
     }
 
-    fn archive_completed_data_segments(&mut self) -> Result<()> {
-        let Some(active_tail_offset) = self.segments.active_tail_offset() else {
-            return Ok(());
-        };
-        let archived_until = self.dataset_state.archived_until_offset();
-        if active_tail_offset <= archived_until {
-            return Ok(());
-        }
-        let stats = self
-            .segments
-            .archivable_stats(archived_until, active_tail_offset);
-        self.dataset_state
-            .archive_data_segments(active_tail_offset, &stats)?;
-        Ok(())
-    }
-
     fn add_archived_invalid_if_needed(&mut self, block_offset: u64) -> Result<()> {
         let seg_offset = self.data_segment_offset_for(block_offset);
         if seg_offset < self.dataset_state.archived_until_offset() {
@@ -1064,15 +1071,18 @@ impl DataSetInner {
         // Normal write: timestamp > latest
         if self.config.index_continuous == 0 {
             let (seg_offset, block_rel_offset, in_block_offset) =
-                self.segments.append(timestamp, data)?;
+                self.segments.append_with_archive_sink(
+                    timestamp,
+                    data,
+                    Some(&mut self.dataset_state as &mut dyn DataSegmentArchiveSink),
+                )?;
             let block_offset = seg_offset + block_rel_offset;
-            let index_segments_before = self.time_index.total_len();
-            self.time_index
-                .add_entry(timestamp, block_offset, in_block_offset)?;
-            self.archive_completed_data_segments()?;
-            if self.time_index.total_len() != index_segments_before {
-                self.refresh_archived_index_timestamp_range()?;
-            }
+            self.time_index.add_entry_with_archived_range_sink(
+                timestamp,
+                block_offset,
+                in_block_offset,
+                Some(&mut self.dataset_state as &mut dyn ArchivedIndexTimestampRangeSink),
+            )?;
             self.latest_written_timestamp = Some(timestamp);
             self.last_used_at = Instant::now();
             self.notify_queue();
@@ -1082,19 +1092,20 @@ impl DataSetInner {
             })
         } else {
             let (seg_offset, block_rel_offset, in_block_offset) =
-                self.segments.append(timestamp, data)?;
+                self.segments.append_with_archive_sink(
+                    timestamp,
+                    data,
+                    Some(&mut self.dataset_state as &mut dyn DataSegmentArchiveSink),
+                )?;
             let block_offset = seg_offset + block_rel_offset;
-            let index_segments_before = self.time_index.total_len();
-            self.time_index.add_sparse_continuous_entry(
-                self.latest_written_timestamp,
-                timestamp,
-                block_offset,
-                in_block_offset,
-            )?;
-            self.archive_completed_data_segments()?;
-            if self.time_index.total_len() != index_segments_before {
-                self.refresh_archived_index_timestamp_range()?;
-            }
+            self.time_index
+                .add_sparse_continuous_entry_with_archived_range_sink(
+                    self.latest_written_timestamp,
+                    timestamp,
+                    block_offset,
+                    in_block_offset,
+                    Some(&mut self.dataset_state as &mut dyn ArchivedIndexTimestampRangeSink),
+                )?;
             self.latest_written_timestamp = Some(timestamp);
             self.last_used_at = Instant::now();
             self.notify_queue();
@@ -1204,20 +1215,22 @@ impl DataSetInner {
         cache: Option<&BlockCache>,
     ) -> Result<WriteOutcome> {
         let (seg_offset, block_rel_offset, in_block_offset) =
-            self.segments.append(timestamp, data)?;
+            self.segments.append_with_archive_sink(
+                timestamp,
+                data,
+                Some(&mut self.dataset_state as &mut dyn DataSegmentArchiveSink),
+            )?;
         let new_block_offset = seg_offset + block_rel_offset;
 
-        let index_segments_before = self.time_index.total_len();
-        let old_entry =
-            self.time_index
-                .update_entry(timestamp, new_block_offset, in_block_offset)?;
-        if self.time_index.total_len() != index_segments_before {
-            self.refresh_archived_index_timestamp_range()?;
-        }
+        let old_entry = self.time_index.update_entry_with_archived_range_sink(
+            timestamp,
+            new_block_offset,
+            in_block_offset,
+            Some(&mut self.dataset_state as &mut dyn ArchivedIndexTimestampRangeSink),
+        )?;
 
         if old_entry.block_offset != BLOCK_OFFSET_FILLER {
             self.invalidate_cache_for_entry(&old_entry, cache);
-            self.archive_completed_data_segments()?;
             self.segments
                 .increment_invalid_record_count(old_entry.block_offset)?;
             self.add_archived_invalid_if_needed(old_entry.block_offset)?;

@@ -21,6 +21,10 @@ pub(crate) enum IndexSegmentEntryState {
     Closed(IndexSegmentMeta),
 }
 
+pub(crate) trait ArchivedIndexTimestampRangeSink {
+    fn set_archived_index_timestamp_range(&mut self, range: Option<(i64, i64)>) -> Result<()>;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct IndexEntryPosition {
     pub segment_start_timestamp: i64,
@@ -307,9 +311,9 @@ impl TimeIndex {
         );
         if self.index_continuous {
             self.ensure_base_timestamp(timestamp)?;
-            self.append_continuous_entry_to_disk(&entry)
+            self.append_continuous_entry_to_disk(&entry, None)
         } else {
-            self.append_noncontinuous_entry_to_disk(&entry)
+            self.append_noncontinuous_entry_to_disk(&entry, None)
         }
     }
 
@@ -320,14 +324,24 @@ impl TimeIndex {
         block_offset: u64,
         in_block_offset: u16,
     ) -> Result<()> {
+        self.add_entry_with_archived_range_sink(timestamp, block_offset, in_block_offset, None)
+    }
+
+    pub(crate) fn add_entry_with_archived_range_sink(
+        &mut self,
+        timestamp: i64,
+        block_offset: u64,
+        in_block_offset: u16,
+        archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<()> {
         if self.index_continuous && self.base_timestamp.is_none() {
             self.ensure_base_timestamp(timestamp)?;
         }
         let entry = IndexEntry::new(timestamp, block_offset, in_block_offset);
         if self.index_continuous {
-            self.append_continuous_entry_to_disk(&entry)?;
+            self.append_continuous_entry_to_disk(&entry, archived_range_sink)?;
         } else {
-            self.append_noncontinuous_entry_to_disk(&entry)?;
+            self.append_noncontinuous_entry_to_disk(&entry, archived_range_sink)?;
         }
         Ok(())
     }
@@ -340,8 +354,30 @@ impl TimeIndex {
         block_offset: u64,
         in_block_offset: u16,
     ) -> Result<()> {
+        self.add_sparse_continuous_entry_with_archived_range_sink(
+            previous_latest,
+            timestamp,
+            block_offset,
+            in_block_offset,
+            None,
+        )
+    }
+
+    pub(crate) fn add_sparse_continuous_entry_with_archived_range_sink(
+        &mut self,
+        previous_latest: Option<i64>,
+        timestamp: i64,
+        block_offset: u64,
+        in_block_offset: u16,
+        archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<()> {
         if !self.index_continuous {
-            return self.add_entry(timestamp, block_offset, in_block_offset);
+            return self.add_entry_with_archived_range_sink(
+                timestamp,
+                block_offset,
+                in_block_offset,
+                archived_range_sink,
+            );
         }
 
         self.ensure_base_timestamp(timestamp)?;
@@ -360,7 +396,7 @@ impl TimeIndex {
             }
         }
 
-        self.append_continuous_entry_to_disk(&real_entry)?;
+        self.append_continuous_entry_to_disk(&real_entry, archived_range_sink)?;
         Ok(())
     }
 
@@ -490,6 +526,21 @@ impl TimeIndex {
         new_block_offset: u64,
         new_in_block_offset: u16,
     ) -> Result<IndexEntry> {
+        self.update_entry_with_archived_range_sink(
+            timestamp,
+            new_block_offset,
+            new_in_block_offset,
+            None,
+        )
+    }
+
+    pub(crate) fn update_entry_with_archived_range_sink(
+        &mut self,
+        timestamp: i64,
+        new_block_offset: u64,
+        new_in_block_offset: u16,
+        archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<IndexEntry> {
         let ic = self.index_continuous;
         let new_entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
 
@@ -517,6 +568,7 @@ impl TimeIndex {
                 timestamp,
                 new_block_offset,
                 new_in_block_offset,
+                archived_range_sink,
             );
         }
 
@@ -531,6 +583,7 @@ impl TimeIndex {
         timestamp: i64,
         new_block_offset: u64,
         new_in_block_offset: u16,
+        archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
     ) -> Result<IndexEntry> {
         let segment_start = self.segment_start_for(timestamp)?;
         let entry_index = self.entry_index_for(timestamp)?;
@@ -545,7 +598,7 @@ impl TimeIndex {
 
         self.push_filler_range(segment_start + materialized_count as i64, timestamp - 1)?;
         let entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
-        self.append_continuous_entry_to_disk(&entry)?;
+        self.append_continuous_entry_to_disk(&entry, archived_range_sink)?;
 
         Ok(IndexEntry::new(
             timestamp,
@@ -611,7 +664,11 @@ impl TimeIndex {
         }
     }
 
-    fn append_noncontinuous_entry_to_disk(&mut self, entry: &IndexEntry) -> Result<()> {
+    fn append_noncontinuous_entry_to_disk(
+        &mut self,
+        entry: &IndexEntry,
+        mut archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<()> {
         if let Some(latest) = self.latest_materialized_timestamp() {
             if entry.timestamp <= latest {
                 return Err(TmslError::InvalidData(format!(
@@ -621,7 +678,10 @@ impl TimeIndex {
             }
         }
         loop {
-            let seg = self.get_or_create_segment_for_ts(entry.timestamp)?;
+            let seg = self.get_or_create_segment_for_ts_with_sink(
+                entry.timestamp,
+                &mut archived_range_sink,
+            )?;
             match Self::append_with_expansion(seg, entry) {
                 Ok(()) => return Ok(()),
                 Err(TmslError::SegmentFull) => continue,
@@ -630,10 +690,16 @@ impl TimeIndex {
         }
     }
 
-    fn append_continuous_entry_to_disk(&mut self, entry: &IndexEntry) -> Result<()> {
+    fn append_continuous_entry_to_disk(
+        &mut self,
+        entry: &IndexEntry,
+        archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<()> {
         let segment_start = self.segment_start_for(entry.timestamp)?;
         let entry_index = self.entry_index_for(entry.timestamp)?;
-        let seg = self.get_or_create_segment_by_start(segment_start)?;
+        let mut archived_range_sink = archived_range_sink;
+        let seg =
+            self.get_or_create_segment_by_start_with_sink(segment_start, &mut archived_range_sink)?;
         if seg.wrote_count != entry_index {
             return Err(TmslError::InvalidData(format!(
                 "continuous index append expected entry_index {}, got wrote_count {}",
@@ -649,8 +715,11 @@ impl TimeIndex {
         })
     }
 
-    /// Get or create a segment for the given timestamp.
-    fn get_or_create_segment_for_ts(&mut self, start_ts: i64) -> Result<&mut IndexSegment> {
+    fn get_or_create_segment_for_ts_with_sink(
+        &mut self,
+        start_ts: i64,
+        archived_range_sink: &mut Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<&mut IndexSegment> {
         if let Some(latest_key) = self.index_segments.last_key_value().map(|(key, _)| *key) {
             let latest_available = {
                 let latest = self.open_index_segment(latest_key)?;
@@ -663,10 +732,19 @@ impl TimeIndex {
             }
         }
 
-        self.get_or_create_segment_by_start(start_ts)
+        self.get_or_create_segment_by_start_with_sink(start_ts, archived_range_sink)
     }
 
     fn get_or_create_segment_by_start(&mut self, segment_start: i64) -> Result<&mut IndexSegment> {
+        let mut archived_range_sink = None;
+        self.get_or_create_segment_by_start_with_sink(segment_start, &mut archived_range_sink)
+    }
+
+    fn get_or_create_segment_by_start_with_sink(
+        &mut self,
+        segment_start: i64,
+        archived_range_sink: &mut Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<&mut IndexSegment> {
         if self.index_segments.contains_key(&segment_start) {
             return self.open_index_segment(segment_start);
         }
@@ -679,6 +757,7 @@ impl TimeIndex {
             }
         }
 
+        self.refresh_archived_range_before_segment_create(archived_range_sink)?;
         let mut seg = IndexSegment::create_with_compression(
             &self.base_dir,
             segment_start,
@@ -691,6 +770,16 @@ impl TimeIndex {
         self.index_segments
             .insert(segment_start, IndexSegmentEntryState::Open(seg));
         self.open_index_segment(segment_start)
+    }
+
+    fn refresh_archived_range_before_segment_create(
+        &self,
+        archived_range_sink: &mut Option<&mut dyn ArchivedIndexTimestampRangeSink>,
+    ) -> Result<()> {
+        let Some(sink) = archived_range_sink.as_mut() else {
+            return Ok(());
+        };
+        sink.set_archived_index_timestamp_range(self.timestamp_range_snapshot())
     }
 
     /// Query entries in the time range [start_ts, end_ts].
@@ -1045,6 +1134,18 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
+    #[derive(Default)]
+    struct CaptureArchivedRangeSink {
+        calls: Vec<Option<(i64, i64)>>,
+    }
+
+    impl ArchivedIndexTimestampRangeSink for CaptureArchivedRangeSink {
+        fn set_archived_index_timestamp_range(&mut self, range: Option<(i64, i64)>) -> Result<()> {
+            self.calls.push(range);
+            Ok(())
+        }
+    }
+
     fn temp_dir() -> std::path::PathBuf {
         let d = std::env::temp_dir().join("timslite_test_index");
         fs::create_dir_all(&d).unwrap();
@@ -1092,6 +1193,26 @@ mod tests {
                 start_timestamp: 100
             }
         ));
+    }
+
+    #[test]
+    fn test_time_index_archived_range_sink_runs_before_new_segment_create() {
+        let sub = fresh_subdir("archived_range_sink_before_index_create");
+        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        let mut sink = CaptureArchivedRangeSink::default();
+
+        for ts in 100..105 {
+            idx.add_entry_with_archived_range_sink(ts, ts as u64, 0, Some(&mut sink))
+                .unwrap();
+        }
+        assert_eq!(sink.calls, vec![None]);
+        assert_eq!(idx.total_len(), 1);
+
+        idx.add_entry_with_archived_range_sink(105, 105, 0, Some(&mut sink))
+            .unwrap();
+
+        assert_eq!(sink.calls, vec![None, Some((100, 104))]);
+        assert_eq!(idx.total_len(), 2);
     }
 
     #[test]

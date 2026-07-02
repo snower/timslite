@@ -54,8 +54,8 @@
 - [x] Rust 实现
   - [x] 新增 dataset state file 类型与 open/create/snapshot/update/sync 逻辑
   - [x] DataSet create/open 初始化并持有 dataset state cache
-  - [x] data segment rollover 时归档旧 active tail 统计
-  - [x] index segment rollover 时归档旧 active index timestamp 范围
+  - [x] `DataSegmentSet` 创建下一 data segment 前归档旧 active tail 统计
+  - [x] `TimeIndex` 创建下一 index segment 前归档旧 active index timestamp 范围
   - [x] retention 删除 data/index segment 时扣减或更新 state
   - [x] delete 命中已归档 data segment 时更新 `total_invalid_record_count`
   - [x] dataset state 文件变更后立即同步
