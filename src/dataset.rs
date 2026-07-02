@@ -125,16 +125,6 @@ impl DataSetRuntimeContext {
             read_only: true,
         }
     }
-
-    pub(crate) fn read_only_with_flush_queue(flush_queue: Option<SegmentFlushQueue>) -> Self {
-        Self {
-            block_cache: None,
-            journal: None,
-            flush_queue,
-            lifecycle: None,
-            read_only: true,
-        }
-    }
 }
 
 fn validate_record_data_len(data_len: usize) -> Result<()> {
@@ -504,10 +494,6 @@ impl DataSet {
             };
             inner.segments.read_record_data_len(&re, cache.as_deref())
         })
-    }
-
-    pub(crate) fn read_length_at_index(&self, entry: &IndexEntry) -> Result<u32> {
-        self.read_record_data_len_at_index(entry)
     }
 
     pub(crate) fn write_next_queue_record(&self, data: &[u8]) -> Result<i64> {
@@ -1110,16 +1096,6 @@ impl DataSetInner {
         Ok(())
     }
 
-    pub(crate) fn append_with_cache(
-        &mut self,
-        timestamp: i64,
-        data: &[u8],
-        cache: Option<&BlockCache>,
-    ) -> Result<()> {
-        self.append_with_cache_outcome(timestamp, data, cache)
-            .map(|_| ())
-    }
-
     pub(crate) fn append_with_cache_outcome(
         &mut self,
         timestamp: i64,
@@ -1434,18 +1410,6 @@ impl DataSetInner {
         let data_len = self.segments.read_record_data_len(&re, cache.as_deref())?;
         self.last_used_at = Instant::now();
         Ok(Some(data_len))
-    }
-
-    pub(crate) fn next_query_index_entry(
-        &mut self,
-        start_ts: i64,
-        end_ts: i64,
-    ) -> Result<Option<IndexEntry>> {
-        self.ensure_open()?;
-        if start_ts > end_ts {
-            return Ok(None);
-        }
-        Ok(self.time_index.query(start_ts, end_ts)?.into_iter().next())
     }
 
     pub(crate) fn next_query_index_entry_from_position(
@@ -1970,16 +1934,6 @@ impl DataSetInner {
 
         self.last_used_at = last_used_at;
         Ok(idx_reclaimed + data_reclaimed_stats.len())
-    }
-
-    /// Get a reference to the block cache (for FFI and Python wrapper).
-    pub fn cache_ref(&self) -> Option<&Arc<BlockCache>> {
-        self.runtime_context.block_cache.as_ref()
-    }
-
-    /// Get a mutable reference to segments (for FFI and Python wrapper).
-    pub fn segments_mut(&mut self) -> &mut DataSegmentSet {
-        &mut self.segments
     }
 
     /// Get detailed info and state of this dataset.

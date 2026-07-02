@@ -68,17 +68,6 @@ pub(crate) struct SegmentStats {
 }
 
 impl DataSegmentMeta {
-    /// Returns true if this segment's time range overlaps with [start_ts, end_ts].
-    pub fn overlaps_time_range(&self, start_ts: i64, end_ts: i64) -> bool {
-        // Sentinel values (empty segment) never overlap
-        if self.min_timestamp == TIMESTAMP_MIN_SENTINEL
-            || self.max_timestamp == TIMESTAMP_MAX_SENTINEL
-        {
-            return false;
-        }
-        self.max_timestamp >= start_ts && self.min_timestamp <= end_ts
-    }
-
     pub(crate) fn stats(&self) -> SegmentStats {
         SegmentStats {
             file_offset: self.file_offset,
@@ -585,49 +574,6 @@ impl DataSegmentSet {
         seg.append_to_last_record(block_offset - seg.file_offset, in_block_offset, append_data)
     }
 
-    pub fn append_single_record(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u64, u16)> {
-        let compress_level = self.compress_level;
-        let compress_type = self.compress_type;
-        let latest_offset = self
-            .segments
-            .last_key_value()
-            .map(|(offset, _)| *offset)
-            .ok_or_else(|| TmslError::InvalidData("no data segment available".into()))?;
-        let seg = self.lazy_open(latest_offset)?;
-        if seg.pending_block_offset.is_some() {
-            seg.seal_pending_block(compress_level)?;
-            seg.clear_pending();
-        }
-        match seg.create_single_record_block(timestamp, data, compress_level) {
-            Ok((block_rel, in_block)) => Ok((seg.file_offset, block_rel, in_block)),
-            Err(TmslError::SegmentFull) => {
-                seg.sync()?;
-                let new_offset = self.next_offset;
-                let file_name = format!("{:020}", new_offset);
-                let path = self.base_dir.join(&file_name);
-                let new_seg = DataSegment::create_with_compression(
-                    &path,
-                    new_offset,
-                    self.initial_segment_size,
-                    self.segment_size,
-                    compress_level,
-                    compress_type,
-                )?;
-                self.segments
-                    .insert(new_offset, DataSegmentEntry::Open(new_seg));
-                self.next_offset += self.segment_size;
-                let seg = match self.segments.get_mut(&new_offset) {
-                    Some(DataSegmentEntry::Open(seg)) => seg,
-                    _ => unreachable!(),
-                };
-                let (block_rel, in_block) =
-                    seg.create_single_record_block(timestamp, data, compress_level)?;
-                Ok((seg.file_offset, block_rel, in_block))
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     /// Increment invalid_record_count on the data segment that contains the given offset.
     ///
     /// Routes by `absolute_offset` (same coordinate as index entries' block_offset,
@@ -746,11 +692,6 @@ impl DataSegmentSet {
                 absolute_offset
             ))
         })
-    }
-
-    /// Flush all segments.
-    pub fn flush_all(&mut self) -> Result<()> {
-        self.sync_all()
     }
 
     /// Delete data segments whose `max_timestamp` is strictly less than `threshold`.

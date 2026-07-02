@@ -529,26 +529,6 @@ impl IndexSegment {
         Ok(())
     }
 
-    /// Range query indices: returns (start_idx, end_idx) for [start_ts, end_ts].
-    /// Returns None if the range is empty.
-    pub fn query_range_indices(
-        &self,
-        start_ts: i64,
-        end_ts: i64,
-        index_continuous: bool,
-    ) -> Option<(usize, usize)> {
-        if self.wrote_count == 0 {
-            return None;
-        }
-        let start_idx = self.lower_bound_cs(start_ts, index_continuous);
-        let end_idx = self.upper_bound_cs(end_ts, index_continuous);
-        if start_idx >= end_idx {
-            None
-        } else {
-            Some((start_idx, end_idx.min(self.wrote_count)))
-        }
-    }
-
     /// Read one entry by zero-based entry index.
     pub fn read_entry_at_index(&mut self, entry_index: usize) -> Result<IndexEntry> {
         self.ensure_open()?;

@@ -129,48 +129,6 @@ fn validate_state_field(mmap: &[u8], expected_file_type: u8, field_offset: usize
     Ok(state_start)
 }
 
-pub fn data_header_size_from_mmap(mmap: &[u8]) -> Result<u64> {
-    let (_, _, file_type, meta_length) = read_shared_prefix(mmap)?;
-    if file_type != FILE_TYPE_DATA {
-        return Err(TmslError::InvalidData(format!(
-            "unexpected file_type {}",
-            file_type
-        )));
-    }
-    let state_len_off = state_length_offset(meta_length);
-    ensure_len(mmap, state_len_off + STATE_LENGTH_SIZE, "state_length")?;
-    let state_length = read_u16_from_mmap(mmap, state_len_off);
-    let size = header_size(meta_length, state_length);
-    ensure_len(mmap, size as usize, "data header")?;
-    Ok(size)
-}
-
-pub fn index_header_size_from_mmap(mmap: &[u8]) -> Result<u64> {
-    let (_, _, file_type, meta_length) = read_shared_prefix(mmap)?;
-    if file_type != FILE_TYPE_INDEX {
-        return Err(TmslError::InvalidData(format!(
-            "unexpected file_type {}",
-            file_type
-        )));
-    }
-    let state_len_off = state_length_offset(meta_length);
-    ensure_len(mmap, state_len_off + STATE_LENGTH_SIZE, "state_length")?;
-    let state_length = read_u16_from_mmap(mmap, state_len_off);
-    let dynamic_size = header_size(meta_length, state_length);
-    if dynamic_size > INDEX_HEADER_SIZE {
-        return Err(TmslError::InvalidData(format!(
-            "index header content length {} exceeds reserved entry start {}",
-            dynamic_size, INDEX_HEADER_SIZE
-        )));
-    }
-    ensure_len(
-        mmap,
-        INDEX_HEADER_SIZE as usize,
-        "index header reserved area",
-    )?;
-    Ok(INDEX_HEADER_SIZE)
-}
-
 pub fn write_data_core_state_to_mmap(
     mmap: &mut [u8],
     min_timestamp: i64,

@@ -682,10 +682,6 @@ impl ConsumerGroupState {
     }
 }
 
-fn read_i64_at(mmap: &[u8], offset: usize) -> i64 {
-    i64::from_le_bytes(mmap[offset..offset + 8].try_into().unwrap())
-}
-
 pub(crate) fn now_unix_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -792,19 +788,6 @@ impl DatasetQueue {
             inner,
             notify,
             allow_push: true,
-        }
-    }
-
-    pub(crate) fn new_readonly_producer(
-        dataset: Arc<DataSet>,
-        inner: Arc<Mutex<QueueInner>>,
-        notify: Arc<QueueNotifier>,
-    ) -> Self {
-        DatasetQueue {
-            dataset,
-            inner,
-            notify,
-            allow_push: false,
         }
     }
 
