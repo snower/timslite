@@ -844,4 +844,370 @@ mod tests {
         let cfg = StoreConfig::builder().read_only(Some(false)).build();
         assert_eq!(cfg.read_only(), Some(false));
     }
+
+    #[test]
+    fn test_validate_nonzero_size_valid() {
+        assert!(validate_nonzero_size("field", 1).is_ok());
+        assert!(validate_nonzero_size("field", 1024).is_ok());
+        assert!(validate_nonzero_size("field", u64::MAX).is_ok());
+    }
+
+    #[test]
+    fn test_validate_compress_level_valid_range() {
+        for level in 0..=9 {
+            assert!(
+                validate_compress_level(level).is_ok(),
+                "level {level} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_compress_level_boundary_9_is_valid() {
+        assert!(validate_compress_level(9).is_ok());
+    }
+
+    #[test]
+    fn test_validate_compress_level_10_is_invalid() {
+        let result = validate_compress_level(10);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("<= 9"));
+    }
+
+    #[test]
+    fn test_validate_compress_level_max_u8() {
+        let result = validate_compress_level(u8::MAX);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_index_continuous_zero_valid() {
+        assert!(validate_index_continuous(0).is_ok());
+    }
+
+    #[test]
+    fn test_validate_index_continuous_one_valid() {
+        assert!(validate_index_continuous(1).is_ok());
+    }
+
+    #[test]
+    fn test_validate_index_continuous_two_invalid() {
+        let result = validate_index_continuous(2);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("0 or 1"));
+        assert!(msg.contains("2"));
+    }
+
+    #[test]
+    fn test_validate_index_continuous_max_u8() {
+        assert!(validate_index_continuous(u8::MAX).is_err());
+    }
+
+    #[test]
+    fn test_validate_retention_window_zero_valid() {
+        assert!(validate_retention_window(0).is_ok());
+    }
+
+    #[test]
+    fn test_validate_retention_window_i64_max_valid() {
+        assert!(validate_retention_window(i64::MAX as u64).is_ok());
+    }
+
+    #[test]
+    fn test_validate_retention_window_i64_max_plus_one_invalid() {
+        let val = i64::MAX as u64 + 1;
+        let result = validate_retention_window(val);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("i64::MAX"));
+    }
+
+    #[test]
+    fn test_validate_retention_window_u64_max_invalid() {
+        assert!(validate_retention_window(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_valid() {
+        let result = validate_dataset_config_values(
+            64 * 1024 * 1024,
+            16 * 1024 * 1024,
+            6,
+            0,
+            0,
+            256 * 1024,
+            16 * 1024,
+            0,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_zero_index_segment() {
+        let result = validate_dataset_config_values(1024, 0, 6, 0, 0, 512, 512, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("index_segment_size"));
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_zero_initial_data_segment() {
+        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 0, 512, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("initial_data_segment_size"));
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_zero_initial_index_segment() {
+        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 512, 0, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("initial_index_segment_size"));
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_initial_index_over_max() {
+        // initial_index_segment_size > index_segment_size
+        let result = validate_dataset_config_values(1024, 512, 6, 0, 0, 512, 1024, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("initial_index_segment_size"));
+        assert!(msg.contains("index_segment_size"));
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_invalid_compress_type() {
+        let result = validate_dataset_config_values(1024, 1024, 6, 99, 0, 512, 512, 0);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("compress_type"));
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_invalid_compress_level() {
+        let result = validate_dataset_config_values(1024, 1024, 10, 0, 0, 512, 512, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_invalid_index_continuous() {
+        let result = validate_dataset_config_values(1024, 1024, 6, 0, 5, 512, 512, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_dataset_config_values_retention_above_i64_max() {
+        let result =
+            validate_dataset_config_values(1024, 1024, 6, 0, 0, 512, 512, i64::MAX as u64 + 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_store_config_validate_success() {
+        let cfg = StoreConfig::default();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_store_config_validate_retention_check_hour_over_23() {
+        let mut cfg = StoreConfig::default();
+        cfg.retention_check_hour = 24;
+        let result = cfg.validate();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("retention_check_hour"));
+        assert!(msg.contains("23"));
+    }
+
+    #[test]
+    fn test_store_config_validate_retention_check_hour_23_ok() {
+        let cfg = StoreConfig::builder().retention_check_hour(23).build();
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_dataset_builder_zero_data_segment_size() {
+        let result = DataSetConfigBuilder::default().data_segment_size(0).build();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("data_segment_size"));
+    }
+
+    #[test]
+    fn test_dataset_builder_zero_index_segment_size() {
+        let result = DataSetConfigBuilder::default()
+            .index_segment_size(0)
+            .build();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("index_segment_size"));
+    }
+
+    #[test]
+    fn test_dataset_builder_zero_initial_data_segment_size() {
+        let result = DataSetConfigBuilder::default()
+            .initial_data_segment_size(0)
+            .build();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("initial_data_segment_size"));
+    }
+
+    #[test]
+    fn test_dataset_builder_zero_initial_index_segment_size() {
+        let result = DataSetConfigBuilder::default()
+            .initial_index_segment_size(0)
+            .build();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("initial_index_segment_size"));
+    }
+
+    #[test]
+    fn test_dataset_builder_initial_data_over_max() {
+        let result = DataSetConfigBuilder::default()
+            .data_segment_size(512)
+            .initial_data_segment_size(1024)
+            .build();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("initial_data_segment_size"));
+        assert!(msg.contains("data_segment_size"));
+    }
+
+    #[test]
+    fn test_dataset_builder_initial_index_over_max() {
+        let result = DataSetConfigBuilder::default()
+            .index_segment_size(512)
+            .initial_index_segment_size(1024)
+            .build();
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("initial_index_segment_size"));
+        assert!(msg.contains("index_segment_size"));
+    }
+
+    #[test]
+    fn test_dataset_builder_invalid_compress_type() {
+        let result = DataSetConfigBuilder::default().compress_type(99).build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dataset_config_validate_success() {
+        let cfg = DataSetConfig::from_store(&StoreConfig::default());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_store_builder_compress_level_clamped_to_9() {
+        let cfg = StoreConfig::builder().compress_level(255).build();
+        assert_eq!(cfg.compress_level, 9);
+    }
+
+    #[test]
+    fn test_store_builder_retention_check_hour_clamped() {
+        assert_eq!(
+            StoreConfig::builder()
+                .retention_check_hour(0)
+                .build()
+                .retention_check_hour,
+            0
+        );
+        assert_eq!(
+            StoreConfig::builder()
+                .retention_check_hour(23)
+                .build()
+                .retention_check_hour,
+            23
+        );
+        assert_eq!(
+            StoreConfig::builder()
+                .retention_check_hour(24)
+                .build()
+                .retention_check_hour,
+            23
+        );
+    }
+
+    #[test]
+    fn test_dataset_builder_compress_level_clamped_to_9() {
+        let config = DataSetConfigBuilder::default()
+            .compress_level(255)
+            .build()
+            .unwrap();
+        assert_eq!(config.compress_level, 9);
+    }
+
+    #[test]
+    fn test_dataset_builder_index_continuous_clamped() {
+        let config = DataSetConfigBuilder::default()
+            .index_continuous(5)
+            .build()
+            .unwrap();
+        assert_eq!(config.index_continuous, 1);
+    }
+
+    #[test]
+    fn test_store_config_accessors() {
+        let cfg = StoreConfig::default();
+        assert_eq!(cfg.flush_interval(), Duration::from_secs(15));
+        assert_eq!(cfg.idle_timeout(), Duration::from_secs(1800));
+        assert_eq!(cfg.data_segment_size(), 64 * 1024 * 1024);
+        assert_eq!(cfg.index_segment_size(), 16 * 1024 * 1024);
+        assert_eq!(cfg.initial_data_segment_size(), 256 * 1024);
+        assert_eq!(cfg.initial_index_segment_size(), 16 * 1024);
+        assert_eq!(cfg.compress_level(), 6);
+        assert_eq!(cfg.compress_type(), 0);
+        assert_eq!(cfg.cache_max_memory(), 256 * 1024 * 1024);
+        assert_eq!(cfg.cache_idle_timeout(), Duration::from_secs(1800));
+        assert_eq!(cfg.retention_check_hour(), 0);
+        assert!(cfg.enable_background_thread());
+        assert!(cfg.enable_journal());
+        assert!(cfg.read_only().is_none());
+    }
+
+    #[test]
+    fn test_dataset_config_accessors() {
+        let store = StoreConfig::default();
+        let cfg = DataSetConfig::from_store(&store);
+        assert_eq!(cfg.data_segment_size(), store.data_segment_size);
+        assert_eq!(cfg.index_segment_size(), store.index_segment_size);
+        assert_eq!(cfg.compress_level(), store.compress_level);
+        assert_eq!(cfg.compress_type(), store.compress_type);
+        assert_eq!(cfg.index_continuous(), 0);
+        assert_eq!(
+            cfg.initial_data_segment_size(),
+            store.initial_data_segment_size
+        );
+        assert_eq!(
+            cfg.initial_index_segment_size(),
+            store.initial_index_segment_size
+        );
+        assert_eq!(cfg.retention_window(), 0);
+        assert!(!cfg.enable_journal());
+        assert_eq!(cfg.create_time(), 0);
+    }
+
+    #[test]
+    fn test_dataset_config_builder_entry_point() {
+        let config = DataSetConfig::builder()
+            .data_segment_size(1024)
+            .index_segment_size(1024)
+            .initial_data_segment_size(512)
+            .initial_index_segment_size(512)
+            .build()
+            .unwrap();
+        assert_eq!(config.data_segment_size, 1024);
+        assert_eq!(config.index_segment_size, 1024);
+    }
+
+    #[test]
+    fn test_validate_dataset_config_initial_equals_max_allowed() {
+        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 1024, 1024, 0);
+        assert!(result.is_ok());
+    }
 }

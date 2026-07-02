@@ -680,6 +680,128 @@ mod tests {
         assert_eq!(parsed.initial_index_segment_size, 1);
     }
 
+    #[test]
+    fn test_meta_new_sets_create_time() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+            true,
+        );
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!(meta.create_time >= before && meta.create_time <= after);
+    }
+
+    #[test]
+    fn test_meta_from_bytes_empty() {
+        let result = DataSetMeta::from_bytes(&[]);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TmslError::InvalidData(_)));
+    }
+
+    #[test]
+    fn test_meta_from_bytes_truncated_header() {
+        let result = DataSetMeta::from_bytes(b"TMSM\x01");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_meta_from_bytes_truncated_tlv() {
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+            true,
+        );
+        let bytes = meta.to_bytes();
+        let truncated = &bytes[..bytes.len() - 5];
+        let result = DataSetMeta::from_bytes(truncated);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_meta_deflate_compress_type_roundtrip() {
+        let meta = DataSetMeta::new(
+            2048,
+            1024,
+            3,
+            crate::compress::COMPRESS_TYPE_DEFLATE,
+            0,
+            512,
+            256,
+            86400,
+            false,
+        );
+        let bytes = meta.to_bytes();
+        let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed.compress_type, crate::compress::COMPRESS_TYPE_DEFLATE);
+        assert_eq!(parsed.compress_level, 3);
+        assert_eq!(parsed.data_segment_size, 2048);
+        assert_eq!(parsed.index_segment_size, 1024);
+        assert_eq!(parsed.initial_data_segment_size, 512);
+        assert_eq!(parsed.initial_index_segment_size, 256);
+        assert_eq!(parsed.retention_window, 86400);
+        assert!(!parsed.enable_journal);
+    }
+
+    #[test]
+    fn test_meta_to_bytes_length() {
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+            true,
+        );
+        let bytes = meta.to_bytes();
+        assert_eq!(bytes.len(), 8 + META_VALUES_LEN_V1);
+    }
+
+    #[test]
+    fn test_meta_read_from_file_not_found() {
+        let result = DataSetMeta::read_from_file(std::path::Path::new("/nonexistent/path/meta"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_meta_enable_journal_false_roundtrip() {
+        let meta = DataSetMeta::new(
+            1024,
+            512,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            256,
+            128,
+            0,
+            false,
+        );
+        let bytes = meta.to_bytes();
+        let parsed = DataSetMeta::from_bytes(&bytes).unwrap();
+        assert!(!parsed.enable_journal);
+    }
+
     proptest::proptest! {
         #[test]
         fn proptest_meta_roundtrip(

@@ -151,6 +151,76 @@ mod tests {
         assert_eq!(reserved, 0);
     }
 
+    #[test]
+    fn test_block_header_new_fields() {
+        let h = BlockHeader::new(42, BLOCK_FLAG_SEALED, 7, 99);
+        assert_eq!(h.payload_size, 42);
+        assert_eq!(h.flags, BLOCK_FLAG_SEALED);
+        assert_eq!(h.record_count, 7);
+        assert_eq!(h.uncompressed_size, 99);
+    }
+
+    #[test]
+    fn test_block_header_zero_flags() {
+        let h = BlockHeader::new(0, 0, 0, 0);
+        assert!(!h.is_compressed());
+        assert!(!h.is_sealed());
+        assert!(!h.is_single_record());
+    }
+
+    #[test]
+    fn test_block_header_compressed_and_sealed_pair() {
+        let h = BlockHeader::new(100, BLOCK_FLAG_COMPRESSED | BLOCK_FLAG_SEALED, 3, 200);
+        assert!(h.is_compressed());
+        assert!(h.is_sealed());
+        assert!(!h.is_single_record());
+    }
+
+    #[test]
+    fn test_block_header_sealed_and_single_record_pair() {
+        let h = BlockHeader::new(50, BLOCK_FLAG_SEALED | BLOCK_FLAG_SINGLE_RECORD, 1, 50);
+        assert!(!h.is_compressed());
+        assert!(h.is_sealed());
+        assert!(h.is_single_record());
+    }
+
+    #[test]
+    fn test_block_header_compressed_and_single_record_pair() {
+        let h = BlockHeader::new(
+            200,
+            BLOCK_FLAG_COMPRESSED | BLOCK_FLAG_SINGLE_RECORD,
+            1,
+            400,
+        );
+        assert!(h.is_compressed());
+        assert!(!h.is_sealed());
+        assert!(h.is_single_record());
+    }
+
+    #[test]
+    fn test_block_header_roundtrip_boundary_values() {
+        let mut buf = [0u8; 16];
+        let h = BlockHeader::new(u32::MAX, u16::MAX, u16::MAX, u32::MAX);
+        h.write_to(&mut buf, 0);
+        let r = BlockHeader::read_from(&buf, 0);
+        assert_eq!(r.payload_size, u32::MAX);
+        assert_eq!(r.flags, u16::MAX);
+        assert_eq!(r.record_count, u16::MAX);
+        assert_eq!(r.uncompressed_size, u32::MAX);
+    }
+
+    #[test]
+    fn test_block_header_roundtrip_zero_values() {
+        let mut buf = [0u8; 16];
+        let h = BlockHeader::new(0, 0, 0, 0);
+        h.write_to(&mut buf, 0);
+        let r = BlockHeader::read_from(&buf, 0);
+        assert_eq!(r.payload_size, 0);
+        assert_eq!(r.flags, 0);
+        assert_eq!(r.record_count, 0);
+        assert_eq!(r.uncompressed_size, 0);
+    }
+
     proptest::proptest! {
         #[test]
         fn proptest_block_header_roundtrip(

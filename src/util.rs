@@ -169,4 +169,196 @@ mod tests {
         assert_eq!(buf[0], 0x02); // least significant byte first
         assert_eq!(buf[1], 0x01);
     }
+
+    // ─── is_path_safe_component tests ─────────────────────────
+
+    #[test]
+    fn test_path_safe_alphanumeric() {
+        assert!(is_path_safe_component("abc123"));
+    }
+
+    #[test]
+    fn test_path_safe_hyphens() {
+        assert!(is_path_safe_component("my-dataset"));
+    }
+
+    #[test]
+    fn test_path_safe_underscores() {
+        assert!(is_path_safe_component("my_dataset"));
+    }
+
+    #[test]
+    fn test_path_safe_mixed() {
+        assert!(is_path_safe_component("data-set_01"));
+    }
+
+    #[test]
+    fn test_path_safe_single_char() {
+        assert!(is_path_safe_component("a"));
+    }
+
+    #[test]
+    fn test_path_safe_empty_rejected() {
+        assert!(!is_path_safe_component(""));
+    }
+
+    #[test]
+    fn test_path_safe_too_long_rejected() {
+        let long_name = "a".repeat(PATH_COMPONENT_MAX_LEN + 1);
+        assert!(!is_path_safe_component(&long_name));
+    }
+
+    #[test]
+    fn test_path_safe_exact_max_len() {
+        let max_name = "a".repeat(PATH_COMPONENT_MAX_LEN);
+        assert!(is_path_safe_component(&max_name));
+    }
+
+    #[test]
+    fn test_path_safe_dot_rejected() {
+        assert!(!is_path_safe_component("data.set"));
+    }
+
+    #[test]
+    fn test_path_safe_slash_rejected() {
+        assert!(!is_path_safe_component("data/set"));
+    }
+
+    #[test]
+    fn test_path_safe_space_rejected() {
+        assert!(!is_path_safe_component("data set"));
+    }
+
+    // ─── endian roundtrip boundary values ─────────────────────
+
+    #[test]
+    fn test_u16_roundtrip_zero() {
+        let mut buf = [0u8; 2];
+        write_u16_le(&mut buf, 0);
+        assert_eq!(read_u16_le(&buf), 0);
+    }
+
+    #[test]
+    fn test_u16_roundtrip_max() {
+        let mut buf = [0u8; 2];
+        write_u16_le(&mut buf, u16::MAX);
+        assert_eq!(read_u16_le(&buf), u16::MAX);
+    }
+
+    #[test]
+    fn test_u32_roundtrip_zero() {
+        let mut buf = [0u8; 4];
+        write_u32_le(&mut buf, 0);
+        assert_eq!(read_u32_le(&buf), 0);
+    }
+
+    #[test]
+    fn test_u32_roundtrip_max() {
+        let mut buf = [0u8; 4];
+        write_u32_le(&mut buf, u32::MAX);
+        assert_eq!(read_u32_le(&buf), u32::MAX);
+    }
+
+    #[test]
+    fn test_i64_roundtrip_zero() {
+        let mut buf = [0u8; 8];
+        write_i64_le(&mut buf, 0);
+        assert_eq!(read_i64_le(&buf), 0);
+    }
+
+    #[test]
+    fn test_i64_roundtrip_max() {
+        let mut buf = [0u8; 8];
+        write_i64_le(&mut buf, i64::MAX);
+        assert_eq!(read_i64_le(&buf), i64::MAX);
+    }
+
+    #[test]
+    fn test_i64_roundtrip_min() {
+        let mut buf = [0u8; 8];
+        write_i64_le(&mut buf, i64::MIN);
+        assert_eq!(read_i64_le(&buf), i64::MIN);
+    }
+
+    #[test]
+    fn test_i64_roundtrip_negative_one() {
+        let mut buf = [0u8; 8];
+        write_i64_le(&mut buf, -1);
+        assert_eq!(read_i64_le(&buf), -1);
+    }
+
+    #[test]
+    fn test_u64_roundtrip_zero() {
+        let mut buf = [0u8; 8];
+        write_u64_le(&mut buf, 0);
+        assert_eq!(read_u64_le(&buf), 0);
+    }
+
+    #[test]
+    fn test_u64_roundtrip_max() {
+        let mut buf = [0u8; 8];
+        write_u64_le(&mut buf, u64::MAX);
+        assert_eq!(read_u64_le(&buf), u64::MAX);
+    }
+
+    // ─── mmap helpers roundtrip at various positions ──────────
+
+    #[test]
+    fn test_mmap_u16_at_various_positions() {
+        let mut buf = vec![0u8; 64];
+        for pos in [0, 2, 10, 32, 62] {
+            write_u16_to_mmap(&mut buf, pos, 0xBEEF);
+            assert_eq!(read_u16_from_mmap(&buf, pos), 0xBEEF);
+        }
+    }
+
+    #[test]
+    fn test_mmap_u32_at_various_positions() {
+        let mut buf = vec![0u8; 64];
+        for pos in [0, 4, 12, 32, 60] {
+            write_u32_to_mmap(&mut buf, pos, 0xCAFE_BABE);
+            assert_eq!(read_u32_from_mmap(&buf, pos), 0xCAFE_BABE);
+        }
+    }
+
+    #[test]
+    fn test_mmap_i64_at_various_positions() {
+        let mut buf = vec![0u8; 64];
+        for pos in [0, 8, 16, 32, 56] {
+            write_i64_to_mmap(&mut buf, pos, -42_000_000_000_i64);
+            assert_eq!(read_i64_from_mmap(&buf, pos), -42_000_000_000_i64);
+        }
+    }
+
+    #[test]
+    fn test_mmap_u64_roundtrip() {
+        let mut buf = vec![0u8; 64];
+        write_u64_to_mmap(&mut buf, 0, 0xDEAD_BEEF_CAFE_BABE);
+        assert_eq!(read_u64_from_mmap(&buf, 0), 0xDEAD_BEEF_CAFE_BABE);
+    }
+
+    #[test]
+    fn test_mmap_u64_at_various_positions() {
+        let mut buf = vec![0u8; 64];
+        for pos in [0, 8, 16, 32, 56] {
+            write_u64_to_mmap(&mut buf, pos, 0x1234_5678_9ABC_DEF0);
+            assert_eq!(read_u64_from_mmap(&buf, pos), 0x1234_5678_9ABC_DEF0);
+        }
+    }
+
+    #[test]
+    fn test_mmap_boundary_u32_max() {
+        let mut buf = vec![0u8; 8];
+        write_u32_to_mmap(&mut buf, 0, u32::MAX);
+        assert_eq!(read_u32_from_mmap(&buf, 0), u32::MAX);
+    }
+
+    #[test]
+    fn test_mmap_boundary_i64_min_max() {
+        let mut buf = vec![0u8; 16];
+        write_i64_to_mmap(&mut buf, 0, i64::MIN);
+        write_i64_to_mmap(&mut buf, 8, i64::MAX);
+        assert_eq!(read_i64_from_mmap(&buf, 0), i64::MIN);
+        assert_eq!(read_i64_from_mmap(&buf, 8), i64::MAX);
+    }
 }

@@ -1052,4 +1052,507 @@ mod tests {
         assert_eq!(DATA_HEADER_SIZE, 124);
         assert_eq!(INDEX_HEADER_SIZE, 128);
     }
+
+    #[test]
+    fn test_data_read_from_invalid_magic_returns_invalid_magic() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+        mmap[0..4].copy_from_slice(b"JUNK");
+
+        let result = DataFileMetadata::read_from(&mmap);
+        assert!(matches!(result, Err(TmslError::InvalidMagic)));
+    }
+
+    #[test]
+    fn test_data_read_from_truncated_buffer_returns_invalid_data() {
+        let buf = [0u8; 4];
+        let result = DataFileMetadata::read_from(&buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_data_read_from_truncated_meta_tlv() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+        let short = &mmap[..FIXED_PREFIX_SIZE + 5];
+        let result = DataFileMetadata::read_from(short);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_data_read_from_state_length_too_small() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+        let state_len_off = state_length_offset(META_LENGTH_V1);
+        write_u16_to_mmap(&mut mmap, state_len_off, 0);
+
+        let result = DataFileMetadata::read_from(&mmap);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TmslError::InvalidData(msg) => {
+                assert!(msg.contains("state_length"), "msg: {}", msg);
+            }
+            other => panic!("expected InvalidData, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_index_read_from_invalid_magic_returns_invalid_magic() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+        mmap[0..4].copy_from_slice(b"NOPE");
+
+        let result = IndexFileMetadata::read_from(&mmap);
+        assert!(matches!(result, Err(TmslError::InvalidMagic)));
+    }
+
+    #[test]
+    fn test_index_read_from_wrong_version_returns_error() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+        write_u16_to_mmap(&mut mmap, OFF_VERSION, 0);
+
+        let result = IndexFileMetadata::read_from(&mmap);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TmslError::InvalidData(msg) => {
+                assert!(msg.contains("version"), "msg: {}", msg);
+            }
+            other => panic!("expected InvalidData, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_index_read_from_truncated_buffer() {
+        let buf = [0u8; 5];
+        let result = IndexFileMetadata::read_from(&buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_index_read_from_state_length_too_small() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+        let state_len_off = state_length_offset(META_LENGTH_V1);
+        write_u16_to_mmap(&mut mmap, state_len_off, 0);
+
+        let result = IndexFileMetadata::read_from(&mmap);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_data_core_state_rejects_wrong_file_type() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let result = write_data_core_state_to_mmap(&mut mmap, 100, 200, 256, 10, 2000);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TmslError::InvalidData(msg) => {
+                assert!(msg.contains("file_type"), "msg: {}", msg);
+            }
+            other => panic!("expected InvalidData, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_write_index_wrote_position_rejects_wrong_file_type() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let result = write_index_wrote_position_to_mmap(&mut mmap, 256);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TmslError::InvalidData(msg) => {
+                assert!(msg.contains("file_type"), "msg: {}", msg);
+            }
+            other => panic!("expected InvalidData, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_write_data_pending_state_rejects_wrong_file_type() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let result = write_data_pending_state_to_mmap(&mut mmap, 128, 1000, 5);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_data_invalid_record_count_rejects_wrong_file_type() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let result = write_data_invalid_record_count_to_mmap(&mut mmap, 3);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_data_core_state_roundtrip() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_core_state_to_mmap(&mut mmap, 100, 200, 256, 10, 2000).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.min_timestamp, 100);
+        assert_eq!(read.max_timestamp, 200);
+        assert_eq!(read.wrote_position, 256);
+        assert_eq!(read.record_count, 10);
+        assert_eq!(read.total_uncompressed_size, 2000);
+    }
+
+    #[test]
+    fn test_write_data_pending_state_roundtrip() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_pending_state_to_mmap(&mut mmap, 128, 1000, 5).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.pending_block_offset, 128);
+        assert_eq!(read.pending_wrote_position, 1000);
+        assert_eq!(read.pending_record_count, 5);
+    }
+
+    #[test]
+    fn test_write_data_invalid_record_count_roundtrip() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_invalid_record_count_to_mmap(&mut mmap, 42).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.invalid_record_count, 42);
+    }
+
+    #[test]
+    fn test_write_index_wrote_position_roundtrip() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let new_pos = INDEX_HEADER_SIZE + 128;
+        write_index_wrote_position_to_mmap(&mut mmap, new_pos).unwrap();
+
+        let read = IndexFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.wrote_position, new_pos);
+    }
+
+    #[test]
+    fn test_clear_pending_from_mmap_roundtrip() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_pending_state_to_mmap(&mut mmap, 128, 1000, 5).unwrap();
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.pending_block_offset, 128);
+
+        clear_pending_from_mmap(&mut mmap).unwrap();
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.pending_block_offset, PENDING_NONE);
+        assert_eq!(read.pending_wrote_position, 0);
+        assert_eq!(read.pending_record_count, 0);
+    }
+
+    #[test]
+    fn test_data_header_size_field_matches_constant() {
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        assert_eq!(meta.header_size, DATA_HEADER_SIZE);
+        assert_eq!(meta.header_size, 124);
+    }
+
+    #[test]
+    fn test_index_header_size_field_matches_constant() {
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        assert_eq!(meta.header_size, INDEX_HEADER_SIZE);
+        assert_eq!(meta.header_size, 128);
+    }
+
+    #[test]
+    fn test_data_header_size_preserved_after_read() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.header_size, DATA_HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_index_header_size_preserved_after_read() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let read = IndexFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.header_size, INDEX_HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_data_boundary_timestamps_min_max() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_core_state_to_mmap(&mut mmap, i64::MIN, i64::MAX, 0, 0, 0).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.min_timestamp, i64::MIN);
+        assert_eq!(read.max_timestamp, i64::MAX);
+    }
+
+    #[test]
+    fn test_data_boundary_timestamps_zero() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_core_state_to_mmap(&mut mmap, 0, 0, 0, 0, 0).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.min_timestamp, 0);
+        assert_eq!(read.max_timestamp, 0);
+    }
+
+    #[test]
+    fn test_data_boundary_wrote_position_max() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_core_state_to_mmap(&mut mmap, 0, 0, u64::MAX, u64::MAX, u64::MAX).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.wrote_position, u64::MAX);
+        assert_eq!(read.record_count, u64::MAX);
+        assert_eq!(read.total_uncompressed_size, u64::MAX);
+    }
+
+    #[test]
+    fn test_data_boundary_pending_fields_max() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_pending_state_to_mmap(&mut mmap, u64::MAX, u64::MAX, u64::MAX).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.pending_block_offset, u64::MAX);
+        assert_eq!(read.pending_wrote_position, u64::MAX);
+        assert_eq!(read.pending_record_count, u64::MAX);
+    }
+
+    #[test]
+    fn test_data_boundary_file_size_zero() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta = DataFileMetadata::create_default(0, 0, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.file_size, 0);
+    }
+
+    #[test]
+    fn test_data_boundary_file_offset_negative() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta = DataFileMetadata::create_default(
+            i64::MIN,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        );
+        meta.write_to(&mut mmap);
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.file_offset, i64::MIN);
+    }
+
+    #[test]
+    fn test_index_boundary_wrote_position_reset() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_index_wrote_position_to_mmap(&mut mmap, INDEX_HEADER_SIZE).unwrap();
+
+        let read = IndexFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.wrote_position, INDEX_HEADER_SIZE);
+    }
+
+    #[test]
+    fn test_data_negative_timestamps() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_core_state_to_mmap(&mut mmap, -1000, -1, 0, 0, 0).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.min_timestamp, -1000);
+        assert_eq!(read.max_timestamp, -1);
+    }
+
+    #[test]
+    fn test_data_create_default_sentinel_values() {
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        assert_eq!(meta.min_timestamp, TIMESTAMP_MIN_SENTINEL);
+        assert_eq!(meta.max_timestamp, TIMESTAMP_MAX_SENTINEL);
+        assert_eq!(meta.pending_block_offset, PENDING_NONE);
+        assert_eq!(meta.wrote_position, DATA_HEADER_SIZE);
+        assert_eq!(meta.record_count, 0);
+        assert_eq!(meta.total_uncompressed_size, 0);
+        assert_eq!(meta.pending_wrote_position, 0);
+        assert_eq!(meta.pending_record_count, 0);
+        assert_eq!(meta.invalid_record_count, 0);
+    }
+
+    #[test]
+    fn test_index_create_default_values() {
+        let meta =
+            IndexFileMetadata::create_default(100, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        assert_eq!(meta.file_offset, 100);
+        assert_eq!(meta.wrote_position, INDEX_HEADER_SIZE);
+        assert_eq!(meta.state_length, INDEX_STATE_LENGTH_V1);
+        assert_eq!(meta.meta_length, META_LENGTH_V1);
+    }
+
+    #[test]
+    fn test_sentinel_values() {
+        assert_eq!(PENDING_NONE, u64::MAX);
+        assert_eq!(TIMESTAMP_MIN_SENTINEL, i64::MAX);
+        assert_eq!(TIMESTAMP_MAX_SENTINEL, i64::MIN);
+    }
+
+    #[test]
+    fn test_multiple_state_updates_last_wins() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_core_state_to_mmap(&mut mmap, 10, 20, 100, 5, 500).unwrap();
+        write_data_core_state_to_mmap(&mut mmap, 30, 40, 200, 10, 1000).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.min_timestamp, 30);
+        assert_eq!(read.max_timestamp, 40);
+        assert_eq!(read.wrote_position, 200);
+        assert_eq!(read.record_count, 10);
+        assert_eq!(read.total_uncompressed_size, 1000);
+    }
+
+    #[test]
+    fn test_pending_state_update_after_core_state() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        write_data_core_state_to_mmap(&mut mmap, 10, 20, 100, 5, 500).unwrap();
+        write_data_pending_state_to_mmap(&mut mmap, 64, 300, 2).unwrap();
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.min_timestamp, 10);
+        assert_eq!(read.max_timestamp, 20);
+        assert_eq!(read.wrote_position, 100);
+        assert_eq!(read.pending_block_offset, 64);
+        assert_eq!(read.pending_wrote_position, 300);
+        assert_eq!(read.pending_record_count, 2);
+    }
+
+    #[test]
+    fn test_data_compress_level_zero() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 0, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.compress_level, 0);
+    }
+
+    #[test]
+    fn test_data_compress_level_max() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 22, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let read = DataFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.compress_level, 22);
+    }
+
+    #[test]
+    fn test_index_compress_type_roundtrip() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        let meta =
+            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let read = IndexFileMetadata::read_from(&mmap).unwrap();
+        assert_eq!(read.compress_type, crate::compress::COMPRESS_TYPE_ZSTD);
+        assert_eq!(read.compress_level, 6);
+    }
+
+    #[test]
+    fn test_write_data_state_field_offset_exceeds_state_length() {
+        let (mut mmap, _path) = create_test_mmap(DATA_HEADER_SIZE);
+        let meta =
+            DataFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.write_to(&mut mmap);
+
+        let state_len_off = state_length_offset(META_LENGTH_V1);
+        write_u16_to_mmap(&mut mmap, state_len_off, 16);
+
+        let result = write_data_core_state_to_mmap(&mut mmap, 0, 0, 0, 0, 0);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            TmslError::InvalidData(msg) => {
+                assert!(msg.contains("state field offset"), "msg: {}", msg);
+            }
+            other => panic!("expected InvalidData, got: {other:?}"),
+        }
+    }
 }

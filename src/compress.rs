@@ -180,4 +180,101 @@ mod tests {
         let result = deflate_compress(&data, 15);
         assert!(result.is_ok());
     }
+
+    #[test]
+    fn test_validate_compress_type_valid() {
+        assert!(validate_compress_type(COMPRESS_TYPE_ZSTD).is_ok());
+        assert!(validate_compress_type(COMPRESS_TYPE_DEFLATE).is_ok());
+    }
+
+    #[test]
+    fn test_validate_compress_type_invalid() {
+        for t in [2u8, 3, 99, 255] {
+            let result = validate_compress_type(t);
+            assert!(result.is_err(), "type {t} should be rejected");
+            assert!(matches!(result.unwrap_err(), TmslError::InvalidData(_)));
+        }
+    }
+
+    #[test]
+    fn test_zstd_roundtrip() {
+        let original = b"zstd direct roundtrip test ".repeat(200);
+        let compressed = zstd_compress(&original, 6).unwrap();
+        assert!(compressed.len() < original.len());
+        let decompressed = zstd_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_compress_decompress_dispatch_deflate() {
+        let original = b"deflate dispatch test ".repeat(100);
+        let compressed = compress(&original, 6, COMPRESS_TYPE_DEFLATE).unwrap();
+        let decompressed = decompress(&compressed, COMPRESS_TYPE_DEFLATE).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_compress_decompress_dispatch_zstd() {
+        let original = b"zstd dispatch test ".repeat(100);
+        let compressed = compress(&original, 6, COMPRESS_TYPE_ZSTD).unwrap();
+        let decompressed = decompress(&compressed, COMPRESS_TYPE_ZSTD).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_decompress_rejects_unknown_type() {
+        let result = decompress(b"data", 99);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), TmslError::InvalidData(_)));
+    }
+
+    #[test]
+    fn test_deflate_roundtrip_large_data() {
+        let original: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let compressed = deflate_compress(&original, 6).unwrap();
+        let decompressed = deflate_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_zstd_roundtrip_large_data() {
+        let original: Vec<u8> = (0..4096).map(|i| (i % 256) as u8).collect();
+        let compressed = zstd_compress(&original, 3).unwrap();
+        let decompressed = zstd_decompress(&compressed).unwrap();
+        assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_should_use_compressed_returns_false_for_larger() {
+        let original = b"ab";
+        let compressed = deflate_compress(original, 6).unwrap();
+        assert!(!should_use_compressed(&compressed, original));
+    }
+
+    #[test]
+    fn test_should_use_compressed_returns_false_for_equal() {
+        let data = b"equal";
+        assert!(!should_use_compressed(data, data));
+    }
+
+    #[test]
+    fn test_zstd_level_range() {
+        let data = b"zstd level test ".repeat(200);
+        let c1 = zstd_compress(&data, 1).unwrap();
+        let c10 = zstd_compress(&data, 10).unwrap();
+        let c22 = zstd_compress(&data, 22).unwrap();
+
+        assert!(c22.len() <= c10.len());
+        assert!(c10.len() <= c1.len());
+
+        assert_eq!(zstd_decompress(&c1).unwrap(), data);
+        assert_eq!(zstd_decompress(&c10).unwrap(), data);
+        assert_eq!(zstd_decompress(&c22).unwrap(), data);
+    }
+
+    #[test]
+    fn test_compress_type_constants() {
+        assert_eq!(COMPRESS_TYPE_ZSTD, 0);
+        assert_eq!(COMPRESS_TYPE_DEFLATE, 1);
+    }
 }
