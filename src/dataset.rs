@@ -1427,11 +1427,10 @@ impl DataSetInner {
 
     pub(crate) fn next_query_index_entry(
         &mut self,
-        next_ts: i64,
+        start_ts: i64,
         end_ts: i64,
     ) -> Result<Option<IndexEntry>> {
         self.ensure_open()?;
-        let (start_ts, end_ts) = self.clamp_query_range(next_ts, end_ts);
         if start_ts > end_ts {
             return Ok(None);
         }
@@ -1440,12 +1439,11 @@ impl DataSetInner {
 
     pub(crate) fn next_query_index_entry_from_position(
         &mut self,
-        next_ts: i64,
+        start_ts: i64,
         end_ts: i64,
         cursor: Option<IndexEntryPosition>,
     ) -> Result<Option<(IndexEntryPosition, IndexEntry)>> {
         self.ensure_open()?;
-        let (start_ts, end_ts) = self.clamp_query_range(next_ts, end_ts);
         if start_ts > end_ts {
             return Ok(None);
         }
@@ -1460,7 +1458,6 @@ impl DataSetInner {
         cursor: Option<IndexEntryPosition>,
     ) -> Result<Option<(IndexEntryPosition, IndexEntry)>> {
         self.ensure_open()?;
-        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
         if start_ts > end_ts {
             return Ok(None);
         }
@@ -1470,12 +1467,11 @@ impl DataSetInner {
 
     pub(crate) fn skip_query_index_entries_forward(
         &mut self,
-        next_ts: i64,
+        mut next_ts: i64,
         end_ts: i64,
         count: usize,
     ) -> Result<Option<i64>> {
         self.ensure_open()?;
-        let (mut next_ts, end_ts) = self.clamp_query_range(next_ts, end_ts);
         if next_ts > end_ts {
             return Ok(None);
         }
@@ -1510,11 +1506,10 @@ impl DataSetInner {
     pub(crate) fn skip_query_index_entries_reverse(
         &mut self,
         start_ts: i64,
-        end_ts: i64,
+        mut end_ts: i64,
         count: usize,
     ) -> Result<Option<i64>> {
         self.ensure_open()?;
-        let (start_ts, mut end_ts) = self.clamp_query_range(start_ts, end_ts);
         if start_ts > end_ts {
             return Ok(None);
         }
@@ -1551,7 +1546,7 @@ impl DataSetInner {
         entry: &IndexEntry,
         hot_block: &mut HotBlockCache,
     ) -> Result<Option<(i64, Vec<u8>)>> {
-        if entry.block_offset == BLOCK_OFFSET_FILLER || self.is_timestamp_expired(entry.timestamp) {
+        if entry.block_offset == BLOCK_OFFSET_FILLER {
             return Ok(None);
         }
         let re = ReadIndexEntry {
@@ -1572,7 +1567,7 @@ impl DataSetInner {
         entry: &IndexEntry,
         hot_block: &HotBlockCache,
     ) -> Result<Option<(i64, Vec<u8>)>> {
-        if entry.block_offset == BLOCK_OFFSET_FILLER || self.is_timestamp_expired(entry.timestamp) {
+        if entry.block_offset == BLOCK_OFFSET_FILLER {
             return Ok(None);
         }
         let key = self
@@ -1596,7 +1591,7 @@ impl DataSetInner {
         entry: &IndexEntry,
         hot_block: &mut HotBlockCache,
     ) -> Result<Option<u32>> {
-        if entry.block_offset == BLOCK_OFFSET_FILLER || self.is_timestamp_expired(entry.timestamp) {
+        if entry.block_offset == BLOCK_OFFSET_FILLER {
             return Ok(None);
         }
         let re = ReadIndexEntry {
@@ -1617,7 +1612,7 @@ impl DataSetInner {
         entry: &IndexEntry,
         hot_block: &HotBlockCache,
     ) -> Result<Option<u32>> {
-        if entry.block_offset == BLOCK_OFFSET_FILLER || self.is_timestamp_expired(entry.timestamp) {
+        if entry.block_offset == BLOCK_OFFSET_FILLER {
             return Ok(None);
         }
         let key = self
@@ -1643,9 +1638,7 @@ impl DataSetInner {
         let mut result = Vec::new();
         let mut hot_block = HotBlockCache::new();
         for entry in entries {
-            if entry.block_offset == BLOCK_OFFSET_FILLER
-                || self.is_timestamp_expired(entry.timestamp)
-            {
+            if entry.block_offset == BLOCK_OFFSET_FILLER {
                 continue;
             }
             if let Some(record) = self.try_read_entry_from_hot_cache(&entry, &hot_block)? {
@@ -1711,7 +1704,7 @@ impl DataSetInner {
     }
 
     /// Query data lengths for timestamps in [start_ts, end_ts].
-    /// Returns Vec<(timestamp, data_len)> for valid records only (skips filler and expired).
+    /// Returns Vec<(timestamp, data_len)> for valid records only (skips filler).
     pub fn query_length(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>> {
         let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
         if start_ts > end_ts {
@@ -1721,9 +1714,7 @@ impl DataSetInner {
         let entries = self.time_index.query(start_ts, end_ts)?;
         let mut hot_block = HotBlockCache::new();
         for entry in entries {
-            if entry.block_offset == BLOCK_OFFSET_FILLER
-                || self.is_timestamp_expired(entry.timestamp)
-            {
+            if entry.block_offset == BLOCK_OFFSET_FILLER {
                 continue;
             }
             if let Some(data_len) =
@@ -1751,9 +1742,6 @@ impl DataSetInner {
         entry: &IndexEntry,
         cache: Option<&BlockCache>,
     ) -> Result<(i64, Vec<u8>)> {
-        if self.is_timestamp_expired(entry.timestamp) {
-            return Err(self.expired_error(entry.timestamp));
-        }
         let re = ReadIndexEntry {
             timestamp: entry.timestamp,
             block_offset: entry.block_offset,
@@ -3767,7 +3755,7 @@ mod tests {
     }
 
     #[test]
-    fn test_retention_read_entry_at_index_rejects_expired_entry() {
+    fn test_retention_read_entry_at_index_is_unchecked_after_entry_filter() {
         let dir = temp_dir("retention_read_entry_expired");
         let id = DataSetKey {
             name: "test".into(),
@@ -3790,8 +3778,11 @@ mod tests {
         let old_entry = ds.time_index.find_entry(100).unwrap().unwrap();
         ds.write(200, b"new").unwrap();
 
-        let err = ds.read_entry_at_index(&old_entry).unwrap_err();
-        assert!(matches!(err, TmslError::Expired(_)));
+        assert!(ds.read(100).unwrap().is_none());
+        assert_eq!(
+            ds.read_entry_at_index(&old_entry).unwrap(),
+            (100, b"old".to_vec())
+        );
     }
 
     #[test]

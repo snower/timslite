@@ -583,7 +583,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - 如果最大已写时间戳对应的 index entry 已被 delete 标记为 filler, `read_latest()` 仍返回 `None` (不会回退到更早的有效记录)
 > - FFI 使用独立的 `tmsl_dataset_read_latest` API; `tmsl_dataset_read(dataset, -1, ...)` 读取精确 timestamp `-1`
 >
-> **retention 语义**: 当 `latest_written_timestamp` 为 `Some(latest)` 时, 所有读取路径以 `retention_threshold = latest.saturating_sub(retention_window as i64)` 为可见性下界；为 `None` 时不产生 retention threshold。`retention_window` 在进入计算前必须已校验为 `0..=i64::MAX`。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold; `read_entry_at_index(entry)` 若 entry.timestamp 已过期则返回 `Expired` 错误, 防止绕过单时间戳入口读取已过期数据。
+> **retention 语义**: 当 `latest_written_timestamp` 为 `Some(latest)` 时, 所有读取路径以 `retention_threshold = latest.saturating_sub(retention_window as i64)` 为可见性下界；为 `None` 时不产生 retention threshold。`retention_window` 在进入计算前必须已校验为 `0..=i64::MAX`。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold。`read_entry_at_index(entry)` 是 crate 内部低层读取 helper, 调用方必须先通过 public 入口或已钳制的 index 查询确定 entry 可见。
 
 ### 10.4 `latest_written_timestamp`
 
@@ -663,7 +663,7 @@ retention_threshold = latest_written_timestamp.map(|latest| latest.saturating_su
 | `read_exist(ts)` | 返回 `Ok(false)` |
 | `query_exist(start, end)` | 返回与原请求范围对齐的 bitmap, 过期 bit 为 0; 超过 4MiB bitmap 返回错误 |
 | `query_index_entries` | 与 query 使用相同钳制, 不暴露过期 entry |
-| `read_entry_at_index(entry)` | 返回 `Expired` 错误, 防止绕过 timestamp 入口 |
+| `read_entry_at_index(entry)` | crate 内部低层读取 helper, 不重复判断 retention; 调用方必须传入已通过入口过滤的可见 entry |
 | `delete(ts)` | 返回 `Expired` 错误, 不打开旧索引/旧数据段 |
 | `write(ts)` 且 `ts < latest` | 作为过期乱序写入返回 `Expired` 错误 |
 | `write(ts)` 且 `ts > latest` | 正序写入允许, 并推进 latest/threshold |

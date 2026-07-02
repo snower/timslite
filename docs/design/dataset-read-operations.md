@@ -269,7 +269,7 @@ pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengt
 
 **Rust 与 FFI 语义差异**:
 - Rust `DataSet::query_length_iter()` 是 source-cursor iterator。每次 `next()` 才读取下一个 index entry 和对应 record header; 如果 dataset 在迭代期间关闭或相关 data segment 被 retention 删除, 后续 `next()` 返回错误。
-- FFI `tmsl_dataset_query_length_iter()` 当前使用 index-entry snapshot iterator。创建 iterator 时 snapshot 当前可见的 `IndexEntry` 列表; `tmsl_length_iter_next()` 再逐条按 snapshot entry 读取 data length。它不会重新查询 index, 但 data segment 缺失、过期或 dataset handle 失效仍会在 next 时返回错误。
+- FFI `tmsl_dataset_query_length_iter()` 当前使用 index-entry snapshot iterator。创建 iterator 时 snapshot 当前可见的 `IndexEntry` 列表; `tmsl_length_iter_next()` 再逐条按 snapshot entry 读取 data length。它不会重新查询 index, 但 data segment 缺失或 dataset handle 失效仍会在 next 时返回错误。
 
 ---
 
