@@ -3,8 +3,9 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use crate::bg::SegmentFlushQueue;
 use crate::config::StoreConfig;
-use crate::dataset::{DataSetJournalSink, DataSetKey, SegmentFlushQueue};
+use crate::dataset::{DataSetJournalSink, DataSetKey};
 use crate::error::{Result, TmslError};
 use crate::index::segment::IndexEntry;
 

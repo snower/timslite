@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::bg::{SegmentDirtySink, SegmentFlushTarget};
 use crate::block::{
     BlockHeader, BLOCK_FLAG_COMPRESSED, BLOCK_FLAG_SEALED, BLOCK_FLAG_SINGLE_RECORD,
 };
@@ -62,6 +63,7 @@ pub struct DataSegment {
     pub last_accessed_at: Instant,
     pub is_flushed: bool,
     pub queued_for_flush: bool,
+    dirty_sink: Option<SegmentDirtySink>,
 
     // ─── Pending block state (from header state) ──────────────────────────
     pub pending_block_offset: Option<u64>,
@@ -147,6 +149,7 @@ impl DataSegment {
             last_accessed_at: now,
             is_flushed: true,
             queued_for_flush: false,
+            dirty_sink: None,
             pending_block_offset: None,
             pending_wrote_position: 0,
             pending_record_count: 0,
@@ -197,6 +200,7 @@ impl DataSegment {
             last_accessed_at: now,
             is_flushed: true,
             queued_for_flush: false,
+            dirty_sink: None,
             pending_block_offset: None,
             pending_wrote_position: 0,
             pending_record_count: 0,
@@ -318,17 +322,27 @@ impl DataSegment {
         Ok(())
     }
 
-    pub(crate) fn take_flush_enqueue_marker(&mut self) -> bool {
-        if !self.is_flushed && !self.queued_for_flush {
-            self.queued_for_flush = true;
-            true
-        } else {
-            false
-        }
+    pub(crate) fn set_dirty_sink(&mut self, dirty_sink: Option<SegmentDirtySink>) {
+        self.dirty_sink = dirty_sink;
+        self.enqueue_dirty_if_needed();
     }
 
     fn mark_dirty(&mut self) {
         self.is_flushed = false;
+        self.enqueue_dirty_if_needed();
+    }
+
+    fn enqueue_dirty_if_needed(&mut self) {
+        if self.is_flushed || self.queued_for_flush {
+            return;
+        }
+        let Some(sink) = self.dirty_sink.as_ref() else {
+            return;
+        };
+        sink.enqueue(SegmentFlushTarget::Data {
+            file_offset: self.file_offset,
+        });
+        self.queued_for_flush = true;
     }
 
     /// Expand the segment file by 2x (up to max_file_size).

@@ -8,13 +8,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use crate::bg::BackgroundTasks;
-use crate::bg::TickResult;
+use crate::bg::{BackgroundTasks, SegmentFlushQueue, TickResult};
 use crate::cache::BlockCache;
 use crate::config::{DataSetConfigBuilder, StoreConfig};
 use crate::dataset::{
     DataSet, DataSetInspectResult, DataSetJournalSink, DataSetKey, DataSetLifecycleSink,
-    DataSetRuntimeContext, SegmentFlushQueue,
+    DataSetRuntimeContext,
 };
 use crate::error::{Result, TmslError};
 use crate::index::segment::IndexEntry;

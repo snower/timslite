@@ -8,17 +8,51 @@
 //! Both modes share a `Mutex<ExecutorState>` for concurrency safety.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cache::BlockCache;
-use crate::dataset::DataSetKey;
-use crate::dataset::{DataSet, DataSetFlushTarget, SegmentFlushQueue, SegmentFlushTarget};
+use crate::dataset::{DataSet, DataSetKey};
 use crate::journal::JournalManager;
 
 type DatasetMap = HashMap<DataSetKey, Arc<DataSet>>;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum SegmentFlushTarget {
+    Data { file_offset: u64 },
+    Index { start_timestamp: i64 },
+    QueueState { group_name: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DataSetFlushTarget {
+    pub dataset: DataSetKey,
+    pub segment: SegmentFlushTarget,
+}
+
+pub(crate) type SegmentFlushQueue = Arc<Mutex<VecDeque<DataSetFlushTarget>>>;
+
+#[derive(Clone)]
+pub(crate) struct SegmentDirtySink {
+    dataset: DataSetKey,
+    queue: SegmentFlushQueue,
+}
+
+impl SegmentDirtySink {
+    pub(crate) fn new(dataset: DataSetKey, queue: SegmentFlushQueue) -> Self {
+        Self { dataset, queue }
+    }
+
+    pub(crate) fn enqueue(&self, segment: SegmentFlushTarget) {
+        self.queue.lock().unwrap().push_back(DataSetFlushTarget {
+            dataset: self.dataset.clone(),
+            segment,
+        });
+    }
+}
 
 /// Shared scheduling state kept across tick invocations.
 pub struct ExecutorState {

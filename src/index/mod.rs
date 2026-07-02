@@ -12,6 +12,7 @@ pub use self::segment::INDEX_ENTRY_SIZE;
 use self::segment::{
     IndexEntry, IndexSegment, IndexSegmentMeta, BLOCK_OFFSET_FILLER, IN_BLOCK_OFFSET_FILLER,
 };
+use crate::bg::SegmentDirtySink;
 use crate::error::{Result, TmslError};
 use crate::header::{IndexFileMetadata, INDEX_HEADER_SIZE};
 
@@ -38,6 +39,7 @@ pub struct TimeIndex {
     pub index_continuous: bool, // true = continuous mode (O(1) lookup enabled)
     pub base_timestamp: Option<i64>,
     pub index_header_size: u64,
+    dirty_sink: Option<SegmentDirtySink>,
 }
 
 impl TimeIndex {
@@ -80,10 +82,11 @@ impl TimeIndex {
         self.index_segments.len()
     }
 
-    pub(crate) fn take_flush_enqueue_marker(&mut self, start_timestamp: i64) -> bool {
-        match self.index_segments.get_mut(&start_timestamp) {
-            Some(IndexSegmentEntryState::Open(seg)) => seg.take_flush_enqueue_marker(),
-            _ => false,
+    pub(crate) fn set_dirty_sink(&mut self, dirty_sink: Option<SegmentDirtySink>) {
+        self.dirty_sink = dirty_sink;
+        let sink = self.dirty_sink.clone();
+        for seg in self.open_index_segments_mut() {
+            seg.set_dirty_sink(sink.clone());
         }
     }
 
@@ -187,7 +190,8 @@ impl TimeIndex {
             else {
                 unreachable!();
             };
-            let seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            let mut seg = IndexSegment::open(&meta.path, meta.start_timestamp, self.segment_size)?;
+            seg.set_dirty_sink(self.dirty_sink.clone());
             self.index_segments
                 .insert(start_timestamp, IndexSegmentEntryState::Open(seg));
         }
@@ -290,6 +294,7 @@ impl TimeIndex {
             index_continuous,
             base_timestamp: None,
             index_header_size: INDEX_HEADER_SIZE,
+            dirty_sink: None,
         })
     }
 
@@ -674,7 +679,7 @@ impl TimeIndex {
             }
         }
 
-        let seg = IndexSegment::create_with_compression(
+        let mut seg = IndexSegment::create_with_compression(
             &self.base_dir,
             segment_start,
             self.initial_segment_size,
@@ -682,6 +687,7 @@ impl TimeIndex {
             self.compress_level,
             self.compress_type,
         )?;
+        seg.set_dirty_sink(self.dirty_sink.clone());
         self.index_segments
             .insert(segment_start, IndexSegmentEntryState::Open(seg));
         self.open_index_segment(segment_start)
@@ -996,6 +1002,7 @@ impl TimeIndex {
             index_continuous,
             base_timestamp,
             index_header_size,
+            dirty_sink: None,
         })
     }
 
@@ -1032,8 +1039,11 @@ impl TimeIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bg::{DataSetFlushTarget, SegmentDirtySink, SegmentFlushTarget};
+    use crate::dataset::DataSetKey;
     use std::fs;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
     fn temp_dir() -> std::path::PathBuf {
         let d = std::env::temp_dir().join("timslite_test_index");
@@ -1056,6 +1066,32 @@ mod tests {
             4,
             INDEX_HEADER_SIZE,
         )
+    }
+
+    #[test]
+    fn test_time_index_dirty_sink_enqueues_from_index_write() {
+        let sub = fresh_subdir("dirty_sink_index_append");
+        let mut idx = TimeIndex::new(&sub, 512, 512, false).unwrap();
+        let dataset = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let queue: Arc<Mutex<std::collections::VecDeque<DataSetFlushTarget>>> =
+            Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        idx.set_dirty_sink(Some(SegmentDirtySink::new(dataset.clone(), queue.clone())));
+
+        idx.add_entry(100, 0, 0).unwrap();
+        idx.add_entry(200, 32, 0).unwrap();
+
+        let queue = queue.lock().unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].dataset, dataset);
+        assert!(matches!(
+            queue[0].segment,
+            SegmentFlushTarget::Index {
+                start_timestamp: 100
+            }
+        ));
     }
 
     #[test]

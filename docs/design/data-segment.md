@@ -415,8 +415,8 @@ segment_file_offset = (block_offset / data_segment_size) * data_segment_size
 
 **状态一致性**:
 - 每次 `append_record` 后立即写入 mmap state 区域
-- 每次 mmap 写入后仅更新内存 dirty 状态: `is_flushed=false`
-- 当 dirty 状态首次从 flushed 变为 unflushed 时, 通过 `DataSetRuntimeContext` 引用的 Store 级共享 `flush_queue` 记录 `{ dataset_key, Data { file_offset } }`
+- 每次 mmap 写入后由 `DataSegment` 自身更新内存 dirty 状态: `is_flushed=false`
+- `DataSegmentSet` 安装 Store 级 dirty sink 后, 当 dirty 状态首次从 flushed 变为 unflushed 时, `DataSegment` 用自身 `file_offset` 记录 `{ dataset_key, Data { file_offset } }`
 - 后台 flush drain 队列后只同步 dirty segment, 成功后 `is_flushed=true`, `queued_for_flush=false`
 - `idle_close()` 前 sync 确保落盘, 并清除该 segment 的 queued 标记; flush 队列中后续遇到该 stale target 时跳过
 - 创建新 data segment 前, 对前一个已经完结的 data segment 直接执行 sync, 不等待后台 flush 间隔

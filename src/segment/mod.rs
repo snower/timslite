@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
+use crate::bg::SegmentDirtySink;
 use crate::error::Result;
 use crate::error::TmslError;
 use crate::header::{DataFileMetadata, TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL};
@@ -107,6 +108,7 @@ pub struct DataSegmentSet {
     pub next_offset: u64,
     pub last_used_at: Instant,
     cache_scope_id: u64,
+    dirty_sink: Option<SegmentDirtySink>,
 }
 
 impl DataSegmentSet {
@@ -147,10 +149,11 @@ impl DataSegmentSet {
         self.segments.len()
     }
 
-    pub(crate) fn take_flush_enqueue_marker(&mut self, file_offset: u64) -> bool {
-        match self.segments.get_mut(&file_offset) {
-            Some(DataSegmentEntry::Open(seg)) => seg.take_flush_enqueue_marker(),
-            _ => false,
+    pub(crate) fn set_dirty_sink(&mut self, dirty_sink: Option<SegmentDirtySink>) {
+        self.dirty_sink = dirty_sink;
+        let sink = self.dirty_sink.clone();
+        for seg in self.open_segments_mut() {
+            seg.set_dirty_sink(sink.clone());
         }
     }
 
@@ -219,6 +222,7 @@ impl DataSegmentSet {
             next_offset: 0,
             last_used_at: Instant::now(),
             cache_scope_id: 0,
+            dirty_sink: None,
         })
     }
 
@@ -286,7 +290,8 @@ impl DataSegmentSet {
             let Some(DataSegmentEntry::Closed(meta)) = self.segments.remove(&file_offset) else {
                 unreachable!();
             };
-            let seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
+            let mut seg = DS::open(&meta.path, meta.file_offset, self.segment_size)?;
+            seg.set_dirty_sink(self.dirty_sink.clone());
             self.segments
                 .insert(file_offset, DataSegmentEntry::Open(seg));
         }
@@ -371,6 +376,7 @@ impl DataSegmentSet {
             next_offset,
             last_used_at: Instant::now(),
             cache_scope_id: 0,
+            dirty_sink: None,
         })
     }
 
@@ -413,7 +419,7 @@ impl DataSegmentSet {
                 // Create new segment with initial_size
                 let file_name = format!("{:020}", current_offset);
                 let path = self.base_dir.join(&file_name);
-                let new_seg = DataSegment::create_with_compression(
+                let mut new_seg = DataSegment::create_with_compression(
                     &path,
                     current_offset,
                     self.initial_segment_size,
@@ -421,6 +427,7 @@ impl DataSegmentSet {
                     compress_level,
                     compress_type,
                 )?;
+                new_seg.set_dirty_sink(self.dirty_sink.clone());
                 self.segments
                     .insert(current_offset, DataSegmentEntry::Open(new_seg));
                 self.next_offset += self.segment_size;
@@ -453,7 +460,7 @@ impl DataSegmentSet {
                     let new_offset = self.next_offset;
                     let file_name = format!("{:020}", new_offset);
                     let path = self.base_dir.join(&file_name);
-                    let new_seg = DataSegment::create_with_compression(
+                    let mut new_seg = DataSegment::create_with_compression(
                         &path,
                         new_offset,
                         self.initial_segment_size,
@@ -461,6 +468,7 @@ impl DataSegmentSet {
                         compress_level,
                         compress_type,
                     )?;
+                    new_seg.set_dirty_sink(self.dirty_sink.clone());
                     self.segments
                         .insert(new_offset, DataSegmentEntry::Open(new_seg));
                     self.next_offset = new_offset + self.segment_size;
@@ -767,7 +775,10 @@ fn read_segment_stats_inner(path: &Path) -> Result<SegmentStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bg::{DataSetFlushTarget, SegmentDirtySink, SegmentFlushTarget};
+    use crate::dataset::DataSetKey;
     use std::fs;
+    use std::sync::{Arc, Mutex};
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("timslite_segment_set_{}", name));
@@ -803,6 +814,37 @@ mod tests {
             }),
         );
         path
+    }
+
+    #[test]
+    fn test_data_segment_set_dirty_sink_enqueues_from_segment_write() {
+        let dir = temp_dir("dirty_sink_data_append");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir,
+            4096,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+        let dataset = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let queue: Arc<Mutex<std::collections::VecDeque<DataSetFlushTarget>>> =
+            Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        set.set_dirty_sink(Some(SegmentDirtySink::new(dataset.clone(), queue.clone())));
+
+        set.append(100, b"first").unwrap();
+        set.append(200, b"second").unwrap();
+
+        let queue = queue.lock().unwrap();
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue[0].dataset, dataset);
+        assert!(matches!(
+            queue[0].segment,
+            SegmentFlushTarget::Data { file_offset: 0 }
+        ));
     }
 
     #[test]

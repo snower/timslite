@@ -59,9 +59,9 @@ flush (默认每 15 秒):
 每个 data/index segment 在内存中维护两个非持久字段:
 
 - `is_flushed`: 当前 mmap 内容是否已通过 `mmap.flush()` 同步。创建、打开、成功 flush 后为 `true`; 任意 mmap 写入后置为 `false`。
-- `queued_for_flush`: 当前 dirty segment 是否已经进入等待 flush 队列。`is_flushed` 从 `true` 变为 `false` 时加入队列; 后续写入保持 dirty 但不重复入队。
+- `queued_for_flush`: 当前 dirty segment 是否已经进入等待 flush 队列。`DataSegmentSet` / `TimeIndex` 安装 Store 级 dirty sink 后, segment 在 `is_flushed` 从 `true` 变为 `false` 的实际 mmap 写入路径中加入队列; 后续写入保持 dirty 但不重复入队。
 
-Store 持有一个全局共享 `VecDeque<DataSetFlushTarget>` 等待队列, `DataSetRuntimeContext` 仅保存该队列的 `Arc` 引用。队列项必须带 dataset key, 以便后台 flush 不扫描全部 dataset:
+Store 持有一个全局共享 `VecDeque<DataSetFlushTarget>` 等待队列, `DataSetRuntimeContext` 仅保存该队列的 `Arc` 引用。`DataSet` 注入 runtime context 时会为 `DataSegmentSet` / `TimeIndex` 安装窄 dirty sink; data/index segment 自己在实际写入后用自身定位键入队。队列项必须带 dataset key, 以便后台 flush 不扫描全部 dataset:
 
 ```rust
 struct DataSetFlushTarget {

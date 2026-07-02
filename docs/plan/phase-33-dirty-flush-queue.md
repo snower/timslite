@@ -20,7 +20,7 @@
 - [x] 在 `DataSetRuntimeContext` 增加 Store 级共享 `flush_queue` 引用。
 - [x] 在 `DataSegment` 增加 `is_flushed` / `queued_for_flush`, 并在所有 mmap 写入路径标记 dirty。
 - [x] 在 `IndexSegment` 增加 `is_flushed` / `queued_for_flush`, 并在 append/overwrite 路径标记 dirty。
-- [x] 在 `DataSet` 增加 dirty target 收集、入队、当前 dataset dirty flush 逻辑。
+- [x] 将 flush target 类型归属到 `bg` 模块; `DataSet` 注入 runtime context 时在 `DataSegmentSet` / `TimeIndex` 安装窄 dirty sink, data/index segment 在实际 mmap 写入路径自行入队。
 - [x] 在 `BackgroundTasks` 增加全局 dirty queue drain 和按 key 定位 flush 逻辑。
 - [x] 在 `DataSegmentSet` rollover 和 `TimeIndex` 新 segment 创建前 flush 已完结 segment。
 - [x] 保持无 runtime context 的低层 `DataSet::flush()` 退化为同步所有打开 segment。

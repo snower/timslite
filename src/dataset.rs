@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::bg::{DataSetFlushTarget, SegmentDirtySink, SegmentFlushQueue, SegmentFlushTarget};
 use crate::cache::BlockCache;
 use crate::config::{validate_dataset_config_values, DataSetConfig};
 use crate::dataset_state::DatasetStateFile;
@@ -44,21 +45,6 @@ fn current_unix_seconds() -> Result<i64> {
     }
     Ok(seconds as i64)
 }
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum SegmentFlushTarget {
-    Data { file_offset: u64 },
-    Index { start_timestamp: i64 },
-    QueueState { group_name: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DataSetFlushTarget {
-    pub dataset: DataSetKey,
-    pub segment: SegmentFlushTarget,
-}
-
-pub(crate) type SegmentFlushQueue = Arc<Mutex<VecDeque<DataSetFlushTarget>>>;
 
 pub(crate) trait DataSetJournalSink: Send + Sync {
     fn record_write(&self, identifier: u64, entry: IndexEntry) -> Result<()>;
@@ -824,6 +810,12 @@ impl DataSetInner {
     }
 
     pub(crate) fn set_runtime_context(&mut self, context: DataSetRuntimeContext) {
+        let dirty_sink = context
+            .flush_queue
+            .as_ref()
+            .map(|queue| SegmentDirtySink::new(self.id.clone(), Arc::clone(queue)));
+        self.segments.set_dirty_sink(dirty_sink.clone());
+        self.time_index.set_dirty_sink(dirty_sink);
         self.runtime_context = context;
     }
 
@@ -903,46 +895,6 @@ impl DataSetInner {
         }
 
         (min_ts, max_ts)
-    }
-
-    fn enqueue_dirty_target(&mut self, segment: SegmentFlushTarget) {
-        let Some(queue) = self.runtime_context.flush_queue.as_ref() else {
-            return;
-        };
-        let should_queue = match &segment {
-            SegmentFlushTarget::Data { file_offset } => {
-                self.segments.take_flush_enqueue_marker(*file_offset)
-            }
-            SegmentFlushTarget::Index { start_timestamp } => {
-                self.time_index.take_flush_enqueue_marker(*start_timestamp)
-            }
-            SegmentFlushTarget::QueueState { .. } => false,
-        };
-        if !should_queue {
-            return;
-        }
-
-        let mut queue = queue.lock().unwrap();
-        queue.push_back(DataSetFlushTarget {
-            dataset: self.id.clone(),
-            segment,
-        });
-    }
-
-    fn enqueue_dirty_data_segment(&mut self, file_offset: u64) {
-        self.enqueue_dirty_target(SegmentFlushTarget::Data { file_offset });
-    }
-
-    fn enqueue_dirty_data_entry(&mut self, block_offset: u64) {
-        self.enqueue_dirty_data_segment(self.data_segment_offset_for(block_offset));
-    }
-
-    fn enqueue_dirty_index_timestamp(&mut self, timestamp: i64) -> Result<()> {
-        let start_timestamp = self
-            .time_index
-            .flush_target_start_for_timestamp(timestamp)?;
-        self.enqueue_dirty_target(SegmentFlushTarget::Index { start_timestamp });
-        Ok(())
     }
 
     pub(crate) fn enqueue_queue_state_flush(&self, group_name: &str) {
@@ -1123,8 +1075,6 @@ impl DataSetInner {
             }
             self.latest_written_timestamp = Some(timestamp);
             self.last_used_at = Instant::now();
-            self.enqueue_dirty_data_segment(seg_offset);
-            self.enqueue_dirty_index_timestamp(timestamp)?;
             self.notify_queue();
             Ok(WriteOutcome {
                 index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
@@ -1147,8 +1097,6 @@ impl DataSetInner {
             }
             self.latest_written_timestamp = Some(timestamp);
             self.last_used_at = Instant::now();
-            self.enqueue_dirty_data_segment(seg_offset);
-            self.enqueue_dirty_index_timestamp(timestamp)?;
             self.notify_queue();
             Ok(WriteOutcome {
                 index_entry: IndexEntry::new(timestamp, block_offset, in_block_offset),
@@ -1227,7 +1175,6 @@ impl DataSetInner {
             self.segments
                 .append_to_last_record(entry.block_offset, entry.in_block_offset, data)?;
         self.last_used_at = Instant::now();
-        self.enqueue_dirty_data_entry(entry.block_offset);
         Ok(Some(AppendOutcome {
             index_entry: entry,
             data_offset: actual_offset,
@@ -1278,11 +1225,6 @@ impl DataSetInner {
 
         // latest_written_timestamp unchanged
         self.last_used_at = Instant::now();
-        self.enqueue_dirty_data_segment(seg_offset);
-        if old_entry.block_offset != BLOCK_OFFSET_FILLER {
-            self.enqueue_dirty_data_entry(old_entry.block_offset);
-        }
-        self.enqueue_dirty_index_timestamp(timestamp)?;
         Ok(WriteOutcome {
             index_entry: IndexEntry::new(timestamp, new_block_offset, in_block_offset),
             branch: WriteBranch::OutOfOrder,
@@ -1316,7 +1258,6 @@ impl DataSetInner {
                         // latest_written_timestamp unchanged; index unchanged.
                         self.invalidate_cache_for_entry(&entry, cache);
                         self.last_used_at = Instant::now();
-                        self.enqueue_dirty_data_entry(entry.block_offset);
                         Ok(WriteOutcome {
                             index_entry: entry,
                             branch: WriteBranch::Correction,
@@ -1395,8 +1336,6 @@ impl DataSetInner {
         self.add_archived_invalid_if_needed(old_entry.block_offset)?;
 
         self.last_used_at = Instant::now();
-        self.enqueue_dirty_data_entry(old_entry.block_offset);
-        self.enqueue_dirty_index_timestamp(timestamp)?;
         Ok(DeleteOutcome {
             old_index_entry: old_entry,
         })
@@ -2357,11 +2296,6 @@ mod tests {
         ds.write(100, b"first").unwrap();
         ds.flush().unwrap();
         assert_eq!(ds.flush_queue_len(), 0);
-
-        let index_seg = ds.time_index.open_index_segments_mut().next().unwrap();
-        index_seg
-            .append_entry(&IndexEntry::new(101, BLOCK_OFFSET_FILLER, 0))
-            .unwrap();
 
         ds.append(100, b"_tail").unwrap();
 

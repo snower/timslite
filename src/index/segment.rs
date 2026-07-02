@@ -8,6 +8,7 @@ use std::fs::OpenOptions;
 use std::path::Path;
 use std::time::Instant;
 
+use crate::bg::{SegmentDirtySink, SegmentFlushTarget};
 use crate::error::{Result, TmslError};
 use crate::header::{write_index_wrote_position_to_mmap, IndexFileMetadata, FIXED_PREFIX_SIZE};
 use crate::util::read_u32_from_mmap;
@@ -126,6 +127,7 @@ pub struct IndexSegment {
     pub max_file_size: u64,
     /// Physical byte offset where index entries start in this file.
     pub header_size: u64,
+    dirty_sink: Option<SegmentDirtySink>,
 }
 
 impl IndexSegment {
@@ -200,6 +202,7 @@ impl IndexSegment {
             current_file_size: file_size,
             max_file_size,
             header_size,
+            dirty_sink: None,
         })
     }
 
@@ -239,6 +242,7 @@ impl IndexSegment {
             current_file_size: actual_file_size,
             max_file_size,
             header_size,
+            dirty_sink: None,
         })
     }
 
@@ -653,17 +657,27 @@ impl IndexSegment {
         Ok(())
     }
 
-    pub(crate) fn take_flush_enqueue_marker(&mut self) -> bool {
-        if !self.is_flushed && !self.queued_for_flush {
-            self.queued_for_flush = true;
-            true
-        } else {
-            false
-        }
+    pub(crate) fn set_dirty_sink(&mut self, dirty_sink: Option<SegmentDirtySink>) {
+        self.dirty_sink = dirty_sink;
+        self.enqueue_dirty_if_needed();
     }
 
     fn mark_dirty(&mut self) {
         self.is_flushed = false;
+        self.enqueue_dirty_if_needed();
+    }
+
+    fn enqueue_dirty_if_needed(&mut self) {
+        if self.is_flushed || self.queued_for_flush {
+            return;
+        }
+        let Some(sink) = self.dirty_sink.as_ref() else {
+            return;
+        };
+        sink.enqueue(SegmentFlushTarget::Index {
+            start_timestamp: self.start_timestamp,
+        });
+        self.queued_for_flush = true;
     }
 }
 
