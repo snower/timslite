@@ -293,6 +293,8 @@ pub(crate) struct ConsumerStateFile {
     mmap: MmapMut,
     processed_ts: i64,
     pending_entries: Vec<PendingEntry>,
+    is_flushed: bool,
+    queued_for_flush: bool,
 }
 
 impl ConsumerStateFile {
@@ -337,6 +339,8 @@ impl ConsumerStateFile {
             mmap,
             processed_ts: initial_processed_ts,
             pending_entries: Vec::new(),
+            is_flushed: true,
+            queued_for_flush: false,
         })
     }
 
@@ -412,6 +416,8 @@ impl ConsumerStateFile {
             mmap,
             processed_ts,
             pending_entries,
+            is_flushed: true,
+            queued_for_flush: false,
         };
         let mut changed = state.cleanup_acked() > 0;
         changed |= state.mark_unacked_recovery_expired();
@@ -449,9 +455,28 @@ impl ConsumerStateFile {
     }
 
     /// Flush mmap to disk (MS_SYNC); called by background flush task.
-    pub fn flush(&self) -> Result<()> {
+    pub fn flush(&mut self) -> Result<()> {
         self.mmap.flush()?;
+        self.is_flushed = true;
+        self.queued_for_flush = false;
         Ok(())
+    }
+
+    pub(crate) fn is_flushed(&self) -> bool {
+        self.is_flushed
+    }
+
+    pub(crate) fn take_flush_enqueue_marker(&mut self) -> bool {
+        if !self.is_flushed && !self.queued_for_flush {
+            self.queued_for_flush = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn mark_dirty(&mut self) {
+        self.is_flushed = false;
     }
 
     /// Add a pending entry. Returns error if capacity reached.
@@ -464,6 +489,7 @@ impl ConsumerStateFile {
             )));
         }
         self.pending_entries.push(entry);
+        self.mark_dirty();
         Ok(())
     }
 
@@ -491,6 +517,7 @@ impl ConsumerStateFile {
                 TmslError::NotFound(format!("pending entry for timestamp {}", timestamp))
             })?;
         entry.status = PENDING_STATUS_ACKED;
+        self.mark_dirty();
         Ok(())
     }
 
@@ -513,6 +540,7 @@ impl ConsumerStateFile {
                 }
             }
             self.pending_entries.drain(..count);
+            self.mark_dirty();
         }
         count
     }
@@ -553,6 +581,9 @@ impl ConsumerStateFile {
         if self.cleanup_acked() > 0 {
             changed = true;
         }
+        if changed {
+            self.mark_dirty();
+        }
 
         PendingScanResult { timestamp, changed }
     }
@@ -585,6 +616,9 @@ impl ConsumerStateFile {
                 entry.start_time = 0;
                 changed = true;
             }
+        }
+        if changed {
+            self.mark_dirty();
         }
         changed
     }
@@ -834,7 +868,7 @@ impl DatasetQueue {
             (sf, group_closed)
         };
 
-        Ok(DatasetQueueConsumer {
+        let consumer = DatasetQueueConsumer {
             group_name: group_name.to_string(),
             state_file,
             config,
@@ -844,7 +878,10 @@ impl DatasetQueue {
             group_closed,
             queue_inner: Arc::clone(&self.inner),
             poll_callback: callback_slot,
-        })
+        };
+        drop(inner);
+        consumer.enqueue_state_flush()?;
+        Ok(consumer)
     }
 
     /// List created consumer-group state file names in the queue directory.
@@ -1150,7 +1187,12 @@ impl DatasetQueueConsumer {
                     status: PENDING_STATUS_UNACKED,
                     retry_count: 0,
                 })?;
-                self.dataset.enqueue_queue_state_flush(&self.group_name)?;
+                let should_queue = sf.take_flush_enqueue_marker();
+                drop(sf);
+                if should_queue {
+                    self.enqueue_state_flush_target()?;
+                }
+                return Ok(Some((ts, data)));
             }
             Ok(Some((ts, data)))
         } else {
@@ -1203,6 +1245,18 @@ impl DatasetQueueConsumer {
     }
 
     fn enqueue_state_flush(&self) -> Result<()> {
+        let mut sf = self
+            .state_file
+            .lock()
+            .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+        if sf.take_flush_enqueue_marker() {
+            drop(sf);
+            self.enqueue_state_flush_target()?;
+        }
+        Ok(())
+    }
+
+    fn enqueue_state_flush_target(&self) -> Result<()> {
         self.dataset.enqueue_queue_state_flush(&self.group_name)
     }
 
@@ -1217,8 +1271,12 @@ impl DatasetQueueConsumer {
 
         sf.ack_pending(timestamp)?;
         sf.cleanup_acked();
+        let should_queue = sf.take_flush_enqueue_marker();
         drop(sf);
-        self.dataset.enqueue_queue_state_flush(&self.group_name)
+        if should_queue {
+            self.enqueue_state_flush_target()?;
+        }
+        Ok(())
     }
 
     /// Register or clear a lightweight wake callback for queue data notifications.
@@ -1432,6 +1490,36 @@ mod tests {
         assert_eq!(sf2.processed_ts(), 42);
         assert_eq!(sf2.pending_count(), 0);
         drop(sf2);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn csf_dirty_marker_queues_once_until_flush() {
+        let dir = temp_queue_dir();
+        let path = dir.join("group_marker");
+        let mut sf = ConsumerStateFile::open_or_create(path, 0).unwrap();
+
+        assert!(sf.is_flushed());
+        assert!(!sf.take_flush_enqueue_marker());
+
+        sf.add_pending(PendingEntry {
+            timestamp: 1,
+            start_time: 10,
+            status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
+        })
+        .unwrap();
+
+        assert!(!sf.is_flushed());
+        assert!(sf.take_flush_enqueue_marker());
+        assert!(!sf.take_flush_enqueue_marker());
+
+        sf.sync_to_mmap().unwrap();
+        sf.flush().unwrap();
+
+        assert!(sf.is_flushed());
+        assert!(!sf.take_flush_enqueue_marker());
+        drop(sf);
         cleanup(&dir);
     }
 

@@ -166,9 +166,9 @@ impl DatasetStateFile {
         &mut self,
         archived_until_offset: u64,
         segments: &[SegmentStats],
-    ) {
+    ) -> Result<()> {
         if archived_until_offset <= self.snapshot.archived_until_offset && segments.is_empty() {
-            return;
+            return Ok(());
         }
         for stats in segments {
             self.snapshot.total_record_count = self
@@ -189,10 +189,11 @@ impl DatasetStateFile {
                 .saturating_add(stats.invalid_record_count);
         }
         self.snapshot.archived_until_offset = archived_until_offset;
-        self.mark_dirty();
+        self.flush_snapshot()?;
+        Ok(())
     }
 
-    pub(crate) fn subtract_data_segment(&mut self, stats: SegmentStats) {
+    pub(crate) fn subtract_data_segment(&mut self, stats: SegmentStats) -> Result<()> {
         self.snapshot.total_record_count = self
             .snapshot
             .total_record_count
@@ -209,24 +210,31 @@ impl DatasetStateFile {
             .snapshot
             .total_invalid_record_count
             .saturating_sub(stats.invalid_record_count);
-        self.mark_dirty();
+        self.flush_snapshot()?;
+        Ok(())
     }
 
-    pub(crate) fn add_invalid_record(&mut self) {
+    pub(crate) fn add_invalid_record(&mut self) -> Result<()> {
         self.snapshot.total_invalid_record_count =
             self.snapshot.total_invalid_record_count.saturating_add(1);
-        self.mark_dirty();
+        self.flush_snapshot()?;
+        Ok(())
     }
 
-    pub(crate) fn set_timestamp_range(&mut self, min_timestamp: i64, max_timestamp: i64) {
+    pub(crate) fn set_timestamp_range(
+        &mut self,
+        min_timestamp: i64,
+        max_timestamp: i64,
+    ) -> Result<()> {
         if self.snapshot.min_timestamp == min_timestamp
             && self.snapshot.max_timestamp == max_timestamp
         {
-            return;
+            return Ok(());
         }
         self.snapshot.min_timestamp = min_timestamp;
         self.snapshot.max_timestamp = max_timestamp;
-        self.mark_dirty();
+        self.flush_snapshot()?;
+        Ok(())
     }
 
     pub(crate) fn sync(&mut self) -> Result<()> {
@@ -246,14 +254,19 @@ impl DatasetStateFile {
         Ok(())
     }
 
-    fn mark_dirty(&mut self) {
+    fn flush_snapshot(&mut self) -> Result<()> {
         if self.read_only {
-            return;
+            self.is_flushed = true;
+            return Ok(());
         }
-        if let Some(mmap) = self.mmap.as_mut() {
-            Self::write_snapshot_to_mmap(mmap, self.snapshot);
-        }
-        self.is_flushed = false;
+        let mmap = self
+            .mmap
+            .as_mut()
+            .ok_or_else(|| TmslError::MmapError("dataset state file is not mapped".into()))?;
+        Self::write_snapshot_to_mmap(mmap, self.snapshot);
+        mmap.flush()?;
+        self.is_flushed = true;
+        Ok(())
     }
 
     fn write_snapshot_to_mmap(mmap: &mut [u8], snapshot: DatasetStateSnapshot) {
@@ -285,5 +298,36 @@ impl Drop for DatasetStateFile {
                 e
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dataset_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "timslite_dataset_state_{name}_{:?}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn state_mutations_flush_immediately() {
+        let dir = temp_dataset_dir("immediate_flush");
+        let mut state = DatasetStateFile::open_or_create(&dir).unwrap();
+
+        state.set_timestamp_range(10, 20).unwrap();
+        assert!(!state.is_dirty());
+
+        let reopened = DatasetStateFile::open_or_create(&dir).unwrap();
+        let snapshot = reopened.snapshot();
+        assert_eq!(snapshot.min_timestamp, 10);
+        assert_eq!(snapshot.max_timestamp, 20);
     }
 }
