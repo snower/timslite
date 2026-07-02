@@ -64,18 +64,105 @@ fn test_read_exist_latest_timestamp() {
     assert!(!ds.read_exist(-1).unwrap());
     drop(ds);
 
-    // Write exact -1 first, then a later timestamp.
+    // Negative timestamps are relative offsets from latest_written_timestamp.
     let ds_arc = handle.clone();
     let ds = ds_arc.clone();
-    ds.write(-1, b"minus-one").unwrap();
+    assert!(ds.write(-1, b"minus-one").is_err());
     ds.write(100, b"hello").unwrap();
     drop(ds);
 
-    // -1 is an exact timestamp, not a latest sentinel.
+    // -1 resolves to latest_written_timestamp.
     let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     assert!(ds.read_exist(-1).unwrap());
     assert!(ds.read_exist(100).unwrap());
+}
+
+#[test]
+fn test_negative_read_arguments_resolve_from_latest_timestamp() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(10, b"ten").unwrap();
+    ds.write(11, b"eleven").unwrap();
+    ds.write(12, b"twelve").unwrap();
+
+    assert_eq!(ds.read(-1).unwrap(), Some((12, b"twelve".to_vec())));
+    assert_eq!(ds.read(-2).unwrap(), Some((11, b"eleven".to_vec())));
+    assert_eq!(ds.read(-3).unwrap(), Some((10, b"ten".to_vec())));
+    assert_eq!(ds.read(-4).unwrap(), None);
+
+    assert!(ds.read_exist(-1).unwrap());
+    assert!(ds.read_exist(-2).unwrap());
+    assert_eq!(ds.read_length(-3).unwrap(), Some(3));
+    assert_eq!(ds.read_length(-4).unwrap(), None);
+}
+
+#[test]
+fn test_negative_query_arguments_resolve_from_latest_timestamp() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(20, b"twenty").unwrap();
+    ds.write(21, b"twenty-one").unwrap();
+    ds.write(22, b"twenty-two").unwrap();
+
+    let rows = ds.query(-3, -1).unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (20, b"twenty".to_vec()),
+            (21, b"twenty-one".to_vec()),
+            (22, b"twenty-two".to_vec())
+        ]
+    );
+
+    let bitmap = ds.query_exist(-3, -1).unwrap();
+    assert_eq!(bitmap.len(), 1);
+    assert_eq!(bitmap[0] & 0b0000_0111, 0b0000_0111);
+
+    let lengths = ds.query_length(-2, -1).unwrap();
+    assert_eq!(lengths, vec![(21, 10), (22, 10)]);
+
+    let iter_rows = ds.query_iter(-2, -1).unwrap().collect_all().unwrap();
+    assert_eq!(
+        iter_rows,
+        vec![(21, b"twenty-one".to_vec()), (22, b"twenty-two".to_vec())]
+    );
+
+    let length_iter_rows = ds.query_length_iter(-2, -1).unwrap().collect_all().unwrap();
+    assert_eq!(length_iter_rows, vec![(21, 10), (22, 10)]);
+}
+
+#[test]
+fn test_negative_write_timestamps_are_rejected() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    assert!(ds.write(-1, b"minus-one").is_err());
+    assert!(ds.append(-1, b"minus-one").is_err());
+    assert!(ds.delete(-1).is_err());
+
+    ds.write(0, b"zero").unwrap();
+    assert_eq!(ds.read(0).unwrap(), Some((0, b"zero".to_vec())));
 }
 
 #[test]
@@ -305,14 +392,16 @@ fn test_read_length_latest() {
     let data = b"test data 123";
     let ds_arc = handle.clone();
     let ds = ds_arc.clone();
-    ds.write(-1, b"minus one").unwrap();
+    ds.write(99, b"previous").unwrap();
     ds.write(100, data).unwrap();
     drop(ds);
 
     let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     let len = ds.read_length(-1).unwrap();
-    assert_eq!(len, Some("minus one".len() as u32));
+    assert_eq!(len, Some(data.len() as u32));
+    let len = ds.read_length(-2).unwrap();
+    assert_eq!(len, Some("previous".len() as u32));
     let len = ds.read_length(100).unwrap();
     assert_eq!(len, Some(data.len() as u32));
 }

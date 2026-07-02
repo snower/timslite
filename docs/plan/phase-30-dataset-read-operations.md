@@ -52,7 +52,7 @@ impl DataSegmentSet {
 ```rust
 impl DataSet {
     /// Check if visible data exists for the given timestamp.
-    /// timestamp is an exact signed i64 business timestamp.
+    /// Non-negative timestamp is exact; negative timestamp is latest-relative offset.
     pub fn read_exist(&self, timestamp: i64) -> Result<bool>;
 }
 ```
@@ -131,7 +131,7 @@ start_ts = 100, end_ts = 107
 ```rust
 impl DataSet {
     /// Read the logical data length for a timestamp.
-    /// timestamp is an exact signed i64 business timestamp.
+    /// Non-negative timestamp is exact; negative timestamp is latest-relative offset.
     /// Returns Some(data_len) if record exists, None if not found or filler.
     pub fn read_length(&self, timestamp: i64) -> Result<Option<u32>>;
 }

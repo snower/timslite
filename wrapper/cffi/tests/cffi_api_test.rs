@@ -52,6 +52,18 @@ fn cffi_dataset_read_and_queue_roundtrip() {
         ),
         0
     );
+    let latest_payload = b"22.0";
+    assert_eq!(
+        tmsl_dataset_write(
+            dataset,
+            101,
+            latest_payload.as_ptr(),
+            latest_payload.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
 
     let mut ts = 0i64;
     let mut data: *mut c_uchar = ptr::null_mut();
@@ -60,6 +72,44 @@ fn cffi_dataset_read_and_queue_roundtrip() {
         tmsl_dataset_read(
             dataset,
             100,
+            &mut ts,
+            &mut data,
+            &mut data_len,
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+    assert_eq!(ts, 100);
+    let read = unsafe { std::slice::from_raw_parts(data, data_len) };
+    assert_eq!(read, payload);
+    tmsl_data_free(data.cast::<c_void>());
+
+    data = ptr::null_mut();
+    data_len = 0;
+    assert_eq!(
+        tmsl_dataset_read(
+            dataset,
+            -1,
+            &mut ts,
+            &mut data,
+            &mut data_len,
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+    assert_eq!(ts, 101);
+    let read = unsafe { std::slice::from_raw_parts(data, data_len) };
+    assert_eq!(read, latest_payload);
+    tmsl_data_free(data.cast::<c_void>());
+
+    data = ptr::null_mut();
+    data_len = 0;
+    assert_eq!(
+        tmsl_dataset_read(
+            dataset,
+            -2,
             &mut ts,
             &mut data,
             &mut data_len,

@@ -262,7 +262,7 @@ All lifecycle types implement `AutoCloseable`: `Store`, `Dataset`, `Queue`, `Que
 
 ### Timestamps
 
-All timestamp values are signed 64-bit integers (`long` in Java). The value `-1` is a special sentinel for "read latest" in `Dataset.read(-1)`.
+Write, append, and delete timestamp values must be non-negative 64-bit integers (`long` in Java). Read and query APIs accept negative values as offsets from the latest written timestamp: `-1` reads the latest timestamp, `-2` reads latest minus one, and so on.
 
 ### Data Payloads
 

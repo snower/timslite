@@ -253,37 +253,37 @@ fn t32_5_reopen_base_timestamp_preserved() {
 }
 
 #[test]
-fn t32_6_negative_base_timestamp() {
-    let (store, ds) = setup_continuous("neg_ts");
+fn t32_6_zero_base_timestamp_and_negative_read_offsets() {
+    let (store, ds) = setup_continuous("zero_ts");
 
-    ds.write(-100, b"neg").unwrap();
-    ds.write(-50, b"less_neg").unwrap();
+    assert!(ds.write(-1, b"negative").is_err());
     ds.write(0, b"zero").unwrap();
-    ds.write(50, b"pos").unwrap();
+    ds.write(1, b"one").unwrap();
+    ds.write(2, b"two").unwrap();
     ds.flush().unwrap();
 
-    let info = store.inspect_dataset("neg_ts", "data").unwrap();
-    assert_eq!(info.state.base_timestamp, Some(-100));
-    assert_eq!(info.state.latest_written_timestamp, Some(50));
+    let info = store.inspect_dataset("zero_ts", "data").unwrap();
+    assert_eq!(info.state.base_timestamp, Some(0));
+    assert_eq!(info.state.latest_written_timestamp, Some(2));
     assert_eq!(
         info.state.index_segments, 1,
-        "all 4 entries should fit in 1 segment"
+        "all 3 entries should fit in 1 segment"
     );
 
     // Verify all records
-    assert_eq!(ds.read(-100).unwrap().unwrap().1, b"neg");
-    assert_eq!(ds.read(-50).unwrap().unwrap().1, b"less_neg");
     assert_eq!(ds.read(0).unwrap().unwrap().1, b"zero");
-    assert_eq!(ds.read(50).unwrap().unwrap().1, b"pos");
+    assert_eq!(ds.read(1).unwrap().unwrap().1, b"one");
+    assert_eq!(ds.read(2).unwrap().unwrap().1, b"two");
+    assert_eq!(ds.read(-1).unwrap().unwrap().1, b"two");
+    assert_eq!(ds.read(-2).unwrap().unwrap().1, b"one");
+    assert_eq!(ds.read(-3).unwrap().unwrap().1, b"zero");
 
     // Filler positions should be None
-    assert!(ds.read(-75).unwrap().is_none());
-    assert!(ds.read(-25).unwrap().is_none());
-    assert!(ds.read(25).unwrap().is_none());
+    assert!(ds.read(-4).unwrap().is_none());
 
     // Query across all
-    let entries = ds.query(-100, 50).unwrap();
-    assert_eq!(entries.len(), 4);
+    let entries = ds.query(-3, -1).unwrap();
+    assert_eq!(entries.len(), 3);
 
     store.close().unwrap();
 }

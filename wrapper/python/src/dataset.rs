@@ -105,10 +105,10 @@ impl PyDataset {
         wrap(self.inner.append_now(&data))
     }
 
-    /// Read a single record by exact timestamp.
+    /// Read a single record by timestamp.
     ///
     /// Args:
-    ///     timestamp: Exact signed business timestamp of the record to read.
+    ///     timestamp: Exact timestamp when non-negative; latest-relative offset when negative.
     ///
     /// Returns:
     ///     Optional[tuple[int, bytes]]: (timestamp, data) if found, or None
@@ -139,7 +139,7 @@ impl PyDataset {
     /// remains on disk until retention-based reclamation or future compaction.
     ///
     /// Args:
-    ///     timestamp: Exact signed business timestamp of the record to delete.
+    ///     timestamp: Non-negative timestamp of the record to delete.
     ///
     /// Raises:
     ///     TmslNotFoundError: no real data exists at that timestamp.
@@ -200,7 +200,7 @@ impl PyDataset {
     /// Check if index entry exists for a timestamp.
     ///
     /// Args:
-    ///     timestamp: Exact signed business timestamp to check.
+    ///     timestamp: Exact timestamp when non-negative; latest-relative offset when negative.
     ///
     /// Returns:
     ///     bool: True if index entry exists (including filler entries), False otherwise.
@@ -215,7 +215,7 @@ impl PyDataset {
     ///     end_ts: End timestamp (inclusive).
     ///
     /// Returns:
-    ///     bytes: Bitmap as bytes. Bit i represents (start_ts + i): 1=exists, 0=not found.
+    ///     bytes: Bitmap as bytes. Negative range endpoints are resolved first.
     fn query_exist(&mut self, start_ts: i64, end_ts: i64) -> PyResult<Vec<u8>> {
         wrap(self.inner.query_exist(start_ts, end_ts))
     }
@@ -223,7 +223,7 @@ impl PyDataset {
     /// Read the logical data length for a timestamp.
     ///
     /// Args:
-    ///     timestamp: Exact signed business timestamp to read.
+    ///     timestamp: Exact timestamp when non-negative; latest-relative offset when negative.
     ///
     /// Returns:
     ///     Optional[int]: Data length if record exists, None if not found, filler, or expired.

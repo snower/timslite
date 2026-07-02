@@ -349,7 +349,7 @@ int tmsl_dataset_identifier(void* dataset, uint64_t* out_identifier,
  *   - in-order: timestamp > latest -> append; continuous mode fills gaps with filler
  *
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Timestamp (unit must match the dataset's timestamp scheme).
+ * @param timestamp    Non-negative timestamp (unit must match the dataset's timestamp scheme).
  * @param data         Raw data bytes.
  * @param data_len     Length of data.
  * @param err_buf      Buffer for error message.
@@ -369,7 +369,7 @@ int tmsl_dataset_write(void* dataset, int64_t timestamp,
  * record may not exceed 4MiB.
  *
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Timestamp to append/create.
+ * @param timestamp    Non-negative timestamp to append/create.
  * @param data         Raw data bytes to append.
  * @param data_len     Length of data.
  * @param err_buf      Buffer for error message.
@@ -421,7 +421,7 @@ int tmsl_dataset_append_now(void* dataset,
  * retention-based reclamation; current versions do not support compaction.
  *
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Timestamp of the record to delete.
+ * @param timestamp    Non-negative timestamp of the record to delete.
  * @param err_buf      Buffer for error message.
  * @param err_buf_len  Length of error buffer.
  * @return 0 on success, -1 on error (e.g. not found or already deleted).
@@ -430,14 +430,17 @@ int tmsl_dataset_delete(void* dataset, int64_t timestamp,
                         char* err_buf, size_t err_buf_len);
 
 /**
- * Read a single record by exact timestamp.
+ * Read a single record by timestamp.
+ *
+ * Non-negative timestamps are exact. Negative timestamps are resolved relative
+ * to the latest written timestamp: -1 = latest, -2 = latest - 1, and so on.
  *
  * On success (record found): allocates `out_data` via malloc, sets `out_ts`
  * (the actual timestamp of the record) and `out_data_len`. Caller must free
  * `out_data` via `tmsl_data_free`.
  *
  * @param dataset      Opaque dataset pointer.
- * @param timestamp    Exact signed business timestamp of the record to read.
+ * @param timestamp    Exact timestamp when non-negative, latest-relative offset when negative.
  * @param out_ts       Output: actual timestamp of the record returned.
  * @param out_data     Output: pointer to data (malloc'd, must be freed via tmsl_data_free).
  * @param out_data_len Output: data length in bytes.
@@ -572,7 +575,7 @@ void tmsl_data_entry_array_free(TmslDataEntry* array, size_t len);
 
 /**
  * Check if visible data exists for a timestamp.
- * timestamp is an exact signed business timestamp.
+ * Non-negative timestamps are exact. Negative timestamps are latest-relative offsets.
  * Expired timestamps and filler/deleted entries return false.
  * @param dataset      Opaque dataset pointer.
  * @param timestamp    Timestamp to check.
@@ -586,7 +589,8 @@ int tmsl_dataset_read_exist(void* dataset, int64_t timestamp,
 /**
  * Check visible data existence in [start_ts, end_ts].
  * Returns bitmap via out_bitmap (allocated with malloc, caller frees with tmsl_data_free).
- * Bit i represents (start_ts + i): 1=visible data exists, 0=not found/expired/filler.
+ * Negative range endpoints are resolved as latest-relative offsets first.
+ * Bit i represents (effective_start_ts + i): 1=visible data exists, 0=not found/expired/filler.
  * The returned bitmap is capped at 4 MiB; larger ranges return an error.
  * @param dataset      Opaque dataset pointer.
  * @param start_ts     Start timestamp (inclusive).
@@ -603,7 +607,7 @@ int tmsl_dataset_query_exist(void* dataset, int64_t start_ts, int64_t end_ts,
 
 /**
  * Read the logical data length for a timestamp.
- * timestamp is an exact signed business timestamp.
+ * Non-negative timestamps are exact. Negative timestamps are latest-relative offsets.
  * @param dataset      Opaque dataset pointer.
  * @param timestamp    Timestamp to read.
  * @param out_len      Output: data length (valid when return=0).
@@ -617,6 +621,7 @@ int tmsl_dataset_read_length(void* dataset, int64_t timestamp,
 
 /**
  * Query data lengths for timestamps in [start_ts, end_ts].
+ * Negative range endpoints are resolved as latest-relative offsets first.
  * Returns array of TmslLengthEntry values via out_array (allocated with malloc).
  * TmslLengthEntry uses normal C struct layout, not packed layout:
  * sizeof(TmslLengthEntry) == 16 and alignment == 8 on supported ABIs.
@@ -638,6 +643,7 @@ int tmsl_dataset_query_length(void* dataset, int64_t start_ts, int64_t end_ts,
 
 /**
  * Create a query length iterator for lazy data length iteration.
+ * Negative range endpoints are resolved as latest-relative offsets first.
  * @param dataset      Opaque dataset pointer.
  * @param start_ts     Start timestamp (inclusive).
  * @param end_ts       End timestamp (inclusive).

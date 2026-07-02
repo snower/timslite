@@ -82,13 +82,13 @@ class TestWriteQuery:
             # Iterator goes out of scope — no error
 
     def test_write_zero_and_negative_timestamps(self, tmpdir):
-        """write() accepts zero and negative signed timestamps."""
+        """write() accepts zero and rejects negative timestamps."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("neg_ts", "data")
             ds = store.open_dataset("neg_ts", "data")
-            ds.write(-1, b"negative")
+            with pytest.raises(timslite.TmslInvalidDataError):
+                ds.write(-1, b"negative")
             ds.write(0, b"zero")
-            assert ds.read(-1) == (-1, b"negative")
             assert ds.read(0) == (0, b"zero")
 
     def test_write_out_of_order_succeeds(self, tmpdir):
@@ -189,7 +189,7 @@ class TestExtendedAPI:
             ts, data = result
             assert ts == 30
             assert data == b"third"
-            assert ds.read(-1) is None
+            assert ds.read(-1) == (30, b"third")
 
     def test_read_latest_empty_dataset(self, tmpdir):
         """ds.read_latest() on empty dataset returns None."""
@@ -200,16 +200,19 @@ class TestExtendedAPI:
             assert ds.read_latest() is None
             assert ds.read(-1) is None
 
-    def test_signed_timestamp_reads_are_exact(self, tmpdir):
-        """Negative timestamps and zero are normal public timestamps."""
+    def test_negative_timestamp_reads_are_latest_offsets(self, tmpdir):
+        """Negative read timestamps are offsets from the latest timestamp."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("signed_ts", "data")
             ds = store.open_dataset("signed_ts", "data")
-            ds.write(-1, b"minus-one")
             ds.write(0, b"zero")
             ds.write(1, b"one")
-            assert ds.read(-1) == (-1, b"minus-one")
+            assert ds.read(-1) == (1, b"one")
+            assert ds.read(-2) == (0, b"zero")
+            assert ds.read(-3) is None
             assert ds.read(0) == (0, b"zero")
+            assert ds.query_all(-2, -1) == [(0, b"zero"), (1, b"one")]
+            assert ds.query_length_all(-2, -1) == [(0, 4), (1, 3)]
             assert ds.read_latest() == (1, b"one")
             assert ds.latest_timestamp == 1
 

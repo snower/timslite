@@ -66,7 +66,7 @@ const META_INDEX_CONTINUOUS: u8 = 0x05; // u8: 0=非连续, 1=连续
 
 ## 10.8 Timestamp = 0 保护
 
-- `DataSet::write()`: `timestamp` 为 signed `i64` 业务时间戳, `0` 和负数都是合法值
+- `DataSet::write()`: `timestamp` 为非负 `i64` 业务时间戳；负值保留给读/查 public 入口表示相对最新 timestamp 的偏移
 
 ## 10.9 重启恢复 latest_written_timestamp
 

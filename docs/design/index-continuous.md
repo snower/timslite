@@ -57,7 +57,7 @@ entry_index(ts)       = (ts - segment_start(ts)) / time_step
 ```
 DataSet::write(timestamp, data):
   │
-  ├─ timestamp 是 signed i64 业务时间戳; 0 和负数都是合法值
+  ├─ timestamp 是非负 i64 业务时间戳; 负值保留给 public 读/查入口的 latest-relative offset 语义
   │
   ├─ 情况A: latest_written_timestamp is None or timestamp > latest_written_timestamp.unwrap() (正序写入)
   │    │

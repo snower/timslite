@@ -159,7 +159,7 @@ fn t8_1_2b_store_read_query_latest_facade() {
 
     assert_eq!(handle.latest_written_timestamp(), Some(2));
     assert_eq!(handle.read(1).unwrap().unwrap().1, b"one");
-    assert!(handle.read(-1).unwrap().is_none());
+    assert_eq!(handle.read(-1).unwrap().unwrap().1, b"two");
     assert_eq!(handle.read_latest().unwrap().unwrap().1, b"two");
     let rows = handle.query(1, 2).unwrap();
     assert_eq!(rows.len(), 2);

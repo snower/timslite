@@ -39,17 +39,18 @@ pub fn read(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>
 读取单条完整记录。
 
 **参数**:
-- `timestamp`: 目标业务时间戳, signed `i64`; `-1` 是普通精确 timestamp, 不表示 latest
+- `timestamp`: `>= 0` 时为目标业务时间戳；负值为相对 `latest_written_timestamp` 的偏移，`-1` 表示 latest，`-2` 表示 latest - 1，依次类推
 
 **返回**:
 - `Ok(Some((timestamp, data)))` — 记录存在且有效
 - `Ok(None)` — 记录不存在、是 filler、或已过期
 
 **流程**:
-1. 检查 retention 是否过期
-2. `TimeIndex::find_entry()` 查找索引
-3. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER`)
-4. `DataSegmentSet::read_at_index()` 读取完整数据
+1. 入口层将负 `timestamp` 解析为真实 timestamp；空 dataset 或解析到负真实 timestamp 时返回 `Ok(None)`
+2. 检查 retention 是否过期
+3. `TimeIndex::find_entry()` 查找索引
+4. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER`)
+5. `DataSegmentSet::read_at_index()` 读取完整数据
 
 ### 2.1.1 read_latest()
 
@@ -62,7 +63,7 @@ pub fn read_latest(&self) -> Result<Option<(i64, Vec<u8>)>>
 **语义**:
 - `latest_written_timestamp: Option<i64>` 为 `None` 时返回 `Ok(None)`
 - 最大已写 timestamp 对应 entry 不存在、已删除、为 filler 或已过期时返回 `Ok(None)`, 不回退到更早有效记录
-- `read_latest()` 是唯一 latest 读取入口; `read(-1)` 读取精确 timestamp `-1`
+- `read_latest()` 是显式 latest 读取入口；`read(-1)` 在入口层解析为 `latest_written_timestamp`
 
 **相关文档**: [数据集操作·读取流程](dataset-operations.md#十读取流程详解)
 
@@ -121,17 +122,18 @@ pub fn read_exist(&self, timestamp: i64) -> Result<bool>
 检查单个时间戳当前是否有可见数据。
 
 **参数**:
-- `timestamp`: 目标业务时间戳, signed `i64`; `-1` 是普通精确 timestamp
+- `timestamp`: `>= 0` 时为目标业务时间戳；负值为相对 `latest_written_timestamp` 的偏移
 
 **返回**:
 - `Ok(true)` — timestamp 在 retention 可见范围内，且索引 entry 指向真实数据
 - `Ok(false)` — 索引 entry 不存在、是 filler/deleted entry，或 timestamp 已过期
 
 **流程**:
-1. 检查 retention 是否过期，过期返回 `false`
-2. `TimeIndex::find_entry()` 查找索引
-3. entry 不存在或 `block_offset == BLOCK_OFFSET_FILLER` 返回 `false`
-4. 否则返回 `true`
+1. 入口层将负 `timestamp` 解析为真实 timestamp；空 dataset 或解析到负真实 timestamp 时返回 `false`
+2. 检查 retention 是否过期，过期返回 `false`
+3. `TimeIndex::find_entry()` 查找索引
+4. entry 不存在或 `block_offset == BLOCK_OFFSET_FILLER` 返回 `false`
+5. 否则返回 `true`
 
 **特点**:
 - **不读取数据段** — 性能最优
@@ -152,9 +154,10 @@ pub fn query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>
 **参数**:
 - `start_ts`: 起始时间戳（含）
 - `end_ts`: 结束时间戳（含）
+- 任一参数为负值时先按 `latest_written_timestamp + value + 1` 解析；起点解析到负真实 timestamp 时夹到 0，终点解析到负真实 timestamp 或 dataset 为空时返回空结果
 
 **返回**: `Vec<u8>` — 位图字节数组
-- 位 `i` 代表时间戳 `(start_ts + i)` 当前是否有可见数据
+- 位 `i` 代表解析后的时间戳 `(effective_start_ts + i)` 当前是否有可见数据
 - `1` = retention 可见范围内存在真实数据，`0` = 不存在、过期、或为 filler/deleted entry
 - 字节数组长度 = `(count + 7) / 8`，其中 `count = end_ts - start_ts + 1`
 - 最大可分配 bitmap 为 4MiB；超过该上限返回错误
@@ -169,11 +172,12 @@ start_ts = 100, end_ts = 107
 ```
 
 **流程**:
-1. 若 `start_ts > end_ts` 返回空 bitmap
-2. 使用 checked arithmetic 按原请求范围计算 timestamp 数量和 bitmap 字节数，保持 bit `i` 始终对应 `start_ts + i`
-3. 若 bitmap 字节数超过 4MiB，返回错误
-4. 计算 retention 可见起点，仅查询当前可见范围内的 index entry；过期区间在原 bitmap 中保持 0
-5. 跳过 filler/deleted entry，仅对真实数据 entry 设置对应位
+1. 入口层先解析负范围参数，得到 `effective_start_ts` / `effective_end_ts`
+2. 若 `effective_start_ts > effective_end_ts` 返回空 bitmap
+3. 使用 checked arithmetic 按解析后的范围计算 timestamp 数量和 bitmap 字节数，保持 bit `i` 始终对应 `effective_start_ts + i`
+4. 若 bitmap 字节数超过 4MiB，返回错误
+5. 计算 retention 可见起点，仅查询当前可见范围内的 index entry；过期区间在原 bitmap 中保持 0
+6. 跳过 filler/deleted entry，仅对真实数据 entry 设置对应位
 
 **特点**:
 - **不读取数据段** — 仅索引查询
@@ -191,17 +195,18 @@ pub fn read_length(&self, timestamp: i64) -> Result<Option<u32>>
 读取单条记录的逻辑数据长度。
 
 **参数**:
-- `timestamp`: 目标业务时间戳, signed `i64`; `-1` 是普通精确 timestamp
+- `timestamp`: `>= 0` 时为目标业务时间戳；负值为相对 `latest_written_timestamp` 的偏移
 
 **返回**:
 - `Ok(Some(data_len))` — 记录存在，返回逻辑数据长度
 - `Ok(None)` — 记录不存在、是 filler、或已过期
 
 **流程**:
-1. 检查 retention 是否过期
-2. `TimeIndex::find_entry()` 查找索引
-3. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER`)
-4. `DataSegmentSet::read_record_data_len()` 仅读取 record header
+1. 入口层将负 `timestamp` 解析为真实 timestamp；空 dataset 或解析到负真实 timestamp 时返回 `Ok(None)`
+2. 检查 retention 是否过期
+3. `TimeIndex::find_entry()` 查找索引
+4. 跳过 filler (`block_offset == BLOCK_OFFSET_FILLER`)
+5. `DataSegmentSet::read_record_data_len()` 仅读取 record header
 
 **数据长度定义**: 用户写入的原始数据长度（不含 record header、block header、压缩开销）
 
