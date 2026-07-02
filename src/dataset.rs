@@ -891,11 +891,22 @@ impl DataSetInner {
         });
     }
 
-    fn remove_queued_flush_targets_for_self(&self) {
-        if let Some(queue) = self.runtime_context.flush_queue.as_ref() {
-            let mut queue = queue.lock().unwrap();
-            queue.retain(|target| target.dataset != self.id);
+    fn take_queued_flush_targets_for_self(&self) -> Vec<SegmentFlushTarget> {
+        let Some(queue) = self.runtime_context.flush_queue.as_ref() else {
+            return Vec::new();
+        };
+        let mut queue = queue.lock().unwrap();
+        let mut targets = Vec::new();
+        let mut retained = VecDeque::with_capacity(queue.len());
+        while let Some(target) = queue.pop_front() {
+            if target.dataset == self.id {
+                targets.push(target.segment);
+            } else {
+                retained.push_back(target);
+            }
         }
+        *queue = retained;
+        targets
     }
 
     pub(crate) fn sync_flush_target(&mut self, target: SegmentFlushTarget) -> Result<()> {
@@ -1756,15 +1767,15 @@ impl DataSetInner {
             return Ok(());
         }
         if self.runtime_context.flush_queue.is_some() {
-            self.flush_dirty_segments()?;
-            self.remove_queued_flush_targets_for_self();
+            let targets = self.take_queued_flush_targets_for_self();
+            self.sync_queued_flush_targets(targets)?;
         } else {
             self.flush_dirty_segments()?;
-        }
-        // Flush queue state files if open
-        if let Some(ref inner) = self.queue_inner {
-            if let Err(e) = flush_queue_state_files(inner) {
-                log::warn!("[flush] queue state flush failed: {}", e);
+            // Flush queue state files if open
+            if let Some(ref inner) = self.queue_inner {
+                if let Err(e) = flush_queue_state_files(inner) {
+                    log::warn!("[flush] queue state flush failed: {}", e);
+                }
             }
         }
         self.last_used_at = Instant::now();
@@ -2438,6 +2449,73 @@ mod tests {
         let persisted = crate::queue::ConsumerStateFile::open_or_create(state_path, 0).unwrap();
         assert_eq!(persisted.processed_ts(), ts);
         assert_eq!(persisted.pending_count(), 0);
+    }
+
+    #[test]
+    fn test_flush_with_runtime_queue_syncs_only_queued_queue_state_targets() {
+        let ds_inner = make_dirty_queue_dataset("dirty_queue_state_precise_flush", 4096);
+        let flush_queue = ds_inner
+            .runtime_context
+            .flush_queue
+            .as_ref()
+            .unwrap()
+            .clone();
+        let ds_arc = Arc::new(DataSet::new(ds_inner));
+        let (inner, notify) = ds_arc.open_queue_components().unwrap();
+        let queue = crate::queue::DatasetQueue::new(Arc::clone(&ds_arc), inner, notify);
+        let group1 = queue.open_consumer("group1").unwrap();
+        let group2 = queue.open_consumer("group2").unwrap();
+
+        let ts = queue.push(b"row").unwrap();
+        assert_eq!(
+            group1
+                .poll(std::time::Duration::from_millis(0))
+                .unwrap()
+                .unwrap()
+                .0,
+            ts
+        );
+        assert_eq!(
+            group2
+                .poll(std::time::Duration::from_millis(0))
+                .unwrap()
+                .unwrap()
+                .0,
+            ts
+        );
+        ds_arc.flush().unwrap();
+
+        group1.ack(ts).unwrap();
+        group2.ack(ts).unwrap();
+        {
+            let mut guard = flush_queue.lock().unwrap();
+            guard.retain(|target| {
+                matches!(
+                    &target.segment,
+                    SegmentFlushTarget::QueueState { group_name } if group_name == "group1"
+                )
+            });
+            assert_eq!(guard.len(), 1);
+        }
+
+        ds_arc.flush().unwrap();
+        assert_eq!(flush_queue.lock().unwrap().len(), 0);
+
+        let group1_state = crate::queue::ConsumerStateFile::open_or_create(
+            ds_arc.queue_dir().unwrap().join("group1"),
+            0,
+        )
+        .unwrap();
+        assert_eq!(group1_state.processed_ts(), ts);
+        assert_eq!(group1_state.pending_count(), 0);
+
+        let group2_state = crate::queue::ConsumerStateFile::open_or_create(
+            ds_arc.queue_dir().unwrap().join("group2"),
+            0,
+        )
+        .unwrap();
+        assert_eq!(group2_state.processed_ts(), TIMESTAMP_MAX_SENTINEL);
+        assert_eq!(group2_state.pending_count(), 1);
     }
 
     #[test]

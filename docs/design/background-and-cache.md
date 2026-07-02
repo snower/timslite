@@ -45,11 +45,11 @@ flush (默认每 15 秒):
   2. 按 dataset key 去重, 不遍历未出现在队列中的普通 dataset
   3. 对每个出现在队列中的普通 dataset:
      a. 通过 datasets HashMap 精确 get 普通 dataset; journal 不进入该队列
-     b. 执行该 dataset 的 flush_dirty_segments()
-        - 执行 index cleanup hook
-        - 收集该 dataset 当前仍 dirty 的 data/index segment
-        - 仅对这些 dirty segment target 执行 mmap.flush() — MS_SYNC
-       - 如果 target 已在 idle-close 中被 flush+close, 或分段已经不存在, 则跳过
+     b. 仅执行该 dataset 在队列中出现的精确 SegmentFlushTarget
+        - Data target 同步指定 data segment
+        - Index target 同步指定 index segment
+        - QueueState target 同步指定 consumer group state file
+        - 如果 target 已在 idle-close 中被 flush+close, 或对象已经不存在, 则跳过
   4. 若 journal enabled, 直接调用 JournalManager::flush_dirty()
      - 检查 journal segment / journal queue state 是否 dirty
      - 仅同步 dirty 对象
@@ -82,7 +82,7 @@ enum SegmentFlushTarget {
 - index segment: `start_timestamp`
 - queue state file: `group_name`
 
-后台 `run_flush()` drain 全局队列后按 dataset key 分组, 再逐个执行队列中出现过的精确 target; 不遍历全部 dataset。data/index target 分别同步对应 segment, queue state target 同步对应 consumer group state file。dataset state file 是低频 inspect 缓存, 由写入/删除/retention reclaim 更新后立即同步, 不作为 flush queue target。`DataSet::flush()` 同步当前 dataset 的所有打开 data/index segment、已打开 queue state files 和 dataset state file, 并清除全局队列中属于当前 dataset 的 stale target; crate-internal 低层 `DataSet::create/open` 如果没有 runtime context, `flush()` 退化为同步所有打开 data/index segment、queue state files 和 dataset state file, 仅供 Store/内部测试路径使用。
+后台 `run_flush()` drain 全局队列后按 dataset key 分组, 再逐个执行队列中出现过的精确 target; 不遍历全部 dataset。data/index target 分别同步对应 segment, queue state target 同步对应 consumer group state file。dataset state file 是低频 inspect 缓存, 由写入/删除/retention reclaim 更新后立即同步, 不作为 flush queue target。带 Store 级 `flush_queue` 的 `DataSet::flush()` 只取出并同步当前 dataset 已入队的精确 target, 不额外全量同步所有打开 queue state files; crate-internal 低层 `DataSet::create/open` 如果没有 runtime context, `flush()` 退化为同步所有打开 data/index segment、queue state files 和 dataset state file, 仅供 Store/内部测试路径使用。
 
 Journal 不把 segment 写入加入 Store 级 `flush_queue`。Journal 是全局单一 append log, 后台 flush 到期时直接调用 `JournalManager::flush_dirty()`; 该方法内部检查 `is_flushed`, clean segment/state file 直接跳过。这样既避免普通 flush queue 被 journal 高频写入污染, 也避免后台为了 journal 扫描普通 dataset。
 
@@ -307,7 +307,7 @@ tick_background_tasks():
 **任务执行顺序与更新**:
 | 任务 | 到期判断 | 执行体 | 状态更新 |
 |------|---------|--------|---------|
-| Flush | `now >= last_flush + flush_interval && !flush_running` | drain 全局 dirty queue, 按 dataset key 精确定位后执行 `flush_dirty_segments()` | 预约时 `last_flush = now`, `flush_running = true`; 完成后 `flush_running = false` |
+| Flush | `now >= last_flush + flush_interval && !flush_running` | drain 全局 dirty queue, 按 dataset key 精确定位后执行队列中的 `SegmentFlushTarget` | 预约时 `last_flush = now`, `flush_running = true`; 完成后 `flush_running = false` |
 | Idle Check | `now >= last_idle_check + 60s && !idle_running` | 收集 idle keys → 调用 `Arc<DataSet>` 方法并由 DataSet 内部锁 double-check close | 预约时 `last_idle_check = now`, `idle_running = true`; 完成后 `idle_running = false` |
 | Cache Eviction | `cache enabled && now >= last_cache_eviction + 60s && !cache_running` | `block_cache.evict_idle(idle_timeout)` | 预约时 `last_cache_eviction = now`, `cache_running = true`; 完成后 `cache_running = false` |
 | Retention Reclaim | `now >= next_retention && !retention_running` | `ds.reclaim_expired_segments()` | 预约时 `next_retention = next_retention_time(hour)`, `retention_running = true`; 完成后 `retention_running = false` |

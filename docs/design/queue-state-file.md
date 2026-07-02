@@ -210,7 +210,7 @@ fn flush_target(dataset: &mut DataSet, target: SegmentFlushTarget) {
 
 普通 dataset queue 的 `ack()` 和 `poll()` 操作后不执行立即 `mmap.flush()`, 仅更新内存中的状态并入队 `QueueState { group_name }`。状态文件与 Dataset 分段文件采用相同的 Sync 策略, 由后台 flush 任务统一执行 `mmap.flush()` (MS_SYNC)。
 
-`DatasetQueueConsumer::flush()` 是公开的主动同步入口, 只同步当前消费组 state file。显式关闭消费组、关闭 queue、关闭 dataset 和 drop consumer 会在释放或删除状态前执行 sync + flush, 并把未 ack pending 标记为恢复过期。
+`DatasetQueueConsumer::flush()` 是公开的主动同步入口, 只同步当前消费组 state file。显式关闭消费组、关闭 queue 和 drop consumer 会在释放或删除状态前执行 sync + flush, 并把未 ack pending 标记为恢复过期。带 Store 级 `flush_queue` 的 dataset-level `flush/close` 只同步已入队的 `QueueState { group_name }` target, 不遍历全部打开消费组。
 
 JournalQueue 没有普通 dataset 的全局 dirty flush queue target, 但必须采用相同的状态文件格式和 retry 规则; JournalQueue close/flush 显式同步当前打开的 group state files。
 
