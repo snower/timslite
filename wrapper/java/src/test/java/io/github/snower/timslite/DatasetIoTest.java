@@ -270,4 +270,55 @@ class DatasetIoTest {
             store.close();
         }
     }
+
+    @Test
+    void readNegativeTimestamps() {
+        Store store = Store.open(tempDir.toString());
+        try {
+            store.createDataset("negts", "metrics",
+                    CreateDatasetOptionsBuilder.builder().build());
+            Dataset dataset = store.openDataset("negts", "metrics");
+            try {
+                byte[] payload1 = new byte[]{10, 20, 30};
+                byte[] payload2 = new byte[]{40, 50};
+                dataset.write(100L, payload1);
+                dataset.write(101L, payload2);
+
+                // read: -1 → latest (101), -2 → second latest (100), -3 → out of range
+                Record r1 = dataset.read(-1L);
+                assertNotNull(r1);
+                assertEquals(101L, r1.getTimestamp());
+                assertArrayEquals(payload2, r1.getData());
+
+                Record r2 = dataset.read(-2L);
+                assertNotNull(r2);
+                assertEquals(100L, r2.getTimestamp());
+                assertArrayEquals(payload1, r2.getData());
+
+                Record r3 = dataset.read(-3L);
+                assertNull(r3);
+
+                // readExist: -1 → true, -2 → true, -3 → false
+                assertTrue(dataset.readExist(-1L));
+                assertTrue(dataset.readExist(-2L));
+                assertFalse(dataset.readExist(-3L));
+
+                // readLength: -1 → 3 (payload2), -2 → 3 (payload1), -3 → null
+                Integer len1 = dataset.readLength(-1L);
+                assertNotNull(len1);
+                assertEquals(payload2.length, len1.intValue());
+
+                Integer len2 = dataset.readLength(-2L);
+                assertNotNull(len2);
+                assertEquals(payload1.length, len2.intValue());
+
+                Integer len3 = dataset.readLength(-3L);
+                assertNull(len3);
+            } finally {
+                dataset.close();
+            }
+        } finally {
+            store.close();
+        }
+    }
 }

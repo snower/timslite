@@ -734,3 +734,114 @@ fn cffi_length_iter_collect_take() {
     unsafe { tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()) };
     unsafe { tmsl_store_close(store, err.as_mut_ptr(), err.len()) };
 }
+
+#[test]
+fn cffi_dataset_negative_timestamp_operations() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = CString::new(dir.path().to_string_lossy().as_bytes()).unwrap();
+    let name = CString::new("neg_ts").unwrap();
+    let kind = CString::new("sensor").unwrap();
+    let mut err = err_buf();
+
+    let store = tmsl_store_open(dir.as_ptr(), err.as_mut_ptr(), err.len());
+    assert!(!store.is_null());
+
+    let dataset = tmsl_dataset_create(
+        store,
+        name.as_ptr(),
+        kind.as_ptr(),
+        64 * 1024 * 1024,
+        4 * 1024 * 1024,
+        6,
+        0,
+        0,
+        err.as_mut_ptr(),
+        err.len(),
+    );
+    assert!(!dataset.is_null());
+
+    let payload_a = b"alpha";
+    assert_eq!(
+        tmsl_dataset_write(
+            dataset,
+            100,
+            payload_a.as_ptr(),
+            payload_a.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+    let payload_b = b"bravo";
+    assert_eq!(
+        tmsl_dataset_write(
+            dataset,
+            101,
+            payload_b.as_ptr(),
+            payload_b.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+
+    // readExist: -1 (latest) exists
+    assert_eq!(
+        tmsl_dataset_read_exist(dataset, -1, err.as_mut_ptr(), err.len()),
+        1
+    );
+    // readExist: -2 (second-to-last) exists
+    assert_eq!(
+        tmsl_dataset_read_exist(dataset, -2, err.as_mut_ptr(), err.len()),
+        1
+    );
+    // readExist: -3 (before all records) does not exist
+    assert_eq!(
+        tmsl_dataset_read_exist(dataset, -3, err.as_mut_ptr(), err.len()),
+        0
+    );
+
+    // readLength: -1 resolves to latest with correct length
+    let mut out_len = 0u32;
+    assert_eq!(
+        tmsl_dataset_read_length(
+            dataset,
+            -1,
+            &mut out_len,
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+    assert_eq!(out_len as usize, payload_b.len());
+
+    // readLength: -2 resolves to second-to-last with correct length
+    out_len = 0;
+    assert_eq!(
+        tmsl_dataset_read_length(
+            dataset,
+            -2,
+            &mut out_len,
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+    assert_eq!(out_len as usize, payload_a.len());
+
+    // readLength: -3 (before all records) returns 1 (not found)
+    out_len = 0;
+    assert_eq!(
+        tmsl_dataset_read_length(
+            dataset,
+            -3,
+            &mut out_len,
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        1
+    );
+
+    assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()), 0);
+    assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err.len()), 0);
+}

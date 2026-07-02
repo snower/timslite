@@ -216,6 +216,20 @@ class TestExtendedAPI:
             assert ds.read_latest() == (1, b"one")
             assert ds.latest_timestamp == 1
 
+    def test_negative_timestamp_exist_and_length(self, tmpdir):
+        """read_exist and read_length work with negative timestamps."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("neg_exist", "data")
+            ds = store.open_dataset("neg_exist", "data")
+            ds.write(0, b"zero")
+            ds.write(1, b"one")
+            assert ds.read_exist(-1) is True
+            assert ds.read_exist(-2) is True
+            assert ds.read_exist(-3) is False
+            assert ds.read_length(-1) == len(b"one")
+            assert ds.read_length(-2) == len(b"zero")
+            assert ds.read_length(-3) is None
+
     def test_correction_write_non_continuous(self, tmpdir):
         """Non-continuous mode: out-of-order write overwrites existing entry."""
         with timslite.Store.open(tmpdir) as store:
