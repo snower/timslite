@@ -183,7 +183,7 @@ tmsl_store_close(store, err, sizeof(err));
 
 ## 十三、Wrapper 同步原则
 
-Python、Node.js、Java 和 C ABI wrapper 都应依赖 `timslite` 的公开 Rust API:
+Python、Node.js、Java、.NET 和 C ABI wrapper 都应依赖 `timslite` 的公开 Rust API:
 
 - Store wrapper 可保留语言层自己的 object id, 但不得依赖主 crate 的 FFI handle registry。
 - Dataset wrapper 应直接持有 `DataSet` 或 `Arc<DataSet>`。

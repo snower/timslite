@@ -34,6 +34,7 @@
 | 20 | [数据集 Inspect](docs/design/dataset-inspect.md) | DataSetInfo (不变配置) + DataSetState (可变状态)、dataset state 文件、Rust/FFI/Python API | 数据集状态监控/运维 |
 | 21 | [Dataset Identifier](docs/design/dataset-identifier.md) | Store 级 `max_identifier`、dataset 级 `identifier` 文件、按 id 打开 dataset API、crash 边界 | 外部系统需要稳定数字 dataset id |
 | W-NODE | [Node.js Wrapper](wrapper/nodejs/design.md) | Node 官方 Node-API 原生包装、TypeScript API、bigint/Buffer 映射、queue/journal 异步 poll | Node.js 集成 |
+| W-DOTNET | [\.NET Wrapper](wrapper/dotnet/design.md) | UniFFI C# binding、C# facade、.NET 8+、NuGet 包装、queue/journal 支持 | .NET 集成 |
 
 ---
 
@@ -75,6 +76,7 @@
 | `JournalManager` + `JournalLog` + `JournalQueue` | [Journal 变更日志](docs/design/journal.md) / [Journal 专用存储](docs/design/journal-storage.md) |
 | `wrapper/nodejs` | [Node.js Wrapper](wrapper/nodejs/design.md) |
 | `wrapper/java` | [Java Wrapper](wrapper/java/design.md) |
+| `wrapper/dotnet` | [.NET Wrapper](wrapper/dotnet/design.md) |
 
 ---
 

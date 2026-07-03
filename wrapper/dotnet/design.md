@@ -541,7 +541,25 @@ Full implementation verification must include root crate checks because the brid
 | Native asset RID selection | Runtime load failures | Use portable .NET 8 RIDs and `runtimes/{rid}/native/`; add packaging tests |
 | Wrapper API drift from Python/Node/Java | User-facing behavior differs by language | Keep Store-managed public boundary and shared integration scenarios |
 
-## 13. External references
+## 13. Implementation status
+
+All phases documented in [plan.md](plan.md) are complete:
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| DOTNET-0 | UniFFI C# and .NET 8 toolchain confirmation | ✅ Complete |
+| DOTNET-1 | Rust UniFFI bridge crate skeleton | ✅ Complete |
+| DOTNET-2 | C# binding generation and .NET project skeleton | ✅ Complete |
+| DOTNET-3 | Types, configuration, error layer | ✅ Complete |
+| DOTNET-4 | Store and Dataset lifecycle | ✅ Complete |
+| DOTNET-5 | Data read/write and query | ✅ Complete |
+| DOTNET-6 | Queue and Journal API | ✅ Complete |
+| DOTNET-7 | Native loading and NuGet packaging | ✅ Complete |
+| DOTNET-8 | Integration tests and regression verification | ✅ Complete |
+| DOTNET-9 | CI/native release preparation | ✅ Complete |
+| DOTNET-10 | Cross-layer documentation sync | ✅ Complete |
+
+## 14. External references
 
 - UniFFI user guide: <https://mozilla.github.io/uniffi-rs/latest/>
 - UniFFI README, third-party C# binding reference: <https://github.com/mozilla/uniffi-rs>

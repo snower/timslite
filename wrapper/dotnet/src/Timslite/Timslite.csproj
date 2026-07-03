@@ -1,0 +1,55 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RollForward>LatestMajor</RollForward>
+
+    <!-- NuGet metadata -->
+    <PackageId>Timslite</PackageId>
+    <Version>0.1.1</Version>
+    <Description>.NET bindings for the timslite time-series storage engine.</Description>
+    <License>MIT</License>
+    <RepositoryUrl>https://github.com/snower/timslite</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>timslite;timeseries;storage;database;mmap</PackageTags>
+    <PackageProjectUrl>https://github.com/snower/timslite</PackageProjectUrl>
+    <Copyright>Copyright (c) snower</Copyright>
+
+    <!-- XML docs -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+
+    <!-- Source link and reproducible build -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Timslite.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="../../generated/timslite.cs" Link="Generated/timslite.cs" />
+  </ItemGroup>
+
+  <!-- Native assets for NuGet packaging.
+       Place pre-built native libraries under runtimes/{rid}/native/ before packing. -->
+  <ItemGroup>
+    <Content Include="runtimes/win-x64/native/timslite_dotnet.dll" Condition="Exists('runtimes/win-x64/native/timslite_dotnet.dll')" Pack="true" PackagePath="runtimes/win-x64/native/" CopyToOutputDirectory="PreserveNewest" Link="runtimes/win-x64/native/timslite_dotnet.dll" />
+    <Content Include="runtimes/win-arm64/native/timslite_dotnet.dll" Condition="Exists('runtimes/win-arm64/native/timslite_dotnet.dll')" Pack="true" PackagePath="runtimes/win-arm64/native/" CopyToOutputDirectory="PreserveNewest" Link="runtimes/win-arm64/native/timslite_dotnet.dll" />
+    <Content Include="runtimes/linux-x64/native/libtimslite_dotnet.so" Condition="Exists('runtimes/linux-x64/native/libtimslite_dotnet.so')" Pack="true" PackagePath="runtimes/linux-x64/native/" CopyToOutputDirectory="PreserveNewest" Link="runtimes/linux-x64/native/libtimslite_dotnet.so" />
+    <Content Include="runtimes/linux-arm64/native/libtimslite_dotnet.so" Condition="Exists('runtimes/linux-arm64/native/libtimslite_dotnet.so')" Pack="true" PackagePath="runtimes/linux-arm64/native/" CopyToOutputDirectory="PreserveNewest" Link="runtimes/linux-arm64/native/libtimslite_dotnet.so" />
+    <Content Include="runtimes/osx-x64/native/libtimslite_dotnet.dylib" Condition="Exists('runtimes/osx-x64/native/libtimslite_dotnet.dylib')" Pack="true" PackagePath="runtimes/osx-x64/native/" CopyToOutputDirectory="PreserveNewest" Link="runtimes/osx-x64/native/libtimslite_dotnet.dylib" />
+    <Content Include="runtimes/osx-arm64/native/libtimslite_dotnet.dylib" Condition="Exists('runtimes/osx-arm64/native/libtimslite_dotnet.dylib')" Pack="true" PackagePath="runtimes/osx-arm64/native/" CopyToOutputDirectory="PreserveNewest" Link="runtimes/osx-arm64/native/libtimslite_dotnet.dylib" />
+  </ItemGroup>
+
+</Project>

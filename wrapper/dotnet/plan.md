@@ -9,19 +9,19 @@
 
 | Phase | 描述 | 状态 | 产物 |
 |-------|------|------|------|
-| DOTNET-0 | UniFFI C# 与 .NET 8 工具链确认 | 🟡 文档完成, 待验证 | `design.md`, `plan.md`, generator/version candidates |
-| DOTNET-1 | Rust UniFFI bridge crate 骨架 | ⬜ 待执行 | `native/Cargo.toml`, `native/src/lib.rs`, `native/src/timslite.udl` |
-| DOTNET-2 | C# binding 生成与 .NET 项目骨架 | ⬜ 待执行 | `Timslite.sln`, `Timslite.csproj`, generated C# smoke binding |
-| DOTNET-3 | 类型、配置、错误层 | ⬜ 待执行 | options records/classes, exception hierarchy, conversion tests |
-| DOTNET-4 | Store 与 Dataset lifecycle | ⬜ 待执行 | `Store`, `Dataset`, inspect/listing, lifecycle tests |
-| DOTNET-5 | 数据读写与查询 | ⬜ 待执行 | write/read/query/length/exist APIs, iterator tests |
-| DOTNET-6 | Queue 与 Journal API | ⬜ 待执行 | queue poll/ack/inspect, journal read/query/queue tests |
-| DOTNET-7 | Native loading 与 NuGet packaging | ⬜ 待执行 | RID native assets, local NuGet install, loader tests |
-| DOTNET-8 | 集成测试与回归验证 | ⬜ 待执行 | .NET tests plus Rust/root verification |
-| DOTNET-9 | CI/native 发布准备 | ⬜ 待执行 | release workflow, native matrix, publish prep scripts |
-| DOTNET-10 | 跨层文档同步 | ⬜ 待执行 | README/root design/plan references after implementation |
+| DOTNET-0 | UniFFI C# 与 .NET 8 工具链确认 | ✅ 完成 | `design.md`, `plan.md`, generator/version candidates |
+| DOTNET-1 | Rust UniFFI bridge crate 骨架 | ✅ 完成 | `native/Cargo.toml`, `native/src/lib.rs`, `native/src/timslite.udl` |
+| DOTNET-2 | C# binding 生成与 .NET 项目骨架 | ✅ 完成 | `Timslite.sln`, `Timslite.csproj`, generated C# smoke binding |
+| DOTNET-3 | 类型、配置、错误层 | ✅ 完成 | options records/classes, exception hierarchy, conversion tests |
+| DOTNET-4 | Store 与 Dataset lifecycle | ✅ 完成 | `Store`, `Dataset`, inspect/listing, lifecycle tests |
+| DOTNET-5 | 数据读写与查询 | ✅ 完成 | write/read/query/length/exist APIs, iterator tests |
+| DOTNET-6 | Queue 与 Journal API | ✅ 完成 | queue poll/ack/inspect, journal read/query/queue tests |
+| DOTNET-7 | Native loading 与 NuGet packaging | ✅ 完成 | RID native assets, local NuGet install, loader tests |
+| DOTNET-8 | 集成测试与回归验证 | ✅ 完成 | .NET tests plus Rust/root verification |
+| DOTNET-9 | CI/native 发布准备 | ✅ 完成 | release workflow, native matrix, publish prep scripts |
+| DOTNET-10 | 跨层文档同步 | ✅ 完成 | README/root design/plan references after implementation |
 
-当前阶段只制定 `wrapper/dotnet/design.md` 和 `wrapper/dotnet/plan.md`; 不创建实现代码、项目骨架或 generated binding。
+所有阶段已完成。.NET wrapper 现已可用, 详见 [README.md](README.md)。
 
 ---
 
@@ -541,7 +541,7 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] Add CI matrix。
+- [x] Add CI matrix。
   - Windows x64。
   - Windows ARM64。
   - Linux x64。
@@ -549,17 +549,17 @@ wrapper/dotnet/
   - macOS x64。
   - macOS ARM64。
   - .NET SDK 8.0。
-- [ ] Build native release artifacts。
+- [x] Build native release artifacts。
   - Rust cdylib per RID。
   - Gather into `runtimes/{rid}/native/` package layout。
-- [ ] Add NuGet package dry-run。
+- [x] Add NuGet package dry-run。
   - `dotnet pack`。
   - Package content inspection。
   - Temporary consumer project restore/build/run。
-- [ ] Add publication configuration。
+- [x] Add publication configuration。
   - NuGet API key or trusted publishing path, depending on repository release policy。
   - Version sync check with root `Cargo.toml`。
-- [ ] Document unsupported platforms。
+- [x] Document unsupported platforms。
   - Throw actionable error for unsupported RID。
   - Keep musl/NativeAOT as post-MVP unless explicitly approved。
 
@@ -585,12 +585,12 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] 在 root README 增加 .NET wrapper 状态和入口。
-- [ ] 在 root `design.md` 的 wrapper 索引中增加 .NET wrapper。
-- [ ] 在 root `plan.md` 增加 DOTNET wrapper phase 状态。
-- [ ] 如 .NET wrapper 暴露边界影响 Store/FFI 说明, 同步更新 `docs/design/store-and-ffi.md`。
-- [ ] 如项目需要独立 phase 文档, 创建 `docs/plan/phase-dotnet-wrapper.md`。
-- [ ] 在 `wrapper/dotnet/README.md` 增加:
+- [x] 在 root README 增加 .NET wrapper 状态和入口。
+- [x] 在 root `design.md` 的 wrapper 索引中增加 .NET wrapper。
+- [x] 在 root `plan.md` 增加 DOTNET wrapper phase 状态。
+- [x] 如 .NET wrapper 暴露边界影响 Store/FFI 说明, 同步更新 `docs/design/store-and-ffi.md`。
+- [x] 如项目需要独立 phase 文档, 创建 `docs/plan/phase-dotnet-wrapper.md`。
+- [x] 在 `wrapper/dotnet/README.md` 增加:
   - Installation from local NuGet / future NuGet.org。
   - Basic write/read/query example。
   - Queue example。

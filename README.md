@@ -1,6 +1,6 @@
 # timslite
 
-> 高性能 Rust 时序数据存储库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、独立 C ABI wrapper、Python wrapper、Node.js wrapper 和 Java wrapper。
+> 高性能 Rust 时序数据存储库: mmap 分段存储、Block 聚合、延迟压缩、持久化队列、Journal 变更日志、独立 C ABI wrapper、Python wrapper、Node.js wrapper、Java wrapper 和 .NET wrapper。
 
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021-orange.svg)](https://www.rust-lang.org)
@@ -8,11 +8,11 @@
 
 timslite 是一个可嵌入到其它项目中的本地时序数据存储引擎。它面向需要高性能本地写入、精确时间戳读取、范围查询、持久化消费队列和轻量变更日志的应用，不需要单独部署数据库服务。
 
-你可以把主项目作为标准 Rust library 使用。C ABI 已迁移到独立的 `wrapper/cffi` crate (`timslitecffi`)，Python/Node.js/Java wrapper 分别位于 `wrapper/python`、`wrapper/nodejs` 和 `wrapper/java`。
+你可以把主项目作为标准 Rust library 使用。C ABI 已迁移到独立的 `wrapper/cffi` crate (`timslitecffi`)，Python/Node.js/Java/.NET wrapper 分别位于 `wrapper/python`、`wrapper/nodejs`、`wrapper/java` 和 `wrapper/dotnet`。
 
 ## 当前状态
 
-timslite 仍处于首次正式发布前的开发阶段。Rust API、C ABI、Python wrapper、Node.js wrapper、Java wrapper 和磁盘格式仍可能调整，因此更适合评估、内部集成实验和受控场景使用。
+timslite 仍处于首次正式发布前的开发阶段。Rust API、C ABI、Python wrapper、Node.js wrapper、Java wrapper、.NET wrapper 和磁盘格式仍可能调整，因此更适合评估、内部集成实验和受控场景使用。
 
 当前可用能力:
 
@@ -22,6 +22,7 @@ timslite 仍处于首次正式发布前的开发阶段。Rust API、C ABI、Pyth
 - Python wrapper 位于 [wrapper/python](wrapper/python)。
 - Node.js wrapper 位于 [wrapper/nodejs](wrapper/nodejs)。
 - Java wrapper 位于 [wrapper/java](wrapper/java)。
+- .NET wrapper 位于 [wrapper/dotnet](wrapper/dotnet)。
 - CI 已覆盖 Rust format、clippy、unit/integration tests 和 Python wrapper tests。
 - 性能基准仍在后续完善中；`benches/` 目录已存在，但 benchmark target 还不是必过验证项。
 

@@ -1,0 +1,34 @@
+[package]
+name = "timslite-dotnet"
+version = "0.1.1"
+edition = "2021"
+publish = false
+description = ".NET UniFFI bindings for the timslite time-series storage engine."
+license = "MIT"
+repository = "https://github.com/snower/timslite"
+readme = "README.md"
+include = [
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "src/**",
+    "tests/**",
+]
+
+[lib]
+name = "timslite_dotnet"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+timslite = { path = "../../..", version = "=0.1.1" }
+uniffi = { version = "0.31", features = ["cli"] }
+thiserror = "1"
+
+[build-dependencies]
+uniffi = { version = "0.31", features = ["build"] }
+
+[dev-dependencies]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"

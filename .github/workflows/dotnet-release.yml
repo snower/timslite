@@ -1,0 +1,259 @@
+name: .NET Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and validate package without publishing"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  DOTNET_VERSION: '8.0'
+  RUST_TOOLCHAIN: stable
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-release-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-native:
+    name: Build native (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rid: win-x64
+            artifact: native-win-x64
+            cargo-target: x86_64-pc-windows-msvc
+            native-lib: timslite_dotnet.dll
+          - os: windows-11-arm
+            rid: win-arm64
+            artifact: native-win-arm64
+            cargo-target: aarch64-pc-windows-msvc
+            native-lib: timslite_dotnet.dll
+          - os: ubuntu-latest
+            rid: linux-x64
+            artifact: native-linux-x64
+            cargo-target: x86_64-unknown-linux-gnu
+            native-lib: libtimslite_dotnet.so
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+            artifact: native-linux-arm64
+            cargo-target: aarch64-unknown-linux-gnu
+            native-lib: libtimslite_dotnet.so
+          - os: macos-13
+            rid: osx-x64
+            artifact: native-osx-x64
+            cargo-target: x86_64-apple-darwin
+            native-lib: libtimslite_dotnet.dylib
+          - os: macos-14
+            rid: osx-arm64
+            artifact: native-osx-arm64
+            cargo-target: aarch64-apple-darwin
+            native-lib: libtimslite_dotnet.dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cargo-target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            wrapper/dotnet/native/target
+          key: ${{ runner.os }}-${{ matrix.rid }}-cargo-dotnet-${{ hashFiles('wrapper/dotnet/native/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.rid }}-cargo-dotnet-
+            ${{ runner.os }}-cargo-dotnet-
+
+      - name: Build native library
+        run: cargo build --manifest-path wrapper/dotnet/native/Cargo.toml --release --target ${{ matrix.cargo-target }}
+
+      - name: Prepare native artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="native-upload/runtimes/${{ matrix.rid }}/native"
+          mkdir -p "$dest"
+          cp "wrapper/dotnet/native/target/${{ matrix.cargo-target }}/release/${{ matrix.native-lib }}" \
+             "$dest/${{ matrix.native-lib }}"
+          find native-upload -type f -print
+
+      - name: Upload native library
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: native-upload/
+
+  validate:
+    name: Validate NuGet package
+    needs: build-native
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-download
+          merge-multiple: true
+
+      - name: Stage native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtimes_dir="wrapper/dotnet/src/Timslite/runtimes"
+          rm -rf "$runtimes_dir"
+          cp -R native-download/runtimes "$runtimes_dir"
+          echo "=== Staged native libraries ==="
+          find "$runtimes_dir" -type f -print
+
+      - name: Verify version alignment
+        shell: bash
+        run: |
+          set -euo pipefail
+          root_version=$(grep -m1 'version' Cargo.toml | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          native_version=$(grep -m1 'version' wrapper/dotnet/native/Cargo.toml | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+          csproj_version=$(grep -oP '<Version>\K[^<]+' wrapper/dotnet/src/Timslite/Timslite.csproj)
+
+          echo "Root crate:    $root_version"
+          echo "Native crate:  $native_version"
+          echo "Csproj:        $csproj_version"
+
+          if [[ "$root_version" != "$native_version" ]]; then
+            echo "ERROR: Version mismatch between root and native crate" >&2
+            exit 1
+          fi
+          if [[ "$csproj_version" != "$root_version" ]]; then
+            echo "ERROR: Version mismatch between root crate and csproj" >&2
+            exit 1
+          fi
+          echo "All versions aligned: $root_version"
+
+      - name: Pack NuGet package
+        run: dotnet pack wrapper/dotnet/src/Timslite/Timslite.csproj -c Release
+
+      - name: Inspect package content
+        shell: bash
+        run: |
+          set -euo pipefail
+          nupkg=$(find wrapper/dotnet/src/Timslite/bin/Release -name 'Timslite.*.nupkg' | head -1)
+          if [[ -z "$nupkg" ]]; then
+            echo "ERROR: .nupkg not found" >&2
+            exit 1
+          fi
+          echo "Package: $nupkg"
+          ls -lh "$nupkg"
+          echo ""
+          echo "=== Package contents ==="
+          unzip -l "$nupkg"
+          echo ""
+          echo "=== Verifying native libraries ==="
+          for lib in \
+            runtimes/win-x64/native/timslite_dotnet.dll \
+            runtimes/win-arm64/native/timslite_dotnet.dll \
+            runtimes/linux-x64/native/libtimslite_dotnet.so \
+            runtimes/linux-arm64/native/libtimslite_dotnet.so \
+            runtimes/osx-x64/native/libtimslite_dotnet.dylib \
+            runtimes/osx-arm64/native/libtimslite_dotnet.dylib; do
+            if ! unzip -l "$nupkg" | grep -q "$lib"; then
+              echo "ERROR: Missing $lib in package" >&2
+              exit 1
+            fi
+            echo "  OK: $lib"
+          done
+          echo "All native libraries present."
+
+      - name: Test consumer project
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmpdir=$(mktemp -d)
+          trap 'rm -rf "$tmpdir"' EXIT
+
+          nupkg_dir="wrapper/dotnet/src/Timslite/bin/Release"
+
+          # Create a minimal consumer project.
+          cat > "$tmpdir/Consumer.csproj" <<'CSPROJ'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>Exe</OutputType>
+              <TargetFramework>net8.0</TargetFramework>
+              <Nullable>enable</Nullable>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="Timslite" Version="*" />
+            </ItemGroup>
+          </Project>
+          CSPROJ
+
+          cat > "$tmpdir/Program.cs" <<'CS'
+          using Timslite;
+          Console.WriteLine($"Timslite loaded OK, version: {TimsliteInfo.Version()}");
+          CS
+
+          dotnet restore "$tmpdir/Consumer.csproj" --source "$nupkg_dir"
+          dotnet build "$tmpdir/Consumer.csproj" -c Release --no-restore
+          dotnet run --project "$tmpdir/Consumer.csproj" -c Release --no-build
+
+  publish:
+    name: Publish to NuGet
+    needs: validate
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native-download
+          merge-multiple: true
+
+      - name: Stage native libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtimes_dir="wrapper/dotnet/src/Timslite/runtimes"
+          rm -rf "$runtimes_dir"
+          cp -R native-download/runtimes "$runtimes_dir"
+
+      - name: Pack NuGet package
+        run: dotnet pack wrapper/dotnet/src/Timslite/Timslite.csproj -c Release
+
+      - name: Publish to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          set -euo pipefail
+          nupkg=$(find wrapper/dotnet/src/Timslite/bin/Release -name 'Timslite.*.nupkg' | head -1)
+          if [[ -z "$nupkg" ]]; then
+            echo "ERROR: .nupkg not found" >&2
+            exit 1
+          fi
+          dotnet nuget push "$nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate

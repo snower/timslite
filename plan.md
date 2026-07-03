@@ -58,6 +58,7 @@
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 | NODE | Node.js Package (Node-API) | ✅ 完成 | [wrapper/nodejs/plan.md](wrapper/nodejs/plan.md) |
 | JAVA | Java Package (UniFFI) | ✅ 完成 | [wrapper/java/plan.md](wrapper/java/plan.md) |
+| DOTNET | .NET Package (UniFFI) | ✅ 完成 | [wrapper/dotnet/plan.md](wrapper/dotnet/plan.md) |
 
 ---
 
@@ -129,7 +130,8 @@ docs/plan/
 ├── phase-45-store-read-only-lock.md ← Phase 45: Store Read-only Lock
 ├── phase-46-rust-api-simplify-cffi-split.md ← Phase 46: Rust API 简化与 C ABI Wrapper 拆分
 ├── wrapper/nodejs/plan.md ← NODE: Node.js Package (Node-API)
-└── wrapper/java/plan.md   ← JAVA: Java Package (UniFFI)
+├── wrapper/java/plan.md   ← JAVA: Java Package (UniFFI)
+└── wrapper/dotnet/plan.md ← DOTNET: .NET Package (UniFFI)
 ```
 
 **概览文档** ([docs/plan/overview.md](docs/plan/overview.md)) 包含:

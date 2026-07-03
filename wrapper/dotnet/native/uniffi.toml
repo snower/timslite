@@ -1,0 +1,3 @@
+[bindings.csharp]
+cdylib_name = "timslite_dotnet"
+namespace_name = "Timslite.Uniffi"

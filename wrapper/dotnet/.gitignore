@@ -1,0 +1,8 @@
+/target
+/native/target
+/dist
+/src/Timslite/bin
+/src/Timslite/obj
+/src/Timslite/runtimes
+/tests/Timslite.Tests/bin
+/tests/Timslite.Tests/obj
