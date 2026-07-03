@@ -70,7 +70,16 @@ internal static class NativeLibraryLoader
     {
         var os = GetOsId();
         var arch = GetArchId();
+        if (os == "linux" && IsMuslRuntime(RuntimeInformation.RuntimeIdentifier))
+            return $"linux-musl-{arch}";
+
         return $"{os}-{arch}";
+    }
+
+    internal static bool IsMuslRuntime(string? runtimeIdentifier)
+    {
+        return !string.IsNullOrEmpty(runtimeIdentifier) &&
+               runtimeIdentifier.StartsWith("linux-musl-", StringComparison.OrdinalIgnoreCase);
     }
 
     internal static string GetNativeLibraryName(string rid)
@@ -83,7 +92,8 @@ internal static class NativeLibraryLoader
             return "libtimslite_dotnet.so";
 
         throw new PlatformNotSupportedException(
-            $"Unsupported RID '{rid}'. Supported: win-x64, win-arm64, linux-x64, linux-arm64, osx-x64, osx-arm64.");
+            $"Unsupported RID '{rid}'. Packaged RIDs: win-x64, win-arm64, linux-x64, linux-arm64, " +
+            $"linux-musl-x64, linux-musl-arm64, osx-arm64.");
     }
 
     private static string GetOsId()

@@ -12,7 +12,7 @@ on:
         type: boolean
 
 env:
-  DOTNET_VERSION: '8.0'
+  DOTNET_VERSION: '8.0.x'
   RUST_TOOLCHAIN: stable
   CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
@@ -51,11 +51,16 @@ jobs:
             artifact: native-linux-arm64
             cargo-target: aarch64-unknown-linux-gnu
             native-lib: libtimslite_dotnet.so
-          - os: macos-13
-            rid: osx-x64
-            artifact: native-osx-x64
-            cargo-target: x86_64-apple-darwin
-            native-lib: libtimslite_dotnet.dylib
+          - os: ubuntu-latest
+            rid: linux-musl-x64
+            artifact: native-linux-musl-x64
+            cargo-target: x86_64-unknown-linux-musl
+            native-lib: libtimslite_dotnet.so
+          - os: ubuntu-24.04-arm
+            rid: linux-musl-arm64
+            artifact: native-linux-musl-arm64
+            cargo-target: aarch64-unknown-linux-musl
+            native-lib: libtimslite_dotnet.so
           - os: macos-14
             rid: osx-arm64
             artifact: native-osx-arm64
@@ -81,7 +86,18 @@ jobs:
             ${{ runner.os }}-${{ matrix.rid }}-cargo-dotnet-
             ${{ runner.os }}-cargo-dotnet-
 
+      - name: Install musl toolchain
+        if: startsWith(matrix.rid, 'linux-musl-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
       - name: Build native library
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --manifest-path wrapper/dotnet/native/Cargo.toml --release --target ${{ matrix.cargo-target }}
 
       - name: Prepare native artifact
@@ -174,7 +190,8 @@ jobs:
             runtimes/win-arm64/native/timslite_dotnet.dll \
             runtimes/linux-x64/native/libtimslite_dotnet.so \
             runtimes/linux-arm64/native/libtimslite_dotnet.so \
-            runtimes/osx-x64/native/libtimslite_dotnet.dylib \
+            runtimes/linux-musl-x64/native/libtimslite_dotnet.so \
+            runtimes/linux-musl-arm64/native/libtimslite_dotnet.so \
             runtimes/osx-arm64/native/libtimslite_dotnet.dylib; do
             if ! unzip -l "$nupkg" | grep -q "$lib"; then
               echo "ERROR: Missing $lib in package" >&2
@@ -254,6 +271,10 @@ jobs:
           nupkg=$(find wrapper/dotnet/src/Timslite/bin/Release -name 'Timslite.*.nupkg' | head -1)
           if [[ -z "$nupkg" ]]; then
             echo "ERROR: .nupkg not found" >&2
+            exit 1
+          fi
+          if [[ -z "${NUGET_API_KEY:-}" ]]; then
+            echo "ERROR: NUGET_API_KEY secret is not configured" >&2
             exit 1
           fi
           dotnet nuget push "$nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate

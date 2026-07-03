@@ -35,7 +35,7 @@ function Build-NativeLib {
     $nativeDir = Join-Path $DotnetRoot "native"
     Write-Host "Building native library for $Rid (target: $Target)..." -ForegroundColor Cyan
 
-    $cargoArgs = @("build", "--target", $Target)
+    $cargoArgs = @("build", "--manifest-path", (Join-Path $nativeDir "Cargo.toml"), "--target", $Target)
     if ($Release) {
         $cargoArgs += "--release"
     }
@@ -101,7 +101,8 @@ $targets = @(
     @{ Target = "aarch64-pc-windows-msvc";  Rid = "win-arm64" },
     @{ Target = "x86_64-unknown-linux-gnu"; Rid = "linux-x64" },
     @{ Target = "aarch64-unknown-linux-gnu"; Rid = "linux-arm64" },
-    @{ Target = "x86_64-apple-darwin";      Rid = "osx-x64" },
+    @{ Target = "x86_64-unknown-linux-musl"; Rid = "linux-musl-x64" },
+    @{ Target = "aarch64-unknown-linux-musl"; Rid = "linux-musl-arm64" },
     @{ Target = "aarch64-apple-darwin";     Rid = "osx-arm64" }
 )
 

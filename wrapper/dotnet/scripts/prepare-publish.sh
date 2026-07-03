@@ -38,7 +38,7 @@ build_native_lib() {
     echo "Building native library for $rid (target: $target)..."
 
     local native_dir="$DOTNET_ROOT/native"
-    cargo build --target "$target" $CARGO_FLAG
+    cargo build --manifest-path "$native_dir/Cargo.toml" --target "$target" $CARGO_FLAG
 
     local build_subdir="debug"
     if $RELEASE; then
@@ -94,7 +94,8 @@ targets=(
     "aarch64-pc-windows-msvc|win-arm64"
     "x86_64-unknown-linux-gnu|linux-x64"
     "aarch64-unknown-linux-gnu|linux-arm64"
-    "x86_64-apple-darwin|osx-x64"
+    "x86_64-unknown-linux-musl|linux-musl-x64"
+    "aarch64-unknown-linux-musl|linux-musl-arm64"
     "aarch64-apple-darwin|osx-arm64"
 )
 

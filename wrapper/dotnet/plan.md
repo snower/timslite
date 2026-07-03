@@ -460,7 +460,8 @@ wrapper/dotnet/
   - `runtimes/win-arm64/native/timslite_dotnet.dll`。
   - `runtimes/linux-x64/native/libtimslite_dotnet.so`。
   - `runtimes/linux-arm64/native/libtimslite_dotnet.so`。
-  - `runtimes/osx-x64/native/libtimslite_dotnet.dylib`。
+  - `runtimes/linux-musl-x64/native/libtimslite_dotnet.so`。
+  - `runtimes/linux-musl-arm64/native/libtimslite_dotnet.so`。
   - `runtimes/osx-arm64/native/libtimslite_dotnet.dylib`。
 - [ ] Add native library loader tests。
   - Current RID selects native library。
@@ -546,7 +547,8 @@ wrapper/dotnet/
   - Windows ARM64。
   - Linux x64。
   - Linux ARM64。
-  - macOS x64。
+  - Linux x64 musl。
+  - Linux ARM64 musl。
   - macOS ARM64。
   - .NET SDK 8.0。
 - [x] Build native release artifacts。
@@ -561,7 +563,7 @@ wrapper/dotnet/
   - Version sync check with root `Cargo.toml`。
 - [x] Document unsupported platforms。
   - Throw actionable error for unsupported RID。
-  - Keep musl/NativeAOT as post-MVP unless explicitly approved。
+  - Keep macOS x64/NativeAOT as not shipped unless explicitly approved。
 
 验收标准:
 
@@ -645,6 +647,6 @@ git diff --check
 - `ReadOnlySpan<byte>` / `ReadOnlyMemory<byte>` overload。
 - `IAsyncEnumerable<Record>` queue/journal helpers。
 - Journal payload decode helper。
-- Linux musl native artifacts。
+- macOS x64 packaged native artifact, only if explicitly required。
 - NativeAOT compatibility investigation。
 - Benchmark and throughput examples。

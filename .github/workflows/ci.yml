@@ -228,5 +228,14 @@ jobs:
       - name: Build .NET solution
         run: dotnet build wrapper/dotnet/Timslite.slnx --no-restore
 
+      - name: Stage native library for .NET tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="wrapper/dotnet/tests/Timslite.Tests/bin/Debug/net8.0/runtimes/linux-x64/native"
+          mkdir -p "$dest"
+          cp wrapper/dotnet/native/target/debug/libtimslite_dotnet.so "$dest/libtimslite_dotnet.so"
+          find wrapper/dotnet/tests/Timslite.Tests/bin/Debug/net8.0/runtimes -type f -print
+
       - name: Run .NET tests
         run: dotnet test wrapper/dotnet/Timslite.slnx --no-build --verbosity normal

@@ -89,7 +89,7 @@ if (entry != null)
 ## Requirements
 
 - .NET 8.0 or later (`net8.0`).
-- Supported platforms: Windows (x64/arm64), Linux (x64/arm64), macOS (x64/arm64).
+- Supported package platforms: Windows (x64/arm64), Linux glibc (x64/arm64), Linux musl (x64/arm64), macOS (arm64).
 
 ## Native Library Loading
 
@@ -111,16 +111,17 @@ export TIMSLITE_NATIVE_LIBRARY_PATH=/opt/timslite/libtimslite_dotnet.so
 | `win-arm64` | `timslite_dotnet.dll` |
 | `linux-x64` | `libtimslite_dotnet.so` |
 | `linux-arm64` | `libtimslite_dotnet.so` |
-| `osx-x64` | `libtimslite_dotnet.dylib` |
+| `linux-musl-x64` | `libtimslite_dotnet.so` |
+| `linux-musl-arm64` | `libtimslite_dotnet.so` |
 | `osx-arm64` | `libtimslite_dotnet.dylib` |
 
 ### Unsupported Platforms
 
 The following platforms are **not supported** in the current release. Attempting to load the native library on an unsupported RID will throw a clear error at runtime.
 
-- **musl-based Linux** (`linux-musl-x64`, `linux-musl-arm64`) — Alpine, Void, etc.
-- **NativeAOT** — pre-compiled native trimming is not yet validated.
-- **FreeBSD**, **Android**, **iOS**, **wasm** — no native binaries are shipped.
+- **macOS x64** (`osx-x64`) - not built by the default NuGet release workflow.
+- **NativeAOT** - pre-compiled native trimming is not yet validated.
+- **FreeBSD**, **Android**, **iOS**, **wasm** - no native binaries are shipped.
 
 If you need support for one of these platforms, please [open an issue](https://github.com/snower/timslite/issues).
 

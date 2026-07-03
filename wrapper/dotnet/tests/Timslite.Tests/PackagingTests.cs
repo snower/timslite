@@ -62,6 +62,7 @@ public class PackagingTests
         Assert.True(
             rid == "win-x64" || rid == "win-arm64" ||
             rid == "linux-x64" || rid == "linux-arm64" ||
+            rid == "linux-musl-x64" || rid == "linux-musl-arm64" ||
             rid == "osx-x64" || rid == "osx-arm64",
             $"Unexpected RID: {rid}");
     }
@@ -94,6 +95,8 @@ public class PackagingTests
     [InlineData("win-arm64", "timslite_dotnet.dll")]
     [InlineData("linux-x64", "libtimslite_dotnet.so")]
     [InlineData("linux-arm64", "libtimslite_dotnet.so")]
+    [InlineData("linux-musl-x64", "libtimslite_dotnet.so")]
+    [InlineData("linux-musl-arm64", "libtimslite_dotnet.so")]
     [InlineData("osx-x64", "libtimslite_dotnet.dylib")]
     [InlineData("osx-arm64", "libtimslite_dotnet.dylib")]
     public void GetNativeLibraryName_ReturnsCorrectName(string rid, string expected)
@@ -107,6 +110,17 @@ public class PackagingTests
     {
         Assert.Throws<PlatformNotSupportedException>(
             () => NativeLibraryLoader.GetNativeLibraryName("freebsd-x64"));
+    }
+
+    [Theory]
+    [InlineData("linux-musl-x64", true)]
+    [InlineData("linux-musl-arm64", true)]
+    [InlineData("linux-x64", false)]
+    [InlineData("win-x64", false)]
+    [InlineData("", false)]
+    public void IsMuslRuntime_DetectsMuslRuntimeIdentifier(string runtimeIdentifier, bool expected)
+    {
+        Assert.Equal(expected, NativeLibraryLoader.IsMuslRuntime(runtimeIdentifier));
     }
 
     [Fact]
