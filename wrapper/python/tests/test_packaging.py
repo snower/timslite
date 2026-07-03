@@ -54,6 +54,9 @@ def test_readme_documents_pip_install_and_source_build_fallback():
 def test_release_workflow_prepares_sdist_for_crates_io_source_build():
     workflow = (ROOT / ".github" / "workflows" / "python-release.yml").read_text(encoding="utf-8")
 
+    assert 'workflows: ["Release Rust Crate"]' in workflow
+    assert "github.event.workflow_run.head_sha || github.ref" in workflow
+    assert "github.event.workflow_run.event == 'release'" in workflow
     assert "python scripts/prepare_publish.py" in workflow
     assert "if cargo generate-lockfile --manifest-path Cargo.toml && cargo fetch --locked --manifest-path Cargo.toml" in workflow
     assert "cargo generate-lockfile --manifest-path Cargo.toml" in workflow

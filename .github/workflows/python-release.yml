@@ -1,8 +1,9 @@
 name: Release Python Package
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release Rust Crate"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -19,15 +20,18 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-python-${{ github.event.release.tag_name || github.ref }}
+  group: release-python-${{ github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: false
 
 jobs:
   validate:
     name: Validate package metadata
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -97,6 +101,8 @@ jobs:
             python-architecture: arm64
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -152,6 +158,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -191,7 +199,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: [build-wheels, build-sdist]
-    if: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
+    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: ubuntu-latest
     environment:
       name: pypi

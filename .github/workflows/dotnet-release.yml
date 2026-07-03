@@ -1,8 +1,9 @@
 name: .NET Release
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release Rust Crate"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -21,12 +22,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: dotnet-release-${{ github.event.release.tag_name || github.ref }}
+  group: dotnet-release-${{ github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: false
 
 jobs:
   build-native:
     name: Build native (${{ matrix.rid }})
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') }}
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +71,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -122,6 +126,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -237,7 +243,7 @@ jobs:
     name: Publish to NuGet
     needs: validate
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
     environment:
       name: nuget
       url: https://www.nuget.org/packages/Timslite
@@ -246,6 +252,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: actions/setup-dotnet@v4
         with:

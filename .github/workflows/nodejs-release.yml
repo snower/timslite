@@ -1,8 +1,9 @@
 name: Node.js Release
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Release Rust Crate"]
+    types: [completed]
 
 env:
   CARGO_TERM_COLOR: always
@@ -11,12 +12,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: nodejs-release-${{ github.event.release.tag_name }}
+  group: nodejs-release-${{ github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
     name: Build - ${{ matrix.target }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release' }}
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
@@ -42,6 +44,8 @@ jobs:
             os: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -82,6 +86,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: build
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -89,10 +94,10 @@ jobs:
     environment:
       name: npm
       url: https://www.npmjs.com/package/timslite
-    env:
-      NPM_CONFIG_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -116,6 +121,26 @@ jobs:
         working-directory: wrapper/nodejs
         run: |
           mv artifacts/*.node .
+
+      - name: Resolve npm dist tag
+        id: npm_tag
+        working-directory: wrapper/nodejs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          release_tag="v${version}"
+          if ! is_prerelease="$(gh release view "${release_tag}" --json isPrerelease --jq '.isPrerelease' 2>/dev/null)"; then
+            release_tag="${version}"
+            is_prerelease="$(gh release view "${release_tag}" --json isPrerelease --jq '.isPrerelease')"
+          fi
+          if [ "${is_prerelease}" = "true" ]; then
+            echo "tag=next" >> "${GITHUB_OUTPUT}"
+          else
+            echo "tag=latest" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Prepare source build fallback
         working-directory: wrapper/nodejs
@@ -145,4 +170,6 @@ jobs:
 
       - name: Publish root package
         working-directory: wrapper/nodejs
+        env:
+          NPM_CONFIG_TAG: ${{ steps.npm_tag.outputs.tag }}
         run: npm publish
