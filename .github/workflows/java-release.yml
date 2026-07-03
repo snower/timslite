@@ -26,12 +26,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-13
-            platform: macos-x86_64
-            artifact: native-macos-x86_64
-            native-lib: libtimslite_java.dylib
-            cargo-target: x86_64-apple-darwin
-            rustflags: ""
           - os: macos-14
             platform: macos-aarch64
             artifact: native-macos-aarch64

@@ -447,7 +447,6 @@ The preferred Maven layout is a single JAR containing all platform native librar
 
 The JAR includes native libraries at:
 
-- `META-INF/native/macos-x86_64/libtimslite_java.dylib`
 - `META-INF/native/macos-aarch64/libtimslite_java.dylib`
 - `META-INF/native/linux-x86_64/libtimslite_java.so`
 - `META-INF/native/linux-aarch64/libtimslite_java.so`
