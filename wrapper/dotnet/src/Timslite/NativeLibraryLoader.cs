@@ -7,25 +7,31 @@ namespace Timslite;
 
 internal static class NativeLibraryLoader
 {
+    private const string NativeLibraryBaseName = "timslite_dotnet";
+    private static readonly object LoadLock = new();
     private static bool _loaded;
+    private static bool _resolverRegistered;
+    private static IntPtr _nativeHandle;
 
     public static void Load()
     {
         if (_loaded) return;
 
+        lock (LoadLock)
+        {
+            if (_loaded) return;
+
+            RegisterDllImportResolver();
+            _nativeHandle = LoadNativeLibrary();
+            _loaded = true;
+        }
+    }
+
+    private static IntPtr LoadNativeLibrary()
+    {
         var customPath = Environment.GetEnvironmentVariable("TIMSLITE_NATIVE_LIBRARY_PATH");
         if (!string.IsNullOrEmpty(customPath))
-        {
-            if (!File.Exists(customPath))
-            {
-                throw new InvalidOperationException(
-                    $"TIMSLITE_NATIVE_LIBRARY_PATH points to a missing file: {customPath}");
-            }
-
-            NativeLibrary.Load(customPath);
-            _loaded = true;
-            return;
-        }
+            return LoadFromPath(customPath);
 
         var rid = GetCurrentRid();
         var libName = GetNativeLibraryName(rid);
@@ -44,17 +50,13 @@ internal static class NativeLibraryLoader
             var candidate = Path.GetFullPath(Path.Combine(root, "runtimes", rid, "native", libName));
             if (File.Exists(candidate))
             {
-                NativeLibrary.Load(candidate);
-                _loaded = true;
-                return;
+                return LoadFromPath(candidate);
             }
         }
 
         try
         {
-            NativeLibrary.Load(libName);
-            _loaded = true;
-            return;
+            return NativeLibrary.Load(libName);
         }
         catch (DllNotFoundException)
         {
@@ -64,6 +66,42 @@ internal static class NativeLibraryLoader
             $"Failed to load native library '{libName}' for RID '{rid}'. " +
             $"Searched: {string.Join(", ", Array.ConvertAll(searchRoots, r => Path.GetFullPath(Path.Combine(r, "runtimes", rid, "native"))))}. " +
             $"Set TIMSLITE_NATIVE_LIBRARY_PATH to override the native library path.");
+    }
+
+    internal static IntPtr LoadFromPath(string path)
+    {
+        if (!File.Exists(path))
+        {
+            throw new InvalidOperationException(
+                $"TIMSLITE_NATIVE_LIBRARY_PATH points to a missing file: {path}");
+        }
+
+        return NativeLibrary.Load(path);
+    }
+
+    private static void RegisterDllImportResolver()
+    {
+        if (_resolverRegistered) return;
+
+        NativeLibrary.SetDllImportResolver(typeof(NativeLibraryLoader).Assembly, ResolveDllImport);
+        _resolverRegistered = true;
+    }
+
+    private static IntPtr ResolveDllImport(string libraryName, Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (!IsTimsliteNativeLibraryName(libraryName))
+            return IntPtr.Zero;
+
+        Load();
+        return _nativeHandle;
+    }
+
+    internal static bool IsTimsliteNativeLibraryName(string libraryName)
+    {
+        return string.Equals(libraryName, NativeLibraryBaseName, StringComparison.Ordinal) ||
+               string.Equals(libraryName, "timslite_dotnet.dll", StringComparison.Ordinal) ||
+               string.Equals(libraryName, "libtimslite_dotnet.so", StringComparison.Ordinal) ||
+               string.Equals(libraryName, "libtimslite_dotnet.dylib", StringComparison.Ordinal);
     }
 
     internal static string GetCurrentRid()

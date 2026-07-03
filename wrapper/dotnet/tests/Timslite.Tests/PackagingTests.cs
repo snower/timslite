@@ -113,6 +113,17 @@ public class PackagingTests
     }
 
     [Theory]
+    [InlineData("timslite_dotnet", true)]
+    [InlineData("timslite_dotnet.dll", true)]
+    [InlineData("libtimslite_dotnet.so", true)]
+    [InlineData("libtimslite_dotnet.dylib", true)]
+    [InlineData("other", false)]
+    public void IsTimsliteNativeLibraryName_DetectsGeneratedImportName(string libraryName, bool expected)
+    {
+        Assert.Equal(expected, NativeLibraryLoader.IsTimsliteNativeLibraryName(libraryName));
+    }
+
+    [Theory]
     [InlineData("linux-musl-x64", true)]
     [InlineData("linux-musl-arm64", true)]
     [InlineData("linux-x64", false)]
@@ -126,27 +137,8 @@ public class PackagingTests
     [Fact]
     public void EnvOverride_MissingFile_ThrowsActionableError()
     {
-        var original = Environment.GetEnvironmentVariable("TIMSLITE_NATIVE_LIBRARY_PATH");
-        try
-        {
-            Environment.SetEnvironmentVariable("TIMSLITE_NATIVE_LIBRARY_PATH", "/nonexistent/lib.so");
-            try
-            {
-                NativeLibraryLoader.Load();
-            }
-            catch (InvalidOperationException ex)
-            {
-                Assert.Contains("TIMSLITE_NATIVE_LIBRARY_PATH", ex.Message);
-                return;
-            }
-            catch (DllNotFoundException)
-            {
-                return;
-            }
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("TIMSLITE_NATIVE_LIBRARY_PATH", original);
-        }
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => NativeLibraryLoader.LoadFromPath("/nonexistent/lib.so"));
+        Assert.Contains("TIMSLITE_NATIVE_LIBRARY_PATH", ex.Message);
     }
 }

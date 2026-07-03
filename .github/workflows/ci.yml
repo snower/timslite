@@ -232,10 +232,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dest="wrapper/dotnet/tests/Timslite.Tests/bin/Debug/net8.0/runtimes/linux-x64/native"
+          output_dir="wrapper/dotnet/tests/Timslite.Tests/bin/Debug/net8.0"
+          dest="$output_dir/runtimes/linux-x64/native"
           mkdir -p "$dest"
           cp wrapper/dotnet/native/target/debug/libtimslite_dotnet.so "$dest/libtimslite_dotnet.so"
-          find wrapper/dotnet/tests/Timslite.Tests/bin/Debug/net8.0/runtimes -type f -print
+          cp wrapper/dotnet/native/target/debug/libtimslite_dotnet.so "$output_dir/libtimslite_dotnet.so"
+          find "$output_dir" -name 'libtimslite_dotnet.so' -print
 
       - name: Run .NET tests
+        env:
+          TIMSLITE_NATIVE_LIBRARY_PATH: ${{ github.workspace }}/wrapper/dotnet/native/target/debug/libtimslite_dotnet.so
         run: dotnet test wrapper/dotnet/Timslite.slnx --no-build --verbosity normal
