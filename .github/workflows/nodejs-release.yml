@@ -85,9 +85,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      id-token: write
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/timslite
     env:
       NPM_CONFIG_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
