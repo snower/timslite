@@ -38,36 +38,43 @@ jobs:
             artifact: native-win-x64
             cargo-target: x86_64-pc-windows-msvc
             native-lib: timslite_dotnet.dll
+            rustflags: ""
           - os: windows-11-arm
             rid: win-arm64
             artifact: native-win-arm64
             cargo-target: aarch64-pc-windows-msvc
             native-lib: timslite_dotnet.dll
+            rustflags: ""
           - os: ubuntu-latest
             rid: linux-x64
             artifact: native-linux-x64
             cargo-target: x86_64-unknown-linux-gnu
             native-lib: libtimslite_dotnet.so
+            rustflags: ""
           - os: ubuntu-24.04-arm
             rid: linux-arm64
             artifact: native-linux-arm64
             cargo-target: aarch64-unknown-linux-gnu
             native-lib: libtimslite_dotnet.so
+            rustflags: ""
           - os: ubuntu-latest
             rid: linux-musl-x64
             artifact: native-linux-musl-x64
             cargo-target: x86_64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
+            rustflags: "-C target-feature=-crt-static"
           - os: ubuntu-24.04-arm
             rid: linux-musl-arm64
             artifact: native-linux-musl-arm64
             cargo-target: aarch64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
+            rustflags: "-C target-feature=-crt-static"
           - os: macos-14
             rid: osx-arm64
             artifact: native-osx-arm64
             cargo-target: aarch64-apple-darwin
             native-lib: libtimslite_dotnet.dylib
+            rustflags: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -102,6 +109,7 @@ jobs:
         env:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --manifest-path wrapper/dotnet/native/Cargo.toml --release --target ${{ matrix.cargo-target }}
 
       - name: Prepare native artifact

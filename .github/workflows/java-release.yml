@@ -13,7 +13,7 @@ on:
         type: boolean
 
 env:
-  JAVA_VERSION: '17'
+  JAVA_VERSION: '21'
   RUST_TOOLCHAIN: stable
   CARGO_INCREMENTAL: 0
   MAVEN_ARGS: --batch-mode --no-transfer-progress
@@ -31,41 +31,49 @@ jobs:
             artifact: native-macos-x86_64
             native-lib: libtimslite_java.dylib
             cargo-target: x86_64-apple-darwin
+            rustflags: ""
           - os: macos-14
             platform: macos-aarch64
             artifact: native-macos-aarch64
             native-lib: libtimslite_java.dylib
             cargo-target: aarch64-apple-darwin
+            rustflags: ""
           - os: ubuntu-latest
             platform: linux-x86_64
             artifact: native-linux-x86_64
             native-lib: libtimslite_java.so
             cargo-target: x86_64-unknown-linux-gnu
+            rustflags: ""
           - os: ubuntu-latest
             platform: linux-x86_64-musl
             artifact: native-linux-x86_64-musl
             native-lib: libtimslite_java.so
             cargo-target: x86_64-unknown-linux-musl
+            rustflags: "-C target-feature=-crt-static"
           - os: ubuntu-24.04-arm
             platform: linux-aarch64
             artifact: native-linux-aarch64
             native-lib: libtimslite_java.so
             cargo-target: aarch64-unknown-linux-gnu
+            rustflags: ""
           - os: ubuntu-24.04-arm
             platform: linux-aarch64-musl
             artifact: native-linux-aarch64-musl
             native-lib: libtimslite_java.so
             cargo-target: aarch64-unknown-linux-musl
+            rustflags: "-C target-feature=-crt-static"
           - os: windows-latest
             platform: windows-x86_64
             artifact: native-windows-x86_64
             native-lib: timslite_java.dll
             cargo-target: x86_64-pc-windows-msvc
+            rustflags: ""
           - os: windows-11-arm
             platform: windows-aarch64
             artifact: native-windows-aarch64
             native-lib: timslite_java.dll
             cargo-target: aarch64-pc-windows-msvc
+            rustflags: ""
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
@@ -85,7 +93,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
@@ -105,9 +113,11 @@ jobs:
 
       - name: Run Maven tests
         if: ${{ !endsWith(matrix.platform, '-musl') }}
-        run: mvn ${{ env.MAVEN_ARGS }} -f wrapper/java/pom.xml clean test -Dnative.platform=${{ matrix.platform }}
+        run: mvn ${{ env.MAVEN_ARGS }} -f wrapper/java/pom.xml clean test "-Dnative.platform=${{ matrix.platform }}"
 
       - name: Build Rust cdylib for publication
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --manifest-path wrapper/java/native/Cargo.toml --release --target ${{ matrix.cargo-target }}
 
       - name: Prepare native artifact
@@ -137,7 +147,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
@@ -183,9 +193,9 @@ jobs:
         run: >
           mvn ${{ env.MAVEN_ARGS }} -f wrapper/java/pom.xml clean deploy
           -P release
-          -Dnative.lib.dir="$TIMSLITE_NATIVE_LIB_DIR"
-          -Dnative.platform=linux-x86_64
-          -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}"
+          "-Dnative.lib.dir=$TIMSLITE_NATIVE_LIB_DIR"
+          "-Dnative.platform=linux-x86_64"
+          "-Dgpg.passphrase=${{ secrets.GPG_PASSPHRASE }}"
         env:
           CENTRAL_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
@@ -203,7 +213,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           java-version: ${{ env.JAVA_VERSION }}
           distribution: temurin
@@ -242,8 +252,8 @@ jobs:
         run: >
           mvn ${{ env.MAVEN_ARGS }} -f wrapper/java/pom.xml clean package
           -P release
-          -Dnative.lib.dir="$TIMSLITE_NATIVE_LIB_DIR"
-          -Dnative.platform=linux-x86_64
+          "-Dnative.lib.dir=$TIMSLITE_NATIVE_LIB_DIR"
+          "-Dnative.platform=linux-x86_64"
 
       - name: Verify JAR contents
         shell: bash

@@ -86,8 +86,8 @@ wrapper/java/
   - 记录 `uniffi`, `uniffi_bindgen` 或 Maven plugin 的精确版本。
   - 验证该版本支持 Java 8 目标字节码和禁用 Java 9 cleaner path。
 - [x] 确认 Maven/Kotlin/JDK 组合。
-  - Maven compiler source/target 使用 1.8。
-  - Kotlin Maven plugin `jvmTarget` 使用 1.8。
+  - Maven compiler `release` 使用 8, 并保留 source/target=8 fallback。
+  - Kotlin Maven plugin `jvmTarget` 使用 1.8, 并启用 `-Xjdk-release=1.8`。
   - 测试运行至少覆盖 Java 8 或等效 Java 8 toolchain。
 - [x] 确认 Maven coordinates。
   - 固定使用 `groupId=io.github.snower`, `artifactId=timslite`。
