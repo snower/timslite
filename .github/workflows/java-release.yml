@@ -29,31 +29,58 @@ jobs:
             platform: macos-x86_64
             artifact: native-macos-x86_64
             native-lib: libtimslite_java.dylib
+            cargo-target: x86_64-apple-darwin
           - os: macos-14
             platform: macos-aarch64
             artifact: native-macos-aarch64
             native-lib: libtimslite_java.dylib
+            cargo-target: aarch64-apple-darwin
           - os: ubuntu-latest
             platform: linux-x86_64
             artifact: native-linux-x86_64
             native-lib: libtimslite_java.so
+            cargo-target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            platform: linux-x86_64-musl
+            artifact: native-linux-x86_64-musl
+            native-lib: libtimslite_java.so
+            cargo-target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
             platform: linux-aarch64
             artifact: native-linux-aarch64
             native-lib: libtimslite_java.so
+            cargo-target: aarch64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64-musl
+            artifact: native-linux-aarch64-musl
+            native-lib: libtimslite_java.so
+            cargo-target: aarch64-unknown-linux-musl
           - os: windows-latest
             platform: windows-x86_64
             artifact: native-windows-x86_64
             native-lib: timslite_java.dll
+            cargo-target: x86_64-pc-windows-msvc
           - os: windows-11-arm
             platform: windows-aarch64
             artifact: native-windows-aarch64
             native-lib: timslite_java.dll
+            cargo-target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cargo-target }}
+
+      - name: Install Linux musl toolchain
+        if: ${{ endsWith(matrix.platform, '-musl') }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - uses: actions/setup-java@v4
         with:
@@ -74,17 +101,18 @@ jobs:
             ${{ runner.os }}-cargo-java-
 
       - name: Run Maven tests
+        if: ${{ !endsWith(matrix.platform, '-musl') }}
         run: mvn ${{ env.MAVEN_ARGS }} -f wrapper/java/pom.xml clean test -Dnative.platform=${{ matrix.platform }}
 
       - name: Build Rust cdylib for publication
-        run: cargo build --manifest-path wrapper/java/native/Cargo.toml --release
+        run: cargo build --manifest-path wrapper/java/native/Cargo.toml --release --target ${{ matrix.cargo-target }}
 
       - name: Prepare native artifact
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "native-upload/META-INF/native/${{ matrix.platform }}"
-          cp "wrapper/java/native/target/release/${{ matrix.native-lib }}" \
+          cp "wrapper/java/native/target/${{ matrix.cargo-target }}/release/${{ matrix.native-lib }}" \
              "native-upload/META-INF/native/${{ matrix.platform }}/${{ matrix.native-lib }}"
           find native-upload -type f -print
 

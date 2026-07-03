@@ -73,10 +73,20 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             python-architecture: x64
+          - name: linux-x86_64-musl
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            python-architecture: x64
+            manylinux: musllinux_1_2
           - name: linux-aarch64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             python-architecture: arm64
+          - name: linux-aarch64-musl
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            python-architecture: arm64
+            manylinux: musllinux_1_2
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -125,7 +135,7 @@ jobs:
           working-directory: wrapper/python
           maturin-version: ${{ env.MATURIN_VERSION }}
           target: ${{ matrix.platform.target }}
-          manylinux: "2_28"
+          manylinux: ${{ matrix.platform.manylinux || '2_28' }}
           args: --release --locked --out dist --compatibility pypi ${{ steps.maturin_args.outputs.extra_args }}
           sccache: true
 

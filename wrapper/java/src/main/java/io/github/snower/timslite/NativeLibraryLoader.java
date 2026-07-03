@@ -3,8 +3,10 @@ package io.github.snower.timslite;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 
 public final class NativeLibraryLoader {
@@ -122,6 +124,10 @@ public final class NativeLibraryLoader {
         return NATIVE_RESOURCE_ROOT + "/" + platformClassifier(osName, archName) + "/" + mappedLibraryName(osName);
     }
 
+    static String resolveResourcePath(String osName, String archName, boolean musl) {
+        return NATIVE_RESOURCE_ROOT + "/" + platformClassifier(osName, archName, musl) + "/" + mappedLibraryName(osName);
+    }
+
     private static String resolveResourcePath() {
         return resolveResourcePath(
             System.getProperty("os.name", ""),
@@ -130,6 +136,10 @@ public final class NativeLibraryLoader {
     }
 
     static String platformClassifier(String osName, String archName) {
+        return platformClassifier(osName, archName, isMusl(osName));
+    }
+
+    static String platformClassifier(String osName, String archName, boolean musl) {
         String os = osName.toLowerCase();
         String arch = archName.toLowerCase();
 
@@ -144,9 +154,9 @@ public final class NativeLibraryLoader {
         } else if (isMac && isArm) {
             return "macos-aarch64";
         } else if (isLinux && isX86) {
-            return "linux-x86_64";
+            return musl ? "linux-x86_64-musl" : "linux-x86_64";
         } else if (isLinux && isArm) {
-            return "linux-aarch64";
+            return musl ? "linux-aarch64-musl" : "linux-aarch64";
         } else if (isWindows && isX86) {
             return "windows-x86_64";
         } else if (isWindows && isArm) {
@@ -154,6 +164,75 @@ public final class NativeLibraryLoader {
         }
 
         throw new UnsatisfiedLinkError("Unsupported platform: " + os + "-" + arch);
+    }
+
+    static boolean isMusl(String osName) {
+        String os = osName.toLowerCase();
+        if (!os.contains("linux")) {
+            return false;
+        }
+
+        String configuredLibc = System.getProperty("timslite.native.libc", "").toLowerCase();
+        if ("musl".equals(configuredLibc)) {
+            return true;
+        }
+        if ("gnu".equals(configuredLibc) || "glibc".equals(configuredLibc)) {
+            return false;
+        }
+
+        Boolean filesystemResult = isMuslFromFilesystem();
+        if (filesystemResult != null) {
+            return filesystemResult.booleanValue();
+        }
+        return isMuslFromLddVersion();
+    }
+
+    private static Boolean isMuslFromFilesystem() {
+        try {
+            String ldd = new String(Files.readAllBytes(Paths.get("/usr/bin/ldd")), StandardCharsets.UTF_8);
+            return Boolean.valueOf(ldd.contains("musl"));
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    private static boolean isMuslFromLddVersion() {
+        Process process = null;
+        try {
+            process = new ProcessBuilder("ldd", "--version").redirectErrorStream(true).start();
+            byte[] output = readProcessOutput(process);
+            int exitCode = process.waitFor();
+            return exitCode == 0 && new String(output, StandardCharsets.UTF_8).contains("musl");
+        } catch (IOException e) {
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        } finally {
+            if (process != null) {
+                process.destroy();
+            }
+        }
+    }
+
+    private static byte[] readProcessOutput(Process process) throws IOException {
+        InputStream stream = process.getInputStream();
+        try {
+            byte[] buffer = new byte[4096];
+            int total = 0;
+            int read;
+            byte[] output = new byte[0];
+            while ((read = stream.read(buffer)) != -1) {
+                byte[] next = new byte[total + read];
+                System.arraycopy(output, 0, next, 0, total);
+                System.arraycopy(buffer, 0, next, total, read);
+                output = next;
+                total += read;
+            }
+            return output;
+        } finally {
+            stream.close();
+        }
     }
 
     private static String mappedLibraryName() {

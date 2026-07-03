@@ -53,9 +53,13 @@ class PackagingTest {
     @Test
     void nativeResourcePathsUsePlatformDirectoriesAndStandardLibraryNames() {
         assertEquals("META-INF/native/linux-x86_64/libtimslite_java.so",
-            NativeLibraryLoader.resolveResourcePath("Linux", "amd64"));
+            NativeLibraryLoader.resolveResourcePath("Linux", "amd64", false));
         assertEquals("META-INF/native/linux-aarch64/libtimslite_java.so",
-            NativeLibraryLoader.resolveResourcePath("Linux", "aarch64"));
+            NativeLibraryLoader.resolveResourcePath("Linux", "aarch64", false));
+        assertEquals("META-INF/native/linux-x86_64-musl/libtimslite_java.so",
+            NativeLibraryLoader.resolveResourcePath("Linux", "amd64", true));
+        assertEquals("META-INF/native/linux-aarch64-musl/libtimslite_java.so",
+            NativeLibraryLoader.resolveResourcePath("Linux", "aarch64", true));
         assertEquals("META-INF/native/macos-x86_64/libtimslite_java.dylib",
             NativeLibraryLoader.resolveResourcePath("Mac OS X", "x86_64"));
         assertEquals("META-INF/native/macos-aarch64/libtimslite_java.dylib",
