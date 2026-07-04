@@ -43,7 +43,7 @@ jobs:
             artifact: native-linux-x86_64-musl
             native-lib: libtimslite_java.so
             cargo-target: x86_64-unknown-linux-musl
-            rustflags: "-C target-feature=-crt-static"
+            rustflags: "-C panic=abort"
           - os: ubuntu-24.04-arm
             platform: linux-aarch64
             artifact: native-linux-aarch64
@@ -55,7 +55,7 @@ jobs:
             artifact: native-linux-aarch64-musl
             native-lib: libtimslite_java.so
             cargo-target: aarch64-unknown-linux-musl
-            rustflags: "-C target-feature=-crt-static"
+            rustflags: "-C panic=abort"
           - os: windows-latest
             platform: windows-x86_64
             artifact: native-windows-x86_64

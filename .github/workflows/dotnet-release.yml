@@ -62,13 +62,13 @@ jobs:
             artifact: native-linux-musl-x64
             cargo-target: x86_64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
-            rustflags: "-C target-feature=-crt-static"
+            rustflags: "-C panic=abort"
           - os: ubuntu-24.04-arm
             rid: linux-musl-arm64
             artifact: native-linux-musl-arm64
             cargo-target: aarch64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
-            rustflags: "-C target-feature=-crt-static"
+            rustflags: "-C panic=abort"
           - os: macos-14
             rid: osx-arm64
             artifact: native-osx-arm64
