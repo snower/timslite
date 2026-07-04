@@ -43,7 +43,7 @@ jobs:
             artifact: native-linux-x86_64-musl
             native-lib: libtimslite_java.so
             cargo-target: x86_64-unknown-linux-musl
-            rustflags: "-C target-feature=-crt-static"
+            rustflags: '-C target-feature=-crt-static -C link-arg=-Wl,-rpath,$ORIGIN'
           - os: ubuntu-24.04-arm
             platform: linux-aarch64
             artifact: native-linux-aarch64
@@ -55,7 +55,7 @@ jobs:
             artifact: native-linux-aarch64-musl
             native-lib: libtimslite_java.so
             cargo-target: aarch64-unknown-linux-musl
-            rustflags: "-C target-feature=-crt-static"
+            rustflags: '-C target-feature=-crt-static -C link-arg=-Wl,-rpath,$ORIGIN'
           - os: windows-latest
             platform: windows-x86_64
             artifact: native-windows-x86_64
@@ -72,8 +72,6 @@ jobs:
     env:
       CARGO_PROFILE_RELEASE_PANIC: abort
       CARGO_TARGET_DIR: wrapper/java/native/target
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
       - uses: actions/checkout@v4
         with:
@@ -82,12 +80,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.cargo-target }}
-
-      - name: Install Linux musl toolchain
-        if: ${{ endsWith(matrix.platform, '-musl') }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
 
       - uses: actions/setup-java@v5
         with:
@@ -112,9 +104,93 @@ jobs:
         run: mvn ${{ env.MAVEN_ARGS }} -f wrapper/java/pom.xml clean test "-Dnative.platform=${{ matrix.platform }}"
 
       - name: Build Rust cdylib for publication
+        if: ${{ !endsWith(matrix.platform, '-musl') }}
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --manifest-path wrapper/java/native/Cargo.toml --release --target ${{ matrix.cargo-target }} --lib
+
+      - name: Build Rust cdylib for publication (musl)
+        if: ${{ endsWith(matrix.platform, '-musl') }}
+        shell: bash
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          MUSL_TARGET: ${{ matrix.cargo-target }}
+        run: |
+          set -euo pipefail
+          case "${MUSL_TARGET}" in
+            x86_64-unknown-linux-musl)
+              image="quay.io/pypa/musllinux_1_2_x86_64"
+              ;;
+            aarch64-unknown-linux-musl)
+              image="quay.io/pypa/musllinux_1_2_aarch64"
+              ;;
+            *)
+              echo "Unsupported musl target: ${MUSL_TARGET}" >&2
+              exit 1
+              ;;
+          esac
+          docker run --rm \
+            -e CARGO_PROFILE_RELEASE_PANIC=abort \
+            -e CARGO_TARGET_DIR=/work/wrapper/java/native/target \
+            -e MUSL_TARGET \
+            -e RUSTFLAGS \
+            -v "${PWD}:/work" \
+            -w /work \
+            "${image}" \
+            /bin/bash -lc '
+            set -euo pipefail
+            if command -v apk >/dev/null 2>&1; then
+              apk add --no-cache curl
+            elif command -v dnf >/dev/null 2>&1; then
+              dnf install -y curl
+            elif command -v yum >/dev/null 2>&1; then
+              yum install -y curl
+            fi
+            if ! command -v cargo >/dev/null 2>&1; then
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              . "${HOME}/.cargo/env"
+            fi
+            if command -v rustup >/dev/null 2>&1; then
+              rustup target add "${MUSL_TARGET}"
+            fi
+            case "${MUSL_TARGET}" in
+              x86_64-unknown-linux-musl)
+                linker_env="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER"
+                candidates="x86_64-linux-musl-gcc x86_64-unknown-linux-musl-gcc musl-gcc"
+                ;;
+              aarch64-unknown-linux-musl)
+                linker_env="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"
+                candidates="aarch64-linux-musl-gcc aarch64-unknown-linux-musl-gcc"
+                ;;
+            esac
+            linker=""
+            for candidate in ${candidates}; do
+              if command -v "${candidate}" >/dev/null 2>&1; then
+                linker="$(command -v "${candidate}")"
+                break
+              fi
+            done
+            if [ -z "${linker}" ]; then
+              linker="$(find /usr/local/musl -type f \( -name "${MUSL_TARGET}-gcc" -o -name "*linux-musl-gcc" -o -name "musl-gcc" \) | head -n 1)"
+            fi
+            if [ -z "${linker}" ] || [ ! -x "${linker}" ]; then
+              echo "Could not find musl linker for ${MUSL_TARGET}" >&2
+              find /usr/local/musl -maxdepth 4 -type f -print >&2 || true
+              exit 1
+            fi
+            export "${linker_env}=${linker}"
+            cargo build --manifest-path wrapper/java/native/Cargo.toml --release --target "${MUSL_TARGET}" --lib
+            libgcc_path="/usr/local/musl/${MUSL_TARGET}/lib/libgcc_s.so.1"
+            if [ ! -f "${libgcc_path}" ]; then
+              libgcc_path="$(find /usr/local/musl -type f -name libgcc_s.so.1 | head -n 1)"
+            fi
+            if [ -z "${libgcc_path}" ] || [ ! -f "${libgcc_path}" ]; then
+              echo "Could not find musl libgcc_s.so.1" >&2
+              find /usr/local/musl -maxdepth 4 -type f -print >&2 || true
+              exit 1
+            fi
+            cp "${libgcc_path}" "wrapper/java/native/target/${MUSL_TARGET}/release/libgcc_s.so.1"
+            '
 
       - name: Prepare native artifact
         shell: bash
@@ -134,6 +210,9 @@ jobs:
             exit 1
           fi
           cp "${lib_path}" "native-upload/META-INF/native/${{ matrix.platform }}/${{ matrix.native-lib }}"
+          if [ -f "${release_dir}/libgcc_s.so.1" ]; then
+            cp "${release_dir}/libgcc_s.so.1" "native-upload/META-INF/native/${{ matrix.platform }}/libgcc_s.so.1"
+          fi
           find native-upload -type f -print
 
       - name: Upload native library
@@ -267,6 +346,8 @@ jobs:
         run: |
           set -euo pipefail
           jar tf wrapper/java/target/timslite-*.jar | grep -E '^META-INF/native/.+/(libtimslite_java\.dylib|libtimslite_java\.so|timslite_java\.dll)$'
+          jar tf wrapper/java/target/timslite-*.jar | grep -F 'META-INF/native/linux-x86_64-musl/libgcc_s.so.1'
+          jar tf wrapper/java/target/timslite-*.jar | grep -F 'META-INF/native/linux-aarch64-musl/libgcc_s.so.1'
           ls -lh wrapper/java/target/timslite-*.jar
 
       - name: Upload JAR artifacts

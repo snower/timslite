@@ -14,6 +14,7 @@ public final class NativeLibraryLoader {
     private static final String BASE_LIBRARY_NAME = "timslite_java";
     private static final String LIBRARY_OVERRIDE_PROPERTY = "uniffi.component.timslite.libraryOverride";
     private static final String NATIVE_RESOURCE_ROOT = "META-INF/native";
+    private static final String LINUX_LIBGCC_NAME = "libgcc_s.so.1";
 
     private static volatile boolean loaded = false;
 
@@ -96,6 +97,20 @@ public final class NativeLibraryLoader {
     }
 
     private static void extractAndLoad(String resourcePath) throws IOException {
+        String libraryName = resourcePath.substring(resourcePath.lastIndexOf('/') + 1);
+        String resourceDir = resourcePath.substring(0, resourcePath.lastIndexOf('/'));
+        Path tempDir = Files.createTempDirectory("timslite_native");
+        tempDir.toFile().deleteOnExit();
+        extractResourceIfPresent(resourceDir + "/" + LINUX_LIBGCC_NAME, tempDir.resolve(LINUX_LIBGCC_NAME));
+
+        Path tempFile = tempDir.resolve(libraryName);
+        extractRequiredResource(resourcePath, tempFile);
+
+        System.load(tempFile.toAbsolutePath().toString());
+        System.setProperty(LIBRARY_OVERRIDE_PROPERTY, tempFile.toAbsolutePath().toString());
+    }
+
+    private static void extractRequiredResource(String resourcePath, Path targetPath) throws IOException {
         String classpathResource = "/" + resourcePath;
         InputStream is = NativeLibraryLoader.class.getResourceAsStream(resourcePath);
         if (is == null) {
@@ -105,19 +120,30 @@ public final class NativeLibraryLoader {
             throw new IOException("Native library not found in classpath: " + classpathResource);
         }
 
-        String libraryName = resourcePath.substring(resourcePath.lastIndexOf('/') + 1);
-        String suffix = libraryName.substring(libraryName.lastIndexOf('.'));
-        Path tempFile = Files.createTempFile("timslite_native", suffix);
-        tempFile.toFile().deleteOnExit();
-
         try {
-            Files.copy(is, tempFile, StandardCopyOption.REPLACE_EXISTING);
+            Files.copy(is, targetPath, StandardCopyOption.REPLACE_EXISTING);
         } finally {
             is.close();
         }
+        targetPath.toFile().deleteOnExit();
+    }
 
-        System.load(tempFile.toAbsolutePath().toString());
-        System.setProperty(LIBRARY_OVERRIDE_PROPERTY, tempFile.toAbsolutePath().toString());
+    private static void extractResourceIfPresent(String resourcePath, Path targetPath) throws IOException {
+        String classpathResource = "/" + resourcePath;
+        InputStream is = NativeLibraryLoader.class.getResourceAsStream(resourcePath);
+        if (is == null) {
+            is = NativeLibraryLoader.class.getResourceAsStream(classpathResource);
+        }
+        if (is == null) {
+            return;
+        }
+
+        try {
+            Files.copy(is, targetPath, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            is.close();
+        }
+        targetPath.toFile().deleteOnExit();
     }
 
     static String resolveResourcePath(String osName, String archName) {

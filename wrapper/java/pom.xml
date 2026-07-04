@@ -139,6 +139,7 @@
                                     <includes>
                                         <include>libtimslite_java.dylib</include>
                                         <include>libtimslite_java.so</include>
+                                        <include>libgcc_s.so.1</include>
                                         <include>timslite_java.dll</include>
                                     </includes>
                                 </resource>
@@ -159,6 +160,7 @@
                                     <includes>
                                         <include>**/*.dylib</include>
                                         <include>**/*.so</include>
+                                        <include>**/libgcc_s.so.1</include>
                                         <include>**/*.dll</include>
                                     </includes>
                                 </resource>
@@ -337,6 +339,7 @@
                                             <includes>
                                                 <include>libtimslite_java.dylib</include>
                                                 <include>libtimslite_java.so</include>
+                                                <include>libgcc_s.so.1</include>
                                                 <include>timslite_java.dll</include>
                                             </includes>
                                         </resource>

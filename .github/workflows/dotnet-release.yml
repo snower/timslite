@@ -62,13 +62,13 @@ jobs:
             artifact: native-linux-musl-x64
             cargo-target: x86_64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
-            rustflags: "-C target-feature=-crt-static"
+            rustflags: '-C target-feature=-crt-static -C link-arg=-Wl,-rpath,$ORIGIN'
           - os: ubuntu-24.04-arm
             rid: linux-musl-arm64
             artifact: native-linux-musl-arm64
             cargo-target: aarch64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
-            rustflags: "-C target-feature=-crt-static"
+            rustflags: '-C target-feature=-crt-static -C link-arg=-Wl,-rpath,$ORIGIN'
           - os: macos-14
             rid: osx-arm64
             artifact: native-osx-arm64
@@ -100,20 +100,94 @@ jobs:
             ${{ runner.os }}-${{ matrix.rid }}-cargo-dotnet-
             ${{ runner.os }}-cargo-dotnet-
 
-      - name: Install musl toolchain
-        if: startsWith(matrix.rid, 'linux-musl-')
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-
       - name: Build native library
+        if: ${{ !startsWith(matrix.rid, 'linux-musl-') }}
         env:
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --manifest-path wrapper/dotnet/native/Cargo.toml --release --target ${{ matrix.cargo-target }} --lib
+
+      - name: Build native library (musl)
+        if: ${{ startsWith(matrix.rid, 'linux-musl-') }}
+        shell: bash
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+          MUSL_TARGET: ${{ matrix.cargo-target }}
+        run: |
+          set -euo pipefail
+          case "${MUSL_TARGET}" in
+            x86_64-unknown-linux-musl)
+              image="quay.io/pypa/musllinux_1_2_x86_64"
+              ;;
+            aarch64-unknown-linux-musl)
+              image="quay.io/pypa/musllinux_1_2_aarch64"
+              ;;
+            *)
+              echo "Unsupported musl target: ${MUSL_TARGET}" >&2
+              exit 1
+              ;;
+          esac
+          docker run --rm \
+            -e CARGO_PROFILE_RELEASE_PANIC=abort \
+            -e CARGO_TARGET_DIR=/work/wrapper/dotnet/native/target \
+            -e MUSL_TARGET \
+            -e RUSTFLAGS \
+            -v "${PWD}:/work" \
+            -w /work \
+            "${image}" \
+            /bin/bash -lc '
+            set -euo pipefail
+            if command -v apk >/dev/null 2>&1; then
+              apk add --no-cache curl
+            elif command -v dnf >/dev/null 2>&1; then
+              dnf install -y curl
+            elif command -v yum >/dev/null 2>&1; then
+              yum install -y curl
+            fi
+            if ! command -v cargo >/dev/null 2>&1; then
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              . "${HOME}/.cargo/env"
+            fi
+            if command -v rustup >/dev/null 2>&1; then
+              rustup target add "${MUSL_TARGET}"
+            fi
+            case "${MUSL_TARGET}" in
+              x86_64-unknown-linux-musl)
+                linker_env="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER"
+                candidates="x86_64-linux-musl-gcc x86_64-unknown-linux-musl-gcc musl-gcc"
+                ;;
+              aarch64-unknown-linux-musl)
+                linker_env="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"
+                candidates="aarch64-linux-musl-gcc aarch64-unknown-linux-musl-gcc"
+                ;;
+            esac
+            linker=""
+            for candidate in ${candidates}; do
+              if command -v "${candidate}" >/dev/null 2>&1; then
+                linker="$(command -v "${candidate}")"
+                break
+              fi
+            done
+            if [ -z "${linker}" ]; then
+              linker="$(find /usr/local/musl -type f \( -name "${MUSL_TARGET}-gcc" -o -name "*linux-musl-gcc" -o -name "musl-gcc" \) | head -n 1)"
+            fi
+            if [ -z "${linker}" ] || [ ! -x "${linker}" ]; then
+              echo "Could not find musl linker for ${MUSL_TARGET}" >&2
+              find /usr/local/musl -maxdepth 4 -type f -print >&2 || true
+              exit 1
+            fi
+            export "${linker_env}=${linker}"
+            cargo build --manifest-path wrapper/dotnet/native/Cargo.toml --release --target "${MUSL_TARGET}" --lib
+            libgcc_path="/usr/local/musl/${MUSL_TARGET}/lib/libgcc_s.so.1"
+            if [ ! -f "${libgcc_path}" ]; then
+              libgcc_path="$(find /usr/local/musl -type f -name libgcc_s.so.1 | head -n 1)"
+            fi
+            if [ -z "${libgcc_path}" ] || [ ! -f "${libgcc_path}" ]; then
+              echo "Could not find musl libgcc_s.so.1" >&2
+              find /usr/local/musl -maxdepth 4 -type f -print >&2 || true
+              exit 1
+            fi
+            cp "${libgcc_path}" "wrapper/dotnet/native/target/${MUSL_TARGET}/release/libgcc_s.so.1"
+            '
 
       - name: Prepare native artifact
         shell: bash
@@ -134,6 +208,9 @@ jobs:
             exit 1
           fi
           cp "${lib_path}" "$dest/${{ matrix.native-lib }}"
+          if [ -f "${release_dir}/libgcc_s.so.1" ]; then
+            cp "${release_dir}/libgcc_s.so.1" "$dest/libgcc_s.so.1"
+          fi
           find native-upload -type f -print
 
       - name: Upload native library
@@ -219,7 +296,9 @@ jobs:
             runtimes/linux-x64/native/libtimslite_dotnet.so \
             runtimes/linux-arm64/native/libtimslite_dotnet.so \
             runtimes/linux-musl-x64/native/libtimslite_dotnet.so \
+            runtimes/linux-musl-x64/native/libgcc_s.so.1 \
             runtimes/linux-musl-arm64/native/libtimslite_dotnet.so \
+            runtimes/linux-musl-arm64/native/libgcc_s.so.1 \
             runtimes/osx-arm64/native/libtimslite_dotnet.dylib; do
             if ! unzip -l "$nupkg" | grep -q "$lib"; then
               echo "ERROR: Missing $lib in package" >&2

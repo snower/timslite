@@ -15,6 +15,7 @@
     "Cargo.lock",
     "build.rs",
     "src/**",
+    "libs/**",
     "*.node"
   ],
   "scripts": {
