@@ -76,6 +76,8 @@ jobs:
             native-lib: libtimslite_dotnet.dylib
             rustflags: ""
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TARGET_DIR: wrapper/dotnet/native/target
     steps:
       - uses: actions/checkout@v4
         with:
