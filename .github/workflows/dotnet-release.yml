@@ -110,16 +110,27 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           RUSTFLAGS: ${{ matrix.rustflags }}
-        run: cargo build --manifest-path wrapper/dotnet/native/Cargo.toml --release --target ${{ matrix.cargo-target }}
+        run: cargo build --manifest-path wrapper/dotnet/native/Cargo.toml --release --target ${{ matrix.cargo-target }} --lib
 
       - name: Prepare native artifact
         shell: bash
         run: |
           set -euo pipefail
+          release_dir="wrapper/dotnet/native/target/${{ matrix.cargo-target }}/release"
           dest="native-upload/runtimes/${{ matrix.rid }}/native"
           mkdir -p "$dest"
-          cp "wrapper/dotnet/native/target/${{ matrix.cargo-target }}/release/${{ matrix.native-lib }}" \
-             "$dest/${{ matrix.native-lib }}"
+          if [ ! -d "${release_dir}" ]; then
+            echo "Cargo release directory does not exist: ${release_dir}" >&2
+            find wrapper/dotnet/native/target -maxdepth 4 -type f -print >&2 || true
+            exit 1
+          fi
+          lib_path="$(find "${release_dir}" -maxdepth 2 -type f -name "${{ matrix.native-lib }}" | head -n 1)"
+          if [ -z "${lib_path}" ]; then
+            echo "Could not find ${{ matrix.native-lib }} under ${release_dir}" >&2
+            find "${release_dir}" -maxdepth 3 -type f -print >&2
+            exit 1
+          fi
+          cp "${lib_path}" "$dest/${{ matrix.native-lib }}"
           find native-upload -type f -print
 
       - name: Upload native library
