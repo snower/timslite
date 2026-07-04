@@ -4,6 +4,13 @@ on:
   workflow_run:
     workflows: ["Release Rust Crate"]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and validate package without publishing"
+        required: false
+        default: true
+        type: boolean
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,7 +25,7 @@ concurrency:
 jobs:
   build:
     name: Build - ${{ matrix.target }}
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release' }}
+    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') }}
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
@@ -95,7 +102,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: build
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release' }}
+    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -182,3 +189,43 @@ jobs:
         env:
           NPM_CONFIG_TAG: ${{ steps.npm_tag.outputs.tag }}
         run: npm publish
+
+  dry-run:
+    name: Build Dry-Run
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: wrapper/nodejs/artifacts
+          merge-multiple: true
+
+      - name: Install dependencies
+        working-directory: wrapper/nodejs
+        run: npm ci
+
+      - name: Move artifacts to root package
+        working-directory: wrapper/nodejs
+        run: |
+          mv artifacts/*.node .
+
+      - name: Verify package contents
+        working-directory: wrapper/nodejs
+        shell: bash
+        run: |
+          expected="$(node -p "require('./package.json').napi.targets.length")"
+          actual="$(find . -maxdepth 1 -name '*.node' | wc -l | tr -d ' ')"
+          test "$actual" = "$expected"
+          npm pack --dry-run --json > pack.json
+          node -e "const fs = require('fs'); const pkg = require('./package.json'); const pack = JSON.parse(fs.readFileSync('pack.json', 'utf8'))[0]; const paths = new Set(pack.files.map((f) => f.path)); const nodes = pack.files.filter((f) => f.path.endsWith('.node')); if (nodes.length !== pkg.napi.targets.length) { throw new Error(`npm pack would include ${nodes.length} native artifacts, expected ${pkg.napi.targets.length}`); } for (const required of ['README.md', 'Cargo.toml', 'Cargo.lock', 'build.rs', 'binding-target.js', 'scripts/install.js', 'scripts/prepare-publish.js', 'src/lib.rs']) { if (!paths.has(required)) { throw new Error(`npm pack is missing ${required}`); } }"
