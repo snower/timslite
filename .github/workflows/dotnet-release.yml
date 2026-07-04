@@ -62,13 +62,13 @@ jobs:
             artifact: native-linux-musl-x64
             cargo-target: x86_64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
-            rustflags: "-C panic=abort"
+            rustflags: "-C target-feature=-crt-static"
           - os: ubuntu-24.04-arm
             rid: linux-musl-arm64
             artifact: native-linux-musl-arm64
             cargo-target: aarch64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
-            rustflags: "-C panic=abort"
+            rustflags: "-C target-feature=-crt-static"
           - os: macos-14
             rid: osx-arm64
             artifact: native-osx-arm64
@@ -77,6 +77,7 @@ jobs:
             rustflags: ""
     runs-on: ${{ matrix.os }}
     env:
+      CARGO_PROFILE_RELEASE_PANIC: abort
       CARGO_TARGET_DIR: wrapper/dotnet/native/target
     steps:
       - uses: actions/checkout@v4
