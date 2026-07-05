@@ -104,10 +104,55 @@ jobs:
         run: mvn ${{ env.MAVEN_ARGS }} -f wrapper/java/pom.xml clean test "-Dnative.platform=${{ matrix.platform }}"
 
       - name: Build Rust cdylib for publication
-        if: ${{ !endsWith(matrix.platform, '-musl') }}
+        if: ${{ !startsWith(matrix.platform, 'linux-') && !endsWith(matrix.platform, '-musl') }}
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --manifest-path wrapper/java/native/Cargo.toml --release --target ${{ matrix.cargo-target }} --lib
+
+      - name: Build Rust cdylib for publication (manylinux)
+        if: ${{ startsWith(matrix.platform, 'linux-') && !endsWith(matrix.platform, '-musl') }}
+        shell: bash
+        env:
+          GNU_TARGET: ${{ matrix.cargo-target }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          set -euo pipefail
+          case "${GNU_TARGET}" in
+            x86_64-unknown-linux-gnu)
+              image="quay.io/pypa/manylinux_2_28_x86_64"
+              ;;
+            aarch64-unknown-linux-gnu)
+              image="quay.io/pypa/manylinux_2_28_aarch64"
+              ;;
+            *)
+              echo "Unsupported manylinux target: ${GNU_TARGET}" >&2
+              exit 1
+              ;;
+          esac
+          docker run --rm \
+            -e CARGO_PROFILE_RELEASE_PANIC=abort \
+            -e CARGO_TARGET_DIR=/work/wrapper/java/native/target \
+            -e GNU_TARGET \
+            -e RUSTFLAGS \
+            -v "${PWD}:/work" \
+            -w /work \
+            "${image}" \
+            /bin/bash -lc '
+            set -euo pipefail
+            if command -v dnf >/dev/null 2>&1; then
+              dnf install -y curl
+            elif command -v yum >/dev/null 2>&1; then
+              yum install -y curl
+            fi
+            if ! command -v cargo >/dev/null 2>&1; then
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              . "${HOME}/.cargo/env"
+            fi
+            if command -v rustup >/dev/null 2>&1; then
+              rustup target add "${GNU_TARGET}"
+            fi
+            cargo build --manifest-path wrapper/java/native/Cargo.toml --release --target "${GNU_TARGET}" --lib
+            '
 
       - name: Build Rust cdylib for publication (musl)
         if: ${{ endsWith(matrix.platform, '-musl') }}

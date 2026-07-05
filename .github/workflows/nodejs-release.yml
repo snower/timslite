@@ -41,7 +41,7 @@ jobs:
             os: ubuntu-latest
             rustflags: ""
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             rustflags: ""
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
@@ -69,23 +69,90 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
-      - name: Install Linux ARM64 toolchain
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-
       - name: Install dependencies
-        if: ${{ !contains(matrix.target, 'musl') }}
+        if: ${{ !contains(matrix.target, 'unknown-linux') }}
         working-directory: wrapper/nodejs
         run: npm ci
 
       - name: Build native addon
-        if: ${{ !contains(matrix.target, 'musl') }}
+        if: ${{ !contains(matrix.target, 'unknown-linux') }}
         working-directory: wrapper/nodejs
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: npm exec -- napi build --platform --no-js --release --target ${{ matrix.target }} --dts auto-generated.d.ts
+
+      - name: Build native addon (manylinux)
+        if: ${{ endsWith(matrix.target, 'unknown-linux-gnu') }}
+        shell: bash
+        env:
+          GNU_TARGET: ${{ matrix.target }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          set -euo pipefail
+          case "${GNU_TARGET}" in
+            x86_64-unknown-linux-gnu)
+              image="quay.io/pypa/manylinux_2_28_x86_64"
+              ;;
+            aarch64-unknown-linux-gnu)
+              image="quay.io/pypa/manylinux_2_28_aarch64"
+              ;;
+            *)
+              echo "Unsupported manylinux target: ${GNU_TARGET}" >&2
+              exit 1
+              ;;
+          esac
+          docker run --rm \
+            -e CARGO_PROFILE_RELEASE_PANIC=abort \
+            -e GNU_TARGET \
+            -e RUSTFLAGS \
+            -v "${PWD}:/work" \
+            -w /work \
+            "${image}" \
+            /bin/bash -lc '
+            set -euo pipefail
+            if command -v dnf >/dev/null 2>&1; then
+              dnf install -y curl xz
+            elif command -v yum >/dev/null 2>&1; then
+              yum install -y curl xz
+            else
+              echo "Could not find a package manager to install curl/xz" >&2
+              exit 1
+            fi
+            case "$(uname -m)" in
+              x86_64)
+                node_arch="x64"
+                ;;
+              aarch64)
+                node_arch="arm64"
+                ;;
+              *)
+                echo "Unsupported Node.js architecture: $(uname -m)" >&2
+                exit 1
+                ;;
+            esac
+            node_base_url="https://nodejs.org/dist/latest-v24.x"
+            node_package="$(curl -fsSL "${node_base_url}/SHASUMS256.txt" | awk -v arch="${node_arch}" '\''$2 ~ ("node-v24\\..*-linux-" arch "\\.tar\\.xz$") { print $2; exit }'\'')"
+            if [ -z "${node_package}" ]; then
+              echo "Could not resolve Node.js 24 package for ${node_arch}" >&2
+              exit 1
+            fi
+            curl -fsSLO "${node_base_url}/${node_package}"
+            mkdir -p /opt/node
+            tar -xJf "${node_package}" -C /opt/node --strip-components=1
+            export PATH="/opt/node/bin:${PATH}"
+            node --version
+            npm --version
+            if ! command -v cargo >/dev/null 2>&1; then
+              curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+              . "${HOME}/.cargo/env"
+            fi
+            if command -v rustup >/dev/null 2>&1; then
+              rustup target add "${GNU_TARGET}"
+            fi
+            cd wrapper/nodejs
+            npm ci
+            npm exec -- napi build --platform --no-js --release --target "${GNU_TARGET}" --dts auto-generated.d.ts
+            '
 
       - name: Build native addon (musl)
         if: ${{ contains(matrix.target, 'musl') }}
