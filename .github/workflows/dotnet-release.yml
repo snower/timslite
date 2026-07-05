@@ -333,6 +333,7 @@ jobs:
           CSPROJ
 
           cat > "$tmpdir/Program.cs" <<'CS'
+          using System;
           using Timslite;
           Console.WriteLine($"Timslite loaded OK, version: {TimsliteInfo.Version()}");
           CS

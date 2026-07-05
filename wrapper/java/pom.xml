@@ -239,6 +239,9 @@
                     <source>8</source>
                     <doclint>none</doclint>
                     <failOnError>false</failOnError>
+                    <additionalClasspathElements>
+                        <additionalClasspathElement>${project.build.outputDirectory}</additionalClasspathElement>
+                    </additionalClasspathElements>
                 </configuration>
                 <executions>
                     <execution>
