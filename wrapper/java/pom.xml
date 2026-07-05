@@ -239,9 +239,10 @@
                     <source>8</source>
                     <doclint>none</doclint>
                     <failOnError>false</failOnError>
-                    <additionalClasspathElements>
-                        <additionalClasspathElement>${project.build.outputDirectory}</additionalClasspathElement>
-                    </additionalClasspathElements>
+                    <sourcepath>${project.basedir}/src/main/javadoc</sourcepath>
+                    <sourceFileIncludes>
+                        <sourceFileInclude>**/*.java</sourceFileInclude>
+                    </sourceFileIncludes>
                 </configuration>
                 <executions>
                     <execution>
