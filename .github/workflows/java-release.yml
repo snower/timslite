@@ -346,10 +346,31 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          jar tf wrapper/java/target/timslite-*.jar | grep -E '^META-INF/native/.+/(libtimslite_java\.dylib|libtimslite_java\.so|timslite_java\.dll)$'
-          jar tf wrapper/java/target/timslite-*.jar | grep -F 'META-INF/native/linux-x86_64-musl/libgcc_s.so.1'
-          jar tf wrapper/java/target/timslite-*.jar | grep -F 'META-INF/native/linux-aarch64-musl/libgcc_s.so.1'
           ls -lh wrapper/java/target/timslite-*.jar
+          main_jar="$(find wrapper/java/target -maxdepth 1 -type f -name 'timslite-*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | sort | head -n 1)"
+          if [ -z "${main_jar}" ]; then
+            echo "Could not find main timslite jar in wrapper/java/target" >&2
+            find wrapper/java/target -maxdepth 1 -type f -name '*.jar' -print >&2
+            exit 1
+          fi
+          echo "Verifying main jar: ${main_jar}"
+          jar tf "${main_jar}" | tee jar-contents.txt
+          for expected in \
+            META-INF/native/macos-aarch64/libtimslite_java.dylib \
+            META-INF/native/linux-x86_64/libtimslite_java.so \
+            META-INF/native/linux-x86_64-musl/libtimslite_java.so \
+            META-INF/native/linux-x86_64-musl/libgcc_s.so.1 \
+            META-INF/native/linux-aarch64/libtimslite_java.so \
+            META-INF/native/linux-aarch64-musl/libtimslite_java.so \
+            META-INF/native/linux-aarch64-musl/libgcc_s.so.1 \
+            META-INF/native/windows-x86_64/timslite_java.dll \
+            META-INF/native/windows-aarch64/timslite_java.dll; do
+            if ! grep -Fxq "${expected}" jar-contents.txt; then
+              echo "Missing ${expected} in ${main_jar}" >&2
+              exit 1
+            fi
+            echo "  OK: ${expected}"
+          done
 
       - name: Upload JAR artifacts
         uses: actions/upload-artifact@v4
