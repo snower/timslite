@@ -138,11 +138,11 @@ jobs:
             case "${MUSL_TARGET}" in
               x86_64-unknown-linux-musl)
                 linker_env="CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER"
-                candidates="x86_64-linux-musl-gcc x86_64-unknown-linux-musl-gcc musl-gcc"
+                candidates="x86_64-linux-musl-gcc x86_64-unknown-linux-musl-gcc musl-gcc gcc"
                 ;;
               aarch64-unknown-linux-musl)
                 linker_env="CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"
-                candidates="aarch64-linux-musl-gcc aarch64-unknown-linux-musl-gcc"
+                candidates="aarch64-linux-musl-gcc aarch64-unknown-linux-musl-gcc gcc"
                 ;;
             esac
             linker=""
@@ -153,24 +153,25 @@ jobs:
               fi
             done
             if [ -z "${linker}" ]; then
-              linker="$(find /usr/local/musl -type f \( -name "${MUSL_TARGET}-gcc" -o -name "*linux-musl-gcc" -o -name "musl-gcc" \) | head -n 1)"
+              linker="$(find / -type f \( -name "${MUSL_TARGET}-gcc" -o -name "*linux-musl-gcc" -o -name "musl-gcc" -o -name "gcc" \) 2>/dev/null | head -n 1 || true)"
             fi
             if [ -z "${linker}" ] || [ ! -x "${linker}" ]; then
               echo "Could not find musl linker for ${MUSL_TARGET}" >&2
-              find /usr/local/musl -maxdepth 4 -type f -print >&2 || true
+              find / -maxdepth 4 -type f \( -name "*linux-musl-gcc" -o -name "musl-gcc" -o -name "gcc" \) -print >&2 2>/dev/null || true
               exit 1
             fi
             export "${linker_env}=${linker}"
             cd wrapper/nodejs
             npm ci
             npm exec -- napi build --platform --no-js --release --target "${MUSL_TARGET}" --dts auto-generated.d.ts
-            libgcc_path="/usr/local/musl/${MUSL_TARGET}/lib/libgcc_s.so.1"
-            if [ ! -f "${libgcc_path}" ]; then
-              libgcc_path="$(find /usr/local/musl -type f -name libgcc_s.so.1 | head -n 1)"
+            libgcc_path="$("${linker}" -print-file-name=libgcc_s.so.1 || true)"
+            if [ -z "${libgcc_path}" ] || [ "${libgcc_path}" = "libgcc_s.so.1" ] || [ ! -f "${libgcc_path}" ]; then
+              libgcc_path="$(find / -type f -name libgcc_s.so.1 2>/dev/null | head -n 1 || true)"
             fi
             if [ -z "${libgcc_path}" ] || [ ! -f "${libgcc_path}" ]; then
               echo "Could not find musl libgcc_s.so.1" >&2
-              find /usr/local/musl -maxdepth 4 -type f -print >&2 || true
+              "${linker}" -print-search-dirs >&2 || true
+              find / -maxdepth 5 -type f -name libgcc_s.so.1 -print >&2 2>/dev/null || true
               exit 1
             fi
             mkdir -p "libs/${MUSL_TARGET}"
