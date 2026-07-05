@@ -9,7 +9,7 @@ PYTHON_ROOT = ROOT / "wrapper" / "python"
 def test_python_wrapper_uses_development_path_with_exact_version():
     cargo_toml = (PYTHON_ROOT / "Cargo.toml").read_text(encoding="utf-8")
 
-    assert 'timslite = { path = "../..", version = "=0.1.1" }' in cargo_toml
+    assert 'timslite = { path = "../..", version = "=0.1.2" }' in cargo_toml
 
 
 def test_prepare_publish_rewrites_timslite_dependency(tmp_path):
@@ -24,23 +24,23 @@ def test_prepare_publish_rewrites_timslite_dependency(tmp_path):
     wrapper_root.mkdir(parents=True)
 
     (repo_root / "Cargo.toml").write_text(
-        '[package]\nname = "timslite"\nversion = "0.1.1"\n',
+        '[package]\nname = "timslite"\nversion = "0.1.2"\n',
         encoding="utf-8",
     )
     (wrapper_root / "pyproject.toml").write_text(
-        '[project]\nname = "timslite"\nversion = "0.1.1"\n',
+        '[project]\nname = "timslite"\nversion = "0.1.2"\n',
         encoding="utf-8",
     )
     cargo_toml = wrapper_root / "Cargo.toml"
     cargo_toml.write_text(
-        '[package]\nname = "timslite-python"\nversion = "0.1.1"\n\n'
-        '[dependencies]\ntimslite = { path = "../..", version = "=0.1.1" }\n',
+        '[package]\nname = "timslite-python"\nversion = "0.1.2"\n\n'
+        '[dependencies]\ntimslite = { path = "../..", version = "=0.1.2" }\n',
         encoding="utf-8",
     )
 
     module.prepare_publish(wrapper_root)
 
-    assert 'timslite = { version = "=0.1.1" }' in cargo_toml.read_text(encoding="utf-8")
+    assert 'timslite = { version = "=0.1.2" }' in cargo_toml.read_text(encoding="utf-8")
 
 
 def test_readme_documents_pip_install_and_source_build_fallback():

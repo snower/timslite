@@ -1,6 +1,6 @@
 [package]
 name = "timslite-java"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 publish = false
 description = "Java/Kotlin UniFFI bindings for the timslite time-series storage engine."
@@ -20,7 +20,7 @@ name = "timslite_java"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-timslite = { path = "../../..", version = "=0.1.1" }
+timslite = { path = "../../..", version = "=0.1.2" }
 uniffi = { version = "0.31", features = ["cli"] }
 
 [build-dependencies]

@@ -89,8 +89,8 @@ wrapper/python/
 
 ## 发布与源码构建策略
 
-- [x] 开发期 `wrapper/python/Cargo.toml` 使用 `timslite = { path = "../..", version = "=0.1.1" }`, 继续直接引用仓库根 crate, 并用精确版本防止 root crate / wrapper crate / Python package 版本漂移。
-- [x] PyPI sdist 构建前运行 `wrapper/python/scripts/prepare_publish.py`, 将依赖改写为 `timslite = { version = "=0.1.1" }`, 让未命中预编译 wheel 的安装可从 crates.io 拉取同版本 Rust crate 源码构建。
+- [x] 开发期 `wrapper/python/Cargo.toml` 使用 `timslite = { path = "../..", version = "=0.1.2" }`, 继续直接引用仓库根 crate, 并用精确版本防止 root crate / wrapper crate / Python package 版本漂移。
+- [x] PyPI sdist 构建前运行 `wrapper/python/scripts/prepare_publish.py`, 将依赖改写为 `timslite = { version = "=0.1.2" }`, 让未命中预编译 wheel 的安装可从 crates.io 拉取同版本 Rust crate 源码构建。
 - [x] `python-release.yml` 的 sdist job 在改写依赖后执行 `cargo generate-lockfile --manifest-path Cargo.toml` 和 `cargo fetch --locked --manifest-path Cargo.toml`, 并等待 crates.io 索引可见后再打包。
 - [x] `wrapper/python/README.md` 说明 `pip install timslite`、预编译 wheel、源码构建 fallback 以及源码构建所需 Rust/native toolchain。
 
@@ -104,10 +104,10 @@ wrapper/python/
   - `[package] name = "timslite-python"`, edition = "2021"
   - `[lib] name = "timslite"`, crate-type = `["cdylib"]`
   - `[dependencies] pyo3 = "0.28"` (features: `["extension-module"]`)
-  - `[dependencies] timslite = { path = "../..", version = "=0.1.1" }`
+  - `[dependencies] timslite = { path = "../..", version = "=0.1.2" }`
 - [x] `wrapper/python/pyproject.toml` — PEP 517 构建配置
   - `build-system: requires = ["maturin>=1.0,<2.0"]`, `build-backend = "maturin"`
-  - `[project]` name = "timslite", version = "0.1.1", requires-python = ">=3.9"
+  - `[project]` name = "timslite", version = "0.1.2", requires-python = ">=3.9"
   - `[tool.maturin]` features = `["pyo3/extension-module"]`
 - [x] `wrapper/python/src/lib.rs` — PyO3 模块入口
   - `use pyo3::prelude::*`

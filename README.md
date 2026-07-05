@@ -348,7 +348,7 @@ Maven 坐标:
 <dependency>
   <groupId>io.github.snower</groupId>
   <artifactId>timslite</artifactId>
-  <version>0.1.1</version>
+  <version>0.1.2</version>
 </dependency>
 ```
 

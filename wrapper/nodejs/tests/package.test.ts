@@ -48,7 +48,7 @@ describe("postinstall source build fallback", () => {
   it("skips source build in the development checkout", () => {
     const install = require("../scripts/install.js");
     const rootDir = tempPackageRoot();
-    writeFileSync(join(rootDir, "Cargo.toml"), 'timslite = { path = "../..", version = "=0.1.1" }\n');
+    writeFileSync(join(rootDir, "Cargo.toml"), 'timslite = { path = "../..", version = "=0.1.2" }\n');
 
     let spawnCalls = 0;
     const result = install.main({
@@ -71,7 +71,7 @@ describe("postinstall source build fallback", () => {
   it("builds from source and writes the current platform binding when no prebuild exists", () => {
     const install = require("../scripts/install.js");
     const rootDir = tempPackageRoot();
-    writeFileSync(join(rootDir, "Cargo.toml"), 'timslite = { version = "=0.1.1" }\n');
+    writeFileSync(join(rootDir, "Cargo.toml"), 'timslite = { version = "=0.1.2" }\n');
 
     const releaseDir = join(rootDir, "target", "release");
     mkdirSync(releaseDir, { recursive: true });

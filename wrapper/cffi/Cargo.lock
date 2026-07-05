@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "timslite"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "log",
  "memmap2",
@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "timslitecffi"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libc",
  "tempfile",
