@@ -34,7 +34,7 @@ Returns whether this store resolved to read-only mode at open time. Read-only st
 
 ### 1.2 Dataset Management
 
-#### `Store::create_dataset(&mut self, name: &str, dataset_type: &str, data_segment_size: u64, index_segment_size: u64, compress_level: u8, index_continuous: u8, retention_window: u64) -> Result<DataSetHandle>`
+#### `Store::create_dataset(&mut self, name: &str, dataset_type: &str, data_segment_size: u64, index_segment_size: u64, compress_level: u8, index_continuous: u8, retention_window: u64) -> Result<DataSet>`
 
 Creates a new dataset with explicit parameters.
 
@@ -47,34 +47,36 @@ Creates a new dataset with explicit parameters.
 - `index_continuous`: 0 = sparse mode, 1 = continuous mode
 - `retention_window`: Retention window in timestamp units (0 = no limit)
 
-**Returns**: `DataSetHandle` (opaque numeric handle for opening the dataset).
+**Returns**: `DataSet` instance for direct read/write operations.
 
 **Errors**:
 - `AlreadyExists` if dataset already exists
 - `InvalidData` if name/type invalid or parameters out of range
 - Rejects the reserved name `.journal`
 
-#### `Store::create_dataset_with_config(&mut self, name: &str, dataset_type: &str, config: Option<DataSetConfigBuilder>) -> Result<DataSetHandle>`
+#### `Store::create_dataset_with_config(&mut self, name: &str, dataset_type: &str, config: Option<DataSetConfigBuilder>) -> Result<DataSet>`
 
 Creates a dataset with optional custom configuration. Pass `None` to use store defaults.
 
-#### `Store::open_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetHandle>`
+**Returns**: `DataSet` instance.
 
-Opens an existing dataset and returns a `DataSetHandle`. The dataset's configuration is read from its meta file.
+#### `Store::open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSet>`
+
+Opens an existing dataset and returns a `DataSet` instance. The dataset's configuration is read from its meta file.
+
+**Returns**: `DataSet` instance.
 
 **Errors**: `NotFound` if dataset doesn't exist.
 
-#### `Store::open_dataset_by_identifier(&self, identifier: u64) -> Result<DataSetHandle>`
+#### `Store::open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSet>`
 
 Opens a dataset by its numeric identifier (assigned at creation time).
+
+**Returns**: `DataSet` instance.
 
 #### `Store::drop_dataset(&mut self, name: &str, dataset_type: &str) -> Result<()>`
 
 Deletes a dataset and all its files (data segments, index segments, meta, state, queue). Irreversible.
-
-#### `Store::get_dataset(&self, handle: &DataSetHandle) -> Result<Arc<DataSet>>`
-
-Returns a clone-safe `Arc<DataSet>` for read/write operations. Multiple calls with the same handle return the same `Arc`.
 
 #### `Store::list_datasets(&self) -> Result<Vec<(String, String)>>`
 
@@ -291,18 +293,34 @@ pub struct QueueConsumerConfig {
 
 ### 5.1 DatasetQueue
 
-Obtained via `Store::open_queue(handle)`. Clone-safe (internally `Arc`-shared). Call `Store::close_queue()` to close.
+Obtained via `Store::open_queue(&dataset)`. Clone-safe (internally `Arc`-shared). Call `queue.close()` or drop to close.
 
 **Key behavior**:
 - `push(data)` auto-assigns `timestamp = latest_written_timestamp + 1`
-- `poll(timeout)` returns the next unacked record for this consumer group
-- `ack(timestamp)` marks a record as processed
+- `open_consumer(group_name)` opens a consumer group
+- `get_consumer_group_names()` lists registered consumer groups
+- `drop_consumer_group(group_name)` drops a consumer group
 - Multiple consumer groups are independent; each maintains its own progress
 - Multiple consumer instances in the same group share progress (mutual exclusion via state file lock)
 
+**Methods**:
+- `queue.push(data: &[u8]) -> Result<i64>` — Push data, returns assigned timestamp
+- `queue.open_consumer(group_name: &str) -> Result<DatasetQueueConsumer>` — Open consumer with default config
+- `queue.open_consumer_with_config(group_name: &str, config: QueueConsumerConfig) -> Result<DatasetQueueConsumer>` — Open consumer with explicit config
+- `queue.get_consumer_group_names() -> Result<Vec<String>>` — List consumer groups
+- `queue.drop_consumer_group(group_name: &str) -> Result<()>` — Drop consumer group
+
 ### 5.2 DatasetQueueConsumer
 
-Obtained via `Store::open_consumer(&queue, group_name)`.
+Obtained via `queue.open_consumer(group_name)`.
+
+**Methods**:
+- `consumer.poll(timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>` — Poll for next record
+- `consumer.ack(timestamp: i64) -> Result<()>` — Acknowledge record
+- `consumer.flush() -> Result<()>` — Flush consumer state to disk
+- `consumer.get_pending_entries() -> Result<Vec<QueueConsumerPendingEntry>>` — Get pending entries
+- `consumer.inspect() -> Result<QueueConsumerInspectResult>` — Inspect consumer state
+- `consumer.poll_callback(callback: Option<QueuePollCallback>) -> Result<()>` — Set poll callback for notification
 
 **Poll semantics**:
 - Polls from `processed_ts + 1` forward

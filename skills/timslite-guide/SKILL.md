@@ -1,13 +1,13 @@
 ---
 name: timslite-guide
-description: Use when integrating or using the timslite time-series storage library (Rust/Python/Node.js/Java), when writing/reading time-series data via Store/DataSet/Queue/Journal APIs, when debugging timslite errors, when configuring StoreConfig/DataSetConfig, or when understanding mmap-backed block storage and retention/queue/journal semantics
+description: Use when integrating or using the timslite time-series storage library (Rust/Python/Node.js/Java/.NET), when writing/reading time-series data via Store/DataSet/Queue/Journal APIs, when debugging timslite errors, when configuring StoreConfig/DataSetConfig, or when understanding mmap-backed block storage and retention/queue/journal semantics
 ---
 
 # timslite Developer Guide
 
 ## Overview
 
-timslite is a high-performance **mmap-backed time-series data storage library** written in Rust. It can be used as a Rust crate, a C ABI dynamic library (`cdylib`), or through language bindings for Python, Node.js, and Java.
+timslite is a high-performance **mmap-backed time-series data storage library** written in Rust. It can be used as a Rust crate, a C ABI dynamic library (`cdylib`), or through language bindings for Python, Node.js, Java, and .NET.
 
 **Core principle**: Multiple records are aggregated into Blocks (max 64KB), blocks are lazily compressed on seal, and a time index points to `(block_offset, in_block_offset)`. Each `(dataset_name, dataset_type)` pair has independent meta, data segments, index segments, and optional queue state.
 
@@ -19,7 +19,7 @@ timslite is a high-performance **mmap-backed time-series data storage library** 
 - Block-level compression (zstd/deflate) to save disk space
 - Multi-consumer-group queues on top of time-series data
 - A change log (journal) for hot migration, sync, or audit
-- Cross-language bindings (Rust, Python, Node.js, Java, C/C++)
+- Cross-language bindings (Rust, Python, Node.js, Java, .NET, C/C++)
 
 **Do NOT use timslite for:**
 - Relational data with complex queries (use a SQL database)
@@ -88,6 +88,13 @@ Choose your language for detailed documentation, quick start guides, API referen
 - **[Quick Start](java/quick-start.md)** — Getting started with Java
 - **[API Reference](java/api-reference.md)** — Complete Java API signatures
 - **[Examples](java/examples.md)** — Feature scenarios with Java examples
+
+### .NET
+
+- **Installation**: `dotnet add package Timslite`
+- **[Quick Start](dotnet/quick-start.md)** — Getting started with .NET
+- **[API Reference](dotnet/api-reference.md)** — Complete .NET API signatures
+- **[Examples](dotnet/examples.md)** — Feature scenarios with .NET examples
 
 ### C / C++
 
