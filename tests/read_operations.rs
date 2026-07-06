@@ -567,6 +567,28 @@ fn test_query_length_iter_matches_query_length() {
     assert_eq!(vec_result, iter_result);
 }
 
+#[test]
+fn test_query_length_iter_collect_take_stops_when_exhausted() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("ds", "type", 64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)
+        .unwrap();
+    let handle = store.open_dataset("ds", "type").unwrap();
+
+    handle.write(1, b"a").unwrap();
+    handle.write(2, b"abcd").unwrap();
+
+    let result = handle
+        .query_length_iter(1, 2)
+        .unwrap()
+        .collect_take(5)
+        .unwrap();
+    assert_eq!(result, vec![(1, 1), (2, 4)]);
+}
+
 // 閳光偓閳光偓閳光偓 Store facade tests 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓
 
 #[test]

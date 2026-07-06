@@ -159,3 +159,34 @@ fn dataset_identifier_rejects_invalid_file_content() {
     let result = store.open_dataset("alpha", "data");
     assert!(matches!(result, Err(TmslError::InvalidData(_))));
 }
+
+#[test]
+fn dataset_identifier_rejects_zero_identifier_file_content() {
+    let dir = temp_dir("zero_content");
+    {
+        let mut store = Store::open(&dir, store_config()).unwrap();
+        store
+            .create_dataset_with_config("alpha", "data", None)
+            .unwrap();
+    }
+
+    fs::write(dataset_identifier_path(&dir, "alpha", "data"), "0").unwrap();
+    let mut store = Store::open(&dir, store_config()).unwrap();
+    let result = store.open_dataset("alpha", "data");
+    assert!(matches!(result, Err(TmslError::InvalidData(_))));
+}
+
+#[test]
+fn max_identifier_rejects_overflowing_file_content() {
+    let dir = temp_dir("max_overflow");
+    {
+        let mut store = Store::open(&dir, store_config()).unwrap();
+        store
+            .create_dataset_with_config("alpha", "data", None)
+            .unwrap();
+    }
+
+    fs::write(dir.join("max_identifier"), "18446744073709551616").unwrap();
+    let result = Store::open(&dir, store_config());
+    assert!(matches!(result, Err(TmslError::InvalidData(_))));
+}

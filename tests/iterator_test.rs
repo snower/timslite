@@ -260,6 +260,34 @@ fn t33_4_iterator_single_record() {
     store.close().unwrap();
 }
 
+#[test]
+fn query_iter_collect_take_stops_when_iterator_is_exhausted() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset(
+            "collect_take_short",
+            "data",
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    let ds = store.open_dataset("collect_take_short", "data").unwrap();
+    ds.write(1, b"one").unwrap();
+    ds.write(2, b"two").unwrap();
+
+    let records = ds.query_iter(1, 2).unwrap().collect_take(5).unwrap();
+    assert_eq!(records, vec![(1, b"one".to_vec()), (2, b"two".to_vec())]);
+
+    store.close().unwrap();
+}
+
 /// P1-I-5: Iterator with deleted records
 ///
 /// Query should skip deleted records.
