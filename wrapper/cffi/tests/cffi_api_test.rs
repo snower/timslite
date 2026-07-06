@@ -40,6 +40,31 @@ fn cffi_dataset_read_and_queue_roundtrip() {
     );
     assert!(!dataset.is_null());
 
+    let payload_minus_two = b"minus-two";
+    assert_eq!(
+        tmsl_dataset_write(
+            dataset,
+            -2,
+            payload_minus_two.as_ptr(),
+            payload_minus_two.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+    let payload_minus_one = b"minus-one";
+    assert_eq!(
+        tmsl_dataset_write(
+            dataset,
+            -1,
+            payload_minus_one.as_ptr(),
+            payload_minus_one.len(),
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+
     let payload = b"21.5";
     assert_eq!(
         tmsl_dataset_write(
@@ -99,9 +124,9 @@ fn cffi_dataset_read_and_queue_roundtrip() {
         ),
         0
     );
-    assert_eq!(ts, 101);
+    assert_eq!(ts, -1);
     let read = unsafe { std::slice::from_raw_parts(data, data_len) };
-    assert_eq!(read, latest_payload);
+    assert_eq!(read, payload_minus_one);
     tmsl_data_free(data.cast::<c_void>());
 
     data = ptr::null_mut();
@@ -118,9 +143,9 @@ fn cffi_dataset_read_and_queue_roundtrip() {
         ),
         0
     );
-    assert_eq!(ts, 100);
+    assert_eq!(ts, -2);
     let read = unsafe { std::slice::from_raw_parts(data, data_len) };
-    assert_eq!(read, payload);
+    assert_eq!(read, payload_minus_two);
     tmsl_data_free(data.cast::<c_void>());
 
     let queue = tmsl_queue_open(dataset, err.as_mut_ptr(), err.len());
@@ -764,7 +789,7 @@ fn cffi_dataset_negative_timestamp_operations() {
     assert_eq!(
         tmsl_dataset_write(
             dataset,
-            100,
+            -2,
             payload_a.as_ptr(),
             payload_a.len(),
             err.as_mut_ptr(),
@@ -776,7 +801,7 @@ fn cffi_dataset_negative_timestamp_operations() {
     assert_eq!(
         tmsl_dataset_write(
             dataset,
-            101,
+            -1,
             payload_b.as_ptr(),
             payload_b.len(),
             err.as_mut_ptr(),
@@ -785,23 +810,23 @@ fn cffi_dataset_negative_timestamp_operations() {
         0
     );
 
-    // readExist: -1 (latest) exists
+    // readExist: -1 is an exact timestamp.
     assert_eq!(
         tmsl_dataset_read_exist(dataset, -1, err.as_mut_ptr(), err.len()),
         1
     );
-    // readExist: -2 (second-to-last) exists
+    // readExist: -2 is an exact timestamp.
     assert_eq!(
         tmsl_dataset_read_exist(dataset, -2, err.as_mut_ptr(), err.len()),
         1
     );
-    // readExist: -3 (before all records) does not exist
+    // readExist: -3 was not written.
     assert_eq!(
         tmsl_dataset_read_exist(dataset, -3, err.as_mut_ptr(), err.len()),
         0
     );
 
-    // readLength: -1 resolves to latest with correct length
+    // readLength: -1 is an exact timestamp.
     let mut out_len = 0u32;
     assert_eq!(
         tmsl_dataset_read_length(
@@ -815,7 +840,7 @@ fn cffi_dataset_negative_timestamp_operations() {
     );
     assert_eq!(out_len as usize, payload_b.len());
 
-    // readLength: -2 resolves to second-to-last with correct length
+    // readLength: -2 is an exact timestamp.
     out_len = 0;
     assert_eq!(
         tmsl_dataset_read_length(
@@ -829,7 +854,7 @@ fn cffi_dataset_negative_timestamp_operations() {
     );
     assert_eq!(out_len as usize, payload_a.len());
 
-    // readLength: -3 (before all records) returns 1 (not found)
+    // readLength: -3 was not written.
     out_len = 0;
     assert_eq!(
         tmsl_dataset_read_length(

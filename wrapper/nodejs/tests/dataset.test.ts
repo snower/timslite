@@ -89,22 +89,23 @@ describe("dataset", () => {
       });
     });
 
-    it("negative timestamp reads are latest offsets", () => {
+    it("negative timestamp reads are exact", () => {
       withStore((store) => {
         store.createDataset("test", "data");
         const ds = store.openDataset("test", "data");
-        ds.write(0n, Buffer.from("zero"));
+        ds.write(-2n, Buffer.from("minus-two"));
+        ds.write(-1n, Buffer.from("minus-one"));
         ds.write(1n, Buffer.from("one"));
 
         const r1 = ds.read(-1n);
         assert(r1 !== null);
-        assert.equal(r1[0], 1n);
-        assert.deepEqual(Buffer.from(r1[1]), Buffer.from("one"));
+        assert.equal(r1[0], -1n);
+        assert.deepEqual(Buffer.from(r1[1]), Buffer.from("minus-one"));
 
         const r2 = ds.read(-2n);
         assert(r2 !== null);
-        assert.equal(r2[0], 0n);
-        assert.deepEqual(Buffer.from(r2[1]), Buffer.from("zero"));
+        assert.equal(r2[0], -2n);
+        assert.deepEqual(Buffer.from(r2[1]), Buffer.from("minus-two"));
 
         assert.equal(ds.read(-3n), null);
 
@@ -112,8 +113,8 @@ describe("dataset", () => {
         assert.equal(ds.readExist(-2n), true);
         assert.equal(ds.readExist(-3n), false);
 
-        assert.equal(ds.readLength(-1n), 3);
-        assert.equal(ds.readLength(-2n), 4);
+        assert.equal(ds.readLength(-1n), 9);
+        assert.equal(ds.readLength(-2n), 9);
         assert.equal(ds.readLength(-3n), null);
 
         assert.equal(ds.latestTimestamp, 1n);

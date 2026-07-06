@@ -62,7 +62,7 @@ impl DataSet {
     fn query_iter(&mut self, start_ts: i64, end_ts: i64) -> io::Result<QueryIterator<'_>>;
 
     // 轻量级读操作 (仅索引或 record header)
-    /// 检查 timestamp 当前是否存在可见数据。负 timestamp 在入口层按 latest-relative offset 解析。
+    /// 检查精确 timestamp 当前是否存在可见数据。
     /// 不读取数据段；过期 timestamp 与 filler/deleted entry 返回 false。
     fn read_exist(&self, timestamp: i64) -> io::Result<bool>;
 
@@ -70,7 +70,7 @@ impl DataSet {
     /// 不读取数据段；过期 timestamp 与 filler/deleted entry 位为 0；bitmap 最大 4MiB。
     fn query_exist(&self, start_ts: i64, end_ts: i64) -> io::Result<Vec<u8>>;
 
-    /// 读取单条记录的逻辑数据长度。负 timestamp 在入口层按 latest-relative offset 解析。
+    /// 读取精确 timestamp 对应记录的逻辑数据长度。
     /// 跳过 filler 和过期记录，仅读取 record header (12 bytes)。
     fn read_length(&self, timestamp: i64) -> io::Result<Option<u32>>;
 
@@ -237,7 +237,7 @@ DataSet::write(timestamp, data):
 
 **单条 record 上限**: `DataSet::write` 必须拒绝 `data.len() > 4MiB`。该限制适用于普通聚合 block 和 exclusive/single-record block, 与 `data_len:u32` 的磁盘编码能力无关。
 
-**public timestamp 契约**: 写入、append、delete 的 `timestamp` 必须为非负 `i64`。读相关入口 (`read`、`read_exist`、`read_length`、`query`、`query_exist`、`query_length`、`query_iter`、`query_length_iter`) 接收负值作为相对 `latest_written_timestamp` 的偏移: `-1` 表示 latest, `-2` 表示 latest - 1, 依次类推。入口层先解析负值并得到真实 timestamp, 然后复用标准 retention、index 和 data segment 流程。
+**public timestamp 契约**: 所有普通 record API 的 `timestamp` 都是 signed `i64` 业务时间戳，`0` 和负数都是合法值。`read(-1)`、`read_exist(-1)`、`query(-3, -1)` 等调用均按精确 timestamp 处理；读取 latest 使用显式 `read_latest()` / `latest_written_timestamp()` API。
 
 **current-time 写入辅助 API**: `write_now(data)` 和 `append_now(data)` 是公开 Rust convenience API, 采样 `SystemTime::now()` 的 Unix 秒级时间戳后分别复用普通 `write(timestamp, data)` / `append(timestamp, data)` 语义。采样必须发生在外层 `DataSet` 已获取内部 mutex 之后, 调用方不得在锁外预先取时间再传入, 否则线程调度延迟可能让并发 now 写入以错误顺序进入 timestamp 检查。这两个 helper 不引入单调计数器; 同一秒内的调用仍遵循既有 correction / append 规则。
 
@@ -556,7 +556,7 @@ DataSet::delete(timestamp):
 ```
 read(timestamp) → Option<(i64, Vec<u8>)>
     │
-    ├─ 1. 入口层解析 timestamp: 非负值为精确业务 timestamp; 负值按 latest-relative offset 解析
+    ├─ 1. 将输入 timestamp 作为精确业务 timestamp
     │
     ├─ 2. if retention_window > 0 && timestamp < retention_threshold
     │      → return Ok(None)
@@ -583,7 +583,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > **latest 读取**:
 > - `read_latest()` 直接复用内存中的 `latest_written_timestamp: Option<i64>`; `None` 表示 dataset 尚未写入过任何 record
 > - 如果最大已写时间戳对应的 index entry 已被 delete 标记为 filler, `read_latest()` 仍返回 `None` (不会回退到更早的有效记录)
-> - FFI 保留独立的 `tmsl_dataset_read_latest` API; `tmsl_dataset_read(dataset, -1, ...)` 也会在入口层解析为 `latest_written_timestamp`
+> - FFI 保留独立的 `tmsl_dataset_read_latest` API; `tmsl_dataset_read(dataset, -1, ...)` 读取精确 timestamp `-1`
 >
 > **retention 语义**: 当 `latest_written_timestamp` 为 `Some(latest)` 时, 所有读取路径以 `retention_threshold = latest.saturating_sub(retention_window as i64)` 为可见性下界；为 `None` 时不产生 retention threshold。`retention_window` 在进入计算前必须已校验为 `0..=i64::MAX`。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold。`read_entry_at_index(entry)` 是 crate 内部低层读取 helper, 调用方必须先通过 public 入口或已钳制的 index 查询确定 entry 可见。
 

@@ -1,6 +1,6 @@
 # Phase 20: 显式最新记录读取 (Explicit Latest Read)
 
-> 目标: 新增获取数据集最新写入时间戳和最新记录的显式 API。当前 public 写入 timestamp 必须为非负 `i64`; 读/查接口的负值参数表示相对最新 timestamp 的偏移，`read(-1)` 解析为 `latest_written_timestamp`。
+> 目标: 新增获取数据集最新写入时间戳和最新记录的显式 API。public timestamp 是 signed `i64` 业务时间戳，`0` 和负数都是合法值；`read(-1)` 读取精确 timestamp `-1`，latest 通过显式 API 读取。
 
 ## 1. 设计概要
 
@@ -27,7 +27,7 @@ int tmsl_dataset_read_latest(void* ds, int64_t* out_ts,
 ## 2. 实现清单
 
 - [x] `dataset.rs`: 新增 `DataSet::latest_written_timestamp(&self) -> Option<i64>`
-- [x] `dataset.rs`: 新增 `DataSet::read_latest()`; `DataSet::read()` 对非负 timestamp 保持精确读取，负 timestamp 按 latest-relative offset 解析
+- [x] `dataset.rs`: 新增 `DataSet::read_latest()`; `DataSet::read()` 保持精确 timestamp 读取
 - [x] `ffi.rs`: 新增 `tmsl_dataset_latest_timestamp(...)` FFI 函数
 - [x] `ffi.rs`: 新增 `tmsl_dataset_read_latest(...)` FFI 函数
 - [x] `ffi.rs`: 修复 `tmsl_dataset_read` 中 `out_ts` 写入 (原为硬编码输入值, 改为写入实际返回的时间戳)
@@ -39,10 +39,10 @@ int tmsl_dataset_read_latest(void* ds, int64_t* out_ts,
 ### 单元测试
 - `test_latest_written_timestamp_after_writes` — 写入后返回最新时间戳
 - `test_latest_written_timestamp_after_reopen` — reopen 后保持一致
-- `test_read_latest_empty_dataset_and_minus_one_offset` — 空数据集 latest 为 `None`, `read(-1)` 返回 `None`
-- `test_non_negative_timestamps_and_read_latest` — 0 timestamp 可写可读, 负 timestamp 读参数按 latest-relative offset 解析, `read_latest()` 返回最大已写 timestamp 对应记录
+- `test_read_latest_empty_dataset_and_minus_one_is_exact` — 空数据集 latest 为 `None`, `read(-1)` 按精确 timestamp 读取并返回 `None`
+- `test_signed_timestamps_and_read_latest` — 0 和负 timestamp 可写可读, `read_latest()` 返回最大已写 timestamp 对应记录
 - `test_read_latest_after_delete_latest` — 删除 latest 后 `read_latest()` 返回 `None`, latest timestamp 不回退
-- `test_read_latest_after_reopen_and_minus_one_offset` — reopen 后 latest 恢复, `read(-1)` 解析为 latest
+- `test_read_latest_after_reopen_and_minus_one_is_exact` — reopen 后 latest 恢复, `read(-1)` 仍按精确 timestamp 读取
 
 ## 4. 验收
 

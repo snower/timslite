@@ -1,4 +1,4 @@
-﻿//! Integration tests for lightweight read operations: read_exist, query_exist, read_length, query_length, query_length_iter.
+//! Integration tests for lightweight read operations: read_exist, query_exist, read_length, query_length, query_length_iter.
 
 use std::fs;
 use std::path::PathBuf;
@@ -64,14 +64,14 @@ fn test_read_exist_latest_timestamp() {
     assert!(!ds.read_exist(-1).unwrap());
     drop(ds);
 
-    // Negative timestamps are relative offsets from latest_written_timestamp.
+    // Write exact -1 first, then a later timestamp.
     let ds_arc = handle.clone();
     let ds = ds_arc.clone();
-    assert!(ds.write(-1, b"minus-one").is_err());
+    ds.write(-1, b"minus-one").unwrap();
     ds.write(100, b"hello").unwrap();
     drop(ds);
 
-    // -1 resolves to latest_written_timestamp.
+    // -1 is an exact timestamp, not a latest sentinel.
     let ds_arc = handle.clone();
     let ds = ds_arc.clone();
     assert!(ds.read_exist(-1).unwrap());
@@ -79,7 +79,7 @@ fn test_read_exist_latest_timestamp() {
 }
 
 #[test]
-fn test_negative_read_arguments_resolve_from_latest_timestamp() {
+fn test_negative_read_arguments_are_exact_timestamps() {
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
@@ -89,23 +89,24 @@ fn test_negative_read_arguments_resolve_from_latest_timestamp() {
         .unwrap();
     let ds = store.open_dataset("ds", "type").unwrap();
 
-    ds.write(10, b"ten").unwrap();
-    ds.write(11, b"eleven").unwrap();
-    ds.write(12, b"twelve").unwrap();
+    ds.write(-3, b"minus-three").unwrap();
+    ds.write(-2, b"minus-two").unwrap();
+    ds.write(-1, b"minus-one").unwrap();
+    ds.write(12, b"positive").unwrap();
 
-    assert_eq!(ds.read(-1).unwrap(), Some((12, b"twelve".to_vec())));
-    assert_eq!(ds.read(-2).unwrap(), Some((11, b"eleven".to_vec())));
-    assert_eq!(ds.read(-3).unwrap(), Some((10, b"ten".to_vec())));
+    assert_eq!(ds.read(-1).unwrap(), Some((-1, b"minus-one".to_vec())));
+    assert_eq!(ds.read(-2).unwrap(), Some((-2, b"minus-two".to_vec())));
+    assert_eq!(ds.read(-3).unwrap(), Some((-3, b"minus-three".to_vec())));
     assert_eq!(ds.read(-4).unwrap(), None);
 
     assert!(ds.read_exist(-1).unwrap());
     assert!(ds.read_exist(-2).unwrap());
-    assert_eq!(ds.read_length(-3).unwrap(), Some(3));
+    assert_eq!(ds.read_length(-3).unwrap(), Some(11));
     assert_eq!(ds.read_length(-4).unwrap(), None);
 }
 
 #[test]
-fn test_negative_query_arguments_resolve_from_latest_timestamp() {
+fn test_negative_query_arguments_are_exact_timestamps() {
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
@@ -115,17 +116,18 @@ fn test_negative_query_arguments_resolve_from_latest_timestamp() {
         .unwrap();
     let ds = store.open_dataset("ds", "type").unwrap();
 
-    ds.write(20, b"twenty").unwrap();
-    ds.write(21, b"twenty-one").unwrap();
-    ds.write(22, b"twenty-two").unwrap();
+    ds.write(-3, b"minus-three").unwrap();
+    ds.write(-2, b"minus-two").unwrap();
+    ds.write(-1, b"minus-one").unwrap();
+    ds.write(22, b"positive").unwrap();
 
     let rows = ds.query(-3, -1).unwrap();
     assert_eq!(
         rows,
         vec![
-            (20, b"twenty".to_vec()),
-            (21, b"twenty-one".to_vec()),
-            (22, b"twenty-two".to_vec())
+            (-3, b"minus-three".to_vec()),
+            (-2, b"minus-two".to_vec()),
+            (-1, b"minus-one".to_vec())
         ]
     );
 
@@ -134,20 +136,20 @@ fn test_negative_query_arguments_resolve_from_latest_timestamp() {
     assert_eq!(bitmap[0] & 0b0000_0111, 0b0000_0111);
 
     let lengths = ds.query_length(-2, -1).unwrap();
-    assert_eq!(lengths, vec![(21, 10), (22, 10)]);
+    assert_eq!(lengths, vec![(-2, 9), (-1, 9)]);
 
     let iter_rows = ds.query_iter(-2, -1).unwrap().collect_all().unwrap();
     assert_eq!(
         iter_rows,
-        vec![(21, b"twenty-one".to_vec()), (22, b"twenty-two".to_vec())]
+        vec![(-2, b"minus-two".to_vec()), (-1, b"minus-one".to_vec())]
     );
 
     let length_iter_rows = ds.query_length_iter(-2, -1).unwrap().collect_all().unwrap();
-    assert_eq!(length_iter_rows, vec![(21, 10), (22, 10)]);
+    assert_eq!(length_iter_rows, vec![(-2, 9), (-1, 9)]);
 }
 
 #[test]
-fn test_negative_write_timestamps_are_rejected() {
+fn test_negative_write_timestamps_are_valid() {
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
@@ -157,12 +159,12 @@ fn test_negative_write_timestamps_are_rejected() {
         .unwrap();
     let ds = store.open_dataset("ds", "type").unwrap();
 
-    assert!(ds.write(-1, b"minus-one").is_err());
-    assert!(ds.append(-1, b"minus-one").is_err());
-    assert!(ds.delete(-1).is_err());
-
-    ds.write(0, b"zero").unwrap();
+    ds.write(-1, b"minus-one").unwrap();
+    assert_eq!(ds.read(-1).unwrap(), Some((-1, b"minus-one".to_vec())));
+    ds.append(0, b"zero").unwrap();
     assert_eq!(ds.read(0).unwrap(), Some((0, b"zero".to_vec())));
+    ds.delete(-1).unwrap();
+    assert_eq!(ds.read(-1).unwrap(), None);
 }
 
 #[test]
@@ -379,7 +381,7 @@ fn test_read_length_nonexistent() {
 }
 
 #[test]
-fn test_read_length_latest() {
+fn test_read_length_negative_timestamps_are_exact() {
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
@@ -390,10 +392,12 @@ fn test_read_length_latest() {
     let handle = store.open_dataset("ds", "type").unwrap();
 
     let data = b"test data 123";
+    let previous = b"previous";
     let ds_arc = handle.clone();
     let ds = ds_arc.clone();
-    ds.write(99, b"previous").unwrap();
-    ds.write(100, data).unwrap();
+    ds.write(-2, previous).unwrap();
+    ds.write(-1, data).unwrap();
+    ds.write(100, b"latest").unwrap();
     drop(ds);
 
     let ds_arc = handle.clone();
@@ -401,9 +405,9 @@ fn test_read_length_latest() {
     let len = ds.read_length(-1).unwrap();
     assert_eq!(len, Some(data.len() as u32));
     let len = ds.read_length(-2).unwrap();
-    assert_eq!(len, Some("previous".len() as u32));
+    assert_eq!(len, Some(previous.len() as u32));
     let len = ds.read_length(100).unwrap();
-    assert_eq!(len, Some(data.len() as u32));
+    assert_eq!(len, Some("latest".len() as u32));
 }
 
 // 閳光偓閳光偓閳光偓 query_length tests 閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓閳光偓

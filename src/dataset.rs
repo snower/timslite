@@ -145,15 +145,6 @@ fn validate_record_data_len(data_len: usize) -> Result<()> {
     Ok(())
 }
 
-fn validate_write_timestamp(timestamp: i64) -> Result<()> {
-    if timestamp < 0 {
-        return Err(TmslError::InvalidData(
-            "write timestamp must be non-negative".into(),
-        ));
-    }
-    Ok(())
-}
-
 fn data_len_u32(data_len: usize) -> Result<u32> {
     u32::try_from(data_len).map_err(|_| TmslError::InvalidData("data_len exceeds u32".into()))
 }
@@ -367,12 +358,7 @@ impl DataSet {
     }
 
     pub fn read(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
-        self.with_open_inner(|inner| {
-            let Some(timestamp) = Self::resolve_read_timestamp(inner, timestamp) else {
-                return Ok(None);
-            };
-            inner.read(timestamp)
-        })
+        self.with_open_inner(|inner| inner.read(timestamp))
     }
 
     pub fn read_latest(&self) -> Result<Option<(i64, Vec<u8>)>> {
@@ -380,31 +366,15 @@ impl DataSet {
     }
 
     pub fn read_exist(&self, timestamp: i64) -> Result<bool> {
-        self.with_open_inner(|inner| {
-            let Some(timestamp) = Self::resolve_read_timestamp(inner, timestamp) else {
-                return Ok(false);
-            };
-            inner.read_exist(timestamp)
-        })
+        self.with_open_inner(|inner| inner.read_exist(timestamp))
     }
 
     pub fn read_length(&self, timestamp: i64) -> Result<Option<u32>> {
-        self.with_open_inner(|inner| {
-            let Some(timestamp) = Self::resolve_read_timestamp(inner, timestamp) else {
-                return Ok(None);
-            };
-            inner.read_length(timestamp)
-        })
+        self.with_open_inner(|inner| inner.read_length(timestamp))
     }
 
     pub fn query(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
-        self.with_open_inner(|inner| {
-            let Some((start_ts, end_ts)) = Self::resolve_query_range(inner, start_ts, end_ts)
-            else {
-                return Ok(Vec::new());
-            };
-            inner.query(start_ts, end_ts)
-        })
+        self.with_open_inner(|inner| inner.query(start_ts, end_ts))
     }
 
     pub(crate) fn query_index_entries(
@@ -412,41 +382,19 @@ impl DataSet {
         start_ts: i64,
         end_ts: i64,
     ) -> Result<Vec<IndexEntry>> {
-        self.with_open_inner(|inner| {
-            let Some((start_ts, end_ts)) = Self::resolve_query_range(inner, start_ts, end_ts)
-            else {
-                return Ok(Vec::new());
-            };
-            inner.query_index_entries(start_ts, end_ts)
-        })
+        self.with_open_inner(|inner| inner.query_index_entries(start_ts, end_ts))
     }
 
     pub fn query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>> {
-        self.with_open_inner(|inner| {
-            let Some((start_ts, end_ts)) = Self::resolve_query_range(inner, start_ts, end_ts)
-            else {
-                return Ok(Vec::new());
-            };
-            inner.query_exist(start_ts, end_ts)
-        })
+        self.with_open_inner(|inner| inner.query_exist(start_ts, end_ts))
     }
 
     pub fn query_length(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>> {
-        self.with_open_inner(|inner| {
-            let Some((start_ts, end_ts)) = Self::resolve_query_range(inner, start_ts, end_ts)
-            else {
-                return Ok(Vec::new());
-            };
-            inner.query_length(start_ts, end_ts)
-        })
+        self.with_open_inner(|inner| inner.query_length(start_ts, end_ts))
     }
 
     pub fn query_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryIterator> {
         let (start_ts, end_ts) = self.with_open_inner(|inner| {
-            let Some((start_ts, end_ts)) = Self::resolve_query_range(inner, start_ts, end_ts)
-            else {
-                return Ok((1, 0));
-            };
             let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts);
             Ok((start_ts, end_ts))
         })?;
@@ -455,10 +403,6 @@ impl DataSet {
 
     pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator> {
         let (start_ts, end_ts) = self.with_open_inner(|inner| {
-            let Some((start_ts, end_ts)) = Self::resolve_query_range(inner, start_ts, end_ts)
-            else {
-                return Ok((1, 0));
-            };
             let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts);
             Ok((start_ts, end_ts))
         })?;
@@ -489,30 +433,6 @@ impl DataSet {
             inner.touch();
             Ok(())
         })
-    }
-
-    fn resolve_read_timestamp(inner: &DataSetInner, timestamp: i64) -> Option<i64> {
-        if timestamp >= 0 {
-            return Some(timestamp);
-        }
-        let latest = inner.latest_written_timestamp()?;
-        let offset = timestamp.checked_add(1)?;
-        let resolved = latest.checked_add(offset)?;
-        (resolved >= 0).then_some(resolved)
-    }
-
-    fn resolve_query_range(inner: &DataSetInner, start_ts: i64, end_ts: i64) -> Option<(i64, i64)> {
-        let start_ts = if start_ts >= 0 {
-            start_ts
-        } else {
-            Self::resolve_read_timestamp(inner, start_ts).unwrap_or(0)
-        };
-        let end_ts = if end_ts >= 0 {
-            end_ts
-        } else {
-            Self::resolve_read_timestamp(inner, end_ts)?
-        };
-        Some((start_ts, end_ts))
     }
 
     pub(crate) fn queue_dir(&self) -> Result<PathBuf> {
@@ -1046,7 +966,6 @@ impl DataSetInner {
         data: &[u8],
         cache: Option<&BlockCache>,
     ) -> Result<WriteOutcome> {
-        validate_write_timestamp(timestamp)?;
         validate_record_data_len(data.len())?;
         if self.is_timestamp_expired(timestamp) {
             return Err(self.expired_error(timestamp));
@@ -1142,7 +1061,6 @@ impl DataSetInner {
         data: &[u8],
         cache: Option<&BlockCache>,
     ) -> Result<Option<AppendOutcome>> {
-        validate_write_timestamp(timestamp)?;
         validate_record_data_len(data.len())?;
         if self.is_timestamp_expired(timestamp) {
             return Err(self.expired_error(timestamp));
@@ -1330,7 +1248,6 @@ impl DataSetInner {
         timestamp: i64,
         cache: Option<&BlockCache>,
     ) -> Result<DeleteOutcome> {
-        validate_write_timestamp(timestamp)?;
         if self.latest_written_timestamp.is_none() {
             return Err(TmslError::NotFound(format!(
                 "no entry to delete at timestamp {} (dataset is empty)",
@@ -1367,8 +1284,6 @@ impl DataSetInner {
     }
 
     /// Read a single record by exact timestamp.
-    /// Public `DataSet` resolves latest-relative negative arguments before
-    /// calling this inner method.
     ///
     /// Returns `Ok(Some((timestamp, data)))` if found, `Ok(None)` if not found
     /// or entry is a filler (deleted or never-written in continuous mode).
@@ -1413,7 +1328,7 @@ impl DataSetInner {
     }
 
     /// Check if index entry exists for the given timestamp.
-    /// `timestamp` is exact; public `DataSet` resolves negative offsets first.
+    /// `timestamp` is exact; `-1` is not a latest shortcut.
     /// Returns true only when the timestamp has visible data.
     pub fn read_exist(&mut self, timestamp: i64) -> Result<bool> {
         if self.is_timestamp_expired(timestamp) {
@@ -1424,7 +1339,7 @@ impl DataSetInner {
     }
 
     /// Read the logical data length for a timestamp.
-    /// `timestamp` is exact; public `DataSet` resolves negative offsets first.
+    /// `timestamp` is exact; `-1` is not a latest shortcut.
     /// Returns Some(data_len) if record exists, None if not found, filler, or expired.
     pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>> {
         if self.is_timestamp_expired(timestamp) {
@@ -3309,7 +3224,7 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_timestamp_is_valid_and_negative_write_is_rejected() {
+    fn test_zero_and_negative_timestamps_are_valid() {
         let dir = temp_dir("ts_zero");
         let id = DataSetKey {
             name: "test".into(),
@@ -3328,11 +3243,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(ds.write(-1, b"negative").is_err());
+        ds.write(-1, b"negative").unwrap();
         ds.write(0, b"zero").unwrap();
 
         assert_eq!(ds.latest_written_timestamp, Some(0));
-        assert!(ds.read(-1).unwrap().is_none());
+        assert_eq!(ds.read(-1).unwrap().unwrap().1, b"negative");
         assert_eq!(ds.read(0).unwrap().unwrap().1, b"zero");
     }
 
@@ -4629,7 +4544,7 @@ mod tests {
     }
 
     #[test]
-    fn test_non_negative_timestamps_and_read_latest() {
+    fn test_signed_timestamps_and_read_latest() {
         let dir = temp_dir("read_minus_one_latest");
         let id = DataSetKey {
             name: "test".into(),
@@ -4648,11 +4563,13 @@ mod tests {
         )
         .unwrap();
 
+        ds.write(-1, b"minus-one").unwrap();
         ds.write(0, b"zero").unwrap();
         ds.write(300, b"latest").unwrap();
 
-        assert!(ds.write(-1, b"minus-one").is_err());
-        assert!(ds.read(-1).unwrap().is_none());
+        let (ts, data) = ds.read(-1).unwrap().unwrap();
+        assert_eq!(ts, -1);
+        assert_eq!(data, b"minus-one");
 
         let (ts, data) = ds.read(0).unwrap().unwrap();
         assert_eq!(ts, 0);
@@ -4763,7 +4680,7 @@ mod tests {
     }
 
     #[test]
-    fn test_read_latest_after_reopen_and_inner_minus_one_is_exact() {
+    fn test_read_latest_after_reopen_and_minus_one_is_exact() {
         let dir = temp_dir("read_minus_one_reopen");
         let id = DataSetKey {
             name: "test".into(),
@@ -4783,6 +4700,7 @@ mod tests {
                 0,
             )
             .unwrap();
+            ds.write(-1, b"minus-one").unwrap();
             ds.write(100, b"a").unwrap();
             ds.write(500, b"latest").unwrap();
             ds.flush().unwrap();
@@ -4793,7 +4711,9 @@ mod tests {
             let mut ds = DataSetInner::open(id, dir).unwrap();
             assert_eq!(ds.latest_written_timestamp(), Some(500));
 
-            assert!(ds.read(-1).unwrap().is_none());
+            let r = ds.read(-1).unwrap().unwrap();
+            assert_eq!(r.0, -1);
+            assert_eq!(r.1, b"minus-one");
 
             let r = ds.read_latest().unwrap().unwrap();
             assert_eq!(r.0, 500);

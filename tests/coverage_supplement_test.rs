@@ -1904,7 +1904,7 @@ fn store_open_by_identifier() {
 }
 
 #[test]
-fn read_negative_one_resolves_to_latest() {
+fn read_negative_one_is_exact_timestamp() {
     use timslite::{Store, StoreConfig};
 
     let dir = temp_dir();
@@ -1924,13 +1924,14 @@ fn read_negative_one_resolves_to_latest() {
         .expect("create dataset");
 
     let ds = store.open_dataset("neg_one", "data").expect("open dataset");
+    ds.write(-1, b"minus-one").expect("write -1");
     ds.write(100, b"first").expect("write 100");
     ds.write(200, b"latest").expect("write 200");
 
-    // read(-1) should resolve to latest_written_timestamp (200)
+    // read(-1) reads the exact signed business timestamp.
     let result = ds.read(-1).expect("read -1").expect("should exist");
-    assert_eq!(result.0, 200);
-    assert_eq!(result.1, b"latest");
+    assert_eq!(result.0, -1);
+    assert_eq!(result.1, b"minus-one");
 
     store.close().expect("close store");
 }
