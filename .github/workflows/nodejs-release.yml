@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Build and validate package without publishing"
+        description: "Keep true for validation only; set false to publish manually"
         required: false
         default: true
         type: boolean
@@ -257,7 +257,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: build
-    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -376,7 +376,7 @@ jobs:
   dry-run:
     name: Build Dry-Run
     needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

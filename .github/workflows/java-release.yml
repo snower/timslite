@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Build distributions without publishing"
+        description: "Keep true for validation only; set false to publish manually"
         required: false
         default: true
         type: boolean
@@ -271,7 +271,7 @@ jobs:
     name: Publish to Maven Central
     needs: build-native
     runs-on: ubuntu-latest
-    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') || (github.event_name == 'workflow_dispatch' && !inputs.dry_run) }}
+    if: ${{ (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'release') || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -337,7 +337,7 @@ jobs:
     name: Build Dry-Run
     needs: build-native
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
     steps:
       - uses: actions/checkout@v4
         with:
