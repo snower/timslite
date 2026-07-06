@@ -1,7 +1,7 @@
 # timslite API Reference
 
 > Complete API signatures, parameters, return types, and semantics.
-> This reference covers the Rust public API. Python and C FFI equivalents are noted where relevant.
+> This reference covers the Rust public API. Python, Node.js, Java, .NET, and C FFI equivalents are noted where relevant.
 
 ---
 
@@ -27,7 +27,7 @@ Opens or connects to a store at `data_dir`. Acquires a `.lock` file for exclusiv
 
 Stops the background thread (if running), flushes all dirty segments, closes all open datasets, closes the journal, and releases the store lock.
 
-**Fails if**: Any dataset handle, iterator, queue, or consumer created from this store is still open.
+**Fails if**: Any dataset, iterator, queue, or consumer created from this store is still open.
 
 #### `Store::is_read_only(&self) -> bool`
 
@@ -35,7 +35,7 @@ Returns whether this store resolved to read-only mode at open time. Read-only st
 
 ### 1.2 Dataset Management
 
-#### `Store::create_dataset(&mut self, name: &str, dataset_type: &str, data_segment_size: u64, index_segment_size: u64, compress_level: u8, index_continuous: u8, retention_window: u64) -> Result<DataSetHandle>`
+#### `Store::create_dataset(&mut self, name: &str, dataset_type: &str, data_segment_size: u64, index_segment_size: u64, compress_level: u8, index_continuous: u8, retention_window: u64) -> Result<DataSet>`
 
 Creates a new dataset with explicit parameters.
 
@@ -48,34 +48,36 @@ Creates a new dataset with explicit parameters.
 - `index_continuous`: 0 = sparse mode, 1 = continuous mode
 - `retention_window`: Retention window in timestamp units (0 = no limit)
 
-**Returns**: `DataSetHandle` (opaque numeric handle for opening the dataset).
+**Returns**: `DataSet` instance for direct read/write operations.
 
 **Errors**:
 - `AlreadyExists` if dataset already exists
 - `InvalidData` if name/type invalid or parameters out of range
 - Rejects the reserved name `.journal`
 
-#### `Store::create_dataset_with_config(&mut self, name: &str, dataset_type: &str, config_builder: Option<DataSetConfigBuilder>) -> Result<DataSetHandle>`
+#### `Store::create_dataset_with_config(&mut self, name: &str, dataset_type: &str, config_builder: Option<DataSetConfigBuilder>) -> Result<DataSet>`
 
 Creates a dataset with a full `DataSetConfigBuilder` for complete control. Pass `None` to use store defaults.
 
-#### `Store::open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetHandle>`
+**Returns**: `DataSet` instance.
+
+#### `Store::open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSet>`
 
 Opens an existing dataset. Parameters are read from the `meta` file, not from arguments.
 
+**Returns**: `DataSet` instance.
+
 **Errors**: `NotFound` if dataset doesn't exist.
 
-#### `Store::open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSetHandle>`
+#### `Store::open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSet>`
 
 Opens a dataset by its numeric identifier (stored in the `identifier` file). Useful when you only have the ID (e.g., from journal records).
+
+**Returns**: `DataSet` instance.
 
 #### `Store::drop_dataset(&mut self, name: &str, dataset_type: &str) -> Result<()>`
 
 Deletes a dataset and all associated files (data, index, meta, state, queue). The dataset can be recreated afterwards.
-
-#### `Store::get_dataset(&self, handle: &DataSetHandle) -> Result<Arc<DataSet>>`
-
-Returns a shared (`Arc`) reference to the dataset for read/write operations. The returned `Arc<DataSet>` uses `&self` methods internally (mutex-protected), so multiple threads can safely use it concurrently.
 
 #### `Store::list_datasets(&self) -> Result<Vec<(String, String)>>`
 
@@ -87,39 +89,24 @@ Returns the dataset's immutable config (`DataSetInfo`) and mutable state (`DataS
 
 ### 1.3 Queue Operations
 
-#### `Store::open_queue(&mut self, handle: DataSetHandle) -> Result<DatasetQueue>`
+#### `Store::open_queue(&mut self, dataset: &DataSet) -> Result<DatasetQueue>`
 
 Opens the queue for a dataset. A dataset can have only one queue open at a time. The queue is backed by the dataset's `queue/` directory.
 
-#### `Store::close_queue(&mut self, queue: DatasetQueue) -> Result<()>`
+**Parameters**:
+- `dataset`: Reference to an open `DataSet`
 
-Closes a queue, syncing all consumer state files and waking waiters.
+**Returns**: `DatasetQueue` instance.
 
-#### `Store::queue_push(&self, queue: &DatasetQueue, data: &[u8]) -> Result<i64>`
+**Errors**: `QueueAlreadyOpen` if queue is already open for this dataset.
 
-Pushes data to the queue. Auto-assigns the next timestamp (`latest_written_timestamp + 1`). Returns the assigned timestamp.
+#### `Store::open_journal_queue(&mut self) -> Result<JournalQueue>`
 
-**Note**: The consumer must be opened before pushing if you want to consume from the beginning. New consumers initialize from the current `latest_written_timestamp`.
+Opens the journal queue for consuming journal records.
 
-#### `Store::queue_poll(&self, consumer: &DatasetQueueConsumer, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>`
+**Returns**: `JournalQueue` instance.
 
-Polls for the next unacked record. Blocks up to `timeout` if no data is available. Returns `Ok(Some((timestamp, data)))` if data is available, `Ok(None)` on timeout.
-
-#### `Store::queue_ack(&self, consumer: &DatasetQueueConsumer, timestamp: i64) -> Result<()>`
-
-Acknowledges a previously polled record. Only updates the current consumer group's state file.
-
-#### `Store::open_consumer(&self, queue: &DatasetQueue, group_name: &str) -> Result<DatasetQueueConsumer>`
-
-Opens a consumer group with default config (`running_expired_seconds=900`, `max_retry_count=3`). If the group already exists, reopens with the existing state.
-
-#### `Store::open_consumer_with_config(&self, queue: &DatasetQueue, group_name: &str, config: QueueConsumerConfig) -> Result<DatasetQueueConsumer>`
-
-Opens a consumer group with explicit retry/visibility config. If the group already exists, the config must match the previously opened config.
-
-#### `Store::drop_consumer(&mut self, queue: &DatasetQueue, group_name: &str) -> Result<()>`
-
-Drops a consumer group and deletes its state file.
+**Errors**: `QueueAlreadyOpen` if journal queue is already open.
 
 ### 1.4 Journal Operations
 
@@ -131,19 +118,30 @@ Returns the latest journal sequence number. Returns `None` if journal is disable
 
 Reads a journal record by sequence. Returns `Ok(None)` if the sequence doesn't exist or journal is disabled.
 
-#### `Store::journal_query(&self, start_seq: i64, end_seq: i64) -> Result<Vec<(i64, Vec<u8>)>>`
+**Parameters**:
+- `sequence`: Journal sequence number
 
-Range query on journal records. Returns `Vec<(sequence, raw_record_bytes)>`.
+**Returns**: `Ok(Some((sequence, data)))` if found, `Ok(None)` if not found.
 
-#### `Store::open_journal_queue(&mut self) -> Result<JournalQueue>`
+#### `Store::journal_query(&self, start_sequence: i64, end_sequence: i64) -> Result<Vec<(i64, Vec<u8>)>>`
 
-Opens the journal queue for consuming change records. Each successfully written journal record (create/drop/write/delete/append) is delivered as an independent queue entry.
+Queries journal records in a sequence range.
 
-**Not supported in read-only mode.**
+**Parameters**:
+- `start_sequence`: Start sequence (inclusive)
+- `end_sequence`: End sequence (inclusive)
 
-#### `Store::read_journal_source_record(&self, dataset_identifier: u64, index_info: JournalIndexInfo) -> Result<Option<(i64, Vec<u8>)>>`
+**Returns**: Vector of `(sequence, data)` tuples.
 
-Dereferences a journal record to its source business data. Used by journal consumers to fetch the actual payload referenced by a journal entry. Validates the source dataset still exists and the referenced entry is valid.
+#### `Store::read_journal_source_record(&self, dataset_identifier: u64, index_info: JournalIndexInfo) -> Result<(i64, Vec<u8>)>`
+
+Reads the source record referenced by a journal entry.
+
+**Parameters**:
+- `dataset_identifier`: Dataset identifier
+- `index_info`: Journal index info containing timestamp, block offset, and in-block offset
+
+**Returns**: `(timestamp, data)` tuple.
 
 ### 1.5 Background Tasks
 
@@ -163,7 +161,7 @@ Queries the delay until the next background task is due, without executing anyth
 
 ## 2. DataSet
 
-`DataSet` is obtained via `Store::get_dataset(&handle)`. It's an `Arc<DataSet>` — all methods take `&self` and use internal mutex synchronization, so it's safe for concurrent use.
+`DataSet` is obtained via `Store::create_dataset` or `Store::open_dataset`. It's an `Arc<DataSet>` — all methods take `&self` and use internal mutex synchronization, so it's safe for concurrent use.
 
 ### 2.1 Write Operations
 
@@ -294,27 +292,27 @@ pub struct DataSetInfo {
     pub base_dir: String,
     pub identifier: u64,
 
-    // Storage config
+    // Segment sizes
     pub data_segment_size: u64,
     pub index_segment_size: u64,
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
 
-    // Compression config
-    pub compress_type: u8,       // 0=zstd, 1=deflate
-    pub compress_level: u8,      // 0-9
+    // Compression
+    pub compress_type: u8,     // 0=zstd, 1=deflate
+    pub compress_level: u8,    // 0-9
 
-    // Index config
-    pub index_continuous: u8,    // 0=sparse, 1=continuous
+    // Index mode
+    pub index_continuous: u8,  // 0=sparse, 1=continuous
 
     // Retention
-    pub retention_window: u64,   // 0 = no limit
+    pub retention_window: u64, // timestamp units, 0=no limit
 
     // Journal
-    pub enable_journal: bool,    // immutable after creation
+    pub enable_journal: bool,
 
-    // Metadata
-    pub create_time: i64,        // Unix milliseconds
+    // Timestamps
+    pub create_time: i64,      // Unix milliseconds
 }
 ```
 
@@ -336,10 +334,19 @@ pub struct DataSetState {
     // Index segments
     pub open_index_segments: u32,
     pub index_segments: u32,      // total
+    pub pending_index_entries: u32,  // always 0 (kept for ABI compatibility)
+    pub base_timestamp: Option<i64>,
 
     // Timestamp range
     pub min_timestamp: Option<i64>,
     pub max_timestamp: Option<i64>,
+
+    // Status flags
+    pub read_only: bool,
+    pub has_block_cache: bool,
+    pub has_journal: bool,
+    pub has_queue: bool,
+    pub queue_consumer_groups: u32,
 }
 ```
 
@@ -348,6 +355,12 @@ pub struct DataSetState {
 - `total_*` fields cover the entire dataset (archived state file + active tail).
 - `latest_written_timestamp`: max timestamp ever successfully written. Delete does NOT retroactively update this.
 - `min_timestamp` / `max_timestamp`: based on index visible range.
+- `base_timestamp`: first entry's timestamp in the index, `None` if no data.
+- `read_only`: whether the dataset is in read-only mode.
+- `has_block_cache`: whether BlockCache is enabled.
+- `has_journal`: whether Journal is enabled.
+- `has_queue`: whether the dataset has an associated Queue.
+- `queue_consumer_groups`: number of queue consumer groups (only meaningful when `has_queue=true`).
 
 ### 3.3 DataSetInspectResult
 
@@ -454,18 +467,34 @@ pub struct QueueConsumerConfig {
 
 ### 5.1 DatasetQueue
 
-Obtained via `Store::open_queue(handle)`. Clone-safe (internally `Arc`-shared). Call `Store::close_queue()` to close.
+Obained via `Store::open_queue(&dataset)`. Clone-safe (internally `Arc`-shared). Call `queue.close()` or drop to close.
 
 **Key behavior**:
 - `push(data)` auto-assigns `timestamp = latest_written_timestamp + 1`
-- `poll(timeout)` returns the next unacked record for this consumer group
-- `ack(timestamp)` marks a record as processed
+- `open_consumer(group_name)` opens a consumer group
+- `get_consumer_group_names()` lists registered consumer groups
+- `drop_consumer_group(group_name)` drops a consumer group
 - Multiple consumer groups are independent; each maintains its own progress
 - Multiple consumer instances in the same group share progress (mutual exclusion via state file lock)
 
+**Methods**:
+- `queue.push(data: &[u8]) -> Result<i64>` — Push data, returns assigned timestamp
+- `queue.open_consumer(group_name: &str) -> Result<DatasetQueueConsumer>` — Open consumer with default config
+- `queue.open_consumer_with_config(group_name: &str, config: QueueConsumerConfig) -> Result<DatasetQueueConsumer>` — Open consumer with explicit config
+- `queue.get_consumer_group_names() -> Result<Vec<String>>` — List consumer groups
+- `queue.drop_consumer_group(group_name: &str) -> Result<()>` — Drop consumer group
+
 ### 5.2 DatasetQueueConsumer
 
-Obtained via `Store::open_consumer(&queue, group_name)`.
+Obtained via `queue.open_consumer(group_name)`.
+
+**Methods**:
+- `consumer.poll(timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>` — Poll for next record
+- `consumer.ack(timestamp: i64) -> Result<()>` — Acknowledge record
+- `consumer.flush() -> Result<()>` — Flush consumer state to disk
+- `consumer.get_pending_entries() -> Result<Vec<QueueConsumerPendingEntry>>` — Get pending entries
+- `consumer.inspect() -> Result<QueueConsumerInspectResult>` — Inspect consumer state
+- `consumer.poll_callback(callback: Option<QueuePollCallback>) -> Result<()>` — Set poll callback for notification
 
 **Poll semantics**:
 - Polls from `processed_ts + 1` forward
@@ -478,11 +507,21 @@ Obtained via `Store::open_consumer(&queue, group_name)`.
 
 Obtained via `Store::open_journal_queue()`. Uses the same `ConsumerStateFile` format and at-least-once ack semantics as `DatasetQueue`, but the data source is `JournalLog::read(sequence)`.
 
+**Methods**:
+- `journal_queue.open_consumer(group_name: &str) -> Result<JournalQueueConsumer>` — Open consumer
+- `journal_queue.open_consumer_with_config(group_name: &str, config: QueueConsumerConfig) -> Result<JournalQueueConsumer>` — Open consumer with config
+
 **Poll returns**: `(journal_sequence, raw_record_bytes)` where the raw bytes are the encoded journal record (type byte + TLV fields).
 
 ### 5.4 JournalQueueConsumer
 
-Same interface as `DatasetQueueConsumer` (`poll`, `ack`, `poll_callback`).
+Same interface as `DatasetQueueConsumer` (`poll`, `ack`, `flush`, `poll_callback`).
+
+**Methods**:
+- `consumer.poll(timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>` — Poll for next journal record
+- `consumer.ack(sequence: i64) -> Result<()>` — Acknowledge journal record
+- `consumer.flush() -> Result<()>` — Flush consumer state
+- `consumer.poll_callback(callback: Option<QueuePollCallback>) -> Result<()>` — Set poll callback
 
 ### 5.5 Queue Consumer poll_callback
 
@@ -494,15 +533,7 @@ Registers or clears a lightweight wake callback invoked after queue data notific
 
 **Python**: Not directly exposed; use `poll(timeout_ms)` in a loop instead.
 
-### 5.6 DataSetHandle
-
-`DataSetHandle` is a lightweight opaque wrapper around a `u64` identifier. It's `Copy` and `Clone`, so you can freely pass it by value. Use it with `Store::get_dataset(&handle)` to obtain an `Arc<DataSet>` for operations.
-
-```rust
-pub struct DataSetHandle(pub u64);  // Copy, Clone
-```
-
-### 5.7 JournalIndexInfo
+### 5.6 JournalIndexInfo
 
 `JournalIndexInfo` is a reference pointer stored in journal records for `0x11` (write) and `0x13` (append) events. It contains the information needed to locate the source business data:
 
