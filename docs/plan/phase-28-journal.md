@@ -307,7 +307,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test --manifest-path wrapper/python/Cargo.toml -- --test-threads=1
 cargo clippy --manifest-path wrapper/python/Cargo.toml --all-targets -- -D warnings
 python -m maturin build --manifest-path wrapper/python/Cargo.toml --out wrapper/python/target/wheels
-python -m pip install --force-reinstall --target wrapper/python/.pytest-target wrapper/python/target/wheels/timslite-0.1.2-cp313-cp313-win_amd64.whl
+python -m pip install --force-reinstall --target wrapper/python/.pytest-target wrapper/python/target/wheels/timslite-0.1.3-cp313-cp313-win_amd64.whl
 $env:PYTHONPATH=(Resolve-Path wrapper/python/.pytest-target).Path; python -m pytest wrapper/python/tests -q -p no:cacheprovider
 git diff --check
 ```

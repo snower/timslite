@@ -120,7 +120,7 @@ wrapper/java/
 
 - [x] 创建 Rust bridge crate。
   - `[lib] crate-type = ["cdylib", "rlib"]`。
-  - 依赖 root crate: `timslite = { path = "../../..", version = "=0.1.2" }`。
+  - 依赖 root crate: `timslite = { path = "../../..", version = "=0.1.3" }`。
   - 添加 UniFFI 运行时和 bindgen/build 依赖。
 - [x] 创建最小 UniFFI interface。
   - namespace 使用 `timslite`。
