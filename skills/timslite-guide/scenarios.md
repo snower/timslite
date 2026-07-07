@@ -14,16 +14,13 @@ use timslite::{Store, StoreConfig};
 let mut store = Store::open("/data/sensors", StoreConfig::default())?;
 
 // Create a dataset for sensor readings (sparse mode for irregular timestamps)
-store.create_dataset("temp_sensor", "readings",
+let ds = store.create_dataset("temp_sensor", "readings",
     64 * 1024 * 1024,  // 64MB data segments
     4 * 1024 * 1024,   // 4MB index segments
     6,                 // compress level
     0,                 // sparse index mode
     0,                 // no retention
 )?;
-
-let handle = store.open_dataset("temp_sensor", "readings")?;
-let ds = store.get_dataset(&handle)?;
 
 // Write sensor readings (timestamps must be monotonically increasing)
 for i in 0..1000i64 {
@@ -76,16 +73,13 @@ with timslite.Store.open("/data/sensors") as store:
 let mut store = Store::open("/data/metrics", StoreConfig::default())?;
 
 // Create with index_continuous = 1
-store.create_dataset("cpu_usage", "per_second",
+let ds = store.create_dataset("cpu_usage", "per_second",
     64 * 1024 * 1024,
     4 * 1024 * 1024,
     6,
     1,   // continuous mode — time_step = 1
     0,
 )?;
-
-let handle = store.open_dataset("cpu_usage", "per_second")?;
-let ds = store.get_dataset(&handle)?;
 
 // Write with gaps — filler entries are auto-created for missing timestamps
 ds.write(1, b"50%")?;    // base_timestamp = 1
@@ -120,34 +114,33 @@ use std::time::Duration;
 use timslite::{Store, StoreConfig};
 
 let mut store = Store::open("/data/jobs", StoreConfig::default())?;
-store.create_dataset("task_queue", "jobs",
+let ds = store.create_dataset("task_queue", "jobs",
     64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)?;
-let handle = store.open_dataset("task_queue", "jobs")?;
 
 // Open queue
-let queue = store.open_queue(handle)?;
+let queue = store.open_queue(&ds)?;
 
 // Open two consumer groups — each gets independent progress
-let worker_a = store.open_consumer(&queue, "workers_a")?;
-let worker_b = store.open_consumer(&queue, "workers_b")?;
+let worker_a = queue.open_consumer("workers_a")?;
+let worker_b = queue.open_consumer("workers_b")?;
 
 // Producer pushes data — timestamps auto-assigned (1, 2, 3, ...)
 for i in 0..10 {
-    let ts = store.queue_push(&queue, format!("job_{}", i).as_bytes())?;
+    let ts = queue.push(format!("job_{}", i).as_bytes())?;
     println!("Pushed job {i} at ts={ts}");
 }
 
 // Worker group A consumes
 for _ in 0..10 {
-    let (ts, data) = store.queue_poll(&worker_a, Duration::from_millis(100))?.unwrap();
+    let (ts, data) = worker_a.poll(Duration::from_millis(100))?.unwrap();
     println!("Worker A got: {}", String::from_utf8_lossy(&data));
-    store.queue_ack(&worker_a, ts)?;
+    worker_a.ack(ts)?;
 }
 
 // Worker group B can still consume the same data (independent progress)
-let (ts, data) = store.queue_poll(&worker_b, Duration::from_millis(100))?.unwrap();
+let (ts, data) = worker_b.poll(Duration::from_millis(100))?.unwrap();
 println!("Worker B got: {}", String::from_utf8_lossy(&data));
-store.queue_ack(&worker_b, ts)?;
+worker_b.ack(ts)?;
 
 store.close()?;
 ```
@@ -170,27 +163,26 @@ use std::time::Duration;
 use timslite::{Store, StoreConfig, QueueConsumerConfig};
 
 let mut store = Store::open("/data/jobs", StoreConfig::default())?;
-store.create_dataset("retry_queue", "jobs",
+let ds = store.create_dataset("retry_queue", "jobs",
     64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)?;
-let handle = store.open_dataset("retry_queue", "jobs")?;
-let queue = store.open_queue(handle)?;
+let queue = store.open_queue(&ds)?;
 
 // Configure: pending expires after 60 seconds, max 3 retries
 let config = QueueConsumerConfig {
     running_expired_seconds: 60,
     max_retry_count: 3,
 };
-let consumer = store.open_consumer_with_config(&queue, "retry_group", config)?;
+let consumer = queue.open_consumer_with_config("retry_group", config)?;
 
 // Push and poll
-let ts = store.queue_push(&queue, b"important_task")?;
-let (polled_ts, data) = store.queue_poll(&consumer, Duration::from_millis(100))?.unwrap();
+let ts = queue.push(b"important_task")?;
+let (polled_ts, data) = consumer.poll(Duration::from_millis(100))?.unwrap();
 
 // If we crash here without acking, after 60 seconds the record becomes
 // eligible for redelivery. After 3 failed retries, it's dropped.
 
 // Ack to mark as processed
-store.queue_ack(&consumer, polled_ts)?;
+consumer.ack(polled_ts)?;
 ```
 
 **Python equivalent**:
@@ -199,7 +191,7 @@ cfg = timslite.StoreConfig(enable_background_thread=False)
 with timslite.Store.open("/data/jobs", cfg) as store:
     store.create_dataset("retry_queue", "jobs")
     ds = store.open_dataset("retry_queue", "jobs")
-    q = store.open_queue(ds.id)
+    q = ds.open_queue()
     c = q.open_consumer("retry_group", running_expired_seconds=60, max_retry_count=3)
     ts = q.push(b"important_task")
     result = c.poll(100)
@@ -221,10 +213,8 @@ use timslite::{Store, StoreConfig};
 let mut store = Store::open("/data/app", StoreConfig::default())?;
 
 // Journal is enabled by default. Create a dataset.
-store.create_dataset("events", "user_actions",
+let ds = store.create_dataset("events", "user_actions",
     64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)?;
-let handle = store.open_dataset("events", "user_actions")?;
-let ds = store.get_dataset(&handle)?;
 
 // Every write/delete/append automatically appends to the journal
 ds.write(1, b"user_login")?;
@@ -274,7 +264,6 @@ store.close()?;
 **When**: You want old data to automatically expire and be reclaimed.
 
 ```rust
-use std::time::Duration;
 use timslite::{Store, StoreConfig};
 
 // retention_check_hour = 0 means daily at UTC 00:00
@@ -286,16 +275,13 @@ let mut store = Store::open("/data/metrics", config)?;
 
 // Create dataset with 7-day retention (assuming timestamp = Unix seconds)
 let seven_days = 7 * 24 * 60 * 60;  // 604800 seconds
-store.create_dataset("daily_metrics", "events",
+let ds = store.create_dataset("daily_metrics", "events",
     64 * 1024 * 1024,
     4 * 1024 * 1024,
     6,
     0,
     seven_days,  // retention_window in timestamp units
 )?;
-
-let handle = store.open_dataset("daily_metrics", "events")?;
-let ds = store.get_dataset(&handle)?;
 
 // Write current data
 let now = 1700000000i64;  // current timestamp
@@ -335,9 +321,7 @@ let config = StoreConfig::builder()
     .build();
 
 let mut store = Store::open("/data/app", config)?;
-store.create_dataset("my_ds", "events", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-let handle = store.open_dataset("my_ds", "events")?;
-let ds = store.get_dataset(&handle)?;
+let ds = store.create_dataset("my_ds", "events", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
 
 ds.write(1, b"data")?;
 
@@ -396,8 +380,7 @@ let mut store = Store::open("/data/app", config)?;
 assert!(store.is_read_only());
 
 // Can open and read existing datasets
-if let Ok(handle) = store.open_dataset("my_ds", "events") {
-    let ds = store.get_dataset(&handle)?;
+if let Ok(ds) = store.open_dataset("my_ds", "events") {
     let entries = ds.query(1, 100)?;
     let info = ds.inspect()?;
     println!("Dataset: {} records", info.state.total_record_count);
@@ -420,9 +403,7 @@ if let Ok(handle) = store.open_dataset("my_ds", "events") {
 
 ```rust
 let mut store = Store::open("/data/logs", StoreConfig::default())?;
-store.create_dataset("app_log", "lines", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-let handle = store.open_dataset("app_log", "lines")?;
-let ds = store.get_dataset(&handle)?;
+let ds = store.create_dataset("app_log", "lines", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
 
 // Create initial record at timestamp 1
 ds.append(1, b"line1\n")?;
@@ -435,8 +416,8 @@ ds.append(1, b"line3\n")?;
 let (_, data) = ds.read(1)?.unwrap();
 assert_eq!(data, b"line1\nline2\nline3\n");
 
-// Forward append creates a new record
-ds.append(2, b"new_record")?;
+// Forward append (creates new record when timestamp > latest)
+ds.append(2, b"new_record\n")?;
 ```
 
 **Append rules**:
@@ -537,26 +518,20 @@ assert_eq!(data.len(), 100_000);
 let mut store = Store::open("/data/app", StoreConfig::default())?;
 
 // Each (name, type) pair is an independent dataset
-store.create_dataset("sensors", "temperature", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-store.create_dataset("sensors", "humidity",    64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-store.create_dataset("sensors", "pressure",    64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-store.create_dataset("events",  "user_action", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-store.create_dataset("events",  "system",      64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+let ds1 = store.create_dataset("sensors", "temperature", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+let ds2 = store.create_dataset("sensors", "humidity",    64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+let ds3 = store.create_dataset("sensors", "pressure",    64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+let ds4 = store.create_dataset("events",  "user_action", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+let ds5 = store.create_dataset("events",  "system",      64*1024*1024, 4*1024*1024, 6, 0, 0)?;
 
 // List all datasets
 for (name, dtype) in store.list_datasets()? {
     println!("{name}/{dtype}");
 }
 
-// Open and use each independently
-let h1 = store.open_dataset("sensors", "temperature")?;
-let h2 = store.open_dataset("events", "user_action")?;
-
-let ds1 = store.get_dataset(&h1)?;
-let ds2 = store.get_dataset(&h2)?;
-
+// Use each independently
 ds1.write(1, b"23.5C")?;
-ds2.write(1, b"login")?;
+ds4.write(1, b"login")?;
 
 // Inspect a dataset
 let inspect = store.inspect_dataset("sensors", "temperature")?;

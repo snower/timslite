@@ -119,8 +119,8 @@ if let Some(mut ts) = latest_ts {
 
 **Solution**: Use the same config, or drop and recreate the consumer group:
 ```rust
-store.drop_consumer(&queue, "my_group")?;
-let consumer = store.open_consumer_with_config(&queue, "my_group", new_config)?;
+queue.drop_consumer("my_group")?;
+let consumer = queue.open_consumer_with_config("my_group", new_config)?;
 ```
 
 ### New consumer doesn't receive existing data
@@ -130,12 +130,12 @@ let consumer = store.open_consumer_with_config(&queue, "my_group", new_config)?;
 **Solution**: Open the consumer before pushing data:
 ```rust
 // CORRECT: open consumer first, then push
-let consumer = store.open_consumer(&queue, "worker")?;
-store.queue_push(&queue, b"data")?;  // consumer will receive this
+let consumer = queue.open_consumer("worker")?;
+queue.push(b"data")?;  // consumer will receive this
 
 // WRONG: push first, then open consumer
-store.queue_push(&queue, b"data")?;  // consumer won't see this
-let consumer = store.open_consumer(&queue, "worker")?;  // starts from here
+queue.push(b"data")?;  // consumer won't see this
+let consumer = queue.open_consumer("worker")?;  // starts from here
 ```
 
 ### `QueueClosed`: poll on closed queue

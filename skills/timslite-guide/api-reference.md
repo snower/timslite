@@ -467,7 +467,7 @@ pub struct QueueConsumerConfig {
 
 ### 5.1 DatasetQueue
 
-Obained via `Store::open_queue(&dataset)`. Clone-safe (internally `Arc`-shared). Call `queue.close()` or drop to close.
+Obtained via `Store::open_queue(&dataset)`. Clone-safe (internally `Arc`-shared). Call `queue.close()` or drop to close.
 
 **Key behavior**:
 - `push(data)` auto-assigns `timestamp = latest_written_timestamp + 1`

@@ -98,7 +98,7 @@ Choose your language for detailed documentation, quick start guides, API referen
 
 ### C / C++
 
-Download prebuilt `libtimslite` from [GitHub Releases](https://github.com/user/timslite/releases), or build from source: `cargo build --release`. Link against `libtimslite.so/.dylib/.dll` and include `include/timslite.h`.
+Download prebuilt `libtimslite` from [GitHub Releases](https://github.com/snower/timslite/releases), or build from source: `cargo build --release`. Link against `libtimslite.so/.dylib/.dll` and include `include/timslite.h`.
 
 ## Configuration Defaults
 
@@ -145,8 +145,7 @@ Download prebuilt `libtimslite` from [GitHub Releases](https://github.com/user/t
 | Not calling `flush()` before process exit in manual bg mode | Call `ds.flush()` or `store.close()` which flushes |
 | Polling queue without opening consumer first | Call `open_consumer` before `queue_poll` |
 | Expecting journal to be a WAL | Journal is auxiliary; no transaction guarantees |
-| Forgetting `enable_background_thread=false` needs manual tick | Call `tick_background_tasks()` periodically |
-| Assuming `read(-1)` reads latest | Use `read_latest()`; `read(-1)` reads timestamp `-1` |
+| Forgetting `enable_background_thread=false` in event loops | Set it and call `tick_background_tasks()` periodically |
 
 ## Naming Rules
 
