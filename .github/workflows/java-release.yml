@@ -93,7 +93,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            wrapper/java/native/target
           key: ${{ runner.os }}-${{ matrix.platform }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock', 'Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.platform }}-cargo-java-
@@ -298,7 +297,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            wrapper/java/native/target
           key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock', 'Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-java-
@@ -357,7 +355,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            wrapper/java/native/target
           key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock', 'Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-java-
