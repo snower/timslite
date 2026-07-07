@@ -284,20 +284,25 @@ class DatasetIoTest {
                 dataset.write(100L, payload1);
                 dataset.write(101L, payload2);
 
-                // Negative timestamps are exact, not relative offsets.
-                // read(-1) reads the literal timestamp -1, which does not exist.
-                assertNull(dataset.read(-1L));
-                assertNull(dataset.read(-2L));
+                // Negative read timestamps are latest-relative offsets.
+                Record latestByOffset = dataset.read(-1L);
+                assertNotNull(latestByOffset);
+                assertEquals(101L, latestByOffset.getTimestamp());
+                assertArrayEquals(payload2, latestByOffset.getData());
+
+                Record previousByOffset = dataset.read(-2L);
+                assertNotNull(previousByOffset);
+                assertEquals(100L, previousByOffset.getTimestamp());
+                assertArrayEquals(payload1, previousByOffset.getData());
                 assertNull(dataset.read(-3L));
 
-                // readExist with negative timestamps returns false
-                assertFalse(dataset.readExist(-1L));
-                assertFalse(dataset.readExist(-2L));
+                // readExist and readLength use the same latest-relative contract.
+                assertTrue(dataset.readExist(-1L));
+                assertTrue(dataset.readExist(-2L));
                 assertFalse(dataset.readExist(-3L));
 
-                // readLength with negative timestamps returns null
-                assertNull(dataset.readLength(-1L));
-                assertNull(dataset.readLength(-2L));
+                assertEquals(Long.valueOf(payload2.length), dataset.readLength(-1L));
+                assertEquals(Long.valueOf(payload1.length), dataset.readLength(-2L));
                 assertNull(dataset.readLength(-3L));
 
                 // Use readLatest() to get the latest record
