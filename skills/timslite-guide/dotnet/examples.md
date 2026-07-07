@@ -111,13 +111,10 @@ using var ds = store.OpenDataset("metrics", "cpu");
 
 // Write with explicit timestamp
 ds.Write(1700000000L, BitConverter.GetBytes(42.5));
+ds.Write(1700000001L, BitConverter.GetBytes(43.1));
 
-// Write with current timestamp
-ds.WriteNow(BitConverter.GetBytes(43.2));
-
-// Write with byte array
-var data = new byte[] { 0x01, 0x02, 0x03, 0x04 };
-ds.Write(1700000001L, data);
+// Write with auto-generated timestamp
+ds.WriteNow(BitConverter.GetBytes(44.0));
 ```
 
 ### Reading Records
@@ -128,226 +125,242 @@ var rec = ds.Read(1700000000L);
 if (rec != null)
 {
     double value = BitConverter.ToDouble(rec.Data, 0);
-    Console.WriteLine($"ts={rec.Timestamp}, value={value}");
+    Console.WriteLine($"ts={rec.Timestamp}: {value}");
 }
 
-// Check existence without reading data
-if (ds.ReadExist(1700000000L))
-{
-    Console.WriteLine("Record exists");
-}
-
-// Read latest record
+// Read the latest record
 var latest = ds.ReadLatest();
 if (latest != null)
 {
-    Console.WriteLine($"Latest ts: {latest.Timestamp}");
+    Console.WriteLine($"Latest: ts={latest.Timestamp}");
 }
 
-// Read data length only
-var length = ds.ReadLength(1700000000L);
-if (length != null)
-{
-    Console.WriteLine($"Data length: {length} bytes");
-}
+// Check existence
+bool exists = ds.ReadExist(1700000000L);
+Console.WriteLine($"Record exists: {exists}");
+
+// Read length only
+uint? len = ds.ReadLength(1700000000L);
+Console.WriteLine($"Record length: {len} bytes");
 ```
 
 ### Appending to Records
 
 ```csharp
-// Forward append (new timestamp)
-ds.Append(1700000002L, BitConverter.GetBytes(50.0));
+// Write initial record
+ds.Write(1700000000L, Encoding.UTF8.GetBytes("chunk1"));
 
-// Append to existing record (same timestamp)
-ds.Append(1700000002L, BitConverter.GetBytes(51.0));
+// Append to same timestamp
+ds.Append(1700000000L, Encoding.UTF8.GetBytes(",chunk2"));
+ds.Append(1700000000L, Encoding.UTF8.GetBytes(",chunk3"));
 
-// Append with current timestamp
-ds.AppendNow(BitConverter.GetBytes(52.0));
+// Read full record
+var rec = ds.Read(1700000000L);
+Console.WriteLine(Encoding.UTF8.GetString(rec.Data)); // "chunk1,chunk2,chunk3"
+
+// Forward append (creates new record)
+ds.Append(1700000001L, Encoding.UTF8.GetBytes("new_record"));
+```
+
+### Correcting Records
+
+```csharp
+// Write original
+ds.Write(1700000000L, Encoding.UTF8.GetBytes("wrong_value"));
+
+// Correct it
+ds.Correct(1700000000L, Encoding.UTF8.GetBytes("correct_value"));
+
+// Verify
+var rec = ds.Read(1700000000L);
+Console.WriteLine(Encoding.UTF8.GetString(rec.Data)); // "correct_value"
 ```
 
 ### Deleting Records
 
 ```csharp
+ds.Write(1700000000L, new byte[] { 1, 2, 3 });
 ds.Delete(1700000000L);
 
-// Verify deletion
 var rec = ds.Read(1700000000L);
-Console.WriteLine(rec == null ? "Deleted" : "Still exists");
+Console.WriteLine(rec == null); // true
 ```
 
 ---
 
 ## 3. Query Operations
 
-### Range Query with List
+### Eager Query
 
 ```csharp
 using var ds = store.OpenDataset("metrics", "cpu");
 
-var records = ds.Query(1700000000L, 1700003600L);
-Console.WriteLine($"Found {records.Count} records");
+// Write test data
+for (long i = 1; i <= 100; i++)
+{
+    ds.Write(i, BitConverter.GetBytes(i * 0.1));
+}
 
+// Query range
+var records = ds.Query(10, 20);
 foreach (var rec in records)
 {
     double value = BitConverter.ToDouble(rec.Data, 0);
-    Console.WriteLine($"ts={rec.Timestamp}, value={value}");
+    Console.WriteLine($"ts={rec.Timestamp}: {value}");
 }
 ```
 
-### Using QueryIterator for Large Results
+### Lazy Iterator
 
 ```csharp
-using var iter = ds.QueryIter(1700000000L, 1700003600L);
-
+// Forward iteration
+using var iter = ds.QueryIter(1, 100);
 while (iter.MoveNext())
 {
     var rec = iter.Current;
-    double value = BitConverter.ToDouble(rec.Data, 0);
-    Console.WriteLine($"ts={rec.Timestamp}, value={value}");
+    Console.WriteLine($"ts={rec.Timestamp}: {rec.Data.Length} bytes");
 }
-```
 
-### Using foreach with QueryIterator
-
-```csharp
-using var iter = ds.QueryIter(1700000000L, 1700003600L);
-
-foreach (var rec in iter)
+// Reverse iteration
+using var iter2 = ds.QueryIter(1, 100);
+iter2.Reverse();
+while (iter2.MoveNext())
 {
-    double value = BitConverter.ToDouble(rec.Data, 0);
-    Console.WriteLine($"ts={rec.Timestamp}, value={value}");
+    var rec = iter2.Current;
+    Console.WriteLine($"ts={rec.Timestamp}: {rec.Data.Length} bytes");
 }
-```
 
-### Collecting All Results
+// Skip records
+using var iter3 = ds.QueryIter(1, 100);
+iter3.Skip(10); // skip first 10
+while (iter3.MoveNext())
+{
+    // starts at 11th record
+}
 
-```csharp
-using var iter = ds.QueryIter(1700000000L, 1700003600L);
-var allRecords = iter.CollectAll();
-
+// Collect all
+using var iter4 = ds.QueryIter(1, 100);
+var allRecords = iter4.CollectAll();
 Console.WriteLine($"Collected {allRecords.Count} records");
 ```
 
-### Reversing Iteration Order
+### Query Existence
 
 ```csharp
-using var iter = ds.QueryIter(1700000000L, 1700003600L);
-iter.Reverse();
-
-foreach (var rec in iter)
+byte[] existFlags = ds.QueryExist(1, 100);
+for (int i = 0; i < existFlags.Length; i++)
 {
-    Console.WriteLine($"ts={rec.Timestamp}");
+    if (existFlags[i] == 1)
+    {
+        Console.WriteLine($"Record at ts={i + 1} exists");
+    }
 }
 ```
 
-### Skipping Records
+### Query Lengths
 
 ```csharp
-using var iter = ds.QueryIter(1700000000L, 1700003600L);
-iter.Skip(100); // Skip first 100 records
-
-foreach (var rec in iter)
+// Eager
+var lengths = ds.QueryLength(1, 100);
+foreach (var entry in lengths)
 {
-    Console.WriteLine($"ts={rec.Timestamp}");
-}
-```
-
-### Length-Only Query
-
-```csharp
-using var iter = ds.QueryLengthIter(1700000000L, 1700003600L);
-
-ulong totalSize = 0;
-foreach (var entry in iter)
-{
-    totalSize += entry.Length;
+    Console.WriteLine($"ts={entry.Timestamp}: {entry.Length} bytes");
 }
 
-Console.WriteLine($"Total data size: {totalSize} bytes");
+// Lazy iterator
+using var liter = ds.QueryLengthIter(1, 100);
+while (liter.MoveNext())
+{
+    var entry = liter.Current;
+    Console.WriteLine($"ts={entry.Timestamp}: {entry.Length} bytes");
+}
 ```
 
 ---
 
-## 4. Queue Operations
+## 4. Queue Consumer Pattern
 
 ### Basic Queue Usage
 
 ```csharp
-using var ds = store.OpenDataset("events", "click");
-using var queue = store.OpenQueue(ds);
+using var ds = store.OpenDataset("tasks", "jobs");
 
-// Push records to queue
+// Open queue
+var queue = store.OpenQueue(ds);
+
+// Push tasks
 for (int i = 0; i < 100; i++)
 {
-    var data = BitConverter.GetBytes(i);
-    long ts = queue.Push(data);
-    Console.WriteLine($"Pushed at ts={ts}");
+    var payload = Encoding.UTF8.GetBytes($"{{\"taskId\": {i}}}");
+    long ts = queue.Push(payload);
+    Console.WriteLine($"Pushed task {i} at ts={ts}");
 }
-```
 
-### Consumer Group Processing
+// Open consumer
+var consumer = queue.OpenConsumer("worker_group");
 
-```csharp
-using var consumer = queue.OpenConsumer("processor");
-
-// Poll with timeout
-var record = consumer.Poll(TimeSpan.FromSeconds(5));
-if (record != null)
+// Process tasks
+for (int i = 0; i < 100; i++)
 {
-    int value = BitConverter.ToInt32(record.Data, 0);
-    Console.WriteLine($"Processing: {value}");
-    
-    // Acknowledge processing
-    consumer.Ack(record.Timestamp);
-}
-```
-
-### Async Consumer Processing
-
-```csharp
-using var consumer = queue.OpenConsumer("async-processor");
-
-var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-
-try
-{
-    while (!cts.Token.IsCancellationRequested)
+    var record = consumer.Poll(TimeSpan.FromSeconds(5));
+    if (record != null)
     {
-        var record = await consumer.PollAsync(TimeSpan.FromSeconds(1), cts.Token);
-        if (record != null)
-        {
-            // Process record
-            await ProcessRecordAsync(record);
-            consumer.Ack(record.Timestamp);
-        }
+        var task = JsonSerializer.Deserialize<TaskPayload>(record.Data);
+        Console.WriteLine($"Processing task {task.TaskId}");
+        
+        // Acknowledge
+        consumer.Ack(record.Timestamp);
     }
 }
-catch (OperationCanceledException)
+
+// Flush and close
+consumer.Flush();
+consumer.Dispose();
+queue.Dispose();
+```
+
+### Async Queue Processing
+
+```csharp
+using var ds = store.OpenDataset("tasks", "jobs");
+var queue = store.OpenQueue(ds);
+var consumer = queue.OpenConsumer("async_worker");
+
+while (true)
 {
-    Console.WriteLine("Processing cancelled");
+    var record = await consumer.PollAsync(TimeSpan.FromSeconds(1));
+    if (record != null)
+    {
+        await ProcessRecordAsync(record);
+        consumer.Ack(record.Timestamp);
+    }
 }
 ```
 
-### Multiple Consumer Groups
+### Custom Consumer Options
 
 ```csharp
-// Group 1: Real-time processing
-using var realtimeConsumer = queue.OpenConsumer("realtime");
+var options = new QueueConsumerOptions
+{
+    Config = new QueueConsumerConfig
+    {
+        RunningExpiredSeconds = 120,  // 2 minutes before stuck task retry
+        MaxRetryCount = 5            // max 5 retries before parked
+    }
+};
 
-// Group 2: Analytics
-using var analyticsConsumer = queue.OpenConsumer("analytics");
-
-// Both groups receive all records independently
-var record1 = realtimeConsumer.Poll(TimeSpan.FromSeconds(1));
-var record2 = analyticsConsumer.Poll(TimeSpan.FromSeconds(1));
+var consumer = queue.OpenConsumer("reliable_worker", options);
 ```
 
 ### Inspecting Consumer State
 
 ```csharp
 var inspect = consumer.Inspect();
+
 Console.WriteLine($"Group: {inspect.Info.GroupName}");
-Console.WriteLine($"Processed ts: {inspect.State.ProcessedTs}");
+Console.WriteLine($"Running expired: {inspect.Info.RunningExpiredSeconds}s");
+Console.WriteLine($"Max retry: {inspect.Info.MaxRetryCount}");
+Console.WriteLine($"Processed up to: {inspect.State.ProcessedTs}");
 Console.WriteLine($"Pending entries: {inspect.State.PendingEntries.Count}");
 
 foreach (var entry in inspect.State.PendingEntries)
@@ -359,157 +372,118 @@ foreach (var entry in inspect.State.PendingEntries)
 ### Managing Consumer Groups
 
 ```csharp
-// List all consumer groups
-var groups = queue.GetConsumerGroupNames();
+// List consumer groups
+string[] groups = queue.GetConsumerGroupNames();
 foreach (var group in groups)
 {
     Console.WriteLine($"Consumer group: {group}");
 }
 
 // Drop a consumer group
-queue.DropConsumerGroup("old-group");
+queue.DropConsumer("old_group");
 ```
 
 ---
 
-## 5. Journal Operations
+## 5. Journal Queue for Audit/Sync
 
-### Reading Journal Directly
+### Direct Journal Query
 
 ```csharp
 // Get latest sequence
-var latestSeq = store.JournalLatestSequence();
-Console.WriteLine($"Latest journal sequence: {latestSeq}");
+long? seq = store.JournalLatestSequence();
+if (seq.HasValue)
+{
+    Console.WriteLine($"Latest journal sequence: {seq.Value}");
+}
 
 // Read specific journal record
-var journalRec = store.JournalRead(1L);
-if (journalRec != null)
+var jrec = store.JournalRead(42);
+if (jrec != null)
 {
-    Console.WriteLine($"Seq={journalRec.Sequence}, data_len={journalRec.Data.Length}");
+    Console.WriteLine($"Journal seq={jrec.Sequence}: {jrec.Data.Length} bytes");
 }
 
 // Query journal range
-var journalRecords = store.JournalQuery(1L, 100L);
-foreach (var rec in journalRecords)
+var journalRecords = store.JournalQuery(1, 100);
+foreach (var jr in journalRecords)
 {
-    Console.WriteLine($"Seq={rec.Sequence}");
+    Console.WriteLine($"Journal seq={jr.Sequence}: {jr.Data.Length} bytes");
 }
 ```
 
 ### Journal Queue Consumer
 
 ```csharp
-using var journalQueue = store.OpenJournalQueue();
-using var consumer = journalQueue.OpenConsumer("sync-group");
+// Open journal queue
+var jq = store.OpenJournalQueue();
+var jc = jq.OpenConsumer("audit_group");
 
-// Process journal records
-while (true)
+// Process journal entries
+for (int i = 0; i < 1000; i++)
 {
-    var record = consumer.Poll(TimeSpan.FromSeconds(5));
-    if (record == null) break;
-    
-    Console.WriteLine($"Journal seq: {record.Sequence}");
-    
-    // Process journal record (e.g., sync to another system)
-    await SyncToRemoteAsync(record);
-    
-    consumer.Ack(record.Sequence);
+    var jrecord = jc.Poll(TimeSpan.FromSeconds(1));
+    if (jrecord != null)
+    {
+        Console.WriteLine($"Journal seq={jrecord.Sequence}: {jrecord.Data.Length} bytes");
+        
+        // Process journal entry...
+        
+        // Acknowledge
+        jc.Ack(jrecord.Sequence);
+    }
+    else
+    {
+        break; // no more entries
+    }
+}
+
+// Async processing
+var jrecord2 = await jc.PollAsync(TimeSpan.FromSeconds(5));
+if (jrecord2 != null)
+{
+    jc.Ack(jrecord2.Sequence);
 }
 ```
 
-### Reading Source Records from Journal
+### Resolving Source Records from Journal
 
 ```csharp
-// When processing journal records of type 0x11 (write), 0x12 (delete), 0x13 (append),
-// you can read the source record using the journal index info
-var journalRec = store.JournalRead(42L);
-if (journalRec != null)
+// When processing journal entries of type 0x11, 0x12, 0x13,
+// you may need to read the source dataset record
+var journalRecords = store.JournalQuery(1, 100);
+foreach (var jr in journalRecords)
 {
-    // Parse journal record to get dataset identifier and index info
-    // (parsing depends on journal record type)
-    ulong datasetId = /* parsed from journal record */;
+    // Parse journal entry to get dataset identifier and index info
+    // (parsing logic depends on journal entry type)
+    
+    // Example: read source record
     var indexInfo = new JournalIndexInfo(
-        Timestamp: /* parsed */,
-        BlockOffset: /* parsed */,
-        InBlockOffset: /* parsed */
+        Timestamp: 1700000000L,
+        BlockOffset: 0,
+        InBlockOffset: 0
     );
     
-    var sourceRecord = store.ReadJournalSourceRecord(datasetId, indexInfo);
-    Console.WriteLine($"Source ts: {sourceRecord.Timestamp}");
-}
-```
-
----
-
-## 6. Retention and Expiration
-
-### Setting Retention Window
-
-```csharp
-// Create dataset with 1-hour retention
-store.CreateDataset("metrics", "cpu", new CreateDatasetOptions
-{
-    Config = new DatasetConfig
+    try
     {
-        RetentionWindow = 3600 // 1 hour in seconds
+        var sourceRecord = store.ReadJournalSourceRecord(datasetIdentifier, indexInfo);
+        Console.WriteLine($"Source record: ts={sourceRecord.Timestamp}, {sourceRecord.Data.Length} bytes");
     }
-});
-```
-
-### Working with Retained Data
-
-```csharp
-using var ds = store.OpenDataset("metrics", "cpu");
-
-// Write data
-ds.Write(1700000000L, BitConverter.GetBytes(42.0));
-
-// After retention window expires:
-var rec = ds.Read(1700000000L);
-// rec will be null if timestamp is expired
-
-// Expired timestamps cannot be written to
-try
-{
-    ds.Write(1700000000L, BitConverter.GetBytes(43.0));
+    catch (TmslException ex) when (ex.Code == TmslErrorCode.NotFound)
+    {
+        Console.WriteLine("Source record no longer exists");
+    }
 }
-catch (TmslException ex) when (ex.Code == TmslErrorCode.Expired)
-{
-    Console.WriteLine("Cannot write to expired timestamp");
-}
-```
-
-### Retention Check Hour
-
-```csharp
-// Configure retention check at 2 AM UTC
-var config = new StoreConfig
-{
-    RetentionCheckHour = 2
-};
-
-using var store = Store.Open("/path/to/data", config);
 ```
 
 ---
 
-## 7. Background Tasks
-
-### Using Background Thread
-
-```csharp
-var config = new StoreConfig
-{
-    EnableBackgroundThread = true
-};
-
-using var store = Store.Open("/path/to/data", config);
-// Background tasks run automatically
-```
+## 6. Background Tasks
 
 ### Manual Background Task Execution
 
 ```csharp
+// Disable automatic background thread
 var config = new StoreConfig
 {
     EnableBackgroundThread = false
@@ -517,24 +491,74 @@ var config = new StoreConfig
 
 using var store = Store.Open("/path/to/data", config);
 
-// Manually tick background tasks
+// Write some data
+using var ds = store.CreateDataset("metrics", "cpu");
+for (long i = 1; i <= 1000; i++)
+{
+    ds.Write(i, BitConverter.GetBytes(i * 0.1));
+}
+
+// Manually trigger background tasks
 var result = store.TickBackgroundTasks();
 Console.WriteLine($"Executed {result.ExecutedTasks} tasks");
-Console.WriteLine($"Next delay: {result.NextDelayMs}ms");
+Console.WriteLine($"Next run in {result.NextDelayMs}ms");
 
-// Or use a timer
-var timer = new System.Threading.Timer(_ =>
-{
-    var r = store.TickBackgroundTasks();
-    // Schedule next tick
-}, null, 0, (int)store.NextBackgroundDelayMs());
+// Run again to flush
+var result2 = store.TickBackgroundTasks();
+Console.WriteLine($"Executed {result2.ExecutedTasks} tasks");
+
+// Check next delay without executing
+ulong delayMs = store.NextBackgroundDelayMs();
+Console.WriteLine($"Next task due in {delayMs}ms");
 ```
 
 ---
 
-## 8. Error Handling Patterns
+## 7. Inspection and Monitoring
 
-### Catching Specific Errors
+### Dataset Inspection
+
+```csharp
+using var ds = store.OpenDataset("metrics", "cpu");
+
+// Get dataset identifier
+ulong id = ds.Identifier;
+Console.WriteLine($"Dataset identifier: {id}");
+
+// Inspect via store
+var result = store.InspectDataset("metrics", "cpu");
+
+Console.WriteLine("=== Dataset Info ===");
+Console.WriteLine($"Name: {result.Info.Name}");
+Console.WriteLine($"Type: {result.Info.DatasetType}");
+Console.WriteLine($"Identifier: {result.Info.Identifier}");
+Console.WriteLine($"Compression: {(result.Info.CompressType == 0 ? "zstd" : "deflate")}");
+Console.WriteLine($"Index mode: {(result.Info.IndexContinuous == 0 ? "sparse" : "continuous")}");
+Console.WriteLine($"Retention: {result.Info.RetentionWindow}");
+Console.WriteLine($"Journal: {result.Info.EnableJournal}");
+
+Console.WriteLine("\n=== Dataset State ===");
+Console.WriteLine($"Latest timestamp: {result.State.LatestWrittenTimestamp}");
+Console.WriteLine($"Data segments: {result.State.DataSegments} ({result.State.OpenDataSegments} open)");
+Console.WriteLine($"Index segments: {result.State.IndexSegments} ({result.State.OpenIndexSegments} open)");
+Console.WriteLine($"Total records: {result.State.TotalRecordCount}");
+Console.WriteLine($"Data size: {result.State.TotalDataSize} bytes");
+Console.WriteLine($"Read-only: {result.State.ReadOnly}");
+Console.WriteLine($"Queue groups: {result.State.QueueConsumerGroups}");
+```
+
+### Library Version
+
+```csharp
+string version = TimsliteInfo.Version();
+Console.WriteLine($"timslite version: {version}");
+```
+
+---
+
+## 8. Error Handling
+
+### Basic Error Handling
 
 ```csharp
 using Timslite.Errors;
@@ -545,12 +569,19 @@ try
 }
 catch (TmslException ex) when (ex.Code == TmslErrorCode.AlreadyExists)
 {
-    Console.WriteLine("Dataset already exists, opening instead");
-    var ds = store.OpenDataset("metrics", "cpu");
+    Console.WriteLine("Dataset already exists");
+}
+catch (TmslException ex) when (ex.Code == TmslErrorCode.NotFound)
+{
+    Console.WriteLine("Dataset not found");
 }
 catch (TmslException ex) when (ex.Code == TmslErrorCode.InvalidData)
 {
     Console.WriteLine($"Invalid data: {ex.Message}");
+}
+catch (TmslException ex) when (ex.Code == TmslErrorCode.Expired)
+{
+    Console.WriteLine("Record expired");
 }
 catch (TmslException ex)
 {
@@ -558,216 +589,144 @@ catch (TmslException ex)
 }
 ```
 
-### Handling Queue Errors
+### Comprehensive Error Handling
 
 ```csharp
-try
-{
-    using var queue = store.OpenQueue(ds);
-}
-catch (TmslException ex) when (ex.Code == TmslErrorCode.QueueAlreadyOpen)
-{
-    Console.WriteLine("Queue already open for this dataset");
-}
-```
-
-### Handling Iterator Exhaustion
-
-```csharp
-using var iter = ds.QueryIter(startTs, endTs);
+using Timslite.Errors;
 
 try
 {
-    while (true)
+    // Your timslite operations
+}
+catch (TmslException ex)
+{
+    switch (ex.Code)
     {
-        var rec = iter.Current; // May throw if not called MoveNext first
-        // process
-        iter.MoveNext();
+        case TmslErrorCode.Io:
+            Console.WriteLine($"I/O error: {ex.Message}");
+            break;
+        case TmslErrorCode.InvalidMagic:
+        case TmslErrorCode.InvalidVersion:
+            Console.WriteLine($"Corrupted data: {ex.Message}");
+            break;
+        case TmslErrorCode.MmapError:
+            Console.WriteLine($"Memory mapping error: {ex.Message}");
+            break;
+        case TmslErrorCode.CompressionError:
+        case TmslErrorCode.DecompressionError:
+            Console.WriteLine($"Compression error: {ex.Message}");
+            break;
+        case TmslErrorCode.SegmentFull:
+            Console.WriteLine("Segment full, consider increasing segment size");
+            break;
+        case TmslErrorCode.QueueAlreadyOpen:
+            Console.WriteLine("Queue already opened by another consumer");
+            break;
+        case TmslErrorCode.ConsumerGroupNotFound:
+            Console.WriteLine("Consumer group not found");
+            break;
+        case TmslErrorCode.ConsumerGroupExists:
+            Console.WriteLine("Consumer group already exists");
+            break;
+        case TmslErrorCode.QueueClosed:
+            Console.WriteLine("Queue is closed");
+            break;
+        case TmslErrorCode.PendingFull:
+            Console.WriteLine("Pending queue is full");
+            break;
+        case TmslErrorCode.StoreClosed:
+            Console.WriteLine("Store is closed");
+            break;
+        case TmslErrorCode.DatasetClosed:
+            Console.WriteLine("Dataset is closed");
+            break;
+        case TmslErrorCode.QueueBridgeClosed:
+            Console.WriteLine("Queue bridge is closed");
+            break;
+        case TmslErrorCode.IteratorExhausted:
+            Console.WriteLine("Iterator is exhausted");
+            break;
+        default:
+            Console.WriteLine($"Unknown error {ex.Code}: {ex.Message}");
+            break;
     }
 }
-catch (InvalidOperationException)
-{
-    // No current record
-}
 ```
 
 ---
 
-## 9. Performance Optimization
-
-### Batch Writing
-
-```csharp
-using var ds = store.OpenDataset("metrics", "cpu");
-
-// Write records in sequence
-for (long ts = 1700000000L; ts < 1700003600L; ts++)
-{
-    ds.Write(ts, BitConverter.GetBytes(ts * 1.0));
-}
-```
-
-### Using Length Iterator for Statistics
-
-```csharp
-// Calculate total data size without loading data
-using var iter = ds.QueryLengthIter(startTs, endTs);
-
-ulong totalSize = 0;
-uint count = 0;
-
-foreach (var entry in iter)
-{
-    totalSize += entry.Length;
-    count++;
-}
-
-Console.WriteLine($"Records: {count}, Total size: {totalSize} bytes");
-Console.WriteLine($"Average record size: {totalSize / count} bytes");
-```
-
-### Skipping Unneeded Records
-
-```csharp
-// Sample every 100th record
-using var iter = ds.QueryIter(startTs, endTs);
-
-while (iter.MoveNext())
-{
-    var rec = iter.Current;
-    // process sampled record
-    iter.Skip(99); // Skip 99, process 1
-}
-```
-
----
-
-## 10. Complete Application Example
+## 9. Complete Example: Time-Series Data Pipeline
 
 ```csharp
 using Timslite;
 using Timslite.Errors;
 
-class TimeSeriesApp
+// Configuration
+var storeConfig = new StoreConfig
 {
-    private readonly Store _store;
-    
-    public TimeSeriesApp(string dataDir)
+    FlushIntervalSeconds = 30,
+    EnableBackgroundThread = true,
+    EnableJournal = true,
+    CacheMaxMemory = 512 * 1024 * 1024
+};
+
+var datasetConfig = new CreateDatasetOptions
+{
+    Config = new DatasetConfig
     {
-        var config = new StoreConfig
-        {
-            EnableJournal = true,
-            EnableBackgroundThread = true,
-            CacheMaxMemory = 256 * 1024 * 1024 // 256 MiB
-        };
-        
-        _store = Store.Open(dataDir, config);
+        IndexContinuous = 0,     // sparse mode for irregular timestamps
+        RetentionWindow = 86400, // 24 hours retention
+        CompressLevel = 6
     }
-    
-    public void InitializeDatasets()
-    {
-        // Metrics dataset with 24-hour retention
-        _store.CreateDataset("metrics", "cpu", new CreateDatasetOptions
-        {
-            Config = new DatasetConfig
-            {
-                RetentionWindow = 86400,
-                IndexContinuous = 1,
-                EnableJournal = true
-            }
-        });
-        
-        // Events dataset with 7-day retention
-        _store.CreateDataset("events", "user", new CreateDatasetOptions
-        {
-            Config = new DatasetConfig
-            {
-                RetentionWindow = 604800,
-                IndexContinuous = 0
-            }
-        });
-    }
-    
-    public void WriteMetric(string name, string type, long timestamp, double value)
-    {
-        using var ds = _store.OpenDataset(name, type);
-        ds.Write(timestamp, BitConverter.GetBytes(value));
-    }
-    
-    public List<(long Timestamp, double Value)> QueryMetrics(
-        string name, string type, long start, long end)
-    {
-        using var ds = _store.OpenDataset(name, type);
-        using var iter = ds.QueryIter(start, end);
-        
-        var results = new List<(long, double)>();
-        foreach (var rec in iter)
-        {
-            double value = BitConverter.ToDouble(rec.Data, 0);
-            results.Add((rec.Timestamp, value));
-        }
-        
-        return results;
-    }
-    
-    public void ProcessQueue(string name, string type, string groupName, 
-        Action<Record> handler)
-    {
-        using var ds = _store.OpenDataset(name, type);
-        using var queue = _store.OpenQueue(ds);
-        using var consumer = queue.OpenConsumer(groupName);
-        
-        while (true)
-        {
-            var record = consumer.Poll(TimeSpan.FromSeconds(1));
-            if (record == null) break;
-            
-            handler(record);
-            consumer.Ack(record.Timestamp);
-        }
-    }
-    
-    public void SyncJournal(string consumerGroupName, Action<JournalRecord> handler)
-    {
-        using var journalQueue = _store.OpenJournalQueue();
-        using var consumer = journalQueue.OpenConsumer(consumerGroupName);
-        
-        while (true)
-        {
-            var record = consumer.Poll(TimeSpan.FromSeconds(1));
-            if (record == null) break;
-            
-            handler(record);
-            consumer.Ack(record.Sequence);
-        }
-    }
-    
-    public void Dispose()
-    {
-        _store.Dispose();
-    }
+};
+
+// Open store
+using var store = Store.Open("/data/timeseries", storeConfig);
+
+// Create dataset
+try
+{
+    store.CreateDataset("sensor", "temperature", datasetConfig);
+}
+catch (TmslException ex) when (ex.Code == TmslErrorCode.AlreadyExists)
+{
+    // Dataset already exists, continue
 }
 
-// Usage
-var app = new TimeSeriesApp("/tmp/timslite-app");
-app.InitializeDatasets();
+// Open dataset
+using var ds = store.OpenDataset("sensor", "temperature");
 
-// Write some metrics
-for (int i = 0; i < 100; i++)
+// Write sensor data
+for (long i = 1; i <= 1000; i++)
 {
-    long ts = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + i;
-    app.WriteMetric("metrics", "cpu", ts, i * 1.5);
+    var value = 20.0 + Math.Sin(i * 0.01) * 5.0;
+    ds.Write(i, BitConverter.GetBytes(value));
 }
 
-// Query metrics
-var results = app.QueryMetrics("metrics", "cpu",
-    DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-    DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 100);
+// Query last hour
+var records = ds.Query(900, 1000);
+Console.WriteLine($"Last hour: {records.Count} records");
 
-foreach (var (ts, value) in results)
+// Query with iterator for large ranges
+using var iter = ds.QueryIter(1, 1000);
+iter.Reverse(); // newest first
+iter.Skip(10);  // skip 10 most recent
+var remaining = iter.CollectAll();
+Console.WriteLine($"Remaining: {remaining.Count} records");
+
+// Check lengths
+var lengths = ds.QueryLength(1, 100);
+foreach (var entry in lengths)
 {
-    Console.WriteLine($"ts={ts}, value={value}");
+    Console.WriteLine($"ts={entry.Timestamp}: {entry.Length} bytes");
 }
 
-app.Dispose();
+// Inspect dataset
+var inspect = store.InspectDataset("sensor", "temperature");
+Console.WriteLine($"Total records: {inspect.State.TotalRecordCount}");
+Console.WriteLine($"Data size: {inspect.State.TotalDataSize} bytes");
+
+// Manual background tasks
+var tick = store.TickBackgroundTasks();
+Console.WriteLine($"Background: {tick.ExecutedTasks} tasks, next in {tick.NextDelayMs}ms");
 ```
