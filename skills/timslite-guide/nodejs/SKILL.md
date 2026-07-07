@@ -28,34 +28,40 @@ Set `TIMSLITE_SKIP_SOURCE_BUILD=1` to skip the source build attempt. Set `TIMSLI
 ```js
 const { Store } = require("timslite");
 
-const store = Store.open("./data", {
-  enableBackgroundThread: false,
-});
+const store = Store.open("./data");
 
-const dataset = store.createDataset("metrics", "cpu");
-dataset.write(1n, Buffer.from("hello"));
+// Create dataset (returns void)
+store.createDataset("metrics", "cpu");
 
-const record = dataset.read(1n);
+// Open dataset handle
+const ds = store.openDataset("metrics", "cpu");
+
+// Write a record
+ds.write(1n, Buffer.from("hello"));
+
+// Read a record
+const record = ds.read(1n);
 if (record) {
   const [timestamp, data] = record;
   console.log(timestamp, data.toString());
 }
 
-dataset.close();
+ds.close();
 store.close();
 ```
 
 ## Documentation
 
 - **[API Reference](api-reference.md)** — Complete Node.js API signatures, parameters, return types, and semantics
+- **[Quick Start](quick-start.md)** — Getting started with common operations
 - **[Examples](examples.md)** — Feature scenarios with copy-paste Node.js examples
 
 ## Key Concepts
 
-### Store and DataSet
+### Store and Dataset
 
 - `Store` is the top-level facade managing data directory, datasets, journal, cache, and background tasks
-- `DataSet` handles per-dataset read/write operations, segment management, and indexing
+- `Dataset` handles per-dataset read/write operations, segment management, and indexing
 - Each `(dataset_name, dataset_type)` pair is an independent dataset with its own segments
 
 ### Timestamps
@@ -73,6 +79,11 @@ store.close();
 - Large records (>64KB) get their own single-record block
 - Max record size: 4 MiB
 
+### Index Modes
+
+- **Sparse mode** (`indexContinuous: false`): Flexible timestamps, O(log n) lookup
+- **Continuous mode** (`indexContinuous: true`): Dense sequential timestamps, O(1) lookup
+
 ## Configuration
 
 ### StoreConfig
@@ -83,11 +94,16 @@ const store = Store.open("./data", {
   idleTimeoutMs: 1800000,           // 30 minutes
   dataSegmentSize: 64 * 1024 * 1024,  // 64 MiB
   indexSegmentSize: 4 * 1024 * 1024,   // 4 MiB
-  compressLevel: 6,                  // 0-9
+  initialDataSegmentSize: 256 * 1024,  // 256 KiB
+  initialIndexSegmentSize: 4096,       // 4 KiB
+  compressLevel: 6,                    // 0-9
+  compressType: 1,                     // 0=deflate, 1=zstd
   cacheMaxMemory: 256 * 1024 * 1024,  // 256 MiB
+  cacheIdleTimeoutMs: 1800000,         // 30 minutes
+  retentionCheckHour: 0,               // UTC hour 0-23
   enableBackgroundThread: true,
   enableJournal: true,
-  readOnly: null,                    // null=auto, true=force RO, false=require writable
+  readOnly: null,                      // null=auto, true=force RO, false=require writable
 });
 ```
 
@@ -95,124 +111,64 @@ const store = Store.open("./data", {
 
 ```js
 store.createDataset("metrics", "cpu", {
-  dataSegmentSize: 128 * 1024 * 1024,  // 128 MiB
-  indexSegmentSize: 8 * 1024 * 1024,    // 8 MiB
-  compressLevel: 9,                      // max compression
-  indexContinuous: true,                 // continuous mode
-  retentionWindow: 86400n,               // 1 day in timestamp units
+  dataSegmentSize: 128 * 1024 * 1024,
+  indexSegmentSize: 8 * 1024 * 1024,
+  initialDataSegmentSize: 512 * 1024,
+  initialIndexSegmentSize: 8192,
+  compressLevel: 9,
+  compressType: 1,                     // 0=deflate, 1=zstd
+  indexContinuous: false,              // false=sparse, true=continuous
+  retentionWindow: 86400n,             // 0=unlimited
   enableJournal: true,
 });
 ```
 
-## Common Patterns
-
-### Batch Writes
+## Module Exports
 
 ```js
-for (let i = 0n; i < 1000n; i++) {
-  const data = Buffer.from(JSON.stringify({ value: Number(i) }));
-  dataset.write(i + 1n, data);
-}
+const {
+  Store, Dataset, QueryIterator, QueryLengthIterator,
+  Queue, QueueConsumer, JournalQueue, JournalQueueConsumer,
+  version
+} = require("timslite");
 ```
 
-### Range Queries
+### Main Classes
 
-```js
-// Lazy query (iterator)
-const iter = dataset.query(100n, 200n);
-for (const [ts, data] of iter) {
-  console.log(`ts=${ts}: ${data.toString()}`);
-}
+- `Store` — Main entry point
+- `Dataset` — Dataset operations
+- `Queue` — Queue operations
+- `QueueConsumer` — Queue consumer
+- `JournalQueue` — Journal queue
+- `JournalQueueConsumer` — Journal consumer
 
-// Eager query (array)
-const records = dataset.queryAll(100n, 200n);
-for (const [ts, data] of records) {
-  console.log(`ts=${ts}: ${data.toString()}`);
-}
-```
+### Iterators
 
-### Queue Consumption
+- `QueryIterator` — Query result iterator
+- `QueryLengthIterator` — Query length iterator
 
-```js
-const queue = store.openQueue(dataset);
-const consumer = queue.openConsumer("worker_group");
+### Functions
 
-// Async poll
-const result = await consumer.poll(5000);
-if (result) {
-  const [ts, data] = result;
-  console.log(`Got task: ${data.toString()}`);
-  consumer.ack(ts);
-}
-
-// Sync poll
-const result = consumer.pollSync(5000);
-if (result) {
-  const [ts, data] = result;
-  console.log(`Got task: ${data.toString()}`);
-  consumer.ack(ts);
-}
-
-queue.close();
-```
-
-### Journal Consumption
-
-```js
-const journalQueue = store.openJournalQueue();
-const consumer = journalQueue.openConsumer("sync_worker");
-
-const result = await consumer.poll(100);
-if (result) {
-  const [seq, payload] = result;
-  console.log(`Journal seq: ${seq}`);
-  consumer.ack(seq);
-}
-
-journalQueue.close();
-```
-
-### Manual Background Tasks
-
-When `enableBackgroundThread: false`, the store does not spawn an internal background thread. You must call `store.tickBackgroundTasks()` periodically to drive flush, idle-close, cache eviction, and retention reclaim.
-
-```js
-const store = Store.open("./data", {
-  enableBackgroundThread: false,
-});
-
-store.createDataset("sensor", "waveform");
-const dataset = store.openDataset("sensor", "waveform");
-dataset.write(1n, Buffer.from("reading_1"));
-
-// Manually execute a tick
-const { executedTasks, nextDelayMs } = store.tickBackgroundTasks();
-console.log(`executed=${executedTasks}, next in ${nextDelayMs}ms`);
-
-// Check the delay without executing anything
-const delay = store.nextBackgroundDelay();
-console.log(`next task due in ${delay}ms`);
-
-// In an event loop:
-while (true) {
-  const { executedTasks, nextDelayMs } = store.tickBackgroundTasks();
-  if (executedTasks > 0) {
-    console.log(`ran ${executedTasks} background tasks`);
-  }
-  await new Promise(resolve => setTimeout(resolve, nextDelayMs));
-}
-
-store.close();
-```
+- `version()` — Returns the native library version string (e.g., `"0.1.3"`)
 
 ## Error Handling
 
-All operations throw `Error` on failure. Common errors:
+```js
+try {
+  store.createDataset("sensor", "waveform");
+} catch (err) {
+  if (err.code === "AlreadyExists") {
+    console.log("Dataset already exists");
+  } else if (err.code === "NotFound") {
+    console.log("Dataset not found");
+  } else {
+    console.error("Error:", err.code, err.message);
+  }
+}
+```
 
-- `AlreadyExists` — dataset already exists
-- `InvalidData` — invalid parameters or data
-- `NotFound` — dataset or record not found
-- `SegmentFull` — segment capacity exceeded
-- `ReadOnly` — write attempted on read-only store
-
-See [Troubleshooting](../troubleshooting.md) for detailed error solutions.
+Error codes:
+- `Io`, `InvalidMagic`, `InvalidVersion`, `Mmap`, `Compression`, `Decompression`
+- `InvalidData`, `NotFound`, `Expired`, `AlreadyExists`, `SegmentFull`
+- `QueueAlreadyOpen`, `QueueNotOpen`, `ConsumerGroupNotFound`, `ConsumerGroupExists`
+- `QueueClosed`, `PendingFull`, `StoreClosed`, `DatasetClosed`, `IteratorExhausted`

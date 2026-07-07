@@ -16,25 +16,34 @@ Prebuilt native bindings are included for:
 
 If the current platform does not have a prebuilt binding, the package attempts to build from source during `postinstall`. Source builds require a Rust toolchain and the platform's native C/C++ build tools.
 
+Set `TIMSLITE_SKIP_SOURCE_BUILD=1` to skip the source build attempt. Set `TIMSLITE_BUILD_FROM_SOURCE=1` to force a local source build even when a prebuilt binding exists.
+
 ## Basic Usage
 
 ```js
 const { Store } = require("timslite");
 
-const store = Store.open("./data", {
-  enableBackgroundThread: false,
-});
+// Open store with default config
+const store = Store.open("./data");
 
-const dataset = store.createDataset("metrics", "cpu");
-dataset.write(1n, Buffer.from("hello"));
+// Create dataset (returns void)
+store.createDataset("metrics", "cpu");
 
-const record = dataset.read(1n);
+// Open dataset handle
+const ds = store.openDataset("metrics", "cpu");
+
+// Write a record
+ds.write(1n, Buffer.from("hello"));
+
+// Read a record
+const record = ds.read(1n);
 if (record) {
   const [timestamp, data] = record;
   console.log(timestamp, data.toString());
 }
 
-dataset.close();
+// Close handles
+ds.close();
 store.close();
 ```
 
@@ -70,10 +79,10 @@ const { Store } = require("timslite");
 
 const store = Store.open("./data");
 store.createDataset("tasks", "jobs");
-const dataset = store.openDataset("tasks", "jobs");
+const ds = store.openDataset("tasks", "jobs");
 
 // Open queue for a dataset
-const queue = store.openQueue(dataset);
+const queue = store.openQueue(ds);
 
 // Push data (auto-assigns next timestamp)
 const ts = queue.push(Buffer.from("task_payload"));
@@ -81,7 +90,7 @@ const ts = queue.push(Buffer.from("task_payload"));
 // Open a consumer group
 const consumer = queue.openConsumer("worker_group");
 
-// Poll for records (with timeout in ms)
+// Poll for records (synchronous, timeout in ms)
 const result = consumer.pollSync(5000);
 if (result) {
   const [ts, data] = result;
@@ -90,7 +99,16 @@ if (result) {
   consumer.ack(ts);
 }
 
+// Async polling
+const asyncResult = await consumer.poll(5000);
+
+// Inspect consumer state
+const inspect = consumer.inspect();
+console.log(`Processed: ${inspect.state.processedTs}`);
+
+consumer.close();
 queue.close();
+ds.close();
 store.close();
 ```
 
@@ -100,85 +118,148 @@ store.close();
 const { Store } = require("timslite");
 
 const store = Store.open("./data");
-store.createDataset("events", "user_actions");
-const dataset = store.openDataset("events", "user_actions");
+store.createDataset("events", "user_actions", { enableJournal: true });
+const ds = store.openDataset("events", "user_actions");
 
 // Every write/delete/append automatically appends to the journal
-dataset.write(1n, Buffer.from("user_login"));
-dataset.write(2n, Buffer.from("page_view"));
-dataset.delete(1n);
+ds.write(1n, Buffer.from("action1"));
+ds.write(2n, Buffer.from("action2"));
 
-// Read journal records
-const latest = store.journalLatestSequence();  // bigint or null
-console.log(`Latest journal seq: ${latest}`);
+// Read journal
+const latest = store.journalLatestSequence();
+console.log(`Latest journal sequence: ${latest}`);
 
-// Consume journal via queue (for downstream sync)
-const journalQueue = store.openJournalQueue();
-const consumer = journalQueue.openConsumer("sync_worker");
-
-const result = consumer.pollSync(100);  // timeout in ms
-if (result) {
-  const [seq, payload] = result;
-  console.log(`Consumed journal seq ${seq}`);
-  consumer.ack(seq);
+const first = store.journalRead(1n);
+if (first) {
+  const [seq, payload] = first;
+  console.log(`Sequence ${seq}: ${payload.length} bytes`);
 }
 
-journalQueue.close();
+// Query journal range
+const entries = store.journalQuery(1n, latest);
+for (const [seq, payload] of entries) {
+  console.log(`Sequence ${seq}`);
+}
+
+ds.close();
 store.close();
 ```
 
-## Manual Background Tasks
-
-When `enableBackgroundThread: false`, the store does not spawn an internal background thread. You must call `store.tickBackgroundTasks()` periodically to drive flush, idle-close, cache eviction, and retention reclaim.
+## Journal Queue Usage
 
 ```js
 const { Store } = require("timslite");
 
-const store = Store.open("./data", {
-  enableBackgroundThread: false,
-});
+const store = Store.open("./data");
+store.createDataset("events", "logs", { enableJournal: true });
+const ds = store.openDataset("events", "logs");
 
-store.createDataset("sensor", "waveform");
-const dataset = store.openDataset("sensor", "waveform");
-dataset.write(1n, Buffer.from("reading_1"));
+// Write some data to generate journal entries
+ds.write(1n, Buffer.from("log1"));
 
-// Manually execute a tick
-const { executedTasks, nextDelayMs } = store.tickBackgroundTasks();
-console.log(`executed=${executedTasks}, next in ${nextDelayMs}ms`);
+// Open journal queue
+const jq = store.openJournalQueue();
+const jc = jq.openConsumer();
 
-// Check the delay without executing anything
-const delay = store.nextBackgroundDelay();
-console.log(`next task due in ${delay}ms`);
-
-// In an event loop:
-while (true) {
-  const { executedTasks, nextDelayMs } = store.tickBackgroundTasks();
-  if (executedTasks > 0) {
-    console.log(`ran ${executedTasks} background tasks`);
-  }
-  await new Promise(resolve => setTimeout(resolve, nextDelayMs));
+// Poll for journal records
+const result = await jc.poll(5000);
+if (result) {
+  const [seq, payload] = result;
+  console.log(`Journal sequence ${seq}: ${payload.length} bytes`);
+  jc.ack(seq);
 }
+
+// Get specific journal record
+const record = jc.get(1n);
+
+jc.close();
+jq.close();
+ds.close();
+store.close();
+```
+
+## Inspection and Monitoring
+
+```js
+const { Store } = require("timslite");
+
+const store = Store.open("./data");
+
+// List datasets
+const names = store.getDatasetNames();
+console.log("Datasets:", names);
+
+const types = store.getDatasetTypes("metrics");
+console.log("Types for 'metrics':", types);
+
+// Inspect dataset
+store.createDataset("sensor", "waveform");
+const inspect = store.inspectDataset("sensor", "waveform");
+console.log("Info:", inspect.info);
+console.log("State:", inspect.state);
+
+const ds = store.openDataset("sensor", "waveform");
+
+// Dataset-level inspection
+const dsInspect = ds.inspect();
+console.log("Dataset info:", dsInspect.info);
+console.log("Dataset state:", dsInspect.state);
+
+ds.close();
+store.close();
+```
+
+## Background Tasks
+
+```js
+const { Store } = require("timslite");
+
+// Manual background tasks (no background thread)
+const store = Store.open("./data", { enableBackgroundThread: false });
+
+// ... do work ...
+
+// Manually trigger background tasks
+const result = store.tickBackgroundTasks();
+console.log(`Executed ${result.executedTasks} tasks`);
+console.log(`Next run in ${result.nextDelayMs}ms`);
 
 store.close();
 ```
 
 ## Error Handling
 
-All operations throw `Error` on failure:
-
 ```js
 const { Store } = require("timslite");
 
 try {
   const store = Store.open("./data");
-  store.createDataset("sensor", "waveform");
-  store.close();
-} catch (e) {
-  console.error(`Error: ${e.message}`);
+  store.createDataset("test", "data");
+  store.createDataset("test", "data"); // AlreadyExists
+} catch (err) {
+  if (err.code === "AlreadyExists") {
+    console.log("Dataset already exists");
+  } else if (err.code === "NotFound") {
+    console.log("Dataset not found");
+  } else {
+    console.error("Error:", err.code, err.message);
+  }
 }
 ```
 
-## Next Steps
+## Read-Only Mode
 
-- See [API Reference](api-reference.md) for complete API documentation
-- See [Examples](examples.md) for more feature scenarios
+```js
+const { Store } = require("timslite");
+
+// Open in read-only mode
+const store = Store.open("./data", { readOnly: true });
+
+const ds = store.openDataset("metrics", "cpu");
+const record = ds.read(1n); // OK
+
+// ds.write(2n, Buffer.from("fail")); // Throws "Store is read-only"
+
+ds.close();
+store.close();
+```

@@ -26,7 +26,7 @@ Opens or connects to a store at `dataDir`. Acquires a `.lock` file for exclusive
 
 **Parameters**:
 - `dataDir`: Path to the data directory (created if not exists)
-- `config`: Optional store configuration
+- `config`: Optional store configuration (uses defaults if omitted)
 
 **Returns**: `Store` on success, throws `Error` on failure.
 
@@ -83,408 +83,592 @@ Lists all dataset types for a given name.
 
 #### `store.inspectDataset(name: string, datasetType: string): DataSetInspectResult`
 
-Returns `DataSetInspectResult` with dataset metadata and runtime statistics.
+Returns `DataSetInspectResult` with dataset metadata and runtime state.
 
-### 2.3 Background Tasks
+### 2.3 Queue Management
+
+#### `store.openQueue(dataset: Dataset): Queue`
+
+Opens a queue on an existing dataset. Only one queue can be open per dataset at a time.
+
+**Errors**: `QueueAlreadyOpen` if a queue is already open for this dataset.
+
+#### `store.openJournalQueue(): JournalQueue`
+
+Opens the journal queue. Only one journal queue can be open per store.
+
+### 2.4 Journal
+
+#### `store.journalLatestSequence(): bigint | null`
+
+Returns the latest journal sequence number, or `null` if no journal exists.
+
+#### `store.journalRead(sequence: bigint): [bigint, Uint8Array] | null`
+
+Reads a journal record by sequence number. Returns `[sequence, payload]` or `null`.
+
+#### `store.journalQuery(startSequence: bigint, endSequence: bigint): [bigint, Uint8Array][]`
+
+Returns all journal records in the range `[startSequence, endSequence]`.
+
+#### `store.readJournalSourceRecord(datasetIdOrName: number | bigint, journalRecord: [bigint, Uint8Array]): [bigint, Uint8Array] | null`
+
+Resolves the source dataset record referenced by a journal `write`/`append` entry (type `0x11`/`0x13`). The second argument can be the raw journal entry returned by `journalRead`/`journalQuery`.
+
+### 2.5 Background Tasks
 
 #### `store.tickBackgroundTasks(): TickResult`
 
-Manually executes pending background tasks. Returns `{ executedTasks, nextDelayMs }`.
-
-#### `store.nextBackgroundDelay(): number`
-
-Returns delay in milliseconds until the next background task is due.
+Manually triggers background tasks (flush, idle-close, cache eviction, retention reclaim). Returns `TickResult` with `executedTasks` and `nextDelayMs`.
 
 ---
 
 ## 3. Dataset
 
-### 3.1 Identity
+### 3.1 Write Operations
 
-#### `dataset.id: bigint`
+#### `dataset.write(ts: bigint, data: Uint8Array): void`
 
-Numeric dataset ID assigned by Store.
+Writes a record at timestamp `ts`.
 
-#### `dataset.identifier: bigint`
+**Parameters**:
+- `ts`: Timestamp (must be `>= latest_written_timestamp`)
+- `data`: Record payload (max 4 MiB)
 
-Alias for `id`.
+**Errors**:
+- `InvalidData` if `ts < latest_written_timestamp`
+- `InvalidData` if `data.length > 4 MiB`
+- `DatasetClosed` if dataset is closed
 
-#### `dataset.dataDir: string`
+#### `dataset.append(ts: bigint, data: Uint8Array): void`
 
-Path to the dataset's data directory.
+Appends data to the record at timestamp `ts`. If `ts > latest_written_timestamp`, creates a new record. If `ts == latest_written_timestamp`, appends to the existing uncompressed tail record.
 
-#### `dataset.latestTimestamp: bigint | null`
+**Parameters**:
+- `ts`: Timestamp (must be `>= latest_written_timestamp`)
+- `data`: Data to append
 
-Returns the `latest_written_timestamp` for this dataset. Returns `null` if never written.
+**Errors**:
+- `InvalidData` if `ts < latest_written_timestamp`
+- `InvalidData` if appending would exceed block capacity
+- `DatasetClosed` if dataset is closed
 
-#### `dataset.closed: boolean`
+#### `dataset.correct(ts: bigint, data: Uint8Array): void`
 
-Returns whether the dataset has been closed.
+Corrects (overwrites) the record at timestamp `ts`.
 
-### 3.2 Write Operations
+**Parameters**:
+- `ts`: Timestamp (must exist)
+- `data`: New record payload
 
-#### `dataset.write(timestamp: number | bigint, data: Buffer | Uint8Array): void`
+**Errors**:
+- `NotFound` if no record at `ts`
+- `Expired` if record has expired
+- `DatasetClosed` if dataset is closed
 
-Writes a record at the given timestamp.
+#### `dataset.delete(ts: bigint): void`
 
-**Rules**:
-- `timestamp >= latest_written_timestamp` → new write (or correction if equal)
-- `timestamp < latest_written_timestamp` and index entry exists → out-of-order rewrite (sparse mode only)
-- `timestamp < latest_written_timestamp` and no index entry → error
-- `data.length <= 4 MiB` (otherwise `InvalidData`)
+Deletes the record at timestamp `ts`.
 
-#### `dataset.append(timestamp: number | bigint, data: Buffer | Uint8Array): void`
+**Parameters**:
+- `ts`: Timestamp to delete
 
-Forward append or in-place tail append.
+**Errors**:
+- `NotFound` if no record at `ts`
+- `Expired` if record has expired
+- `DatasetClosed` if dataset is closed
 
-**Rules**:
-- `timestamp < latest_written_timestamp` → error
-- `timestamp > latest_written_timestamp` → forward append (new record)
-- `timestamp == latest_written_timestamp` → in-place append (only if latest record is in uncompressed pending block)
-- Empty data is a no-op (after timestamp/retention checks)
-- `old_len + data.length <= 4 MiB`
+### 3.2 Read Operations
 
-#### `dataset.delete(timestamp: number | bigint): void`
+#### `dataset.read(ts: bigint): [bigint, Uint8Array] | null`
 
-Deletes a record by timestamp. Does NOT retroactively update `latest_written_timestamp`.
+Reads a record by timestamp.
 
-### 3.3 Read Operations
+**Returns**: `[timestamp, data]` tuple, or `null` if not found or expired.
 
-#### `dataset.read(timestamp: number | bigint): [bigint, Buffer] | null`
+#### `dataset.readLatest(): [bigint, Uint8Array] | null`
 
-Reads a single complete record by exact timestamp.
+Reads the record at `latest_written_timestamp`.
 
-**Returns**:
-- `[timestamp, data]` if the record exists and is valid
-- `null` if the record doesn't exist, is a filler, is deleted, or is expired
+**Returns**: `[timestamp, data]` tuple, or `null` if deleted/expired.
 
-**Note**: `read(-1n)` reads the record at timestamp `-1`, NOT the latest. Use `readLatest()` for the latest.
+#### `dataset.readExist(ts: bigint): boolean`
 
-#### `dataset.readLatest(): [bigint, Buffer] | null`
+Checks if a record exists at timestamp `ts` (not deleted, not expired).
 
-Reads the record at `latest_written_timestamp`. Returns `null` if never written, deleted, or expired.
+#### `dataset.readLength(ts: bigint): number | null`
 
-#### `dataset.readExist(timestamp: number | bigint): boolean`
+Returns the uncompressed data length for the record at `ts`, or `null` if not found.
 
-Fast existence check — index lookup only, no data segment I/O.
+### 3.3 Query Operations
 
-#### `dataset.readLength(timestamp: number | bigint): number | null`
+#### `dataset.query(startTs: bigint, endTs: bigint): QueryIterator`
 
-Reads only the data length of a record (reads the 12-byte record header, not the full data).
+Returns a lazy iterator over records in `[startTs, endTs]`.
 
-### 3.4 Query Operations
+**Usage**:
+```js
+for (const [ts, data] of dataset.query(1n, 100n)) {
+  console.log(ts, data);
+}
+```
 
-#### `dataset.query(startTs: number | bigint, endTs: number | bigint): QueryIterator`
+#### `dataset.queryAll(startTs: bigint, endTs: bigint): [bigint, Uint8Array][]`
 
-Lazy range query iterator. Records are read on-demand via iteration.
+Eagerly collects all records in `[startTs, endTs]` into an array.
 
-**Returns**: `QueryIterator` that yields `[timestamp, data]` tuples.
+#### `dataset.queryLength(startTs: bigint, endTs: bigint): [bigint, number][]`
 
-#### `dataset.queryAll(startTs: number | bigint, endTs: number | bigint): Array<[bigint, Buffer]>`
+Returns timestamp and uncompressed data length pairs for records in `[startTs, endTs]`.
 
-Eager range query. Loads all data into memory.
+#### `dataset.queryLengthAll(startTs: bigint, endTs: bigint): [bigint, number][]`
 
-#### `dataset.queryExist(startTs: number | bigint, endTs: number | bigint): Buffer`
+Same as `queryLength` but eager (returns array).
 
-Fast range existence bitmap. Returns a bitmap where bit `i` is set if a record exists at `startTs + i`.
+#### `dataset.queryLengthIter(startTs: bigint, endTs: bigint): QueryLengthIterator`
 
-#### `dataset.queryLength(startTs: number | bigint, endTs: number | bigint): QueryLengthIterator`
+Returns a lazy iterator over timestamp and length pairs.
 
-Lazy iterator over `[timestamp, data_length]` pairs.
-
-#### `dataset.queryLengthAll(startTs: number | bigint, endTs: number | bigint): Array<[bigint, number]>`
-
-Eager range query returning `[timestamp, data_length]` pairs.
-
-### 3.5 Maintenance
-
-#### `dataset.flush(): void`
-
-Flushes all dirty segments for this dataset to disk.
-
-#### `dataset.close(): void`
-
-Closes the dataset and releases resources.
+### 3.4 Inspection
 
 #### `dataset.inspect(): DataSetInspectResult`
 
-Returns `DataSetInspectResult` with dataset metadata and runtime statistics.
+Returns dataset metadata and runtime state.
+
+### 3.5 Lifecycle
+
+#### `dataset.close(): void`
+
+Closes the dataset handle. Does not flush—use `store.close()` or wait for background flush.
+
+#### `dataset.closed: boolean`
+
+Returns whether the dataset handle has been closed.
 
 ---
 
 ## 4. QueryIterator
 
-Lazy iterator returned by `query()`.
+```js
+const iter = dataset.query(1n, 100n);
+```
+
+### 4.1 Iteration
+
+Implements `Symbol.asyncIterator`, so you can use `for await...of`:
 
 ```js
-const iter = dataset.query(1n, 1000n);
-for (const [ts, data] of iter) {
-  console.log(`ts=${ts}: ${data.toString()}`);
+for await (const [ts, data] of iter) {
+  // process record
 }
 ```
 
-**Properties**:
-- `iter.remaining: number` — Number of remaining records
+Or synchronous `for...of` (works because `next()` returns a plain object):
 
-**Behavior**:
-- Reads records on-demand from data segments
-- Implements `Iterable<[bigint, Buffer]>`
-- Automatically releases resources when dropped
+```js
+for (const [ts, data] of iter) {
+  // process record
+}
+```
+
+### 4.2 Methods
+
+#### `iter.next(): { value: [bigint, Uint8Array] | undefined, done: boolean }`
+
+Advances to the next record.
+
+#### `iter.reverse(): void`
+
+Reverses iteration order. Must be called before first `next()`.
+
+#### `iter.skip(count: number): void`
+
+Skips the next `count` records. Must be called before first `next()`.
+
+#### `iter.collectAll(): [bigint, Uint8Array][]`
+
+Eagerly collects all remaining records into an array.
+
+#### `iter.close(): void`
+
+Closes the iterator and releases native resources. Automatically called when iteration completes.
 
 ---
 
 ## 5. QueryLengthIterator
 
-Lazy iterator returned by `queryLength()`.
+```js
+const iter = dataset.queryLengthIter(1n, 100n);
+```
+
+### 5.1 Iteration
+
+Implements `Symbol.asyncIterator`:
 
 ```js
-const iter = dataset.queryLength(1n, 1000n);
-for (const [ts, length] of iter) {
-  console.log(`ts=${ts}: ${length} bytes`);
+for await (const [ts, length] of iter) {
+  console.log(`ts=${ts}, length=${length}`);
 }
 ```
 
-**Properties**:
-- `iter.remaining: number` — Number of remaining records
+### 5.2 Methods
+
+#### `iter.next(): { value: [bigint, number] | undefined, done: boolean }`
+
+Advances to the next entry.
+
+#### `iter.reverse(): void`
+
+Reverses iteration order. Must be called before first `next()`.
+
+#### `iter.skip(count: number): void`
+
+Skips the next `count` entries. Must be called before first `next()`.
+
+#### `iter.collectAll(): [bigint, number][]`
+
+Eagerly collects all remaining entries into an array.
+
+#### `iter.close(): void`
+
+Closes the iterator and releases native resources.
 
 ---
 
-## 6. Configuration
+## 6. Queue
 
-### 6.1 StoreConfig
+### 6.1 Push
 
-```js
-const config = {
-  flushIntervalMs: 15000,           // 15 seconds
-  idleTimeoutMs: 1800000,           // 30 minutes
-  dataSegmentSize: 64 * 1024 * 1024,  // 64 MiB (number or bigint)
-  indexSegmentSize: 4 * 1024 * 1024,   // 4 MiB (number or bigint)
-  initialDataSegmentSize: 256 * 1024,  // 256 KiB (number or bigint)
-  initialIndexSegmentSize: 4 * 1024,   // 4 KiB (number or bigint)
-  compressLevel: 6,                  // 0-9
-  compressType: 0,                   // 0=zstd, 1=deflate
-  cacheMaxMemory: 256 * 1024 * 1024,  // 256 MiB (number or bigint)
-  cacheIdleTimeoutMs: 1800000,       // 30 minutes
-  retentionCheckHour: 0,             // UTC hour 0-23
-  enableBackgroundThread: true,
-  enableJournal: true,
-  readOnly: null,                    // null=auto, true=force RO, false=require writable
-};
-```
+#### `queue.push(data: Uint8Array): bigint`
 
-### 6.2 CreateDatasetOptions
+Pushes a record to the queue. Auto-assigns the next timestamp.
 
-```js
-const options = {
-  dataSegmentSize: 128 * 1024 * 1024,  // 128 MiB (number or bigint)
-  indexSegmentSize: 8 * 1024 * 1024,    // 8 MiB (number or bigint)
-  initialDataSegmentSize: 512 * 1024,  // 512 KiB (number or bigint)
-  initialIndexSegmentSize: 4 * 1024,   // 4 KiB (number or bigint)
-  compressLevel: 9,                      // 0-9
-  compressType: 0,                       // 0=zstd, 1=deflate
-  indexContinuous: true,                 // false=sparse, true=continuous
-  retentionWindow: 86400n,               // 1 day in timestamp units (number or bigint)
-  enableJournal: true,
-};
-```
+**Returns**: The assigned timestamp.
 
-### 6.3 QueueConsumerOptions
+**Errors**:
+- `StoreClosed` if store is closed
+- `DatasetClosed` if dataset is closed
 
-```js
-const options = {
-  runningExpiredSeconds: 900,  // default 900, max 65535
-  maxRetryCount: 3,           // default 3, max 255
-};
-```
-
----
-
-## 7. Queue Types
-
-### 7.1 Queue
-
-Obtained via `store.openQueue(dataset)`.
-
-**Key behavior**:
-- `push(data)` auto-assigns `timestamp = latest_written_timestamp + 1`
-- `poll(timeout_ms)` returns the next unacked record for this consumer group
-- `ack(timestamp)` marks a record as processed
-- Multiple consumer groups are independent; each maintains its own progress
-
-#### `queue.push(data: Buffer | Uint8Array): bigint`
-
-Push data to the queue. Returns the assigned timestamp.
+### 6.2 Consumer Management
 
 #### `queue.openConsumer(groupName: string, options?: QueueConsumerOptions): QueueConsumer`
 
-Open a consumer group.
+Opens a consumer for the given group.
 
-#### `queue.dropConsumer(groupName: string): void`
+**Parameters**:
+- `groupName`: Consumer group name, must match `^[0-9A-Za-z_-]+$`
+- `options`: Optional consumer configuration
 
-Drop a consumer group.
+**Errors**: `ConsumerGroupExists` if group already has an open consumer.
+
+### 6.3 Lifecycle
 
 #### `queue.close(): void`
 
-Close the queue.
-
-### 7.2 QueueConsumer
-
-Obtained via `queue.openConsumer("group_name")`.
-
-#### `consumer.poll(timeoutMs?: number): Promise<[bigint, Buffer] | null>`
-
-Async poll for the next unacked record. Returns `[timestamp, data]` or `null` on timeout.
-
-#### `consumer.pollSync(timeoutMs?: number): [bigint, Buffer] | null`
-
-Sync poll for the next unacked record. Returns `[timestamp, data]` or `null` on timeout.
-
-#### `consumer.ack(timestamp: number | bigint): void`
-
-Acknowledge a polled record.
-
-#### `consumer.pollCallback(callback: (() => void) | null): void`
-
-Set a callback to be called when new data is available.
+Closes the queue handle.
 
 ---
 
-## 8. Journal
+## 7. QueueConsumer
 
-### 8.1 Journal API
+### 7.1 Poll
 
-#### `store.journalLatestSequence(): bigint | null`
+#### `consumer.pollSync(timeoutMs: number): [bigint, Uint8Array] | null`
 
-Get the latest journal sequence number.
+Synchronously polls for the next record. Blocks up to `timeoutMs` milliseconds.
 
-#### `store.journalRead(sequence: number | bigint): [bigint, Buffer] | null`
+**Returns**: `[timestamp, data]` tuple, or `null` on timeout.
 
-Read a journal record by sequence.
+#### `consumer.poll(timeoutMs: number): Promise<[bigint, Uint8Array] | null>`
 
-#### `store.journalQuery(startSequence: number | bigint, endSequence: number | bigint): Array<[bigint, Buffer]>`
+Asynchronous poll. Returns a Promise that resolves to the next record or `null` on timeout.
 
-Range query journal records.
+### 7.2 Acknowledge
 
-#### `store.readJournalSourceRecord(identifier: number | bigint, indexInfo: JournalIndexInfo): [bigint, Buffer]`
+#### `consumer.ack(ts: bigint): void`
 
-Dereference a journal record to its source data.
+Acknowledges processing of the record at `ts`.
 
-### 8.2 JournalQueue
+### 7.3 Management
 
-#### `store.openJournalQueue(): JournalQueue`
+#### `consumer.flush(): void`
 
-Open a journal queue for consumption.
+Flushes the consumer state file to disk.
 
-#### `journalQueue.openConsumer(groupName: string, options?: QueueConsumerOptions): JournalQueueConsumer`
+#### `consumer.drop(): void`
 
-Open a consumer group for journal consumption.
+Removes the consumer group from the queue state.
+
+#### `consumer.inspect(): QueueConsumerInspectResult`
+
+Returns consumer configuration and runtime state.
+
+### 7.4 Lifecycle
+
+#### `consumer.close(): void`
+
+Closes the consumer handle.
+
+---
+
+## 8. JournalQueue
+
+### 8.1 Push
+
+#### `journalQueue.push(data: Uint8Array): bigint`
+
+Pushes a record to the journal queue.
+
+**Returns**: The assigned journal sequence number.
+
+### 8.2 Consumer Management
+
+#### `journalQueue.openConsumer(): JournalQueueConsumer`
+
+Opens a journal queue consumer.
+
+### 8.3 Lifecycle
 
 #### `journalQueue.close(): void`
 
-Close the journal queue.
-
-### 8.3 JournalQueueConsumer
-
-#### `consumer.poll(timeoutMs?: number): Promise<[bigint, Buffer] | null>`
-
-Async poll for the next journal record. Returns `[sequence, payload]` or `null` on timeout.
-
-#### `consumer.pollSync(timeoutMs?: number): [bigint, Buffer] | null`
-
-Sync poll for the next journal record. Returns `[sequence, payload]` or `null` on timeout.
-
-#### `consumer.ack(sequence: number | bigint): void`
-
-Acknowledge a journal record.
-
-#### `consumer.pollCallback(callback: (() => void) | null): void`
-
-Set a callback to be called when new journal records are available.
+Closes the journal queue handle.
 
 ---
 
-## 9. Types
+## 9. JournalQueueConsumer
 
-### 9.1 DataSetInfo
+### 9.1 Poll
 
-```ts
-interface DataSetInfo {
-  name: string
-  datasetType: string
-  baseDir: string
-  identifier: bigint
-  dataSize: bigint
-  indexSize: bigint
-  initialDataSize: bigint
-  initialIndexSize: bigint
-  compressType: number
-  compressLevel: number
-  indexContinuous: number
-  retentionWindow: bigint
-  enableJournal: boolean
-  createTime: bigint
+#### `consumer.poll(timeoutMs: number): Promise<[bigint, Uint8Array] | null>`
+
+Polls for the next journal record. Returns a Promise.
+
+**Returns**: `[sequence, payload]` tuple, or `null` on timeout.
+
+### 9.2 Acknowledge
+
+#### `consumer.ack(sequence: bigint): void`
+
+Acknowledges processing of the journal record at `sequence`.
+
+### 9.3 Read
+
+#### `consumer.get(sequence: bigint): [bigint, Uint8Array] | null`
+
+Reads a specific journal record by sequence number without advancing the consumer cursor.
+
+### 9.4 Lifecycle
+
+#### `consumer.close(): void`
+
+Closes the journal consumer handle.
+
+---
+
+## 10. Configuration Interfaces
+
+### StoreConfig
+
+```js
+{
+  flushIntervalMs?: number,         // Flush interval in milliseconds (default: 5000)
+  idleTimeoutMs?: number,           // Segment idle timeout in milliseconds (default: 60000)
+  dataSegmentSize?: number | bigint, // Max data segment file size (default: 64 MiB)
+  indexSegmentSize?: number | bigint, // Max index segment file size (default: 4 MiB)
+  initialDataSegmentSize?: number | bigint, // Initial data segment size (default: 256 KiB)
+  initialIndexSegmentSize?: number | bigint, // Initial index segment size (default: 4 KiB)
+  compressLevel?: number,           // Compression level 0-9 (default: 6)
+  compressType?: 0 | 1,             // 0=deflate, 1=zstd (default: 1)
+  cacheMaxMemory?: number | bigint, // Max block cache memory (default: 256 MiB)
+  cacheIdleTimeoutMs?: number,      // Cache entry idle timeout in milliseconds (default: 1800000)
+  retentionCheckHour?: number,      // UTC hour 0-23 for retention check (default: 0)
+  enableBackgroundThread?: boolean, // Enable background thread (default: true)
+  enableJournal?: boolean,          // Enable journal (default: true)
+  readOnly?: boolean | null,        // null=auto, true=force RO, false=require writable
 }
 ```
 
-### 9.2 DataSetState
+### CreateDatasetOptions
 
-```ts
-interface DataSetState {
-  latestWrittenTimestamp: bigint | null
-  openDataSegments: number
-  dataSegments: number
-  totalRecordCount: bigint
-  totalDataSize: bigint
-  totalUncompressedSize: bigint
-  totalInvalidRecordCount: bigint
-  minTimestamp: bigint | null
-  maxTimestamp: bigint | null
-  openIndexSegments: number
-  indexSegments: number
-  pendingIndexEntries: number
-  baseTimestamp: bigint | null
-  readOnly: boolean
-  hasBlockCache: boolean
-  hasJournal: boolean
-  hasQueue: boolean
-  queueConsumerGroups: number
+```js
+{
+  dataSegmentSize?: number | bigint,
+  indexSegmentSize?: number | bigint,
+  initialDataSegmentSize?: number | bigint,
+  initialIndexSegmentSize?: number | bigint,
+  compressLevel?: number,
+  compressType?: 0 | 1,             // 0=deflate, 1=zstd
+  indexContinuous?: boolean,        // false=sparse, true=continuous (default: false)
+  retentionWindow?: number | bigint, // 0=unlimited
+  enableJournal?: boolean,          // default: false
 }
 ```
 
-### 9.3 TickResult
+### QueueConsumerOptions
 
-```ts
-interface TickResult {
-  executedTasks: number
-  nextDelayMs: number
-}
-```
-
-### 9.4 JournalIndexInfo
-
-```ts
-interface JournalIndexInfo {
-  timestamp: bigint
-  blockOffset: bigint
-  inBlockOffset: number
+```js
+{
+  runningExpiredSeconds?: number, // Seconds before pending entry is considered stuck (default: 300)
+  maxRetryCount?: number,         // Max retry count before entry is parked (default: 5)
 }
 ```
 
 ---
 
-## 10. Index Modes
+## 11. Data Types
 
-### Sparse Mode (`indexContinuous = false`)
+### Record
 
-- Binary search on `(timestamp, block_offset)` pairs
-- Supports arbitrary timestamp values
-- Out-of-order writes allowed (if timestamp already exists)
-- Choose when: timestamps are irregular, event-driven, or have large gaps
+`[bigint, Uint8Array]` — timestamp and data tuple.
 
-### Continuous Mode (`indexContinuous = true`)
+### JournalRecord
 
-- Mathematical formula: `position = (timestamp - base_timestamp) / time_step`
-- Timestamps must be dense sequential integers
-- `write(ts)` fills the appropriate position, creating filler prefixes as needed
-- O(1) timestamp-to-position calculation within a segment
-- Choose when: timestamps are dense sequential integers (e.g., per-second sensor readings with few gaps)
+`[bigint, Uint8Array]` — sequence number and payload tuple.
+
+### DataSetInspectResult
+
+```js
+{
+  info: DataSetInfo,
+  state: DataSetState,
+}
+```
+
+### DataSetInfo
+
+```js
+{
+  name: string,
+  datasetType: string,
+  baseDir: string,
+  identifier: bigint,
+  dataSize: bigint,
+  indexSize: bigint,
+  initialDataSize: bigint,
+  initialIndexSize: bigint,
+  compressType: number,
+  compressLevel: number,
+  indexContinuous: number,       // 0=sparse, 1=continuous
+  retentionWindow: bigint,
+  enableJournal: boolean,
+  createTime: bigint,
+}
+```
+
+### DataSetState
+
+```js
+{
+  latestWrittenTimestamp: bigint | null,
+  openDataSegments: number,
+  dataSegments: number,
+  totalRecordCount: bigint,
+  totalDataSize: bigint,
+  totalUncompressedSize: bigint,
+  totalInvalidRecordCount: bigint,
+  minTimestamp: bigint | null,
+  maxTimestamp: bigint | null,
+  openIndexSegments: number,
+  indexSegments: number,
+  pendingIndexEntries: number,
+  baseTimestamp: bigint | null,
+  readOnly: boolean,
+  hasBlockCache: boolean,
+  hasJournal: boolean,
+  hasQueue: boolean,
+  queueConsumerGroups: number,
+}
+```
+
+### QueueConsumerInspectResult
+
+```js
+{
+  info: QueueConsumerInfo,
+  state: QueueConsumerState,
+}
+```
+
+### QueueConsumerInfo
+
+```js
+{
+  groupName: string,
+  runningExpiredSeconds: number,
+  maxRetryCount: number,
+}
+```
+
+### QueueConsumerState
+
+```js
+{
+  processedTs: bigint,
+  pendingEntries: QueueConsumerPendingEntry[],
+}
+```
+
+### QueueConsumerPendingEntry
+
+```js
+{
+  timestamp: bigint,
+  startTime: bigint,
+  status: number,
+  retryCount: number,
+}
+```
+
+### TickResult
+
+```js
+{
+  executedTasks: number,
+  nextDelayMs: number,
+}
+```
+
+---
+
+## 12. Error Handling
+
+All errors are standard JavaScript `Error` objects with a `code` property indicating the error type.
+
+### Error Codes
+
+| Code | Description |
+|------|-------------|
+| `Io` | I/O error |
+| `InvalidMagic` | Invalid file magic bytes |
+| `InvalidVersion` | Unsupported file version |
+| `Mmap` | Memory mapping error |
+| `Compression` | Compression error |
+| `Decompression` | Decompression error |
+| `InvalidData` | Invalid data or parameters |
+| `NotFound` | Dataset or record not found |
+| `Expired` | Record has expired |
+| `AlreadyExists` | Dataset already exists |
+| `SegmentFull` | Segment is full |
+| `QueueAlreadyOpen` | Queue already open for dataset |
+| `QueueNotOpen` | Queue not open |
+| `ConsumerGroupNotFound` | Consumer group not found |
+| `ConsumerGroupExists` | Consumer group already exists |
+| `QueueClosed` | Queue is closed |
+| `PendingFull` | Pending queue is full |
+| `StoreClosed` | Store is closed |
+| `DatasetClosed` | Dataset is closed |
+| `IteratorExhausted` | Iterator has no more items |
+
+### Error Handling Pattern
+
+```js
+try {
+  store.createDataset("test", "data");
+} catch (err) {
+  if (err.code === "AlreadyExists") {
+    console.log("Dataset already exists");
+  } else {
+    console.error("Error:", err.message);
+  }
+}
+```

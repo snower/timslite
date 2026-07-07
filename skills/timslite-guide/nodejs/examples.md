@@ -50,6 +50,7 @@ if (latest) {
   console.log(`Latest at ${ts}: ${data.toString()}`);
 }
 
+ds.close();
 store.close();
 ```
 
@@ -88,482 +89,476 @@ if (record) {
   console.log(`Record 500: ${data.toString()}`);
 }
 
-// Continuous mode auto-fills gaps with null on read
-// If you write ts=1 and ts=100, reading ts=50 returns null (filler)
+// Continuous mode is ideal for evenly-spaced data
+// Gaps waste space but are allowed (sparse mode is better for irregular data)
 
+ds.close();
 store.close();
 ```
 
 **Key points**:
-- Continuous mode assumes timestamps are dense sequential integers
-- Missing timestamps become filler entries (read returns `null`)
-- O(1) timestamp-to-position calculation within a segment
+- Continuous mode enables O(1) timestamp lookup
+- Best for evenly-spaced timestamps with minimal gaps
+- Gaps are allowed but waste index space
 
 ---
 
-## Scenario 3: Queue (FIFO Consumer Groups)
+## Scenario 3: Append to Existing Record
 
-**When**: You need ordered delivery with consumer group semantics (like Kafka consumer groups).
+**When**: You need to extend a record's data incrementally (e.g., building a payload in chunks).
 
 ```js
 const { Store } = require("timslite");
 
-const store = Store.open("/data/app");
+const store = Store.open("/data/append");
+store.createDataset("events", "chunked");
+const ds = store.openDataset("events", "chunked");
+
+// Write initial record
+ds.write(1n, Buffer.from("chunk1"));
+
+// Append to the same timestamp (must be >= latest_written_timestamp)
+ds.append(1n, Buffer.from(",chunk2"));
+ds.append(1n, Buffer.from(",chunk3"));
+
+// Read the full record
+const record = ds.read(1n);
+if (record) {
+  console.log(record[1].toString()); // "chunk1,chunk2,chunk3"
+}
+
+// Forward append (ts > latest_written_timestamp) creates new record
+ds.append(2n, Buffer.from("new_record"));
+
+ds.close();
+store.close();
+```
+
+**Key points**:
+- `append(ts, data)` with `ts == latest_written_timestamp` extends the existing tail record
+- `append(ts, data)` with `ts > latest_written_timestamp` creates a new record
+- Append only works on uncompressed tail records
+
+---
+
+## Scenario 4: Correction and Deletion
+
+**When**: You need to fix or remove previously written records.
+
+```js
+const { Store } = require("timslite");
+
+const store = Store.open("/data/corrections");
+store.createDataset("metrics", "correctable");
+const ds = store.openDataset("metrics", "correctable");
+
+// Write some records
+ds.write(1n, Buffer.from("original_value"));
+ds.write(2n, Buffer.from("another_value"));
+
+// Correct a record (overwrites data at existing timestamp)
+ds.correct(1n, Buffer.from("corrected_value"));
+
+// Verify correction
+const record = ds.read(1n);
+console.log(record[1].toString()); // "corrected_value"
+
+// Delete a record
+ds.delete(2n);
+
+// Verify deletion
+const deleted = ds.read(2n);
+console.log(deleted); // null
+
+ds.close();
+store.close();
+```
+
+**Key points**:
+- `correct(ts, data)` overwrites an existing record's data
+- `delete(ts)` removes a record (soft delete — data remains until reclaimed)
+- Deleted records return `null` from `read()`
+
+---
+
+## Scenario 5: Query Length (Header-Only Scan)
+
+**When**: You need record sizes without reading full data (e.g., for capacity planning or selective reads).
+
+```js
+const { Store } = require("timslite");
+
+const store = Store.open("/data/length");
+store.createDataset("logs", "entries");
+const ds = store.openDataset("logs", "entries");
+
+// Write records of varying sizes
+ds.write(1n, Buffer.from("short"));
+ds.write(2n, Buffer.from("a much longer record with more data"));
+ds.write(3n, Buffer.from("medium length"));
+
+// Query lengths only (no data transfer)
+const lengths = ds.queryLength(1n, 3n);
+for (const [ts, length] of lengths) {
+  console.log(`ts=${ts}: ${length} bytes`);
+}
+
+// Use readLength for single record
+const len = ds.readLength(2n);
+console.log(`Record 2 length: ${len}`);
+
+// Selective read based on length
+for (const [ts, length] of lengths) {
+  if (length > 10) {
+    const record = ds.read(ts);
+    console.log(`Large record at ${ts}: ${record[1].toString()}`);
+  }
+}
+
+ds.close();
+store.close();
+```
+
+**Key points**:
+- `queryLength()` returns `[timestamp, length]` pairs without reading data
+- `readLength(ts)` returns length for a single timestamp
+- Useful for capacity planning and selective reads
+
+---
+
+## Scenario 6: Queue Consumer Pattern
+
+**When**: You need reliable task processing with consumer groups.
+
+```js
+const { Store } = require("timslite");
+
+const store = Store.open("/data/queue");
 store.createDataset("tasks", "jobs");
 const ds = store.openDataset("tasks", "jobs");
 
-// Open queue for a dataset
 const queue = store.openQueue(ds);
 
-// Push data (auto-assigns next timestamp)
-const ts1 = queue.push(Buffer.from("task_1"));
-const ts2 = queue.push(Buffer.from("task_2"));
-
-// Open a consumer group
-const consumer = queue.openConsumer("worker_group");
-
-// Poll for records (with timeout in ms)
-const result = consumer.pollSync(5000);
-if (result) {
-  const [ts, data] = result;
-  console.log(`Got task at ${ts}: ${data.toString()}`);
-  // Acknowledge processing
-  consumer.ack(ts);
+// Producer: push tasks
+for (let i = 0; i < 100; i++) {
+  const payload = Buffer.from(JSON.stringify({ taskId: i, action: "process" }));
+  const ts = queue.push(payload);
+  console.log(`Pushed task ${i} at ts=${ts}`);
 }
 
-queue.close();
-store.close();
-```
-
-**Key points**:
-- `push` auto-assigns `timestamp = latest_written_timestamp + 1`
-- Multiple consumer groups are independent
-- Multiple consumers in the same group share progress (mutual exclusion)
-
----
-
-## Scenario 4: Queue with Retry and Expiry
-
-**When**: You need automatic retry for failed tasks and expiry for stuck tasks.
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("/data/app");
-store.createDataset("retry_queue", "jobs");
-const ds = store.openDataset("retry_queue", "jobs");
-const queue = store.openQueue(ds);
-
-// Push some tasks
-queue.push(Buffer.from("important_task"));
-
-// Open consumer with retry config
-const consumer = queue.openConsumer("retry_group", {
-  runningExpiredSeconds: 60,  // re-deliver after 60s if not acked
-  maxRetryCount: 3,           // drop after 3 retries
+// Consumer: process tasks
+const consumer = queue.openConsumer("worker_group", {
+  runningExpiredSeconds: 60,  // 60s before stuck task is retried
+  maxRetryCount: 3,           // max 3 retries before parked
 });
 
 // Poll and process
 const result = consumer.pollSync(5000);
 if (result) {
   const [ts, data] = result;
-  console.log(`Processing: ${data.toString()}`);
-  // If processing fails, don't ack — it will be re-delivered after 60s
-  // After 3 failures, the entry is dropped
+  const task = JSON.parse(data.toString());
+  console.log(`Processing task ${task.taskId}`);
+
+  // Acknowledge successful processing
   consumer.ack(ts);
 }
 
+// Async polling
+const asyncResult = await consumer.poll(5000);
+if (asyncResult) {
+  consumer.ack(asyncResult[0]);
+}
+
+// Inspect consumer state
+const inspect = consumer.inspect();
+console.log(`Processed up to: ${inspect.state.processedTs}`);
+console.log(`Pending entries: ${inspect.state.pendingEntries.length}`);
+
+consumer.close();
 queue.close();
+ds.close();
 store.close();
 ```
 
 **Key points**:
-- `runningExpiredSeconds`: re-deliver pending entries after this timeout
-- `maxRetryCount`: drop entries after this many retries (0 = unlimited)
+- Each consumer group tracks its own position independently
+- `pollSync()` blocks synchronously; `poll()` returns a Promise
+- `ack(ts)` advances the consumer position
+- Stuck tasks are automatically retried after `runningExpiredSeconds`
 
 ---
 
-## Scenario 5: Journal for Change Tracking / Hot Migration
+## Scenario 7: Iterator Control
 
-**When**: You need to track all data changes for audit, sync to another system, or recovery.
+**When**: You need fine-grained control over query iteration (reverse, skip, collect).
 
 ```js
 const { Store } = require("timslite");
 
-const store = Store.open("/data/app");
+const store = Store.open("/data/iter");
+store.createDataset("events", "controlled");
+const ds = store.openDataset("events", "controlled");
 
-// Journal is enabled by default. Create a dataset.
-store.createDataset("events", "user_actions");
-const ds = store.openDataset("events", "user_actions");
-
-// Every write/delete/append automatically appends to the journal
-ds.write(1n, Buffer.from("user_login"));
-ds.write(2n, Buffer.from("page_view"));
-ds.delete(1n);
-
-// Read journal records
-const latest = store.journalLatestSequence();  // e.g., 4n — create + 2 writes + delete
-console.log(`Latest journal seq: ${latest}`);
-
-// Read individual journal record
-const record = store.journalRead(1n);
-if (record) {
-  const [seq, payload] = record;
-  console.log(`Journal record ${seq}: ${payload.length} bytes`);
+// Write test data
+for (let i = 1n; i <= 100n; i++) {
+  ds.write(i, Buffer.from(`event_${i}`));
 }
 
-// Query a range of journal records
-const records = store.journalQuery(1n, latest);
-for (const [seq, payload] of records) {
-  console.log(`Seq ${seq}: ${payload.length} bytes`);
+// Forward iteration (default)
+const forward = ds.query(1n, 10n);
+for (const [ts, data] of forward) {
+  console.log(`Forward: ts=${ts}`);
 }
 
-// Consume journal via queue (for downstream sync)
-const journalQueue = store.openJournalQueue();
-const consumer = journalQueue.openConsumer("sync_worker");
-
-// Each journal record is delivered as a queue entry
-const result = consumer.pollSync(100);
-if (result) {
-  const [seq, payload] = result;
-  console.log(`Consumed journal seq ${seq}`);
-  // Use store.readJournalSourceRecord() to fetch the actual business data
-  consumer.ack(seq);
+// Reverse iteration
+const reverse = ds.query(1n, 10n);
+reverse.reverse();
+for (const [ts, data] of reverse) {
+  console.log(`Reverse: ts=${ts}`);
 }
 
-journalQueue.close();
-store.close();
-```
-
-**Important journal semantics**:
-- Journal is NOT a WAL — no transaction guarantees
-- Journal records do NOT contain business payload; they reference source data via `index_info`
-- Use `store.readJournalSourceRecord(dataset_identifier, index_info)` to dereference
-- Journal append failure does NOT roll back the main operation
-- Disable per-dataset with `enableJournal: false`
-
----
-
-## Scenario 6: Retention Window (Time-Based Data Expiry)
-
-**When**: You want old data to automatically expire and be reclaimed.
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("/data/app");
-
-// Create dataset with 1-day retention (in timestamp units)
-store.createDataset("metrics", "per_second", {
-  retentionWindow: 86400n,  // 86400 seconds = 1 day
-  enableJournal: true,
-});
-
-const ds = store.openDataset("metrics", "per_second");
-
-// Write data with timestamps
-for (let i = 1n; i <= 1000n; i++) {
-  ds.write(i, Buffer.from(`value=${i}`));
+// Skip records
+const skipped = ds.query(1n, 10n);
+skipped.skip(5); // skip first 5
+for (const [ts, data] of skipped) {
+  console.log(`After skip: ts=${ts}`); // starts at 6
 }
 
-// Read old data (may be expired if retentionWindow > 0)
-const record = ds.read(1n);
-if (record) {
-  const [ts, data] = record;
-  console.log(`Old record: ts=${ts}`);
-}
+// Collect all into array
+const collected = ds.query(1n, 10n).collectAll();
+console.log(`Collected ${collected.length} records`);
 
-// Expired records return null on read
-// Reclaim happens during background tasks (daily at retentionCheckHour UTC)
+// QueryLengthIterator with same controls
+const lengthIter = ds.queryLengthIter(1n, 100n);
+lengthIter.reverse();
+lengthIter.skip(10);
+const lengths = lengthIter.collectAll();
+console.log(`Got ${lengths.length} length entries`);
 
+ds.close();
 store.close();
 ```
 
 **Key points**:
-- `retentionWindow` uses the same units as dataset timestamps
-- `retentionWindow = 0n` means no limit
-- `retentionCheckHour` is UTC hour (0-23) for daily reclaim
-- Expired records return `null` on read
-- Reclaim deletes entire segments when all records are expired
+- `reverse()` must be called before first `next()`
+- `skip(count)` must be called before first `next()`
+- `collectAll()` eagerly loads all remaining records
+- `close()` is automatic when iteration completes
 
 ---
 
-## Scenario 7: Read-Only Mode
+## Scenario 8: Inspection and Monitoring
 
-**When**: You want multiple processes to read the same store, or need to inspect data safely.
+**When**: You need to inspect dataset state, consumer progress, or system health.
 
 ```js
 const { Store } = require("timslite");
 
-// Force read-only mode
-const store = Store.open("/data/app", {
-  readOnly: true,
-});
-
-// Read operations work normally
-const ds = store.openDataset("metrics", "cpu");
-const records = ds.queryAll(1n, 100n);
-const info = ds.inspect();
-console.log(`Dataset: ${info.state.totalRecordCount} records`);
-
-// Cannot write, create, drop, or open queues in read-only mode
-// ds.write(1n, Buffer.from("data")) would throw an error
-
-store.close();
-```
-
-**Auto read-only mode** (default):
-- If `.lock` can be acquired → writable
-- If `.lock` is already held → falls back to read-only
-- Use `readOnly: false` to require writable (fail if locked)
-
----
-
-## Scenario 8: Append (In-Place Tail Growth)
-
-**When**: You want to append data to the latest record without creating a new timestamp.
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("/data/logs");
-store.createDataset("app_log", "lines");
-const ds = store.openDataset("app_log", "lines");
-
-// Create initial record at timestamp 1
-ds.append(1n, Buffer.from("line1\n"));
-
-// Append more data to the same timestamp (in-place tail growth)
-ds.append(1n, Buffer.from("line2\n"));
-ds.append(1n, Buffer.from("line3\n"));
-
-// Read the combined record
-const [ts, data] = ds.read(1n);
-console.assert(data.equals(Buffer.from("line1\nline2\nline3\n")));
-
-// Forward append creates a new record
-ds.append(2n, Buffer.from("new_record"));
-
-store.close();
-```
-
-**Append rules**:
-- `timestamp < latest_written_timestamp` → error
-- `timestamp > latest_written_timestamp` → forward append (new record)
-- `timestamp == latest_written_timestamp` → in-place append (only if latest record is in uncompressed pending block)
-- Empty data is a no-op (after timestamp/retention checks)
-- `old_len + data.length <= 4 MiB`
-- Appended data must fit within the current pending block's capacity
-- Does NOT re-notify queue when appending to existing record
-
----
-
-## Scenario 9: Correction Write (Fix Latest Record)
-
-**When**: You wrote data and need to correct the latest record's content.
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("/data/app");
-store.createDataset("events", "actions");
-const ds = store.openDataset("events", "actions");
-
-// Write a record
-ds.write(100n, Buffer.from("wrong_data"));
-
-// Correct it by writing to the same timestamp
-// (only works if latest_written_timestamp == 100 and the record is in a pending raw block)
-ds.write(100n, Buffer.from("corrected_data"));
-
-// If the block has already been sealed/compressed, the correction
-// automatically falls back to an "update write": new data is appended
-// to the latest data segment, the index is updated, and the old
-// record's segment gets invalidRecordCount incremented.
-
-store.close();
-```
-
-**Correction behavior**:
-- Triggers when `timestamp == latest_written_timestamp`
-- If latest record is in pending raw block → in-place correction
-- If latest record is in sealed/compressed block → update write (new data + index update)
-- Cache invalidation occurs for affected blocks
-
----
-
-## Scenario 10: Out-of-Order Write (Sparse Mode)
-
-**When**: You need to update an existing timestamp (not the latest).
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("/data/app");
-store.createDataset("events", "actions");
-const ds = store.openDataset("events", "actions");
-
-// Write some records
-ds.write(1n, Buffer.from("data_1"));
-ds.write(2n, Buffer.from("data_2"));
-ds.write(3n, Buffer.from("data_3"));
-
-// Update timestamp 1 (out-of-order write)
-// Only works in sparse mode, and only if timestamp 1 already has an index entry
-ds.write(1n, Buffer.from("updated_data_1"));
-
-// Out-of-order write to a timestamp with NO index entry → ERROR
-// ds.write(1n, Buffer.from("data"))  // would fail if timestamp 1 didn't exist
-
-store.close();
-```
-
-**In continuous mode**: Out-of-order writes are not supported. Timestamps must be `>= latest_written_timestamp`.
-
----
-
-## Scenario 11: Large Record (Single-Record Block)
-
-**When**: A single record's encoded size exceeds 64KB (the normal block payload limit).
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("/data/app");
-store.createDataset("blobs", "files");
-const ds = store.openDataset("blobs", "files");
-
-// Records larger than 64KB get their own exclusive block
-// (SINGLE_RECORD flag set, immediately compressed)
-const largeData = Buffer.alloc(100_000, 0x78);  // ~100KB
-ds.write(1n, largeData);
-
-// Reading works normally
-const [ts, data] = ds.read(1n);
-console.assert(data.length === 100_000);
-
-store.close();
-```
-
-**Rules**:
-- Single record max: 4 MiB (`write` and `append` both enforce this)
-- Records > 64KB encoded → exclusive single-record block (SINGLE_RECORD | SEALED | COMPRESSED)
-- Records ≤ 64KB → aggregated into normal blocks (pending → sealed on overflow)
-
----
-
-## Scenario 12: Multi-Dataset Isolation
-
-**When**: You have multiple data streams that need independent storage.
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("/data/app");
-
-// Each (name, type) pair is an independent dataset
-store.createDataset("sensors", "temperature");
-store.createDataset("sensors", "humidity");
-store.createDataset("sensors", "pressure");
-store.createDataset("events", "user_action");
-store.createDataset("events", "system");
+const store = Store.open("/data/monitor");
 
 // List all datasets
-for (const name of store.getDatasetNames()) {
-  for (const type of store.getDatasetTypes(name)) {
-    console.log(`${name}/${type}`);
-  }
-}
+const names = store.getDatasetNames();
+console.log("Datasets:", names);
 
-// Open and use each independently
-const ds1 = store.openDataset("sensors", "temperature");
-const ds2 = store.openDataset("events", "user_action");
+// List types for a dataset
+const types = store.getDatasetTypes("sensor");
+console.log("Sensor types:", types);
 
-ds1.write(1n, Buffer.from("23.5C"));
-ds2.write(1n, Buffer.from("login"));
+// Inspect store-level dataset
+store.createDataset("sensor", "waveform", { enableJournal: true });
+const inspect = store.inspectDataset("sensor", "waveform");
 
-// Inspect a dataset
-const inspect = store.inspectDataset("sensors", "temperature");
-console.log(`Records: ${inspect.state.totalRecordCount}`);
+console.log("=== Dataset Info ===");
+console.log(`Name: ${inspect.info.name}`);
+console.log(`Type: ${inspect.info.datasetType}`);
+console.log(`Identifier: ${inspect.info.identifier}`);
+console.log(`Compression: ${inspect.info.compressType === 0 ? "deflate" : "zstd"}`);
+console.log(`Index mode: ${inspect.info.indexContinuous === 0 ? "sparse" : "continuous"}`);
+console.log(`Retention: ${inspect.info.retentionWindow}`);
+console.log(`Journal: ${inspect.info.enableJournal}`);
+
+console.log("\n=== Dataset State ===");
+console.log(`Latest timestamp: ${inspect.state.latestWrittenTimestamp}`);
+console.log(`Data segments: ${inspect.state.dataSegments} (${inspect.state.openDataSegments} open)`);
+console.log(`Index segments: ${inspect.state.indexSegments} (${inspect.state.openIndexSegments} open)`);
+console.log(`Total records: ${inspect.state.totalRecordCount}`);
 console.log(`Data size: ${inspect.state.totalDataSize} bytes`);
+console.log(`Read-only: ${inspect.state.readOnly}`);
+console.log(`Queue groups: ${inspect.state.queueConsumerGroups}`);
 
-store.close();
-```
+const ds = store.openDataset("sensor", "waveform");
 
-**Directory layout**: Each dataset gets its own `{name}/{type}/` directory with independent `meta`, `data/`, `index/`, `state`, and optional `queue/`.
+// Dataset-level inspection
+const dsInspect = ds.inspect();
+console.log("\n=== Dataset Handle State ===");
+console.log(`Closed: ${ds.closed}`);
 
----
-
-## Scenario 13: Efficient Existence Checking
-
-**When**: You need to check if records exist without loading data (e.g., for deduplication or coverage checks).
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("/data/app");
-store.createDataset("events", "actions");
-const ds = store.openDataset("events", "actions");
-
-// Single record existence (index only, no data I/O)
-const exists = ds.readExist(12345n);
-
-// Range existence bitmap (index only, no data I/O)
-const bitmap = ds.queryExist(1n, 1000n);
-// bitmap[i] is set if record at (startTs + i) exists
-
-// Record length (reads 12-byte header only)
-const length = ds.readLength(12345n);  // number or null
-
-// Range lengths (reads headers only)
-const lengths = ds.queryLengthAll(1n, 1000n);  // Array<[bigint, number]>
-
-store.close();
-```
-
-**Performance hierarchy** (fastest to slowest):
-1. `readExist` / `queryExist` — index only, no data segment I/O
-2. `readLength` / `queryLength` / `queryLengthAll` — reads 12-byte record header only
-3. `read` / `query` / `queryAll` — reads full data
-
----
-
-## Scenario 14: Manual Background Tasks
-
-**When**: You need fine-grained control over background task execution.
-
-```js
-const { Store } = require("timslite");
-
-const store = Store.open("./data", {
-  enableBackgroundThread: false,
-});
-
-store.createDataset("sensor", "waveform");
-const dataset = store.openDataset("sensor", "waveform");
-dataset.write(1n, Buffer.from("reading_1"));
-
-// Manually execute a tick
-const { executedTasks, nextDelayMs } = store.tickBackgroundTasks();
-console.log(`executed=${executedTasks}, next in ${nextDelayMs}ms`);
-
-// Check the delay without executing anything
-const delay = store.nextBackgroundDelay();
-console.log(`next task due in ${delay}ms`);
-
-// In an event loop:
-while (true) {
-  const { executedTasks, nextDelayMs } = store.tickBackgroundTasks();
-  if (executedTasks > 0) {
-    console.log(`ran ${executedTasks} background tasks`);
-  }
-  await new Promise(resolve => setTimeout(resolve, nextDelayMs));
-}
-
+ds.close();
 store.close();
 ```
 
 **Key points**:
-- When `enableBackgroundThread: false`, you must call `tickBackgroundTasks()` periodically
-- Returns `{ executedTasks, nextDelayMs }`
-- Use `nextBackgroundDelay()` to check when the next task is due without executing
+- `inspectDataset()` returns both static config and runtime state
+- `inspect()` on Dataset handle returns the same data
+- Useful for monitoring, debugging, and capacity planning
+
+---
+
+## Scenario 9: Journal Queue for Audit/Sync
+
+**When**: You need to consume journal entries for audit logging or cross-system sync.
+
+```js
+const { Store } = require("timslite");
+
+const store = Store.open("/data/journal");
+store.createDataset("events", "audited", { enableJournal: true });
+const ds = store.openDataset("events", "audited");
+
+// Write events (automatically journaled)
+ds.write(1n, Buffer.from("user_login"));
+ds.write(2n, Buffer.from("page_view"));
+ds.write(3n, Buffer.from("purchase"));
+
+// Open journal queue
+const jq = store.openJournalQueue();
+const jc = jq.openConsumer();
+
+// Process journal entries
+for (let i = 0; i < 10; i++) {
+  const entry = await jc.poll(1000);
+  if (entry) {
+    const [seq, payload] = entry;
+    console.log(`Journal #${seq}: ${payload.length} bytes`);
+    jc.ack(seq);
+  } else {
+    break;
+  }
+}
+
+// Get specific journal record without advancing cursor
+const specific = jc.get(1n);
+if (specific) {
+  console.log(`Journal #${specific[0]}: ${specific[1].length} bytes`);
+}
+
+jc.close();
+jq.close();
+ds.close();
+store.close();
+```
+
+**Key points**:
+- Journal entries are automatically created for write/delete/append operations
+- `openJournalQueue()` creates a persistent consumer
+- `poll()` returns `[sequence, payload]` tuples
+- `get(sequence)` reads without advancing the cursor
+
+---
+
+## Scenario 10: Background Tasks
+
+**When**: You need manual control over background maintenance (flush, eviction, retention).
+
+```js
+const { Store } = require("timslite");
+
+// Disable background thread for manual control
+const store = Store.open("/data/manual", { enableBackgroundThread: false });
+
+store.createDataset("metrics", "cpu");
+const ds = store.openDataset("metrics", "cpu");
+
+// Write data
+for (let i = 1n; i <= 1000n; i++) {
+  ds.write(i, Buffer.from(`cpu=${Number(i) * 0.01}`));
+}
+
+// Manually trigger background tasks
+const result = store.tickBackgroundTasks();
+console.log(`Executed ${result.executedTasks} tasks`);
+console.log(`Next run in ${result.nextDelayMs}ms`);
+
+// Run again to flush
+const result2 = store.tickBackgroundTasks();
+console.log(`Executed ${result2.executedTasks} tasks`);
+
+ds.close();
+store.close();
+```
+
+**Key points**:
+- `enableBackgroundThread: false` disables automatic background tasks
+- `tickBackgroundTasks()` manually triggers flush, idle-close, eviction, retention
+- Returns `TickResult` with execution count and next recommended delay
+
+---
+
+## Scenario 11: Error Handling
+
+**When**: You need robust error handling for production use.
+
+```js
+const { Store } = require("timslite");
+
+try {
+  const store = Store.open("/data/errors");
+
+  // AlreadyExists error
+  store.createDataset("test", "data");
+  try {
+    store.createDataset("test", "data");
+  } catch (err) {
+    if (err.code === "AlreadyExists") {
+      console.log("Dataset already exists — expected");
+    }
+  }
+
+  // NotFound error
+  try {
+    store.openDataset("nonexistent", "data");
+  } catch (err) {
+    if (err.code === "NotFound") {
+      console.log("Dataset not found — expected");
+    }
+  }
+
+  // InvalidData error
+  try {
+    store.createDataset("", "data"); // empty name
+  } catch (err) {
+    if (err.code === "InvalidData") {
+      console.log("Invalid name — expected");
+    }
+  }
+
+  // Read-only store
+  const roStore = Store.open("/data/errors", { readOnly: true });
+  const ds = roStore.openDataset("test", "data");
+  try {
+    ds.write(999n, Buffer.from("fail"));
+  } catch (err) {
+    if (err.code === "StoreClosed") {
+      console.log("Cannot write to read-only store — expected");
+    }
+  }
+  ds.close();
+  roStore.close();
+
+  store.close();
+} catch (err) {
+  console.error("Unexpected error:", err.code, err.message);
+}
+```
+
+**Error codes**:
+- `AlreadyExists`: Dataset already exists
+- `NotFound`: Dataset or record not found
+- `InvalidData`: Invalid parameters
+- `StoreClosed`: Operation on closed store
+- `DatasetClosed`: Operation on closed dataset
+- `QueueClosed`: Operation on closed queue
+- `ConsumerGroupExists`: Consumer group already open
+- `ConsumerGroupNotFound`: Consumer group not found
+- `Expired`: Record has expired
+- `SegmentFull`: Segment is full
