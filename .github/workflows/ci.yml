@@ -185,7 +185,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             wrapper/java/native/target
-          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-java-${{ hashFiles('wrapper/java/native/Cargo.lock', 'Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-java-
 
@@ -215,7 +215,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             wrapper/dotnet/native/target
-          key: ${{ runner.os }}-cargo-dotnet-${{ hashFiles('wrapper/dotnet/native/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-dotnet-${{ hashFiles('wrapper/dotnet/native/Cargo.lock', 'Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-dotnet-
 

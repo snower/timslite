@@ -95,7 +95,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             wrapper/dotnet/native/target
-          key: ${{ runner.os }}-${{ matrix.rid }}-cargo-dotnet-${{ hashFiles('wrapper/dotnet/native/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.rid }}-cargo-dotnet-${{ hashFiles('wrapper/dotnet/native/Cargo.lock', 'Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.rid }}-cargo-dotnet-
             ${{ runner.os }}-cargo-dotnet-
