@@ -17,9 +17,18 @@ import io.github.snower.timslite.errors.*;
 
 ### 2.1 Lifecycle
 
+#### `Store.open(String dataDir) -> Store`
+
+Opens or connects to a store at `dataDir` with default configuration.
+
+**Parameters**:
+- `dataDir`: Path to the data directory (created if not exists)
+
+**Returns**: `Store` on success, throws `TmslException` on failure.
+
 #### `Store.open(String dataDir, StoreConfig config) -> Store`
 
-Opens or connects to a store at `dataDir`. Acquires a `.lock` file for exclusive write access. If the lock is already held and `config.readOnly` is `null` (auto), falls back to read-only mode.
+Opens or connects to a store at `dataDir` with explicit configuration. Acquires a `.lock` file for exclusive write access. If the lock is already held and `config.readOnly` is `null` (auto), falls back to read-only mode.
 
 **Parameters**:
 - `dataDir`: Path to the data directory (created if not exists)
@@ -48,7 +57,7 @@ Creates a new dataset with explicit parameters.
 **Parameters**:
 - `name`: Dataset name, must match `^[0-9A-Za-z_-]+$`, max 255 bytes
 - `datasetType`: Dataset type, same naming rules
-- `options`: Dataset configuration options
+- `options`: Dataset configuration options (use `CreateDatasetOptionsBuilder`)
 
 **Errors**:
 - `AlreadyExistsException` if dataset already exists
@@ -78,417 +87,712 @@ Lists all dataset names in the store.
 
 Lists all dataset types for a given name.
 
-#### `store.inspectDataset(String name, String datasetType) -> DataSetInspectResult`
+#### `store.inspectDataset(String name, String datasetType) -> InspectResult`
 
-Returns `DataSetInspectResult` with dataset metadata and runtime statistics.
+Returns `InspectResult` with dataset metadata and runtime statistics.
 
-### 2.3 Background Tasks
+### 2.3 Queue Management
+
+#### `store.openQueue(Dataset dataset) -> Queue`
+
+Opens a queue for the given dataset.
+
+**Parameters**:
+- `dataset`: The dataset to open a queue for
+
+**Returns**: `Queue` handle
+
+#### `store.openQueue(long datasetIdentifier) -> Queue`
+
+Opens a queue for the dataset identified by its numeric identifier.
+
+### 2.4 Journal Access
+
+#### `store.openJournalQueue() -> JournalQueue`
+
+Opens a journal queue for consuming change-log records.
+
+**Errors**: `QueueAlreadyOpenException` if journal queue is already open.
+
+#### `store.journalLatestSequence() -> Long`
+
+Returns the latest journal sequence number, or `null` if journal is empty.
+
+#### `store.journalRead(long sequence) -> JournalRecord`
+
+Reads a single journal record by sequence number.
+
+**Returns**: `JournalRecord` or `null` if not found.
+
+#### `store.journalQuery(long startSequence, long endSequence) -> List<JournalRecord>`
+
+Queries journal records in the range `[startSequence, endSequence)`.
+
+#### `store.readJournalSourceRecord(long datasetIdentifier, String indexInfo) -> Record`
+
+Reads the source dataset record referenced by a journal entry. Used to fetch the actual business data when processing journal change-log entries.
+
+**Returns**: `Record` or `null` if source record is deleted/expired.
+
+### 2.5 Background Tasks
 
 #### `store.tickBackgroundTasks() -> TickResult`
 
-Manually executes pending background tasks. Returns `TickResult { executedTasks, nextDelayMs }`.
+Manually triggers background tasks (flush, idle-close, cache eviction, retention reclaim). Use when `enableBackgroundThread` is `false`.
 
-#### `store.nextBackgroundDelay() -> long`
-
-Returns delay in milliseconds until the next background task is due.
+**Returns**: `TickResult` with executed task count and next recommended delay.
 
 ---
 
-## 3. Dataset
+## 3. StoreConfig
 
-### 3.1 Identity
-
-#### `ds.getIdentifier() -> long`
-
-Numeric dataset ID assigned by Store.
-
-#### `ds.getId() -> long`
-
-Alias for `getIdentifier()`.
-
-#### `ds.getDataDir() -> String`
-
-Path to the dataset's data directory.
-
-#### `ds.getLatestTimestamp() -> Long`
-
-Returns the `latest_written_timestamp` for this dataset. Returns `null` if never written.
-
-#### `ds.isClosed() -> boolean`
-
-Returns whether the dataset has been closed.
-
-### 3.2 Write Operations
-
-#### `ds.write(long timestamp, byte[] data) -> void`
-
-Writes a record at the given timestamp.
-
-**Rules**:
-- `timestamp >= latest_written_timestamp` → new write (or correction if equal)
-- `timestamp < latest_written_timestamp` and index entry exists → out-of-order rewrite (sparse mode only)
-- `timestamp < latest_written_timestamp` and no index entry → error
-- `data.length <= 4 MiB` (otherwise `InvalidDataException`)
-
-#### `ds.append(long timestamp, byte[] data) -> void`
-
-Forward append or in-place tail append.
-
-**Rules**:
-- `timestamp < latest_written_timestamp` → error
-- `timestamp > latest_written_timestamp` → forward append (new record)
-- `timestamp == latest_written_timestamp` → in-place append (only if latest record is in uncompressed pending block)
-- Empty data is a no-op (after timestamp/retention checks)
-- `old_len + data.length <= 4 MiB`
-
-#### `ds.delete(long timestamp) -> void`
-
-Deletes a record by timestamp. Does NOT retroactively update `latest_written_timestamp`.
-
-### 3.3 Read Operations
-
-#### `ds.read(long timestamp) -> Record`
-
-Reads a single complete record by exact timestamp.
-
-**Returns**:
-- `Record { timestamp, data }` if the record exists and is valid
-- `null` if the record doesn't exist, is a filler, is deleted, or is expired
-
-**Note**: `read(-1L)` reads the record at timestamp `-1`, NOT the latest. Use `readLatest()` for the latest.
-
-#### `ds.readLatest() -> Record`
-
-Reads the record at `latest_written_timestamp`. Returns `null` if never written, deleted, or expired.
-
-#### `ds.readExist(long timestamp) -> boolean`
-
-Fast existence check — index lookup only, no data segment I/O.
-
-#### `ds.readLength(long timestamp) -> Long`
-
-Reads only the data length of a record (reads the 12-byte record header, not the full data). Returns `null` if not found.
-
-### 3.4 Query Operations
-
-#### `ds.query(long startTs, long endTs) -> List<Record>`
-
-Eager range query. Loads all data into memory. Returns `List<Record>` sorted by timestamp.
-
-#### `ds.queryIter(long startTs, long endTs) -> QueryIterator`
-
-Lazy range query iterator. Records are read on-demand via `hasNext()`/`next()`.
-
-**Implements**: `AutoCloseable` for try-with-resources.
-
-#### `ds.queryExist(long startTs, long endTs) -> byte[]`
-
-Fast range existence bitmap. Returns a bitmap where bit `i` is set if a record exists at `startTs + i`.
-
-#### `ds.queryLength(long startTs, long endTs) -> List<LengthEntry>`
-
-Eager range query returning `List<LengthEntry>` with timestamp and data length.
-
-#### `ds.queryLengthIter(long startTs, long endTs) -> QueryLengthIterator`
-
-Lazy iterator over `LengthEntry` pairs.
-
-**Implements**: `AutoCloseable` for try-with-resources.
-
-### 3.5 Maintenance
-
-#### `ds.flush() -> void`
-
-Flushes all dirty segments for this dataset to disk.
-
-#### `ds.inspect() -> DataSetInspectResult`
-
-Returns `DataSetInspectResult` with dataset metadata and runtime statistics.
-
----
-
-## 4. Record
-
-Returned by read and query operations.
-
-```java
-public class Record {
-    public long getTimestamp();  // record timestamp
-    public byte[] getData();     // record data payload
-}
-```
-
----
-
-## 5. LengthEntry
-
-Returned by query length operations.
-
-```java
-public class LengthEntry {
-    public long getTimestamp();  // record timestamp
-    public int getLength();      // data length in bytes
-}
-```
-
----
-
-## 6. QueryIterator
-
-Lazy iterator returned by `queryIter()`.
-
-```java
-try (QueryIterator it = ds.queryIter(1L, 1000L)) {
-    while (it.hasNext()) {
-        Record rec = it.next();
-        System.out.println(rec.getTimestamp() + ": " + new String(rec.getData()));
-    }
-}
-```
-
-**Implements**: `Iterator<Record>`, `AutoCloseable`.
-
----
-
-## 7. QueryLengthIterator
-
-Lazy iterator returned by `queryLengthIter()`.
-
-```java
-try (QueryLengthIterator it = ds.queryLengthIter(1L, 1000L)) {
-    while (it.hasNext()) {
-        LengthEntry entry = it.next();
-        System.out.println(entry.getTimestamp() + ": " + entry.getLength() + " bytes");
-    }
-}
-```
-
-**Implements**: `Iterator<LengthEntry>`, `AutoCloseable`.
-
----
-
-## 8. Configuration
-
-### 8.1 StoreConfig / StoreConfigBuilder
+Use `StoreConfigBuilder` to create a `StoreConfig`:
 
 ```java
 StoreConfig config = StoreConfigBuilder.builder()
-        .flushIntervalMs(15000)           // 15 seconds
-        .idleTimeoutMs(1800000)           // 30 minutes
-        .dataSegmentSize(64 * 1024 * 1024)  // 64 MiB
-        .indexSegmentSize(4 * 1024 * 1024)   // 4 MiB
-        .initialDataSegmentSize(256 * 1024)  // 256 KiB
-        .initialIndexSegmentSize(4 * 1024)   // 4 KiB
-        .compressLevel(6)                  // 0-9
-        .compressType(0)                   // 0=zstd, 1=deflate
-        .cacheMaxMemory(256 * 1024 * 1024)  // 256 MiB
-        .cacheIdleTimeoutMs(1800000)       // 30 minutes
-        .retentionCheckHour(0)             // UTC hour 0-23
+        .flushIntervalSecs(15)
+        .idleTimeoutSecs(1800)
+        .dataSegmentSize(64 * 1024 * 1024)
+        .indexSegmentSize(4 * 1024 * 1024)
+        .initialDataSegmentSize(256 * 1024)
+        .initialIndexSegmentSize(4 * 1024)
+        .compressLevel(6)
+        .cacheMaxMemory(256 * 1024 * 1024)
+        .cacheIdleTimeoutSecs(1800)
+        .retentionCheckHour((byte) 0)
         .enableBackgroundThread(true)
         .enableJournal(true)
-        .readOnly(null)                    // null=auto, true=force RO, false=require writable
+        .readOnly(null)  // null=auto, true=force RO, false=require writable
         .build();
 ```
 
-### 8.2 CreateDatasetOptions / CreateDatasetOptionsBuilder
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `flushIntervalSecs` | `long` | 15 | Seconds between periodic flushes (0 = disabled) |
+| `idleTimeoutSecs` | `long` | 1800 | Seconds before idle segment is closed |
+| `dataSegmentSize` | `long` | 64 MiB | Max data segment file size |
+| `indexSegmentSize` | `long` | 4 MiB | Max index segment file size |
+| `initialDataSegmentSize` | `long` | 256 KiB | Initial data segment allocation |
+| `initialIndexSegmentSize` | `long` | 4 KiB | Initial index segment allocation |
+| `compressLevel` | `byte` | 6 | Compression level (0-9) |
+| `cacheMaxMemory` | `long` | 256 MiB | Max block cache memory |
+| `cacheIdleTimeoutSecs` | `long` | 1800 | Seconds before idle cache entry is evicted |
+| `retentionCheckHour` | `byte` | 0 | UTC hour for retention check (0-23) |
+| `enableBackgroundThread` | `boolean` | true | Enable background task thread |
+| `enableJournal` | `boolean` | true | Enable journal change-log |
+| `readOnly` | `Boolean` | null | null=auto, true=force RO, false=require writable |
+
+---
+
+## 4. Dataset
+
+### 4.1 Write Operations
+
+#### `dataset.write(long timestamp, byte[] data) -> void`
+
+Writes a record at the given timestamp. If a record already exists at that timestamp, a correction is applied.
+
+**Parameters**:
+- `timestamp`: Signed 64-bit timestamp
+- `data`: Record payload, up to 4 MiB
+
+**Errors**:
+- `InvalidDataException` if data exceeds 4 MiB
+- `ExpiredException` if timestamp falls outside retention window
+- `InvalidDataException` if timestamp < latest_written_timestamp (sparse mode)
+
+#### `dataset.append(long timestamp, byte[] data) -> void`
+
+Appends data to the latest record or creates a new one.
+
+- If `timestamp > latest_written_timestamp`: creates new record
+- If `timestamp == latest_written_timestamp`: appends to existing uncompressed record
+- If `timestamp < latest_written_timestamp`: throws error
+
+**Errors**:
+- `InvalidDataException` if append would exceed 4 MiB block limit
+- `InvalidDataException` if timestamp < latest_written_timestamp
+
+#### `dataset.correct(long timestamp, byte[] data) -> void`
+
+Corrects a record at the given timestamp. Equivalent to `write()` but semantically indicates a correction.
+
+#### `dataset.delete(long timestamp) -> void`
+
+Deletes the record at the given timestamp.
+
+**Errors**: `ExpiredException` if timestamp falls outside retention window.
+
+### 4.2 Read Operations
+
+#### `dataset.read(long timestamp) -> Record`
+
+Reads the record at the exact timestamp.
+
+**Returns**: `Record` or `null` if not found or expired.
+
+**Note**: `read(-1L)` reads the record at timestamp `-1`, not the latest.
+
+#### `dataset.readLatest() -> Record`
+
+Reads the record at `latest_written_timestamp`.
+
+**Returns**: `Record` or `null` if latest is deleted/expired.
+
+#### `dataset.readExist(long timestamp) -> boolean`
+
+Checks if a record exists at the given timestamp without reading data.
+
+**Returns**: `true` if record exists, `false` otherwise.
+
+#### `dataset.readLength(long timestamp) -> int`
+
+Reads the length of the record at the given timestamp.
+
+**Returns**: Record length in bytes, or `0` if not found.
+
+### 4.3 Query Operations
+
+#### `dataset.query(long startTimestamp, long endTimestamp) -> List<Record>`
+
+Eagerly loads all records in the range `[startTimestamp, endTimestamp]`.
+
+**Returns**: `List<Record>` (may be empty).
+
+**Note**: For large ranges, prefer `queryIter()` to avoid loading everything into memory.
+
+#### `dataset.queryIter(long startTimestamp, long endTimestamp) -> QueryIterator`
+
+Returns a lazy iterator over records in the range `[startTimestamp, endTimestamp]`.
+
+**Implements**: `AutoCloseable` for try-with-resources.
+
+#### `dataset.queryLength(long startTimestamp, long endTimestamp) -> QueryLengthIterator`
+
+Returns a lazy iterator over record lengths (reads only 12-byte headers).
+
+**Implements**: `AutoCloseable` for try-with-resources.
+
+#### `dataset.queryLengthIter(long startTimestamp, long endTimestamp) -> QueryLengthIterator`
+
+Alias for `queryLength()`.
+
+#### `dataset.queryLengthAll(long startTimestamp, long endTimestamp) -> List<LengthEntry>`
+
+Eagerly loads all record lengths in the range.
+
+**Returns**: `List<LengthEntry>` with timestamp and length pairs.
+
+### 4.4 Inspection
+
+#### `dataset.inspect() -> InspectResult`
+
+Returns `InspectResult` with dataset configuration and runtime state.
+
+### 4.5 Lifecycle
+
+#### `dataset.close() -> void`
+
+Closes this dataset handle.
+
+#### `dataset.isClosed() -> boolean`
+
+Returns whether this dataset has been closed.
+
+---
+
+## 5. CreateDatasetOptions
+
+Use `CreateDatasetOptionsBuilder` to create options:
 
 ```java
 CreateDatasetOptions options = CreateDatasetOptionsBuilder.builder()
         .config(DatasetConfigBuilder.builder()
-                .dataSegmentSize(128 * 1024 * 1024)  // 128 MiB
-                .indexSegmentSize(8 * 1024 * 1024)    // 8 MiB
-                .initialDataSegmentSize(512 * 1024)  // 512 KiB
-                .initialIndexSegmentSize(4 * 1024)   // 4 KiB
-                .compressLevel(9)                      // 0-9
-                .compressType(0)                       // 0=zstd, 1=deflate
-                .indexContinuous((byte) 1)             // 0=sparse, 1=continuous
-                .retentionWindow(86400)                // 1 day in timestamp units
+                .dataSegmentSize(128 * 1024 * 1024)
+                .indexSegmentSize(8 * 1024 * 1024)
+                .compressLevel((byte) 9)
+                .indexContinuous((byte) 1)  // 0=sparse, 1=continuous
+                .retentionWindow(86400)
                 .enableJournal(true)
                 .build())
         .build();
 ```
 
-### 8.3 QueueConsumerOptions / QueueConsumerOptionsBuilder
+---
+
+## 6. DatasetConfig
+
+Use `DatasetConfigBuilder` to create a `DatasetConfig`:
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `dataSegmentSize` | `long` | inherit | Max data segment file size |
+| `indexSegmentSize` | `long` | inherit | Max index segment file size |
+| `initialDataSegmentSize` | `long` | inherit | Initial data segment allocation |
+| `initialIndexSegmentSize` | `long` | inherit | Initial index segment allocation |
+| `compressLevel` | `byte` | inherit | Compression level (0-9) |
+| `compressType` | `byte` | auto | Compression type (auto-selected if not set) |
+| `indexContinuous` | `byte` | 0 | Index mode: 0=sparse, 1=continuous |
+| `retentionWindow` | `long` | 0 | Retention window in timestamp units (0=no limit) |
+| `enableJournal` | `boolean` | false | Enable journal for this dataset |
+
+---
+
+## 7. Queue
+
+### 7.1 Push
+
+#### `queue.push(byte[] data) -> long`
+
+Pushes a record to the queue. Auto-assigns `timestamp = latest_written_timestamp + 1`.
+
+**Returns**: The assigned timestamp.
+
+### 7.2 Consumer Management
+
+#### `queue.openConsumer(String groupName, QueueConsumerOptions options) -> QueueConsumer`
+
+Opens a consumer for the given group.
+
+**Parameters**:
+- `groupName`: Consumer group name, must match `^[0-9A-Za-z_-]+$`
+- `options`: Consumer configuration options
+
+**Returns**: `QueueConsumer` handle.
+
+#### `queue.openConsumer(String groupName) -> QueueConsumer`
+
+Opens a consumer with default options.
+
+### 7.3 Lifecycle
+
+#### `queue.close() -> void`
+
+Closes this queue handle.
+
+#### `queue.isClosed() -> boolean`
+
+Returns whether this queue has been closed.
+
+---
+
+## 8. QueueConsumer
+
+### 8.1 Poll
+
+#### `consumer.poll(long timeoutMs) -> Record`
+
+Polls for the next record, blocking up to the specified timeout.
+
+**Parameters**:
+- `timeoutMs`: Maximum time to wait in milliseconds; 0 returns immediately
+
+**Returns**: `Record` or `null` if timeout expires.
+
+### 8.2 Acknowledge
+
+#### `consumer.ack(long timestamp) -> void`
+
+Acknowledges processing of the record at the given timestamp. Advances the consumer position.
+
+### 8.3 Management
+
+#### `consumer.flush() -> void`
+
+Flushes consumer state to disk.
+
+#### `consumer.drop() -> void`
+
+Drops this consumer group. Removes the consumer state file.
+
+#### `consumer.inspect() -> QueueConsumerInspectResult`
+
+Inspects the consumer group state.
+
+**Returns**: `QueueConsumerInspectResult` with info and state.
+
+### 8.4 Lifecycle
+
+#### `consumer.close() -> void`
+
+Closes this consumer handle.
+
+#### `consumer.isClosed() -> boolean`
+
+Returns whether this consumer has been closed.
+
+---
+
+## 9. QueueConsumerOptions
+
+Use `QueueConsumerOptionsBuilder` to create options:
 
 ```java
 QueueConsumerOptions options = QueueConsumerOptionsBuilder.builder()
         .config(QueueConsumerConfigBuilder.builder()
-                .runningExpiredSeconds(900)  // default 900, max 65535
-                .maxRetryCount((short) 3)   // default 3, max 255
+                .runningExpiredSeconds(30)
+                .maxRetryCount((short) 3)
                 .build())
         .build();
 ```
 
 ---
 
-## 9. Queue Types
+## 10. QueueConsumerConfig
 
-### 9.1 Queue
+Use `QueueConsumerConfigBuilder` to create a config:
 
-Obtained via `store.openQueue(dataset)`.
-
-**Key behavior**:
-- `push(data)` auto-assigns `timestamp = latest_written_timestamp + 1`
-- `poll(timeout_ms)` returns the next unacked record for this consumer group
-- `ack(timestamp)` marks a record as processed
-- Multiple consumer groups are independent; each maintains its own progress
-
-**Implements**: `AutoCloseable`.
-
-#### `queue.push(byte[] data) -> long`
-
-Push data to the queue. Returns the assigned timestamp.
-
-#### `queue.openConsumer(String groupName, QueueConsumerOptions options) -> QueueConsumer`
-
-Open a consumer group.
-
-#### `queue.dropConsumer(String groupName) -> void`
-
-Drop a consumer group.
-
-#### `queue.close() -> void`
-
-Close the queue.
-
-### 9.2 QueueConsumer
-
-Obtained via `queue.openConsumer("group_name", options)`.
-
-**Implements**: `AutoCloseable`.
-
-#### `consumer.poll(long timeoutMs) -> Record`
-
-Poll for the next unacked record. Returns `Record` or `null` on timeout.
-
-#### `consumer.ack(long timestamp) -> void`
-
-Acknowledge a polled record.
-
-#### `consumer.close() -> void`
-
-Close the consumer.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `runningExpiredSeconds` | `long` | 0 | Seconds before a running record is considered expired (0=disabled) |
+| `maxRetryCount` | `short` | 0 | Max retry count for expired records (0=unlimited) |
 
 ---
 
-## 10. Journal
+## 11. JournalQueue
 
-### 10.1 Journal API
-
-#### `store.journalLatestSequence() -> Long`
-
-Get the latest journal sequence number. Returns `null` if journal is empty.
-
-#### `store.journalRead(long sequence) -> JournalRecord`
-
-Read a journal record by sequence. Returns `null` if not found.
-
-#### `store.journalQuery(long startSequence, long endSequence) -> List<JournalRecord>`
-
-Range query journal records.
-
-#### `store.readJournalSourceRecord(long identifier, JournalIndexInfo indexInfo) -> Record`
-
-Dereference a journal record to its source data.
-
-### 10.2 JournalQueue
-
-#### `store.openJournalQueue() -> JournalQueue`
-
-Open a journal queue for consumption.
-
-**Implements**: `AutoCloseable`.
+### 11.1 Consumer Management
 
 #### `journalQueue.openConsumer(String groupName, QueueConsumerOptions options) -> JournalQueueConsumer`
 
-Open a consumer group for journal consumption.
+Opens a journal consumer for the given group.
+
+**Parameters**:
+- `groupName`: Consumer group name
+- `options`: Consumer configuration options
+
+**Returns**: `JournalQueueConsumer` handle.
+
+#### `journalQueue.openConsumer(String groupName) -> JournalQueueConsumer`
+
+Opens a journal consumer with default options.
+
+### 11.2 Lifecycle
 
 #### `journalQueue.close() -> void`
 
-Close the journal queue.
+Closes this journal queue handle.
 
-### 10.3 JournalQueueConsumer
+#### `journalQueue.isClosed() -> boolean`
 
-**Implements**: `AutoCloseable`.
+Returns whether this journal queue has been closed.
+
+---
+
+## 12. JournalQueueConsumer
+
+### 12.1 Poll
 
 #### `consumer.poll(long timeoutMs) -> JournalRecord`
 
-Poll for the next journal record. Returns `JournalRecord` or `null` on timeout.
+Polls for the next journal record, blocking up to the specified timeout.
+
+**Parameters**:
+- `timeoutMs`: Maximum time to wait in milliseconds; 0 returns immediately
+
+**Returns**: `JournalRecord` or `null` if timeout expires.
+
+### 12.2 Acknowledge
 
 #### `consumer.ack(long sequence) -> void`
 
-Acknowledge a journal record.
+Acknowledges processing of the journal record at the given sequence.
+
+### 12.3 Lifecycle
 
 #### `consumer.close() -> void`
 
-Close the consumer.
+Closes this journal consumer handle.
+
+#### `consumer.isClosed() -> boolean`
+
+Returns whether this journal consumer has been closed.
 
 ---
 
-## 11. JournalRecord
+## 13. QueryIterator
 
-Returned by journal operations.
+Iterator over query results. Implements `AutoCloseable` for try-with-resources.
 
 ```java
-public class JournalRecord {
-    public long getSequence();  // journal sequence number
-    public byte[] getData();    // journal payload
+try (QueryIterator it = ds.queryIter(startTs, endTs)) {
+    while (it.hasNext()) {
+        Record rec = it.next();
+        // process record
+    }
 }
 ```
+
+### Methods
+
+#### `it.hasNext() -> boolean`
+
+Returns `true` if more records are available.
+
+#### `it.next() -> Record`
+
+Returns the next record, or `null` if exhausted.
+
+#### `it.reverse() -> void`
+
+Reverses the iteration direction.
+
+#### `it.skip(long count) -> void`
+
+Skips the next `count` records.
+
+#### `it.close() -> void`
+
+Closes the iterator and releases native resources.
+
+#### `it.isClosed() -> boolean`
+
+Returns whether the iterator is closed.
 
 ---
 
-## 12. Error Types
+## 14. QueryLengthIterator
 
-All errors are thrown as subclasses of `TmslException`, which extends `RuntimeException`.
-
-```java
-import io.github.snower.timslite.errors.*;
-
-// Base exception
-public class TmslException extends RuntimeException {
-    public TmslErrorCode code();  // error code
-}
-
-// Specific exceptions
-public class AlreadyExistsException extends TmslException {}
-public class NotFoundException extends TmslException {}
-public class InvalidDataException extends TmslException {}
-public class SegmentFullException extends TmslException {}
-public class ReadOnlyException extends TmslException {}
-public class ExpiredException extends TmslException {}
-```
-
-### TmslErrorCode
+Iterator over query-length results. Implements `AutoCloseable`.
 
 ```java
-public enum TmslErrorCode {
-    ALREADY_EXISTS,
-    NOT_FOUND,
-    INVALID_DATA,
-    SEGMENT_FULL,
-    READ_ONLY,
-    EXPIRED,
-    IO_ERROR,
-    // ... other variants
+try (QueryLengthIterator it = ds.queryLength(startTs, endTs)) {
+    while (it.hasNext()) {
+        LengthEntry entry = it.next();
+        // process entry
+    }
 }
 ```
+
+### Methods
+
+#### `it.hasNext() -> boolean`
+
+Returns `true` if more entries are available.
+
+#### `it.next() -> LengthEntry`
+
+Returns the next length entry, or `null` if exhausted.
+
+#### `it.reverse() -> void`
+
+Reverses the iteration direction.
+
+#### `it.skip(long count) -> void`
+
+Skips the next `count` entries.
+
+#### `it.close() -> void`
+
+Closes the iterator and releases native resources.
+
+#### `it.isClosed() -> boolean`
+
+Returns whether the iterator is closed.
 
 ---
 
-## 13. Index Modes
+## 15. Data Types
 
-### Sparse Mode (`indexContinuous = 0`)
+### Record
 
-- Binary search on `(timestamp, block_offset)` pairs
-- Supports arbitrary timestamp values
-- Out-of-order writes allowed (if timestamp already exists)
-- Choose when: timestamps are irregular, event-driven, or have large gaps
+A time-series record containing a timestamp and payload data.
 
-### Continuous Mode (`indexContinuous = 1`)
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getTimestamp()` | `long` | Record timestamp |
+| `getData()` | `byte[]` | Defensive copy of payload |
 
-- Mathematical formula: `position = (timestamp - base_timestamp) / time_step`
-- Timestamps must be dense sequential integers
-- `write(ts)` fills the appropriate position, creating filler prefixes as needed
-- O(1) timestamp-to-position calculation within a segment
-- Choose when: timestamps are dense sequential integers (e.g., per-second sensor readings with few gaps)
+### JournalRecord
+
+A journal change-log record containing a sequence number and payload data.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getSequence()` | `long` | Journal sequence number (starts at 1) |
+| `getData()` | `byte[]` | Defensive copy of payload |
+
+### LengthEntry
+
+A timestamp and record-length pair.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getTimestamp()` | `long` | Record timestamp |
+| `getLength()` | `int` | Record length in bytes |
+
+### InspectResult
+
+Result of inspecting a dataset.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getInfo()` | `DatasetInfo` | Dataset configuration and metadata |
+| `getState()` | `DatasetState` | Runtime state and statistics |
+
+### DatasetInfo
+
+Configuration and metadata about a dataset.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getName()` | `String` | Dataset name |
+| `getDatasetType()` | `String` | Dataset type |
+| `getBaseDir()` | `String` | Base directory path |
+| `getIdentifier()` | `long` | Numeric dataset identifier |
+| `getDataSegmentSize()` | `long` | Max data segment size |
+| `getIndexSegmentSize()` | `long` | Max index segment size |
+| `getInitialDataSegmentSize()` | `long` | Initial data segment size |
+| `getInitialIndexSegmentSize()` | `long` | Initial index segment size |
+| `getCompressType()` | `short` | Compression type |
+| `getCompressLevel()` | `short` | Compression level |
+| `getIndexContinuous()` | `short` | Index mode (0=sparse, 1=continuous) |
+| `getRetentionWindow()` | `long` | Retention window |
+| `getEnableJournal()` | `boolean` | Journal enabled |
+| `getCreateTime()` | `long` | Creation timestamp |
+
+### DatasetState
+
+Runtime state and statistics of a dataset.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getLatestWrittenTimestamp()` | `Long` | Latest written timestamp (nullable) |
+| `getOpenDataSegments()` | `int` | Number of open data segments |
+| `getDataSegments()` | `int` | Total data segment count |
+| `getTotalRecordCount()` | `long` | Total record count |
+| `getTotalDataSize()` | `long` | Total compressed data size |
+| `getTotalUncompressedSize()` | `long` | Total uncompressed size |
+| `getTotalInvalidRecordCount()` | `long` | Invalid record count |
+| `getMinTimestamp()` | `Long` | Minimum timestamp (nullable) |
+| `getMaxTimestamp()` | `Long` | Maximum timestamp (nullable) |
+| `getOpenIndexSegments()` | `int` | Open index segment count |
+| `getIndexSegments()` | `int` | Total index segment count |
+| `getPendingIndexEntries()` | `int` | Pending index entries |
+| `getBaseTimestamp()` | `Long` | Base timestamp (nullable) |
+| `isReadOnly()` | `boolean` | Whether dataset is read-only |
+| `isHasBlockCache()` | `boolean` | Whether block cache is enabled |
+| `isHasJournal()` | `boolean` | Whether journal is enabled |
+| `isHasQueue()` | `boolean` | Whether queue is open |
+| `getQueueConsumerGroups()` | `int` | Number of queue consumer groups |
+
+### QueueConsumerInspectResult
+
+Result of inspecting a queue consumer group.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getInfo()` | `QueueConsumerInfo` | Consumer group configuration |
+| `getState()` | `QueueConsumerState` | Consumer group state |
+
+### QueueConsumerInfo
+
+Public configuration for a queue consumer group.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getGroupName()` | `String` | Consumer group name |
+| `getRunningExpiredSeconds()` | `long` | Running expiry time |
+| `getMaxRetryCount()` | `int` | Max retry count |
+
+### QueueConsumerState
+
+Durable queue consumer state.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getProcessedTs()` | `long` | Last processed timestamp |
+| `getPendingEntries()` | `List<QueueConsumerPendingEntry>` | Pending entries list |
+
+### QueueConsumerPendingEntry
+
+Pending queue record state.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getTimestamp()` | `long` | Record timestamp |
+| `getStartTime()` | `long` | Processing start time |
+| `getStatus()` | `short` | Entry status |
+| `getRetryCount()` | `short` | Retry count |
+
+### TickResult
+
+Result of a background task tick.
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getExecutedTasks()` | `long` | Number of tasks executed |
+| `getNextDelayMs()` | `long` | Recommended delay before next tick (ms) |
+
+---
+
+## 16. Error Handling
+
+All errors are thrown as subclasses of `TmslException` (extends `RuntimeException`).
+
+### Error Hierarchy
+
+```
+TmslException
+├── IoException
+├── InvalidMagicException
+├── InvalidVersionException
+├── MmapException
+├── CompressionException
+├── DecompressionException
+├── InvalidDataException
+├── NotFoundException
+├── ExpiredException
+├── AlreadyExistsException
+├── SegmentFullException
+├── QueueAlreadyOpenException
+├── QueueNotOpenException
+├── ConsumerGroupNotFoundException
+├── ConsumerGroupExistsException
+├── QueueClosedException
+├── PendingFullException
+├── StoreClosedException
+├── DatasetClosedException
+├── QueueBridgeClosedException
+└── IteratorExhaustedException
+```
+
+### Error Codes
+
+Use `e.code()` to inspect the error category:
+
+| Code | Exception | Description |
+|------|-----------|-------------|
+| `IO` | `IoException` | I/O error |
+| `INVALID_MAGIC` | `InvalidMagicException` | Invalid file magic |
+| `INVALID_VERSION` | `InvalidVersionException` | Unsupported format version |
+| `MMAP` | `MmapException` | Memory-mapping error |
+| `COMPRESSION` | `CompressionException` | Compression error |
+| `DECOMPRESSION` | `DecompressionException` | Decompression error |
+| `INVALID_DATA` | `InvalidDataException` | Invalid or corrupt data |
+| `NOT_FOUND` | `NotFoundException` | Record/dataset not found |
+| `EXPIRED` | `ExpiredException` | Timestamp outside retention |
+| `ALREADY_EXISTS` | `AlreadyExistsException` | Already exists |
+| `SEGMENT_FULL` | `SegmentFullException` | Data segment full |
+| `QUEUE_ALREADY_OPEN` | `QueueAlreadyOpenException` | Queue already open |
+| `QUEUE_NOT_OPEN` | `QueueNotOpenException` | Queue not open |
+| `CONSUMER_GROUP_NOT_FOUND` | `ConsumerGroupNotFoundException` | Consumer group not found |
+| `CONSUMER_GROUP_EXISTS` | `ConsumerGroupExistsException` | Consumer group exists |
+| `QUEUE_CLOSED` | `QueueClosedException` | Queue closed |
+| `PENDING_FULL` | `PendingFullException` | Pending queue full |
+| `STORE_CLOSED` | `StoreClosedException` | Store closed |
+| `DATASET_CLOSED` | `DatasetClosedException` | Dataset closed |
+| `QUEUE_BRIDGE_CLOSED` | `QueueBridgeClosedException` | Queue bridge closed |
+| `ITERATOR_EXHAUSTED` | `IteratorExhaustedException` | Iterator exhausted |
+
+### Example
+
+```java
+try {
+    ds.read(1700000000L);
+} catch (TmslException e) {
+    if (e.code() == TmslErrorCode.EXPIRED) {
+        // timestamp outside retention window
+    }
+}
+```

@@ -47,6 +47,14 @@ try (Store store = Store.open("/data/sensors", config)) {
         if (latest != null) {
             System.out.println("Latest at " + latest.getTimestamp() + ": " + new String(latest.getData()));
         }
+
+        // Check if record exists
+        boolean exists = ds.readExist(150);
+        System.out.println("Record 150 exists: " + exists);
+
+        // Get record length
+        int length = ds.readLength(150);
+        System.out.println("Record 150 length: " + length + " bytes");
     }
 }
 ```
@@ -70,6 +78,7 @@ try (Store store = Store.open("/data/metrics", StoreConfigBuilder.builder().buil
     CreateDatasetOptions options = CreateDatasetOptionsBuilder.builder()
             .config(DatasetConfigBuilder.builder()
                     .indexContinuous((byte) 1)  // continuous mode
+                    .retentionWindow(0)
                     .build())
             .build();
 
@@ -87,8 +96,8 @@ try (Store store = Store.open("/data/metrics", StoreConfigBuilder.builder().buil
             System.out.println("Record 500: " + new String(rec.getData()));
         }
 
-        // Continuous mode auto-fills gaps with null on read
-        // If you write ts=1 and ts=100, reading ts=50 returns null (filler)
+        // Continuous mode auto-fills gaps with None on read
+        // If you write ts=1 and ts=100, reading ts=50 returns None (filler)
     }
 }
 ```
@@ -128,6 +137,11 @@ try (Store store = Store.open("/data/app", StoreConfigBuilder.builder().build())
                 // Acknowledge processing
                 consumer.ack(rec.getTimestamp());
             }
+
+            // Inspect consumer state
+            QueueConsumerInspectResult result = consumer.inspect();
+            System.out.println("Processed up to: " + result.getState().getProcessedTs());
+            System.out.println("Pending: " + result.getState().getPendingEntries().size());
         }
     }
 }
@@ -168,25 +182,32 @@ try (Store store = Store.open("/data/app", StoreConfigBuilder.builder().build())
             // Poll and process
             Record rec = consumer.poll(5000);
             if (rec != null) {
+                // Process the task
                 System.out.println("Processing: " + new String(rec.getData()));
-                // If processing fails, don't ack — it will be re-delivered after 60s
-                // After 3 failures, the entry is dropped
+
+                // If processing succeeds, acknowledge
                 consumer.ack(rec.getTimestamp());
+
+                // If processing fails, don't ack — it will be re-delivered after expiry
             }
+
+            // Flush state to disk
+            consumer.flush();
         }
     }
 }
 ```
 
 **Key points**:
-- `runningExpiredSeconds`: re-deliver pending entries after this timeout
-- `maxRetryCount`: drop entries after this many retries (0 = unlimited)
+- `runningExpiredSeconds` controls how long a record can be "in flight" before re-delivery
+- `maxRetryCount` limits how many times a record can be re-delivered before being dropped
+- Always `ack()` after successful processing
 
 ---
 
-## Scenario 5: Journal for Change Tracking / Hot Migration
+## Scenario 5: Journal (Change Data Capture)
 
-**When**: You need to track all data changes for audit, sync to another system, or recovery.
+**When**: You need to replicate or audit all changes across all datasets.
 
 ```java
 import io.github.snower.timslite.*;
@@ -195,9 +216,14 @@ StoreConfig config = StoreConfigBuilder.builder()
         .enableJournal(true)
         .build();
 
-try (Store store = Store.open("/data/app", config)) {
-    // Journal is enabled by default. Create a dataset.
-    store.createDataset("events", "user_actions", CreateDatasetOptionsBuilder.builder().build());
+try (Store store = Store.open("/data/cdc", config)) {
+    // Create datasets with journal enabled
+    store.createDataset("events", "user_actions",
+            CreateDatasetOptionsBuilder.builder()
+                    .config(DatasetConfigBuilder.builder()
+                            .enableJournal(true)
+                            .build())
+                    .build());
 
     try (Dataset ds = store.openDataset("events", "user_actions")) {
         // Every write/delete/append automatically appends to the journal
@@ -238,7 +264,7 @@ try (Store store = Store.open("/data/app", config)) {
 **Important journal semantics**:
 - Journal is NOT a WAL — no transaction guarantees
 - Journal records do NOT contain business payload; they reference source data via `index_info`
-- Use `store.readJournalSourceRecord(dataset_identifier, index_info)` to dereference
+- Use `store.readJournalSourceRecord(datasetIdentifier, indexInfo)` to dereference
 - Journal append failure does NOT roll back the main operation
 - Disable per-dataset with `DatasetConfigBuilder.enableJournal(false)`
 
@@ -263,270 +289,276 @@ try (Store store = Store.open("/data/app", StoreConfigBuilder.builder().build())
     store.createDataset("metrics", "per_second", options);
 
     try (Dataset ds = store.openDataset("metrics", "per_second")) {
-        // Write data with timestamps
-        for (long i = 1; i <= 1000; i++) {
-            ds.write(i, ("value=" + i).getBytes());
-        }
+        // Write data
+        ds.write(1000, "old_data".getBytes());
+        ds.write(100000, "new_data".getBytes());
 
-        // Read old data (may be expired if retentionWindow > 0)
-        Record rec = ds.read(1);
-        if (rec != null) {
-            System.out.println("Old record: ts=" + rec.getTimestamp());
-        }
+        // Reading expired timestamp returns null
+        Record old = ds.read(1000);  // May return null if expired
+        Record fresh = ds.read(100000);  // Returns (100000, "new_data")
 
-        // Expired records return null on read
-        // Reclaim happens during background tasks (daily at retentionCheckHour UTC)
+        // Retention is enforced at read time and during background reclamation
     }
 }
 ```
 
 **Key points**:
-- `retentionWindow` uses the same units as dataset timestamps
-- `retentionWindow = 0` means no limit
-- `retentionCheckHour` is UTC hour (0-23) for daily reclaim
+- `retentionWindow` uses the same unit as the dataset timestamp
+- `retentionWindow=0` means no limit
 - Expired records return `null` on read
-- Reclaim deletes entire segments when all records are expired
+- Expired timestamps cannot be deleted, rewritten, or corrected
+- Reclamation runs in background (or via `tickBackgroundTasks()`)
 
 ---
 
-## Scenario 7: Read-Only Mode
+## Scenario 7: Query Length (Header-Only Scan)
 
-**When**: You want multiple processes to read the same store, or need to inspect data safely.
+**When**: You need to know record sizes without reading full data.
 
 ```java
 import io.github.snower.timslite.*;
 
-// Force read-only mode
-StoreConfig config = StoreConfigBuilder.builder()
-        .readOnly(true)
-        .build();
+try (Store store = Store.open("/data/length", StoreConfigBuilder.builder().build())) {
+    store.createDataset("metrics", "cpu", CreateDatasetOptionsBuilder.builder().build());
 
-try (Store store = Store.open("/data/app", config)) {
-    // Read operations work normally
     try (Dataset ds = store.openDataset("metrics", "cpu")) {
-        for (Record rec : ds.query(1, 100)) {
-            System.out.println(rec.getTimestamp() + ": " + new String(rec.getData()));
+        // Write some records
+        for (long i = 1; i <= 100; i++) {
+            ds.write(i, String.format("value_%d", i).getBytes());
         }
 
-        DataSetInspectResult info = ds.inspect();
-        System.out.println("Dataset: " + info.getState().getTotalRecordCount() + " records");
-    }
+        // Query lengths (reads only 12-byte headers, not full data)
+        try (QueryLengthIterator it = ds.queryLength(1, 100)) {
+            while (it.hasNext()) {
+                LengthEntry entry = it.next();
+                System.out.println("ts=" + entry.getTimestamp() + ": " + entry.getLength() + " bytes");
+            }
+        }
 
-    // Cannot write, create, drop, or open queues in read-only mode
-    // ds.write(1, "data".getBytes()) would throw ReadOnlyException
-}
-```
+        // Or use the eager version
+        List<LengthEntry> lengths = ds.queryLengthAll(1, 100);
+        int total = 0;
+        for (LengthEntry entry : lengths) {
+            total += entry.getLength();
+        }
+        System.out.println("Total data size: " + total + " bytes");
 
-**Auto read-only mode** (default):
-- If `.lock` can be acquired → writable
-- If `.lock` is already held → falls back to read-only
-- Use `readOnly(false)` to require writable (fail if locked)
+        // Check if a record exists without reading data
+        boolean exists = ds.readExist(50);
+        System.out.println("Record 50 exists: " + exists);
 
----
-
-## Scenario 8: Append (In-Place Tail Growth)
-
-**When**: You want to append data to the latest record without creating a new timestamp.
-
-```java
-import io.github.snower.timslite.*;
-
-try (Store store = Store.open("/data/logs", StoreConfigBuilder.builder().build())) {
-    store.createDataset("app_log", "lines", CreateDatasetOptionsBuilder.builder().build());
-
-    try (Dataset ds = store.openDataset("app_log", "lines")) {
-        // Create initial record at timestamp 1
-        ds.append(1, "line1\n".getBytes());
-
-        // Append more data to the same timestamp (in-place tail growth)
-        ds.append(1, "line2\n".getBytes());
-        ds.append(1, "line3\n".getBytes());
-
-        // Read the combined record
-        Record rec = ds.read(1);
-        assert new String(rec.getData()).equals("line1\nline2\nline3\n");
-
-        // Forward append creates a new record
-        ds.append(2, "new_record".getBytes());
+        // Get just the length of a single record
+        int length = ds.readLength(50);
+        System.out.println("Record 50 length: " + length + " bytes");
     }
 }
 ```
 
-**Append rules**:
-- `timestamp < latest_written_timestamp` → error
-- `timestamp > latest_written_timestamp` → forward append (new record)
-- `timestamp == latest_written_timestamp` → in-place append (only if latest record is in uncompressed pending block)
-- Empty data is a no-op (after timestamp/retention checks)
-- `old_len + data.length <= 4 MiB`
-- Appended data must fit within the current pending block's capacity
-- Does NOT re-notify queue when appending to existing record
+**Key points**:
+- `queryLength()` reads only the 12-byte record header per entry
+- `readExist()` checks index only, no data segment I/O
+- `readLength()` reads only the header for a single record
 
 ---
 
-## Scenario 9: Correction Write (Fix Latest Record)
+## Scenario 8: QueryIterator Control
 
-**When**: You wrote data and need to correct the latest record's content.
+**When**: You need fine-grained control over iteration (reverse, skip).
 
 ```java
 import io.github.snower.timslite.*;
 
-try (Store store = Store.open("/data/app", StoreConfigBuilder.builder().build())) {
-    store.createDataset("events", "actions", CreateDatasetOptionsBuilder.builder().build());
+try (Store store = Store.open("/data/iter", StoreConfigBuilder.builder().build())) {
+    store.createDataset("events", "log", CreateDatasetOptionsBuilder.builder().build());
 
-    try (Dataset ds = store.openDataset("events", "actions")) {
-        // Write a record
-        ds.write(100, "wrong_data".getBytes());
-
-        // Correct it by writing to the same timestamp
-        // (only works if latest_written_timestamp == 100 and the record is in a pending raw block)
-        ds.write(100, "corrected_data".getBytes());
-
-        // If the block has already been sealed/compressed, the correction
-        // automatically falls back to an "update write": new data is appended
-        // to the latest data segment, the index is updated, and the old
-        // record's segment gets invalidRecordCount incremented.
-    }
-}
-```
-
-**Correction behavior**:
-- Triggers when `timestamp == latest_written_timestamp`
-- If latest record is in pending raw block → in-place correction
-- If latest record is in sealed/compressed block → update write (new data + index update)
-- Cache invalidation occurs for affected blocks
-
----
-
-## Scenario 10: Out-of-Order Write (Sparse Mode)
-
-**When**: You need to update an existing timestamp (not the latest).
-
-```java
-import io.github.snower.timslite.*;
-
-try (Store store = Store.open("/data/app", StoreConfigBuilder.builder().build())) {
-    store.createDataset("events", "actions", CreateDatasetOptionsBuilder.builder().build());
-
-    try (Dataset ds = store.openDataset("events", "actions")) {
+    try (Dataset ds = store.openDataset("events", "log")) {
         // Write some records
-        ds.write(1, "data_1".getBytes());
-        ds.write(2, "data_2".getBytes());
-        ds.write(3, "data_3".getBytes());
+        for (long i = 1; i <= 100; i++) {
+            ds.write(i, String.format("event_%d", i).getBytes());
+        }
 
-        // Update timestamp 1 (out-of-order write)
-        // Only works in sparse mode, and only if timestamp 1 already has an index entry
-        ds.write(1, "updated_data_1".getBytes());
+        // Iterate forward (default)
+        try (QueryIterator it = ds.queryIter(1, 100)) {
+            while (it.hasNext()) {
+                Record rec = it.next();
+                System.out.println("Forward: ts=" + rec.getTimestamp());
+            }
+        }
 
-        // Out-of-order write to a timestamp with NO index entry → ERROR
-        // ds.write(1, "data".getBytes());  // would fail if timestamp 1 didn't exist
+        // Iterate in reverse
+        try (QueryIterator it = ds.queryIter(1, 100)) {
+            it.reverse();
+            while (it.hasNext()) {
+                Record rec = it.next();
+                System.out.println("Reverse: ts=" + rec.getTimestamp());
+            }
+        }
+
+        // Skip the first 10 records
+        try (QueryIterator it = ds.queryIter(1, 100)) {
+            it.skip(10);
+            while (it.hasNext()) {
+                Record rec = it.next();
+                System.out.println("After skip: ts=" + rec.getTimestamp());
+            }
+        }
     }
 }
 ```
 
-**In continuous mode**: Out-of-order writes are not supported. Timestamps must be `>= latest_written_timestamp`.
+**Key points**:
+- `reverse()` changes iteration direction
+- `skip(count)` skips the first `count` records
+- Always use try-with-resources to release native resources
 
 ---
 
-## Scenario 11: Large Record (Single-Record Block)
+## Scenario 9: Inspection and Monitoring
 
-**When**: A single record's encoded size exceeds 64KB (the normal block payload limit).
+**When**: You need to inspect dataset configuration and runtime state.
 
 ```java
 import io.github.snower.timslite.*;
 
-try (Store store = Store.open("/data/app", StoreConfigBuilder.builder().build())) {
-    store.createDataset("blobs", "files", CreateDatasetOptionsBuilder.builder().build());
+try (Store store = Store.open("/data/inspect", StoreConfigBuilder.builder().build())) {
+    CreateDatasetOptions options = CreateDatasetOptionsBuilder.builder()
+            .config(DatasetConfigBuilder.builder()
+                    .compressLevel((byte) 9)
+                    .indexContinuous((byte) 1)
+                    .build())
+            .build();
 
-    try (Dataset ds = store.openDataset("blobs", "files")) {
-        // Records larger than 64KB get their own exclusive block
-        // (SINGLE_RECORD flag set, immediately compressed)
-        byte[] largeData = new byte[100_000];  // ~100KB
-        ds.write(1, largeData);
+    store.createDataset("sensor", "temp", options);
 
-        // Reading works normally
-        Record rec = ds.read(1);
-        assert rec.getData().length == 100_000;
+    try (Dataset ds = store.openDataset("sensor", "temp")) {
+        // Write some data
+        for (long i = 1; i <= 100; i++) {
+            ds.write(i, String.format("temp=%.1f", i * 0.1).getBytes());
+        }
+
+        // Inspect dataset
+        InspectResult result = ds.inspect();
+        DatasetInfo info = result.getInfo();
+        DatasetState state = result.getState();
+
+        System.out.println("Name: " + info.getName());
+        System.out.println("Type: " + info.getDatasetType());
+        System.out.println("Identifier: " + info.getIdentifier());
+        System.out.println("Compression: type=" + info.getCompressType() + ", level=" + info.getCompressLevel());
+        System.out.println("Index mode: " + (info.getIndexContinuous() == 1 ? "continuous" : "sparse"));
+        System.out.println("Retention window: " + info.getRetentionWindow());
+        System.out.println("Latest timestamp: " + state.getLatestWrittenTimestamp());
+        System.out.println("Data segments: " + state.getDataSegments());
+        System.out.println("Total records: " + state.getTotalRecordCount());
+        System.out.println("Total data size: " + state.getTotalDataSize() + " bytes");
+        System.out.println("Total uncompressed size: " + state.getTotalUncompressedSize() + " bytes");
     }
-}
-```
-
-**Rules**:
-- Single record max: 4 MiB (`write` and `append` both enforce this)
-- Records > 64KB encoded → exclusive single-record block (SINGLE_RECORD | SEALED | COMPRESSED)
-- Records ≤ 64KB → aggregated into normal blocks (pending → sealed on overflow)
-
----
-
-## Scenario 12: Multi-Dataset Isolation
-
-**When**: You have multiple data streams that need independent storage.
-
-```java
-import io.github.snower.timslite.*;
-
-try (Store store = Store.open("/data/app", StoreConfigBuilder.builder().build())) {
-    // Each (name, type) pair is an independent dataset
-    CreateDatasetOptions options = CreateDatasetOptionsBuilder.builder().build();
-    store.createDataset("sensors", "temperature", options);
-    store.createDataset("sensors", "humidity", options);
-    store.createDataset("sensors", "pressure", options);
-    store.createDataset("events", "user_action", options);
-    store.createDataset("events", "system", options);
 
     // List all datasets
-    for (String name : store.getDatasetNames()) {
-        for (String type : store.getDatasetTypes(name)) {
-            System.out.println(name + "/" + type);
-        }
-    }
+    List<String> names = store.getDatasetNames();
+    System.out.println("Dataset names: " + names);
 
-    // Open and use each independently
-    try (Dataset ds1 = store.openDataset("sensors", "temperature");
-         Dataset ds2 = store.openDataset("events", "user_action")) {
+    List<String> types = store.getDatasetTypes("sensor");
+    System.out.println("Types for 'sensor': " + types);
 
-        ds1.write(1, "23.5C".getBytes());
-        ds2.write(1, "login".getBytes());
-    }
-
-    // Inspect a dataset
-    DataSetInspectResult inspect = store.inspectDataset("sensors", "temperature");
-    System.out.println("Records: " + inspect.getState().getTotalRecordCount());
-    System.out.println("Data size: " + inspect.getState().getTotalDataSize() + " bytes");
+    // Inspect from store
+    InspectResult storeResult = store.inspectDataset("sensor", "temp");
+    System.out.println("Store inspect - latest: " + storeResult.getState().getLatestWrittenTimestamp());
 }
 ```
 
-**Directory layout**: Each dataset gets its own `{name}/{type}/` directory with independent `meta`, `data/`, `index/`, `state`, and optional `queue/`.
+**Key points**:
+- `inspect()` returns `InspectResult` with `info` (config) and `state` (runtime)
+- `getDatasetNames()` lists all dataset names
+- `getDatasetTypes(name)` lists all types for a given name
 
 ---
 
-## Scenario 13: Efficient Existence Checking
+## Scenario 10: Background Tasks
 
-**When**: You need to check if records exist without loading data (e.g., for deduplication or coverage checks).
+**When**: You need to manually control background tasks (flush, idle-close, cache eviction, retention reclaim).
 
 ```java
 import io.github.snower.timslite.*;
 
-try (Store store = Store.open("/data/app", StoreConfigBuilder.builder().build())) {
-    store.createDataset("events", "actions", CreateDatasetOptionsBuilder.builder().build());
+// Disable automatic background thread
+StoreConfig config = StoreConfigBuilder.builder()
+        .enableBackgroundThread(false)
+        .build();
 
-    try (Dataset ds = store.openDataset("events", "actions")) {
-        // Single record existence (index only, no data I/O)
-        boolean exists = ds.readExist(12345);
+try (Store store = Store.open("/data/bg", config)) {
+    // ... write data ...
 
-        // Range existence bitmap (index only, no data I/O)
-        byte[] bitmap = ds.queryExist(1, 1000);
-        // bitmap[i] is set if record at (startTs + i) exists
+    // Manually trigger background tasks
+    TickResult result = store.tickBackgroundTasks();
+    System.out.println("Executed " + result.getExecutedTasks() + " tasks");
+    System.out.println("Next delay: " + result.getNextDelayMs() + " ms");
 
-        // Record length (reads 12-byte header only)
-        Long length = ds.readLength(12345);  // Long or null
+    // Sleep for the recommended delay
+    Thread.sleep(result.getNextDelayMs());
 
-        // Range lengths (reads headers only)
-        List<LengthEntry> lengths = ds.queryLength(1, 1000);
-    }
+    // Tick again
+    result = store.tickBackgroundTasks();
 }
 ```
 
-**Performance hierarchy** (fastest to slowest):
-1. `readExist` / `queryExist` — index only, no data segment I/O
-2. `readLength` / `queryLength` / `queryLengthIter` — reads 12-byte record header only
-3. `read` / `query` / `queryIter` — reads full data
+**Key points**:
+- Use `enableBackgroundThread(false)` to disable automatic background tasks
+- `tickBackgroundTasks()` returns the number of tasks executed and recommended delay
+- Use the recommended delay to avoid busy-waiting
+
+---
+
+## Scenario 11: Error Handling
+
+**When**: You need to handle specific error conditions.
+
+```java
+import io.github.snower.timslite.*;
+import io.github.snower.timslite.errors.*;
+
+try {
+    try (Store store = Store.open("/data/error", StoreConfigBuilder.builder().build())) {
+        // Create dataset
+        store.createDataset("test", "data", CreateDatasetOptionsBuilder.builder().build());
+
+        try (Dataset ds = store.openDataset("test", "data")) {
+            // Try to create duplicate
+            try {
+                store.createDataset("test", "data", CreateDatasetOptionsBuilder.builder().build());
+            } catch (AlreadyExistsException e) {
+                System.out.println("Dataset already exists");
+            }
+
+            // Try to open non-existent dataset
+            try {
+                store.openDataset("nonexistent", "data");
+            } catch (NotFoundException e) {
+                System.out.println("Dataset not found");
+            }
+
+            // Try to write oversized record
+            try {
+                ds.write(1, new byte[5 * 1024 * 1024]);  // 5 MiB > 4 MiB limit
+            } catch (InvalidDataException e) {
+                System.out.println("Record too large");
+            }
+
+            // Try to write out-of-order (sparse mode)
+            ds.write(100, "data_100".getBytes());
+            try {
+                ds.write(50, "data_50".getBytes());  // 50 < 100
+            } catch (InvalidDataException e) {
+                System.out.println("Out-of-order write not allowed in sparse mode");
+            }
+        }
+    }
+} catch (TmslException e) {
+    System.out.println("General timslite error: " + e.code() + " - " + e.getMessage());
+}
+```
+
+**Key points**:
+- All specific errors inherit from `TmslException`
+- Catch specific errors first, then fall back to `TmslException`
+- Use `e.code()` to inspect the error category without catching individual subclasses

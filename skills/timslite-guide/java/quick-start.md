@@ -29,6 +29,12 @@ mvn javadoc:javadoc
 ```java
 import io.github.snower.timslite.*;
 
+// Default configuration
+try (Store store = Store.open("/path/to/data")) {
+    // use the store
+}
+
+// Custom configuration
 StoreConfig config = StoreConfigBuilder.builder()
         .enableJournal(true)
         .enableBackgroundThread(true)
@@ -44,8 +50,8 @@ try (Store store = Store.open("/path/to/data", config)) {
 ```java
 CreateDatasetOptions options = CreateDatasetOptionsBuilder.builder()
         .config(DatasetConfigBuilder.builder()
-                .indexContinuous((byte) 0)
-                .retentionWindow(0)
+                .indexContinuous((byte) 0)  // 0=sparse, 1=continuous
+                .retentionWindow(0)          // no retention limit
                 .build())
         .build();
 
@@ -69,8 +75,17 @@ try (Dataset ds = store.openDataset("metrics", "cpu")) {
     // Read the latest record
     Record latest = ds.readLatest();
 
+    // Check if record exists
+    boolean exists = ds.readExist(1700000000L);
+
+    // Get record length
+    int length = ds.readLength(1700000000L);
+
     // Append to the latest record (must be >= latest timestamp)
     ds.append(1700000000L, new byte[]{4, 5});
+
+    // Correct a record
+    ds.correct(1700000000L, new byte[]{6, 7, 8});
 
     // Delete a record
     ds.delete(1700000000L);
@@ -81,6 +96,7 @@ try (Dataset ds = store.openDataset("metrics", "cpu")) {
 
 ```java
 try (Dataset ds = store.openDataset("metrics", "cpu")) {
+    // Eager query (loads all into memory)
     List<Record> records = ds.query(1700000000L, 1700003600L);
     for (Record rec : records) {
         System.out.println(rec.getTimestamp() + ": " + rec.getData().length + " bytes");
@@ -102,13 +118,33 @@ try (Dataset ds = store.openDataset("metrics", "cpu");
 }
 ```
 
-Length-only iteration:
+Length-only iteration (reads only 12-byte headers):
 
 ```java
-try (QueryLengthIterator it = ds.queryLengthIter(startTs, endTs)) {
+try (QueryLengthIterator it = ds.queryLength(startTs, endTs)) {
     while (it.hasNext()) {
         LengthEntry entry = it.next();
         System.out.println(entry.getTimestamp() + ": " + entry.getLength() + " bytes");
+    }
+}
+
+// Or eager version
+List<LengthEntry> lengths = ds.queryLengthAll(startTs, endTs);
+```
+
+### Iterator Control
+
+```java
+try (QueryIterator it = ds.queryIter(1L, 100L)) {
+    // Reverse iteration
+    it.reverse();
+    
+    // Skip records
+    it.skip(10);
+    
+    while (it.hasNext()) {
+        Record rec = it.next();
+        // process
     }
 }
 ```
@@ -151,9 +187,22 @@ try (QueueConsumer consumer = queue.openConsumer("workers", options)) {
 }
 ```
 
-### Acknowledging Records
+### Consumer Management
 
-Call `ack(timestamp)` after processing to advance the consumer position. Unacknowledged records may be redelivered on the next poll.
+```java
+// Flush consumer state
+consumer.flush();
+
+// Inspect consumer state
+QueueConsumerInspectResult result = consumer.inspect();
+QueueConsumerInfo info = result.getInfo();
+QueueConsumerState state = result.getState();
+System.out.println("Processed up to: " + state.getProcessedTs());
+System.out.println("Pending entries: " + state.getPendingEntries().size());
+
+// Drop consumer group
+consumer.drop();
+```
 
 ## Journal Usage
 
@@ -179,6 +228,9 @@ if (rec != null) {
 
 // Query a range
 List<JournalRecord> entries = store.journalQuery(1L, 100L);
+
+// Get latest sequence
+Long latestSeq = store.journalLatestSequence();
 ```
 
 ### Consuming Journal via Queue
@@ -194,6 +246,35 @@ try (JournalQueue jq = store.openJournalQueue();
 }
 ```
 
+## Inspection
+
+```java
+try (Dataset ds = store.openDataset("metrics", "cpu")) {
+    InspectResult result = ds.inspect();
+    DatasetInfo info = result.getInfo();
+    DatasetState state = result.getState();
+
+    System.out.println("Name: " + info.getName());
+    System.out.println("Type: " + info.getDatasetType());
+    System.out.println("Latest: " + state.getLatestWrittenTimestamp());
+    System.out.println("Records: " + state.getTotalRecordCount());
+    System.out.println("Data size: " + state.getTotalDataSize());
+}
+
+// List datasets
+List<String> names = store.getDatasetNames();
+List<String> types = store.getDatasetTypes("metrics");
+```
+
+## Background Tasks
+
+```java
+// Manual tick (when enableBackgroundThread=false)
+TickResult result = store.tickBackgroundTasks();
+System.out.println("Executed: " + result.getExecutedTasks() + " tasks");
+System.out.println("Next delay: " + result.getNextDelayMs() + " ms");
+```
+
 ## Error Handling
 
 All errors are thrown as subclasses of `TmslException`, which extends `RuntimeException`.
@@ -204,29 +285,35 @@ All errors are thrown as subclasses of `TmslException`, which extends `RuntimeEx
 import io.github.snower.timslite.errors.*;
 
 try {
-    ds.read(1700000000L);
-} catch (ExpiredException e) {
-    // timestamp outside retention window
+    store.createDataset("metrics", "cpu", options);
+} catch (AlreadyExistsException e) {
+    System.out.println("Dataset already exists");
 } catch (NotFoundException e) {
-    // record not found
+    System.out.println("Dataset not found");
+} catch (InvalidDataException e) {
+    System.out.println("Invalid data: " + e.getMessage());
+} catch (ExpiredException e) {
+    System.out.println("Timestamp expired");
 } catch (TmslException e) {
-    // handle other errors
+    System.out.println("Error: " + e.code() + " - " + e.getMessage());
 }
 ```
 
-### Using TmslErrorCode
+### Using Error Codes
 
 ```java
 try {
-    store.createDataset("metrics", "cpu", options);
+    ds.read(1700000000L);
 } catch (TmslException e) {
-    if (e.code() == TmslErrorCode.ALREADY_EXISTS) {
-        // dataset already exists, open it instead
+    switch (e.code()) {
+        case EXPIRED:
+            // timestamp outside retention window
+            break;
+        case NOT_FOUND:
+            // record not found
+            break;
+        default:
+            // other error
     }
 }
 ```
-
-## Next Steps
-
-- See [API Reference](api-reference.md) for complete API documentation
-- See [Examples](examples.md) for more feature scenarios

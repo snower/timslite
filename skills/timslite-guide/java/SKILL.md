@@ -47,6 +47,12 @@ mvn javadoc:javadoc
 ```java
 import io.github.snower.timslite.*;
 
+// Default configuration
+try (Store store = Store.open("/path/to/data")) {
+    // use the store
+}
+
+// Custom configuration
 StoreConfig config = StoreConfigBuilder.builder()
         .enableJournal(true)
         .enableBackgroundThread(true)
@@ -62,7 +68,7 @@ try (Store store = Store.open("/path/to/data", config)) {
 ```java
 CreateDatasetOptions options = CreateDatasetOptionsBuilder.builder()
         .config(DatasetConfigBuilder.builder()
-                .indexContinuous((byte) 0)
+                .indexContinuous((byte) 0)  // 0=sparse, 1=continuous
                 .retentionWindow(0)
                 .build())
         .build();
@@ -87,8 +93,17 @@ try (Dataset ds = store.openDataset("metrics", "cpu")) {
     // Read the latest record
     Record latest = ds.readLatest();
 
+    // Check if record exists
+    boolean exists = ds.readExist(1700000000L);
+
+    // Get record length
+    int length = ds.readLength(1700000000L);
+
     // Append to the latest record (must be >= latest timestamp)
     ds.append(1700000000L, new byte[]{4, 5});
+
+    // Correct a record
+    ds.correct(1700000000L, new byte[]{6, 7, 8});
 
     // Delete a record
     ds.delete(1700000000L);
@@ -98,19 +113,20 @@ try (Dataset ds = store.openDataset("metrics", "cpu")) {
 ## Documentation
 
 - **[API Reference](api-reference.md)** — Complete Java API signatures, parameters, return types, and semantics
+- **[Quick Start](quick-start.md)** — Getting started with common operations
 - **[Examples](examples.md)** — Feature scenarios with copy-paste Java examples
 
 ## Key Concepts
 
-### Store and DataSet
+### Store and Dataset
 
 - `Store` is the top-level facade managing data directory, datasets, journal, cache, and background tasks
-- `DataSet` handles per-dataset read/write operations, segment management, and indexing
+- `Dataset` handles per-dataset read/write operations, segment management, and indexing
 - Each `(dataset_name, dataset_type)` pair is an independent dataset with its own segments
 
 ### Timestamps
 
-- All timestamps are `long` values (signed 64-bit integers)
+- All timestamps are signed 64-bit values (`long`)
 - In sparse mode: timestamps must be `>= latest_written_timestamp`
 - In continuous mode: timestamps must be `>= latest_written_timestamp`
 - Use `readLatest()` to get the most recent record
@@ -123,9 +139,10 @@ try (Dataset ds = store.openDataset("metrics", "cpu")) {
 - Large records (>64KB) get their own single-record block
 - Max record size: 4 MiB
 
-### AutoCloseable Pattern
+### Index Modes
 
-All lifecycle types implement `AutoCloseable`: `Store`, `Dataset`, `Queue`, `QueueConsumer`, `JournalQueue`, `JournalQueueConsumer`, `QueryIterator`, `QueryLengthIterator`. Use try-with-resources to guarantee cleanup.
+- **Sparse mode** (`indexContinuous = 0`): Flexible timestamps, O(log n) lookup
+- **Continuous mode** (`indexContinuous = 1`): Dense sequential timestamps, O(1) lookup
 
 ## Configuration
 
@@ -133,114 +150,120 @@ All lifecycle types implement `AutoCloseable`: `Store`, `Dataset`, `Queue`, `Que
 
 ```java
 StoreConfig config = StoreConfigBuilder.builder()
-        .flushIntervalMs(15000)           // 15 seconds
-        .idleTimeoutMs(1800000)           // 30 minutes
+        .flushIntervalSecs(15)           // seconds
+        .idleTimeoutSecs(1800)           // 30 minutes
         .dataSegmentSize(64 * 1024 * 1024)  // 64 MiB
         .indexSegmentSize(4 * 1024 * 1024)   // 4 MiB
-        .compressLevel(6)                  // 0-9
+        .initialDataSegmentSize(256 * 1024)  // 256 KiB
+        .initialIndexSegmentSize(4 * 1024)   // 4 KiB
+        .compressLevel(6)                // 0-9
         .cacheMaxMemory(256 * 1024 * 1024)  // 256 MiB
+        .cacheIdleTimeoutSecs(1800)      // 30 minutes
+        .retentionCheckHour((byte) 0)    // UTC hour 0-23
         .enableBackgroundThread(true)
         .enableJournal(true)
-        .readOnly(null)                    // null=auto, true=force RO, false=require writable
+        .readOnly(null)                  // null=auto, True=force RO, False=require writable
         .build();
 ```
 
-### CreateDatasetOptions
+### Dataset Configuration
+
+Dataset configuration is passed via `DatasetConfigBuilder`:
 
 ```java
+DatasetConfig config = DatasetConfigBuilder.builder()
+        .dataSegmentSize(128 * 1024 * 1024)  // 128 MiB
+        .indexSegmentSize(8 * 1024 * 1024)    // 8 MiB
+        .compressLevel((byte) 9)              // max compression
+        .indexContinuous((byte) 1)            // continuous mode
+        .retentionWindow(86400)               // 1 day in timestamp units
+        .enableJournal(true)
+        .build();
+
 CreateDatasetOptions options = CreateDatasetOptionsBuilder.builder()
-        .config(DatasetConfigBuilder.builder()
-                .dataSegmentSize(128 * 1024 * 1024)  // 128 MiB
-                .indexSegmentSize(8 * 1024 * 1024)    // 8 MiB
-                .compressLevel(9)                      // max compression
-                .indexContinuous((byte) 1)             // continuous mode
-                .retentionWindow(86400)                // 1 day in timestamp units
-                .enableJournal(true)
-                .build())
+        .config(config)
         .build();
 ```
 
-## Common Patterns
-
-### Batch Writes
+## Module Exports
 
 ```java
-for (long i = 1; i <= 1000; i++) {
-    byte[] data = String.format("{\"value\": %d}", i).getBytes();
-    ds.write(i, data);
-}
+import io.github.snower.timslite.*;
+import io.github.snower.timslite.errors.*;
 ```
 
-### Range Queries
+### Main Classes
 
-```java
-// Eager query (list)
-List<Record> records = ds.query(100L, 200L);
-for (Record rec : records) {
-    System.out.println(rec.getTimestamp() + ": " + new String(rec.getData()));
-}
+- `Store` — Main entry point
+- `Dataset` — Dataset operations
+- `Queue` — Queue operations
+- `QueueConsumer` — Queue consumer
+- `JournalQueue` — Journal queue
+- `JournalQueueConsumer` — Journal consumer
 
-// Lazy query (iterator)
-try (QueryIterator it = ds.queryIter(100L, 200L)) {
-    while (it.hasNext()) {
-        Record rec = it.next();
-        System.out.println(rec.getTimestamp() + ": " + new String(rec.getData()));
-    }
-}
-```
+### Configuration Builders
 
-### Queue Consumption
+- `StoreConfigBuilder` — Store configuration
+- `DatasetConfigBuilder` — Dataset configuration
+- `CreateDatasetOptionsBuilder` — Dataset creation options
+- `QueueConsumerOptionsBuilder` — Queue consumer options
+- `QueueConsumerConfigBuilder` — Queue consumer config
 
-```java
-try (Dataset ds = store.openDataset("tasks", "jobs");
-     Queue queue = store.openQueue(ds)) {
+### Iterators
 
-    // Push data (auto-assigns next timestamp)
-    long ts = queue.push("task_payload".getBytes());
+- `QueryIterator` — Query result iterator
+- `QueryLengthIterator` — Query length iterator
 
-    // Open a consumer group
-    try (QueueConsumer consumer = queue.openConsumer("worker_group")) {
-        // Poll for records (with timeout in ms)
-        Record rec = consumer.poll(5000);
-        if (rec != null) {
-            System.out.println("Got task: " + new String(rec.getData()));
-            // Acknowledge processing
-            consumer.ack(rec.getTimestamp());
-        }
-    }
-}
-```
+### Data Types
 
-### Journal Consumption
-
-```java
-try (JournalQueue jq = store.openJournalQueue();
-     JournalQueueConsumer consumer = jq.openConsumer("sync_worker")) {
-
-    JournalRecord rec = consumer.poll(100);  // timeout in ms
-    if (rec != null) {
-        System.out.println("Journal seq: " + rec.getSequence());
-        consumer.ack(rec.getSequence());
-    }
-}
-```
+- `Record` — Timestamp + data
+- `JournalRecord` — Sequence + data
+- `LengthEntry` — Timestamp + length
+- `InspectResult` — Dataset inspect result
+- `DatasetInfo` — Dataset configuration
+- `DatasetState` — Dataset runtime state
+- `QueueConsumerInspectResult` — Consumer inspect result
+- `QueueConsumerInfo` — Consumer configuration
+- `QueueConsumerState` — Consumer state
+- `QueueConsumerPendingEntry` — Pending entry state
+- `TickResult` — Background task result
 
 ## Error Handling
-
-All errors are thrown as subclasses of `TmslException`, which extends `RuntimeException`.
 
 ```java
 import io.github.snower.timslite.errors.*;
 
 try {
-    ds.read(1700000000L);
-} catch (ExpiredException e) {
-    // timestamp outside retention window
+    store.createDataset("sensor", "waveform", options);
+} catch (AlreadyExistsException e) {
+    System.out.println("Dataset already exists");
 } catch (NotFoundException e) {
-    // record not found
+    System.out.println("Dataset not found");
 } catch (TmslException e) {
-    // handle other errors
+    System.out.println("Error: " + e.code() + " - " + e.getMessage());
 }
 ```
 
-See [Troubleshooting](../troubleshooting.md) for detailed error solutions.
+Error hierarchy:
+- `TmslException` (base, extends `RuntimeException`)
+  - `IoException`
+  - `InvalidMagicException`
+  - `InvalidVersionException`
+  - `MmapException`
+  - `CompressionException`
+  - `DecompressionException`
+  - `InvalidDataException`
+  - `NotFoundException`
+  - `ExpiredException`
+  - `AlreadyExistsException`
+  - `SegmentFullException`
+  - `QueueAlreadyOpenException`
+  - `QueueNotOpenException`
+  - `ConsumerGroupNotFoundException`
+  - `ConsumerGroupExistsException`
+  - `QueueClosedException`
+  - `PendingFullException`
+  - `StoreClosedException`
+  - `DatasetClosedException`
+  - `QueueBridgeClosedException`
+  - `IteratorExhaustedException`
