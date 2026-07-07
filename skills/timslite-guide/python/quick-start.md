@@ -39,9 +39,9 @@ with timslite.Store.open("/data/timslite") as store:
     ds.delete(1)
 ```
 
-## Using DataSetConfig
+## Custom Dataset Configuration
 
-For fine-grained control over dataset configuration:
+For fine-grained control over dataset configuration, pass keyword arguments to `create_dataset`:
 
 ```python
 import timslite
@@ -50,16 +50,14 @@ with timslite.Store.open("/data/app") as store:
     # Using create_dataset with default config
     store.create_dataset("metrics", "cpu")
 
-    # Using create_dataset_with_config
-    config = timslite.DataSetConfig(
+    # Using create_dataset with custom config
+    ds = store.create_dataset("metrics", "per_second",
         data_segment_size=128 * 1024 * 1024,  # 128 MiB
         index_segment_size=8 * 1024 * 1024,    # 8 MiB
         compress_level=9,                      # max compression
-        index_continuous=1,                    # continuous mode
-        retention_window=86400,                # 1 day in timestamp units
+        index_continuous=True,                 # continuous mode
         enable_journal=True,
     )
-    store.create_dataset_with_config("metrics", "per_second", config)
 ```
 
 ## Queue Usage
@@ -96,29 +94,32 @@ with timslite.Store.open("/data/app") as store:
 ```python
 import timslite
 
-with timslite.Store.open("/data/app") as store:
-    store.create_dataset("events", "user_actions")
-    ds = store.open_dataset("events", "user_actions")
+with timslite.Store.open("/data/app", timslite.StoreConfig(enable_journal=True)) as store:
+    store.create_dataset("sensor", "temp", enable_journal=True)
+    ds = store.open_dataset("sensor", "temp")
 
-    # Every write/delete/append automatically appends to the journal
-    ds.write(1, b"user_login")
-    ds.write(2, b"page_view")
-    ds.delete(1)
+    # Write data
+    ds.write(1, b"25.3")
 
-    # Read journal records
-    latest = store.journal_latest_sequence()  # -> int or None
-    print(f"Latest journal seq: {latest}")
+    # Read journal entries
+    seq = store.journal_latest_sequence()
+    if seq:
+        entry = store.journal_read(seq)
+        print(f"Journal seq={entry[0]}, data={entry[1]}")
 
-    # Consume journal via queue (for downstream sync)
+    # Range query journal
+    entries = store.journal_query(1, 100)
+    for seq, data in entries:
+        print(f"seq={seq}: {data}")
+
+    # Open journal queue for consumption
     jq = store.open_journal_queue()
-    consumer = jq.open_consumer("sync_worker")
-
-    result = consumer.poll(100)  # timeout in ms
+    consumer = jq.open_consumer("my_group")
+    result = consumer.poll(1000)
     if result:
         seq, payload = result
-        print(f"Consumed journal seq {seq}")
+        print(f"Journal entry: seq={seq}")
         consumer.ack(seq)
-
     jq.close()
 ```
 
@@ -154,22 +155,3 @@ while True:
 
 store.close()
 ```
-
-## Error Handling
-
-All operations raise `TmslError` on failure:
-
-```python
-import timslite
-
-try:
-    store = timslite.Store.open("/data/timslite")
-    store.create_dataset("sensor", "waveform")
-except timslite.TmslError as e:
-    print(f"Error: {e}")
-```
-
-## Next Steps
-
-- See [API Reference](api-reference.md) for complete API documentation
-- See [Examples](examples.md) for more feature scenarios

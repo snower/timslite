@@ -54,11 +54,10 @@ with timslite.Store.open("/data/sensors") as store:
 import timslite
 
 with timslite.Store.open("/data/metrics") as store:
-    # Create with index_continuous = 1
-    config = timslite.DataSetConfig(index_continuous=1)
-    store.create_dataset_with_config("cpu_usage", "per_second", config)
-
-    ds = store.open_dataset("cpu_usage", "per_second")
+    # Create with index_continuous=True
+    ds = store.create_dataset("cpu_usage", "per_second",
+        index_continuous=True,
+    )
 
     # Write sequential timestamps (no gaps allowed in continuous mode)
     for i in range(1, 1001):
@@ -83,431 +82,354 @@ with timslite.Store.open("/data/metrics") as store:
 
 ## Scenario 3: Queue (FIFO Consumer Groups)
 
-**When**: You need ordered delivery with consumer group semantics (like Kafka consumer groups).
+**When**: You need ordered delivery with multiple consumers sharing progress.
 
 ```python
 import timslite
 
-with timslite.Store.open("/data/app") as store:
-    store.create_dataset("tasks", "jobs")
-    ds = store.open_dataset("tasks", "jobs")
+with timslite.Store.open("/data/queue_demo") as store:
+    store.create_dataset("events", "raw")
+    ds = store.open_dataset("events", "raw")
 
-    # Open queue for a dataset
+    # Open queue for the dataset
     q = store.open_queue(ds.id)
 
-    # Push data (auto-assigns next timestamp)
-    ts1 = q.push(b"task_1")
-    ts2 = q.push(b"task_2")
+    # Producer: push data (auto-assigns next timestamp)
+    for i in range(10):
+        ts = q.push(f"event_{i}".encode())
+        print(f"Pushed event_{i} at ts={ts}")
 
-    # Open a consumer group
+    # Consumer: poll with timeout
     consumer = q.open_consumer("worker_group")
 
-    # Poll for records (with timeout in ms)
-    result = consumer.poll(5000)
-    if result:
-        ts, data = result
-        print(f"Got task at {ts}: {data.decode()}")
-        # Acknowledge processing
-        consumer.ack(ts)
+    for _ in range(10):
+        result = consumer.poll(5000)  # 5 second timeout
+        if result:
+            ts, data = result
+            print(f"Processing: {data.decode()}")
+            consumer.ack(ts)
 
+    # Inspect consumer state
+    inspect_result = consumer.inspect()
+    print(f"Processed up to: {inspect_result.state.processed_ts}")
+    print(f"Pending entries: {len(inspect_result.state.pending_entries)}")
+
+    consumer.close()
     q.close()
 ```
 
 **Key points**:
-- `push` auto-assigns `timestamp = latest_written_timestamp + 1`
-- Multiple consumer groups are independent
-- Multiple consumers in the same group share progress (mutual exclusion)
+- `push()` auto-increments timestamp and notifies waiting consumers
+- Multiple consumer groups share the same queue but maintain independent progress
+- `poll()` blocks until data is available or timeout expires
+- Always `ack()` after processing to advance the consumer's position
 
 ---
 
-## Scenario 4: Queue with Retry and Expiry
+## Scenario 4: Journal Queue (Change Data Capture)
 
-**When**: You need automatic retry for failed tasks and expiry for stuck tasks.
+**When**: You need to consume all changes across all datasets for replication or auditing.
 
 ```python
 import timslite
 
-with timslite.Store.open("/data/app") as store:
-    store.create_dataset("retry_queue", "jobs")
-    ds = store.open_dataset("retry_queue", "jobs")
-    q = store.open_queue(ds.id)
+with timslite.Store.open("/data/cdc", timslite.StoreConfig(enable_journal=True)) as store:
+    # Create datasets with journal enabled
+    store.create_dataset("users", "profiles", enable_journal=True)
+    store.create_dataset("orders", "transactions", enable_journal=True)
 
-    # Push some tasks
-    q.push(b"important_task")
+    users = store.open_dataset("users", "profiles")
+    orders = store.open_dataset("orders", "transactions")
 
-    # Open consumer with retry config
-    consumer = q.open_consumer(
-        "retry_group",
-        running_expired_seconds=60,  # re-deliver after 60s if not acked
-        max_retry_count=3,           # drop after 3 retries
-    )
+    # Write data
+    users.write(1, b'{"name": "Alice"}')
+    orders.write(1, b'{"item": "widget", "qty": 5}')
+    users.write(2, b'{"name": "Bob"}')
 
-    # Poll and process
-    result = consumer.poll(5000)
-    if result:
-        ts, data = result
-        print(f"Processing: {data.decode()}")
-        # If processing fails, don't ack — it will be re-delivered after 60s
-        # After 3 failures, the entry is dropped
-        consumer.ack(ts)
-
-    q.close()
-```
-
-**Key points**:
-- `running_expired_seconds`: re-deliver pending entries after this timeout
-- `max_retry_count`: drop entries after this many retries (0 = unlimited)
-
----
-
-## Scenario 5: Journal for Change Tracking / Hot Migration
-
-**When**: You need to track all data changes for audit, sync to another system, or recovery.
-
-```python
-import timslite
-
-with timslite.Store.open("/data/app") as store:
-    # Journal is enabled by default. Create a dataset.
-    store.create_dataset("events", "user_actions")
-    ds = store.open_dataset("events", "user_actions")
-
-    # Every write/delete/append automatically appends to the journal
-    ds.write(1, b"user_login")
-    ds.write(2, b"page_view")
-    ds.delete(1)
-
-    # Read journal records
-    latest = store.journal_latest_sequence()  # e.g., 4 — create + 2 writes + delete
-    print(f"Latest journal seq: {latest}")
-
-    # Read individual journal record
-    record = store.journal_read(1)
-    if record:
-        seq, payload = record
-        print(f"Journal record {seq}: {len(payload)} bytes")
-
-    # Query a range of journal records
-    records = store.journal_query(1, latest)
-    for seq, payload in records:
-        print(f"Seq {seq}: {len(payload)} bytes")
-
-    # Consume journal via queue (for downstream sync)
+    # Open journal queue
     jq = store.open_journal_queue()
-    consumer = jq.open_consumer("sync_worker")
+    consumer = jq.open_consumer("replicator")
 
-    # Each journal record is delivered as a queue entry
-    result = consumer.poll(100)
-    if result:
-        seq, payload = result
-        print(f"Consumed journal seq {seq}")
-        # Use store.read_journal_source_record() to fetch the actual business data
-        consumer.ack(seq)
+    # Consume journal entries
+    for _ in range(3):
+        result = consumer.poll(5000)
+        if result:
+            seq, payload = result
+            print(f"Journal seq={seq}, payload_len={len(payload)}")
+            consumer.ack(seq)
 
+    consumer.close()
     jq.close()
 ```
 
-**Important journal semantics**:
-- Journal is NOT a WAL — no transaction guarantees
-- Journal records do NOT contain business payload; they reference source data via `index_info`
-- Use `store.read_journal_source_record(dataset_identifier, index_info)` to dereference
-- Journal append failure does NOT roll back the main operation
-- Disable per-dataset with `DataSetConfig(enable_journal=False)`
+**Key points**:
+- Journal captures all write operations across datasets
+- Journal sequence is a monotonically increasing `i64`, not a wall-clock timestamp
+- Each journal record encodes the operation type and dataset identifier
 
 ---
 
-## Scenario 6: Retention Window (Time-Based Data Expiry)
+## Scenario 5: Append (Building Records Incrementally)
 
-**When**: You want old data to automatically expire and be reclaimed.
+**When**: You're building a record piece by piece over time.
 
 ```python
 import timslite
 
-with timslite.Store.open("/data/app") as store:
-    # Create dataset with 1-day retention (in timestamp units)
-    config = timslite.DataSetConfig(retention_window=86400)
-    store.create_dataset_with_config("metrics", "per_second", config)
+with timslite.Store.open("/data/append_demo") as store:
+    store.create_dataset("logs", "entries")
+    ds = store.open_dataset("logs", "entries")
 
-    ds = store.open_dataset("metrics", "per_second")
+    # Forward append: creates a new record at ts=100
+    ds.append(100, b"line 1\n")
 
-    # Write data with timestamps
-    for i in range(1, 1001):
-        ds.write(i, f"value={i}".encode())
+    # In-place append: appends to existing record at ts=100
+    # Only works if the record is still in the uncompressed pending block
+    ds.append(100, b"line 2\n")
+    ds.append(100, b"line 3\n")
 
-    # Read old data (may be expired if retention_window > 0)
-    record = ds.read(1)
+    # Read the complete record
+    record = ds.read(100)
     if record:
         ts, data = record
-        print(f"Old record: ts={ts}")
+        print(data.decode())
+        # Output:
+        # line 1
+        # line 2
+        # line 3
 
-    # Expired records return None on read
-    # Reclaim happens during background tasks (daily at retention_check_hour UTC)
+    # append_now: uses current Unix timestamp
+    ds.append_now(b"current time log entry\n")
 ```
 
 **Key points**:
-- `retention_window` uses the same units as dataset timestamps
-- `retention_window = 0` means no limit
-- `retention_check_hour` is UTC hour (0-23) for daily reclaim
-- Expired records return `None` on read
-- Reclaim deletes entire segments when all records are expired
+- `append(ts, data)` with `ts > latest` creates a new record
+- `append(ts, data)` with `ts == latest` appends to the existing uncompressed record
+- In-place append only works while the record is in the pending (uncompressed) block
+- Max combined record size: 4 MiB
 
 ---
 
-## Scenario 7: Read-Only Mode
+## Scenario 6: Query Length (Header-Only Scan)
 
-**When**: You want multiple processes to read the same store, or need to inspect data safely.
+**When**: You need to know record sizes without reading full data.
 
 ```python
 import timslite
 
-# Force read-only mode
-config = timslite.StoreConfig(read_only=True)
-
-with timslite.Store.open("/data/app", config) as store:
-    # Read operations work normally
+with timslite.Store.open("/data/length_demo") as store:
+    store.create_dataset("metrics", "cpu")
     ds = store.open_dataset("metrics", "cpu")
-    records = ds.query(1, 100)
-    info = ds.inspect()
-    print(f"Dataset: {info.state.total_record_count} records")
-
-    # Cannot write, create, drop, or open queues in read-only mode
-    # ds.write(1, b"data") would raise TmslError
-```
-
-**Auto read-only mode** (default):
-- If `.lock` can be acquired → writable
-- If `.lock` is already held → falls back to read-only
-- Use `read_only=False` to require writable (fail if locked)
-
----
-
-## Scenario 8: Append (In-Place Tail Growth)
-
-**When**: You want to append data to the latest record without creating a new timestamp.
-
-```python
-import timslite
-
-with timslite.Store.open("/data/logs") as store:
-    store.create_dataset("app_log", "lines")
-    ds = store.open_dataset("app_log", "lines")
-
-    # Create initial record at timestamp 1
-    ds.append(1, b"line1\n")
-
-    # Append more data to the same timestamp (in-place tail growth)
-    ds.append(1, b"line2\n")
-    ds.append(1, b"line3\n")
-
-    # Read the combined record
-    ts, data = ds.read(1)
-    assert data == b"line1\nline2\nline3\n"
-
-    # Forward append creates a new record
-    ds.append(2, b"new_record")
-```
-
-**Append rules**:
-- `timestamp < latest_written_timestamp` → error
-- `timestamp > latest_written_timestamp` → forward append (new record)
-- `timestamp == latest_written_timestamp` → in-place append (only if latest record is in uncompressed pending block)
-- Empty data is a no-op (after timestamp/retention checks)
-- `old_len + len(data) <= 4 MiB`
-- Appended data must fit within the current pending block's capacity
-- Does NOT re-notify queue when appending to existing record
-
----
-
-## Scenario 9: Correction Write (Fix Latest Record)
-
-**When**: You wrote data and need to correct the latest record's content.
-
-```python
-import timslite
-
-with timslite.Store.open("/data/app") as store:
-    store.create_dataset("events", "actions")
-    ds = store.open_dataset("events", "actions")
-
-    # Write a record
-    ds.write(100, b"wrong_data")
-
-    # Correct it by writing to the same timestamp
-    # (only works if latest_written_timestamp == 100 and the record is in a pending raw block)
-    ds.write(100, b"corrected_data")
-
-    # If the block has already been sealed/compressed, the correction
-    # automatically falls back to an "update write": new data is appended
-    # to the latest data segment, the index is updated, and the old
-    # record's segment gets invalid_record_count incremented.
-```
-
-**Correction behavior**:
-- Triggers when `timestamp == latest_written_timestamp`
-- If latest record is in pending raw block → in-place correction
-- If latest record is in sealed/compressed block → update write (new data + index update)
-- Cache invalidation occurs for affected blocks
-
----
-
-## Scenario 10: Out-of-Order Write (Sparse Mode)
-
-**When**: You need to update an existing timestamp (not the latest).
-
-```python
-import timslite
-
-with timslite.Store.open("/data/app") as store:
-    store.create_dataset("events", "actions")
-    ds = store.open_dataset("events", "actions")
 
     # Write some records
-    ds.write(1, b"data_1")
-    ds.write(2, b"data_2")
-    ds.write(3, b"data_3")
+    for i in range(1, 101):
+        ds.write(i, f"value_{i}".encode())
 
-    # Update timestamp 1 (out-of-order write)
-    # Only works in sparse mode, and only if timestamp 1 already has an index entry
-    ds.write(1, b"updated_data_1")
+    # Query lengths (reads only 12-byte headers, not full data)
+    for ts, length in ds.query_length(1, 100):
+        print(f"ts={ts}: {length} bytes")
 
-    # Out-of-order write to a timestamp with NO index entry → ERROR
-    # ds.write(1, b"data")  # would fail if timestamp 1 didn't exist
-```
+    # Or use the eager version
+    lengths = ds.query_length_all(1, 100)
+    total = sum(length for _, length in lengths)
+    print(f"Total data size: {total} bytes")
 
-**In continuous mode**: Out-of-order writes are not supported. Timestamps must be `>= latest_written_timestamp`.
+    # Check if a record exists without reading data
+    exists = ds.read_exist(50)  # True or False
+    print(f"Record 50 exists: {exists}")
 
----
-
-## Scenario 11: Large Record (Single-Record Block)
-
-**When**: A single record's encoded size exceeds 64KB (the normal block payload limit).
-
-```python
-import timslite
-
-with timslite.Store.open("/data/app") as store:
-    store.create_dataset("blobs", "files")
-    ds = store.open_dataset("blobs", "files")
-
-    # Records larger than 64KB get their own exclusive block
-    # (SINGLE_RECORD flag set, immediately compressed)
-    large_data = b"x" * 100_000  # ~100KB
-    ds.write(1, large_data)
-
-    # Reading works normally
-    ts, data = ds.read(1)
-    assert len(data) == 100_000
-```
-
-**Rules**:
-- Single record max: 4 MiB (`write` and `append` both enforce this)
-- Records > 64KB encoded → exclusive single-record block (SINGLE_RECORD | SEALED | COMPRESSED)
-- Records ≤ 64KB → aggregated into normal blocks (pending → sealed on overflow)
-
----
-
-## Scenario 12: Multi-Dataset Isolation
-
-**When**: You have multiple data streams that need independent storage.
-
-```python
-import timslite
-
-with timslite.Store.open("/data/app") as store:
-    # Each (name, type) pair is an independent dataset
-    store.create_dataset("sensors", "temperature")
-    store.create_dataset("sensors", "humidity")
-    store.create_dataset("sensors", "pressure")
-    store.create_dataset("events", "user_action")
-    store.create_dataset("events", "system")
-
-    # List all datasets
-    for name, dtype in store.list_datasets():
-        print(f"{name}/{dtype}")
-
-    # Open and use each independently
-    ds1 = store.open_dataset("sensors", "temperature")
-    ds2 = store.open_dataset("events", "user_action")
-
-    ds1.write(1, b"23.5C")
-    ds2.write(1, b"login")
-
-    # Inspect a dataset
-    inspect = store.inspect_dataset("sensors", "temperature")
-    print(f"Records: {inspect.state.total_record_count}")
-    print(f"Data size: {inspect.state.total_data_size} bytes")
-```
-
-**Directory layout**: Each dataset gets its own `{name}/{type}/` directory with independent `meta`, `data/`, `index/`, `state`, and optional `queue/`.
-
----
-
-## Scenario 13: Efficient Existence Checking
-
-**When**: You need to check if records exist without loading data (e.g., for deduplication or coverage checks).
-
-```python
-import timslite
-
-with timslite.Store.open("/data/app") as store:
-    store.create_dataset("events", "actions")
-    ds = store.open_dataset("events", "actions")
-
-    # Single record existence (index only, no data I/O)
-    exists = ds.read_exist(12345)
-
-    # Range existence bitmap (index only, no data I/O)
-    bitmap = ds.query_exist(1, 1000)
-    # bitmap[i] is set if record at (start_ts + i) exists
-
-    # Record length (reads 12-byte header only)
-    length = ds.read_length(12345)  # int or None
-
-    # Range lengths (reads headers only)
-    lengths = ds.query_length(1, 1000)  # list of (ts, length)
-```
-
-**Performance hierarchy** (fastest to slowest):
-1. `read_exist` / `query_exist` — index only, no data segment I/O
-2. `read_length` / `query_length` — reads 12-byte record header only
-3. `read` / `query` / `query_all` — reads full data
-
----
-
-## Scenario 14: Manual Background Tasks
-
-**When**: You need fine-grained control over background task execution.
-
-```python
-import timslite
-import time
-
-cfg = timslite.StoreConfig(enable_background_thread=False)
-store = timslite.Store.open("/data/timslite", cfg)
-
-store.create_dataset("sensor", "waveform")
-ds = store.open_dataset("sensor", "waveform")
-ds.write(1, b"reading_1")
-
-# Manually execute a tick — returns (executed_tasks, next_delay_ms)
-executed, delay_ms = store.tick_background_tasks()
-print(f"executed={executed}, next in {delay_ms}ms")
-
-# Check the delay without executing anything
-delay = store.next_background_delay()
-print(f"next task due in {delay}ms")
-
-# In an event loop:
-while True:
-    executed, delay_ms = store.tick_background_tasks()
-    if executed > 0:
-        print(f"ran {executed} background tasks")
-    time.sleep(delay_ms / 1000.0)
-
-store.close()
+    # Get just the length of a single record
+    length = ds.read_length(50)
+    print(f"Record 50 length: {length} bytes")
 ```
 
 **Key points**:
-- When `enable_background_thread=False`, you must call `tick_background_tasks()` periodically
-- Returns `(executed_tasks, next_delay_ms)`
-- Use `next_background_delay()` to check when the next task is due without executing
+- `query_length()` reads only the 12-byte record header per entry
+- `read_exist()` checks index only, no data segment I/O
+- `read_length()` reads only the header for a single record
+
+---
+
+## Scenario 7: QueryIterator Control
+
+**When**: You need fine-grained control over iteration (reverse, skip, collect).
+
+```python
+import timslite
+
+with timslite.Store.open("/data/iter_demo") as store:
+    store.create_dataset("events", "log")
+    ds = store.open_dataset("events", "log")
+
+    # Write some records
+    for i in range(1, 101):
+        ds.write(i, f"event_{i}".encode())
+
+    # Iterate forward (default)
+    for ts, data in ds.query(1, 100):
+        print(f"Forward: ts={ts}")
+
+    # Iterate in reverse
+    iter = ds.query(1, 100)
+    iter.reverse()
+    for ts, data in iter:
+        print(f"Reverse: ts={ts}")
+
+    # Skip the first 10 records
+    iter = ds.query(1, 100)
+    iter.skip(10)
+    for ts, data in iter:
+        print(f"After skip: ts={ts}")
+
+    # Collect up to 5 records
+    iter = ds.query(1, 100)
+    records = iter.collect_take(5)
+    print(f"First 5 records: {records}")
+
+    # Collect all remaining records
+    iter = ds.query(1, 100)
+    all_records = iter.collect_all()
+    print(f"Total records: {len(all_records)}")
+```
+
+**Key points**:
+- `reverse()` changes iteration direction
+- `skip(count)` skips the first `count` records
+- `collect_take(n)` collects up to `n` records
+- `collect_all()` collects all remaining records into a list
+
+---
+
+## Scenario 8: Inspection and Monitoring
+
+**When**: You need to inspect dataset configuration and runtime state.
+
+```python
+import timslite
+
+with timslite.Store.open("/data/inspect_demo") as store:
+    store.create_dataset("sensor", "temp",
+        compress_level=9,
+        index_continuous=True,
+    )
+    ds = store.open_dataset("sensor", "temp")
+
+    # Write some data
+    for i in range(1, 101):
+        ds.write(i, f"temp={i * 0.1:.1f}".encode())
+
+    # Inspect dataset
+    result = ds.inspect()
+    info = result.info
+    state = result.state
+
+    print(f"Name: {info.name}")
+    print(f"Type: {info.dataset_type}")
+    print(f"Identifier: {info.identifier}")
+    print(f"Compression: type={info.compress_type}, level={info.compress_level}")
+    print(f"Index mode: {'continuous' if info.index_continuous else 'sparse'}")
+    print(f"Retention window: {info.retention_window}")
+    print(f"Latest timestamp: {state.latest_written_timestamp}")
+    print(f"Data segments: {state.data_segments}")
+    print(f"Total records: {state.total_record_count}")
+    print(f"Total data size: {state.total_data_size} bytes")
+    print(f"Total original size: {state.total_original_size} bytes")
+
+    # List all datasets
+    names = store.get_dataset_names()
+    print(f"Dataset names: {names}")
+
+    types = store.get_dataset_types("sensor")
+    print(f"Types for 'sensor': {types}")
+
+    # Inspect from store
+    store_result = store.inspect_dataset("sensor", "temp")
+    print(f"Store inspect - latest: {store_result.state.latest_written_timestamp}")
+```
+
+**Key points**:
+- `inspect()` returns `DataSetInspectResult` with `info` (config) and `state` (runtime)
+- `get_dataset_names()` lists all dataset names
+- `get_dataset_types(name)` lists all types for a given name
+
+---
+
+## Scenario 9: Retention Window
+
+**When**: You want automatic expiry of old data.
+
+```python
+import timslite
+
+with timslite.Store.open("/data/retention_demo") as store:
+    # Create dataset with 1-day retention (in timestamp units)
+    ds = store.create_dataset("sensor", "temp",
+        retention_window=86400,  # 86400 seconds = 1 day
+    )
+
+    # Write data
+    ds.write(1000, b"old_data")
+    ds.write(100000, b"new_data")
+
+    # Reading expired timestamp returns None
+    record = ds.read(1000)  # May return None if expired
+    record = ds.read(100000)  # Returns (100000, b"new_data")
+
+    # Retention is enforced at read time and during background reclamation
+```
+
+**Key points**:
+- `retention_window` uses the same unit as the dataset timestamp
+- `retention_window=0` means no limit
+- Expired records return `None` on read
+- Expired timestamps cannot be deleted, rewritten, or corrected
+- Reclamation runs in background (or via `tick_background_tasks()`)
+
+---
+
+## Scenario 10: Error Handling
+
+**When**: You need to handle specific error conditions.
+
+```python
+import timslite
+
+try:
+    with timslite.Store.open("/data/error_demo") as store:
+        # Create dataset
+        store.create_dataset("test", "data")
+        ds = store.open_dataset("test", "data")
+
+        # Try to create duplicate
+        try:
+            store.create_dataset("test", "data")
+        except timslite.TmslAlreadyExistsError:
+            print("Dataset already exists")
+
+        # Try to open non-existent dataset
+        try:
+            store.open_dataset("nonexistent", "data")
+        except timslite.TmslNotFoundError:
+            print("Dataset not found")
+
+        # Try to write oversized record
+        try:
+            ds.write(1, b"x" * (5 * 1024 * 1024))  # 5 MiB > 4 MiB limit
+        except timslite.TmslInvalidDataError:
+            print("Record too large")
+
+        # Try to write out-of-order (sparse mode)
+        ds.write(100, b"data_100")
+        try:
+            ds.write(50, b"data_50")  # 50 < 100
+        except timslite.TmslInvalidDataError:
+            print("Out-of-order write not allowed in sparse mode")
+
+except timslite.TmslError as e:
+    print(f"General timslite error: {e}")
+```
+
+**Key points**:
+- All specific errors inherit from `TmslError`
+- Catch specific errors first, then fall back to `TmslError`
+- Error hierarchy: `TmslError` → `TmslNotFoundError`, `TmslAlreadyExistsError`, `TmslInvalidDataError`, etc.

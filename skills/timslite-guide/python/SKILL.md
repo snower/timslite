@@ -84,135 +84,82 @@ with timslite.Store.open("/data/timslite") as store:
 ### StoreConfig
 
 ```python
-import timslite
-
 config = timslite.StoreConfig(
     flush_interval=15,           # seconds
     idle_timeout=1800,           # 30 minutes
     data_segment_size=64 * 1024 * 1024,  # 64 MiB
     index_segment_size=4 * 1024 * 1024,   # 4 MiB
+    initial_data_segment_size=256 * 1024,  # 256 KiB
+    initial_index_segment_size=4 * 1024,   # 4 KiB
     compress_level=6,            # 0-9
     cache_max_memory=256 * 1024 * 1024,  # 256 MiB
+    cache_idle_timeout=1800,     # 30 minutes
+    retention_check_hour=0,      # UTC hour 0-23
     enable_background_thread=True,
     enable_journal=True,
+    read_only=None,              # None=auto, True=force RO, False=require writable
 )
 ```
 
-### DataSetConfig
+### Dataset Configuration
+
+Dataset configuration is passed as keyword arguments to `store.create_dataset()`:
 
 ```python
-import timslite
-
-# Using create_dataset with default config
-store.create_dataset("metrics", "cpu")
-
-# Using create_dataset_with_config
-config = timslite.DataSetConfig(
+ds = store.create_dataset("sensor", "waveform",
     data_segment_size=128 * 1024 * 1024,  # 128 MiB
     index_segment_size=8 * 1024 * 1024,    # 8 MiB
     compress_level=9,                      # max compression
-    index_continuous=1,                    # continuous mode
+    index_continuous=True,                 # continuous mode
     retention_window=86400,                # 1 day in timestamp units
     enable_journal=True,
 )
-store.create_dataset_with_config("metrics", "per_second", config)
 ```
 
-## Common Patterns
+**Note**: There is no `DataSetConfig` class in the Python wrapper.
 
-### Batch Writes
-
-```python
-for i in range(1000):
-    data = f'{{"value": {i}}}'.encode()
-    ds.write(i + 1, data)
-```
-
-### Range Queries
+## Module Exports
 
 ```python
-# Lazy query (iterator)
-for ts, data in ds.query(100, 200):
-    print(f"ts={ts}: {data.decode()}")
-
-# Eager query (list)
-records = ds.query_all(100, 200)
-for ts, data in records:
-    print(f"ts={ts}: {data.decode()}")
-```
-
-### Queue Consumption
-
-```python
-ds = store.open_dataset("tasks", "jobs")
-q = store.open_queue(ds.id)
-consumer = q.open_consumer("worker_group")
-
-result = consumer.poll(5000)  # timeout in ms
-if result:
-    ts, data = result
-    print(f"Got task: {data.decode()}")
-    consumer.ack(ts)
-
-q.close()
-```
-
-### Journal Consumption
-
-```python
-jq = store.open_journal_queue()
-consumer = jq.open_consumer("sync_worker")
-
-result = consumer.poll(100)  # timeout in ms
-if result:
-    seq, payload = result
-    print(f"Journal seq: {seq}")
-    consumer.ack(seq)
-
-jq.close()
-```
-
-### Manual Background Tasks
-
-When `enable_background_thread=False`, the store does not spawn an internal background thread. You must call `store.tick_background_tasks()` periodically to drive flush, idle-close, cache eviction, and retention reclaim.
-
-```python
-import timslite
-
-cfg = timslite.StoreConfig(enable_background_thread=False)
-store = timslite.Store.open("/data/timslite", cfg)
-
-store.create_dataset("sensor", "waveform")
-ds = store.open_dataset("sensor", "waveform")
-ds.write(1, b"reading_1")
-
-# Manually execute a tick — returns (executed_tasks, next_delay_ms)
-executed, delay_ms = store.tick_background_tasks()
-print(f"executed={executed}, next in {delay_ms}ms")
-
-# Check the delay without executing anything
-delay = store.next_background_delay()
-print(f"next task due in {delay}ms")
-
-# In an event loop:
-import time
-while True:
-    executed, delay_ms = store.tick_background_tasks()
-    if executed > 0:
-        print(f"ran {executed} background tasks")
-    time.sleep(delay_ms / 1000.0)
-
-store.close()
+from timslite import (
+    Store, StoreConfig,
+    Dataset, QueryIterator, QueryLengthIterator,
+    DatasetQueue, DatasetQueueConsumer,
+    DatasetQueueConsumerInfo, DatasetQueueConsumerPendingEntry,
+    DatasetQueueConsumerState, DatasetQueueConsumerInspectResult,
+    JournalQueue, JournalQueueConsumer,
+    DataSetInfo, DataSetState, DataSetInspectResult,
+    TmslError,
+)
 ```
 
 ## Error Handling
 
-All operations raise `TmslError` on failure. Common errors:
+```python
+try:
+    store.create_dataset("sensor", "waveform")
+except timslite.TmslAlreadyExistsError:
+    print("Dataset already exists")
+except timslite.TmslNotFoundError:
+    print("Dataset not found")
+except timslite.TmslError as e:
+    print(f"Error: {e}")
+```
 
-- `AlreadyExists` — dataset already exists
-- `InvalidData` — invalid parameters or data
-- `NotFound` — dataset or record not found
-- `SegmentFull` — segment capacity exceeded
-- `ReadOnly` — write attempted on read-only store
-
-See [Troubleshooting](../troubleshooting.md) for detailed error solutions.
+Error hierarchy:
+- `TmslError` (base)
+  - `TmslIoError`
+  - `TmslNotFoundError`
+  - `TmslAlreadyExistsError`
+  - `TmslInvalidDataError`
+  - `TmslSegmentFullError`
+  - `TmslMmapError`
+  - `TmslCompressionError`
+  - `TmslDecompressionError`
+  - `TmslExpiredError`
+  - `TmslQueueAlreadyOpenError`
+  - `TmslQueueNotOpenError`
+  - `TmslConsumerGroupNotFoundError`
+  - `TmslConsumerGroupExistsError`
+  - `TmslQueueClosedError`
+  - `TmslPendingFullError`
