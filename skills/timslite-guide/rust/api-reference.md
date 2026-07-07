@@ -26,8 +26,6 @@ Opens or connects to a store at `data_dir`. Acquires a `.lock` file for exclusiv
 
 Stops the background thread (if running), flushes all dirty segments, closes all open datasets, closes the journal, and releases the store lock.
 
-**Fails if**: Any dataset handle, iterator, queue, or consumer created from this store is still open.
-
 #### `Store::is_read_only(&self) -> bool`
 
 Returns whether this store resolved to read-only mode at open time. Read-only stores cannot create/drop datasets, write data, or open queues.
@@ -56,360 +54,628 @@ Creates a new dataset with explicit parameters.
 
 #### `Store::create_dataset_with_config(&mut self, name: &str, dataset_type: &str, config: Option<DataSetConfigBuilder>) -> Result<DataSet>`
 
-Creates a dataset with optional custom configuration. Pass `None` to use store defaults.
+Creates a dataset with optional custom configuration. If `config` is `None`, uses store defaults.
+
+**Parameters**:
+- `name`: Dataset name
+- `dataset_type`: Dataset type
+- `config`: Optional `DataSetConfigBuilder` (None = use store defaults)
 
 **Returns**: `DataSet` instance.
 
 #### `Store::open_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSet>`
 
-Opens an existing dataset and returns a `DataSet` instance. The dataset's configuration is read from its meta file.
+Opens an existing dataset by name and type. Returns the cached handle if already open.
+
+**Parameters**:
+- `name`: Dataset name
+- `dataset_type`: Dataset type
 
 **Returns**: `DataSet` instance.
 
-**Errors**: `NotFound` if dataset doesn't exist.
+**Errors**:
+- `NotFound` if dataset does not exist
+- Rejects the reserved name `.journal`
 
 #### `Store::open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSet>`
 
-Opens a dataset by its numeric identifier (assigned at creation time).
+Opens an existing dataset by its Store-assigned numeric identifier.
+
+**Parameters**:
+- `identifier`: Dataset identifier (must be > 0)
 
 **Returns**: `DataSet` instance.
 
 #### `Store::drop_dataset(&mut self, name: &str, dataset_type: &str) -> Result<()>`
 
-Deletes a dataset and all its files (data segments, index segments, meta, state, queue). Irreversible.
+Deletes an entire dataset directory (destructive, not recoverable).
 
-#### `Store::list_datasets(&self) -> Result<Vec<(String, String)>>`
+**Parameters**:
+- `name`: Dataset name
+- `dataset_type`: Dataset type
 
-Lists all dataset `(name, type)` pairs in the store.
+**Errors**:
+- `NotFound` if dataset does not exist
+- Rejects the reserved name `.journal`
 
-#### `Store::inspect_dataset(&self, name: &str, dataset_type: &str) -> Result<DataSetInspectResult>`
+#### `Store::inspect_dataset(&mut self, name: &str, dataset_type: &str) -> Result<DataSetInspectResult>`
 
-Returns `DataSetInspectResult { info: DataSetInfo, state: DataSetState }` with dataset metadata and runtime statistics.
+Inspects a dataset by opening it (if needed) and returning config + state.
+
+**Parameters**:
+- `name`: Dataset name
+- `dataset_type`: Dataset type
+
+**Returns**: `DataSetInspectResult` with `info` (DataSetInfo) and `state` (DataSetState).
+
+### 1.3 Listing
+
+#### `Store::get_dataset_names(&self) -> Result<Vec<String>>`
+
+Returns all unique dataset names in the store (sorted).
+
+#### `Store::get_dataset_types(&self, name: &str) -> Result<Vec<String>>`
+
+Returns all dataset types for a given name (sorted).
+
+### 1.4 Journal
+
+#### `Store::journal_latest_sequence(&self) -> Result<Option<i64>>`
+
+Returns the latest journal sequence, or `None` when the journal is empty.
+
+#### `Store::journal_read(&self, sequence: i64) -> Result<Option<(i64, Vec<u8>)>>`
+
+Reads one encoded journal record by sequence.
+
+**Parameters**:
+- `sequence`: Journal sequence number
+
+**Returns**: `Some((sequence, payload))` if found, `None` if not found.
+
+#### `Store::journal_query(&self, start_sequence: i64, end_sequence: i64) -> Result<Vec<(i64, Vec<u8>)>>`
+
+Queries encoded journal records by inclusive sequence range.
+
+**Parameters**:
+- `start_sequence`: Start of range (inclusive)
+- `end_sequence`: End of range (inclusive)
+
+**Returns**: `Vec<(sequence, payload)>` for matching records.
+
+#### `Store::open_journal_queue(&mut self) -> Result<JournalQueue>`
+
+Opens the built-in journal queue for reliable consumption.
+
+**Errors**:
+- `InvalidData` if store is read-only
+
+#### `Store::read_journal_source_record(&mut self, dataset_identifier: u64, index_info: JournalIndexInfo) -> Result<(i64, Vec<u8>)>`
+
+Reads the source dataset record referenced by a journal write/delete/append record.
+
+**Parameters**:
+- `dataset_identifier`: Dataset identifier from the journal record
+- `index_info`: Index info from the journal record (timestamp, block_offset, in_block_offset)
+
+**Returns**: `(timestamp, data)` of the source record.
+
+### 1.5 Background Tasks
+
+#### `Store::tick_background_tasks(&self) -> Result<TickResult>`
+
+Executes one tick of all background tasks synchronously. Checks if flush, idle-close, cache eviction, or retention reclaim are due and runs them immediately.
+
+**Returns**: `TickResult` with `executed_tasks` count and `next_delay_ms` until next task.
+
+**Errors**:
+- `InvalidData` if store is read-only
+
+#### `Store::next_background_delay(&self) -> Result<Duration>`
+
+Returns the duration until the next background task is due. Reads a snapshot without running any tasks.
+
+**Returns**: `Duration` until next task.
+
+### 1.6 Accessors
+
+#### `Store::block_cache(&self) -> &Arc<BlockCache>`
+
+Returns a reference to the global block cache.
+
+#### `Store::config(&self) -> &StoreConfig`
+
+Returns a reference to the store config.
 
 ---
 
 ## 2. DataSet
 
-### 2.1 Write Operations
+`DataSet` handles per-dataset read/write operations. It is `Clone` (backed by `Arc<Mutex<DataSetInner>>`).
 
-#### `ds.write(&self, timestamp: i64, data: &[u8]) -> Result<()>`
+### 2.1 Read Operations
 
-Writes a record at the given timestamp.
+#### `DataSet::read(&mut self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>`
 
-**Rules**:
-- `timestamp >= latest_written_timestamp` → new write (or correction if equal)
-- `timestamp < latest_written_timestamp` and index entry exists → out-of-order rewrite (sparse mode only)
-- `timestamp < latest_written_timestamp` and no index entry → error
-- `data.len() <= 4 MiB` (otherwise `InvalidData`)
+Reads a record by timestamp. Returns `None` if not found, deleted (filler), or expired.
+
+**Parameters**:
+- `timestamp`: Exact timestamp to read (`-1` reads timestamp `-1`, not latest)
+
+**Returns**: `Some((timestamp, data))` if found, `None` otherwise.
+
+#### `DataSet::read_latest(&mut self) -> Result<Option<(i64, Vec<u8>)>>`
+
+Reads the record at `latest_written_timestamp` without searching backward.
+
+**Returns**: `Some((timestamp, data))` if found, `None` if empty or deleted.
+
+#### `DataSet::read_exist(&mut self, timestamp: i64) -> Result<bool>`
+
+Checks if a visible record exists at the given timestamp.
+
+**Parameters**:
+- `timestamp`: Exact timestamp to check
+
+**Returns**: `true` if record exists and is not filler/expired.
+
+#### `DataSet::read_length(&mut self, timestamp: i64) -> Result<Option<u32>>`
+
+Reads the logical data length for a timestamp without reading the data.
+
+**Parameters**:
+- `timestamp`: Exact timestamp to check
+
+**Returns**: `Some(data_len)` if record exists, `None` if not found, filler, or expired.
+
+### 2.2 Query Operations
+
+#### `DataSet::query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>>`
+
+Queries records in the time range `[start_ts, end_ts]` (eager - loads all into memory). Filler entries are skipped.
+
+**Parameters**:
+- `start_ts`: Start of range (inclusive)
+- `end_ts`: End of range (inclusive)
+
+**Returns**: `Vec<(timestamp, data)>` for visible records.
+
+#### `DataSet::query_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryIterator>`
+
+Returns a lazy iterator for records in `[start_ts, end_ts]`. Better for large ranges.
+
+**Parameters**:
+- `start_ts`: Start of range (inclusive)
+- `end_ts`: End of range (inclusive)
+
+**Returns**: `QueryIterator` yielding `Result<(i64, Vec<u8>)>`.
+
+#### `DataSet::query_length(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>`
+
+Queries data lengths for timestamps in `[start_ts, end_ts]` (eager). Skips filler entries.
+
+**Parameters**:
+- `start_ts`: Start of range (inclusive)
+- `end_ts`: End of range (inclusive)
+
+**Returns**: `Vec<(timestamp, data_len)>` for visible records.
+
+#### `DataSet::query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator>`
+
+Returns a lazy iterator for data lengths in `[start_ts, end_ts]`.
+
+**Parameters**:
+- `start_ts`: Start of range (inclusive)
+- `end_ts`: End of range (inclusive)
+
+**Returns**: `QueryLengthIterator` yielding `Result<(i64, u32)>`.
+
+### 2.3 Write Operations
+
+#### `DataSet::write(&mut self, timestamp: i64, data: &[u8]) -> Result<()>`
+
+Writes a record to the dataset. Dispatch behavior depends on timestamp relative to `latest_written_timestamp`:
+- `timestamp > latest_written_timestamp`: Normal write (append)
+- `timestamp == latest_written_timestamp`: Correction write (in-place overwrite if uncompressed, else out-of-order)
+- `timestamp < latest_written_timestamp`: Out-of-order write (append + index update)
+
+**Parameters**:
+- `timestamp`: Record timestamp (must be > 0)
+- `data`: Record data (max 4 MiB)
+
+**Errors**:
+- `InvalidData` if read-only, timestamp <= 0, or data > 4 MiB
+- `SegmentFull` if segment cannot fit the record
+
+#### `DataSet::correct(&mut self, timestamp: i64, data: &[u8]) -> Result<()>`
+
+Corrects an existing record's data in place.
+
+**Parameters**:
+- `timestamp`: Existing timestamp to correct
+- `data`: New data (max 4 MiB)
+
+**Errors**:
+- `NotFound` if no index entry exists at `timestamp`
+- Falls back to out-of-order write if block is sealed/compressed
+
+#### `DataSet::append(&mut self, timestamp: i64, data: &[u8]) -> Result<()>`
+
+Appends data to an existing record. Only works on uncompressed tail records.
+
+**Parameters**:
+- `timestamp`: Must be `>= latest_written_timestamp`
+- `data`: Data to append
 
 **Behavior**:
-- If the current pending block has space, the record is appended
-- If the block overflows, it is sealed (compressed) and a new block is started
-- Large records (>64KB encoded) get their own single-record block
-- Cache invalidation occurs for affected blocks
+- `timestamp == latest_written_timestamp`: Appends to existing tail record (only if uncompressed)
+- `timestamp > latest_written_timestamp`: Creates new record (forward append)
 
-#### `ds.append(&self, timestamp: i64, data: &[u8]) -> Result<()>`
+#### `DataSet::delete(&mut self, timestamp: i64) -> Result<()>`
 
-Forward append or in-place tail append.
+Deletes a record by marking its index entry as filler.
 
-**Rules**:
-- `timestamp < latest_written_timestamp` → error
-- `timestamp > latest_written_timestamp` → forward append (new record)
-- `timestamp == latest_written_timestamp` → in-place append (only if latest record is in uncompressed pending block)
-- Empty data is a no-op (after timestamp/retention checks)
-- `old_len + append_len <= 4 MiB`
+**Parameters**:
+- `timestamp`: Existing timestamp to delete
 
-#### `ds.delete(&self, timestamp: i64) -> Result<()>`
+**Errors**:
+- `NotFound` if dataset is empty, no entry at timestamp, or entry is already filler
+- `Expired` if timestamp is outside retention window
 
-Deletes a record by timestamp. Does NOT retroactively update `latest_written_timestamp`.
+### 2.4 Lifecycle
 
-**Rules**:
-- Returns `Ok(())` even if the record was already deleted or never existed
-- Refuses to delete expired timestamps (retention)
-- Invalidates the affected cache key
+#### `DataSet::flush(&self) -> Result<()>`
 
-### 2.2 Read Operations
+Flushes all dirty segments (data and index) to disk via mmap sync.
 
-#### `ds.read(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>>`
+#### `DataSet::close(&self) -> Result<()>`
 
-Reads a single complete record by exact timestamp.
+Closes all segments, invalidates cache entries, and marks the dataset as closed.
 
-**Returns**:
-- `Ok(Some((timestamp, data)))` if the record exists and is valid
-- `Ok(None)` if the record doesn't exist, is a filler, is deleted, or is expired
+#### `DataSet::touch(&self) -> Result<()>`
 
-**Note**: `read(-1)` reads the record at timestamp `-1`, NOT the latest. Use `read_latest()` for the latest.
+Updates the `last_used_at` timestamp to prevent idle-close.
 
-#### `ds.read_latest(&self) -> Result<Option<(i64, Vec<u8>)>>`
+### 2.5 Queue Operations
 
-Reads the record at `latest_written_timestamp`. Returns `Ok(None)` if never written, deleted, or expired. Does NOT fall back to earlier records.
+#### `DataSet::open_queue(&self) -> Result<DatasetQueue>`
 
-#### `ds.read_exist(&self, timestamp: i64) -> Result<bool>`
+Opens the queue subsystem for this dataset. Only one queue can be open per dataset.
 
-Fast existence check — index lookup only, no data segment I/O. Returns `true` if a visible record exists at this timestamp.
+**Errors**:
+- `QueueAlreadyOpen` if queue is already open
+- `InvalidData` if dataset is read-only
 
-#### `ds.read_length(&self, timestamp: i64) -> Result<Option<u32>>`
+#### `DataSet::close_queue(&self) -> Result<()>`
 
-Reads only the data length of a record (reads the 12-byte record header, not the full data). Faster than `read()` when you only need the size.
+Closes the queue subsystem and syncs consumer state files.
 
-#### `ds.query(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>>`
+### 2.6 Inspection
 
-Range query returning all valid records in `[start_ts, end_ts]` (inclusive). Eager — loads all data into memory. Internally calls `query_iter().collect_all()`.
+#### `DataSet::inspect(&self) -> Result<DataSetInspectResult>`
 
-**Returns**: `Vec<(timestamp, data)>` sorted by timestamp.
+Returns immutable config and mutable runtime state.
 
-#### `ds.query_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryIterator>`
+**Returns**: `DataSetInspectResult` with `info` and `state`.
 
-Lazy range query iterator. Records are read on-demand via `next()`. Uses a query-level `HotBlockCache` for block reuse. Preferred for large ranges.
+### 2.7 Accessors
 
-**Returns**: `QueryIterator` implementing `Iterator<Item = Result<(i64, Vec<u8>)>>`.
+#### `DataSet::base_dir(&self) -> PathBuf`
 
-#### `ds.query_exist(&self, start_ts: i64, end_ts: i64) -> Result<Vec<u8>>`
+Returns the dataset's base directory path.
 
-Fast range existence bitmap. Returns a bitmap where bit `i` is set if a record exists at `start_ts + i`. No data segment I/O.
+#### `DataSet::last_used_at(&self) -> Instant`
 
-#### `ds.query_length(&self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>>`
+Returns the last used time (for idle-close detection).
 
-Range query returning `(timestamp, data_length)` pairs. Reads only record headers (12 bytes each), not full data.
+#### `DataSet::retention_window(&self) -> u64`
 
-#### `ds.query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator>`
+Returns the retention window (0 = no limit).
 
-Lazy iterator over `(timestamp, data_length)` pairs. Memory-efficient for large ranges.
+#### `DataSet::enable_journal(&self) -> bool`
 
-### 2.3 State & Info
+Returns whether this dataset records journal entries.
 
-#### `ds.latest_timestamp(&self) -> Result<Option<i64>>`
+#### `DataSet::latest_written_timestamp(&self) -> Option<i64>`
 
-Returns the `latest_written_timestamp` for this dataset. Returns `Ok(None)` if never written.
-
-#### `ds.flush(&self) -> Result<()>`
-
-Flushes all dirty segments for this dataset to disk.
-
-#### `ds.inspect(&self) -> Result<DataSetInspectResult>`
-
-Returns `DataSetInspectResult { info: DataSetInfo, state: DataSetState }` with dataset metadata and runtime statistics.
+Returns the highest written timestamp (`None` if empty). Not the latest valid record—deletion doesn't roll back.
 
 ---
 
-## 3. QueryIterator / QueryLengthIterator
+## 3. Iterators
 
-Lazy iterators returned by `query_iter()` and `query_length_iter()`.
+### 3.1 QueryIterator
 
 ```rust
-let mut iter = ds.query_iter(1, 1000)?;
-while let Some(result) = iter.next() {
-    let (ts, data) = result?;
-    // process record
-}
+let iter = ds.query_iter(start_ts, end_ts)?;
 ```
 
+**Methods**:
+- `next() -> Option<Result<(i64, Vec<u8>)>>` — Yield next record
+- `reverse(&mut self)` — Reverse iteration direction (must call before first `next()`)
+- `skip(&mut self, count: usize)` — Skip N records (must call before first `next()`)
+- `collect_all(&mut self) -> Result<Vec<(i64, Vec<u8>)>>` — Collect all remaining records
+
 **Behavior**:
-- Reads records on-demand from data segments
-- Uses a query-level `HotBlockCache` for block reuse within the query
-- Implements `Iterator<Item = Result<(i64, Vec<u8>)>>`
-- Automatically releases resources when dropped
+- Skips filler entries automatically
+- Closes automatically when iteration completes or is dropped
+- Uses a hot block cache for efficient sequential reads
+
+### 3.2 QueryLengthIterator
+
+```rust
+let iter = ds.query_length_iter(start_ts, end_ts)?;
+```
+
+**Methods**:
+- `next() -> Option<Result<(i64, u32)>>` — Yield next (timestamp, length)
+- `reverse(&mut self)` — Reverse direction
+- `skip(&mut self, count: usize)` — Skip N entries
+- `collect_all(&mut self) -> Result<Vec<(i64, u32)>>` — Collect all remaining
 
 ---
 
-## 4. Configuration
+## 4. Queue
 
-### 4.1 StoreConfig / StoreConfigBuilder
-
-```rust
-use timslite::{StoreConfig, StoreConfigBuilder};
-
-// Using struct directly
-let config = StoreConfig {
-    flush_interval: 15,
-    idle_timeout: 1800,
-    data_segment_size: 64 * 1024 * 1024,
-    index_segment_size: 4 * 1024 * 1024,
-    compress_level: 6,
-    cache_max_memory: 256 * 1024 * 1024,
-    enable_background_thread: true,
-    enable_journal: true,
-    read_only: None,
-    ..Default::default()
-};
-
-// Using builder
-let config = StoreConfigBuilder::new()
-    .flush_interval(Duration::from_secs(30))
-    .idle_timeout(Duration::from_secs(60))
-    .compress_level(9)
-    .cache_max_memory(512 * 1024 * 1024)
-    .enable_background_thread(false)
-    .enable_journal(false)
-    .build();
-```
-
-**Read-only mode**:
-- `None` (auto): writable if `.lock` can be acquired, otherwise read-only
-- `Some(false)`: require writable, fail if `.lock` is already locked
-- `Some(true)`: force read-only, do not check or take `.lock`
-
-### 4.2 DataSetConfig / DataSetConfigBuilder
-
-`DataSetConfig` fields are crate-internal. Use `DataSetConfigBuilder` to construct:
+### 4.1 DatasetQueue
 
 ```rust
-let builder = DataSetConfigBuilder::new()
-    .data_segment_size(128 * 1024 * 1024)
-    .index_segment_size(8 * 1024 * 1024)
-    .compress_level(9)
-    .compress_type(0)  // zstd
-    .index_continuous(1)  // continuous mode
-    .retention_window(86400)  // 1 day (in timestamp units)
-    .enable_journal(true);
-
-store.create_dataset_with_config("my_ds", "events", Some(builder))?;
+let queue = ds.open_queue()?;
 ```
 
-**Validation rules**:
-- `data_segment_size > 0`, `index_segment_size > 0`
-- `initial_data_segment_size <= data_segment_size`
-- `initial_index_segment_size <= index_segment_size`
-- `compress_level <= 9`
-- `compress_type`: 0 (zstd) or 1 (deflate)
-- `index_continuous`: 0 or 1
-- `retention_window <= i64::MAX`
+**Methods**:
+- `open_consumer(&self, group_name: &str, config: QueueConsumerConfig) -> Result<DatasetQueueConsumer>` — Open a consumer group
+- `push(&self, data: &[u8]) -> Result<i64>` — Push data (auto-assigns next timestamp)
+- `close(&self) -> Result<()>` — Close the queue
+
+### 4.2 DatasetQueueConsumer
+
+```rust
+let mut consumer = queue.open_consumer("group", config)?;
+```
+
+**Methods**:
+- `poll(&mut self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>` — Poll for data (blocks up to timeout)
+- `ack(&mut self, timestamp: i64) -> Result<()>` — Acknowledge processing
+- `flush(&self) -> Result<()>` — Sync consumer state to disk
+- `inspect(&self) -> Result<DatasetQueueConsumerInspectResult>` — Inspect consumer state
+- `close(&mut self) -> Result<()>` — Close the consumer
 
 ### 4.3 QueueConsumerConfig
 
 ```rust
-pub struct QueueConsumerConfig {
-    pub running_expired_seconds: u16,  // 0=never expire while running, default 900, max 65535
-    pub max_retry_count: u8,           // 0=unlimited, default 3, max 255
-}
+let config = QueueConsumerConfig {
+    running_expired_secs: 60,  // seconds before stuck task is retried
+    max_retry_count: 3,        // max retries before parked
+};
 ```
 
-- `running_expired_seconds`: pending entries older than this (while the consumer is running) become eligible for re-delivery
-- `max_retry_count`: after this many retries, a pending entry is dropped (0 = never drop)
+### 4.4 Inspect Result
+
+```rust
+let inspect = consumer.inspect()?;
+inspect.state.processed_ts        // Option<i64> — last acked timestamp
+inspect.state.pending_entries     // Vec<PendingEntry> — in-flight entries
+inspect.info.group_name           // &str
+```
 
 ---
 
-## 5. Queue Types
+## 5. Journal
 
-### 5.1 DatasetQueue
-
-Obtained via `Store::open_queue(&dataset)`. Clone-safe (internally `Arc`-shared). Call `queue.close()` or drop to close.
-
-**Key behavior**:
-- `push(data)` auto-assigns `timestamp = latest_written_timestamp + 1`
-- `open_consumer(group_name)` opens a consumer group
-- `get_consumer_group_names()` lists registered consumer groups
-- `drop_consumer_group(group_name)` drops a consumer group
-- Multiple consumer groups are independent; each maintains its own progress
-- Multiple consumer instances in the same group share progress (mutual exclusion via state file lock)
-
-**Methods**:
-- `queue.push(data: &[u8]) -> Result<i64>` — Push data, returns assigned timestamp
-- `queue.open_consumer(group_name: &str) -> Result<DatasetQueueConsumer>` — Open consumer with default config
-- `queue.open_consumer_with_config(group_name: &str, config: QueueConsumerConfig) -> Result<DatasetQueueConsumer>` — Open consumer with explicit config
-- `queue.get_consumer_group_names() -> Result<Vec<String>>` — List consumer groups
-- `queue.drop_consumer_group(group_name: &str) -> Result<()>` — Drop consumer group
-
-### 5.2 DatasetQueueConsumer
-
-Obtained via `queue.open_consumer(group_name)`.
-
-**Methods**:
-- `consumer.poll(timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>` — Poll for next record
-- `consumer.ack(timestamp: i64) -> Result<()>` — Acknowledge record
-- `consumer.flush() -> Result<()>` — Flush consumer state to disk
-- `consumer.get_pending_entries() -> Result<Vec<QueueConsumerPendingEntry>>` — Get pending entries
-- `consumer.inspect() -> Result<QueueConsumerInspectResult>` — Inspect consumer state
-- `consumer.poll_callback(callback: Option<QueuePollCallback>) -> Result<()>` — Set poll callback for notification
-
-**Poll semantics**:
-- Polls from `processed_ts + 1` forward
-- Skips filler/gap entries (not delivered, not pending, not acked)
-- On direct read miss → skip
-- On data read miss → mark processed, retry next
-- Pending entries (already polled, not yet acked) are re-delivered after `running_expired_seconds`
-- After `max_retry_count` retries, a pending entry is dropped (0 = never drop)
-
----
-
-## 6. Journal
-
-### 6.1 Journal Queue
-
-Obtained via `Store::open_journal_queue()`.
-
-**Behavior**:
-- Each successful `0x11` (write), `0x12` (delete), or `0x13` (append) operation creates a journal record
-- Journal records are consumed via the queue interface
-- Use `Store::read_journal_source_record(dataset_identifier, index_info)` to dereference journal records to source data
-
-### 6.2 Journal Consumption
+### 5.1 JournalQueue
 
 ```rust
 let jq = store.open_journal_queue()?;
-let consumer = jq.open_consumer("sync_worker")?;
+```
 
-while let Some((seq, payload)) = consumer.poll(Duration::from_millis(100))? {
-    // process journal record
-    consumer.ack(seq)?;
+**Methods**:
+- `open_consumer(&self) -> Result<JournalQueueConsumer>` — Open a consumer
+- `close(&self) -> Result<()>` — Close the queue
+
+### 5.2 JournalQueueConsumer
+
+```rust
+let mut jc = jq.open_consumer()?;
+```
+
+**Methods**:
+- `poll(&mut self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>>` — Poll for journal entry (sequence, payload)
+- `ack(&mut self, sequence: i64) -> Result<()>` — Acknowledge entry
+- `get(&self, sequence: i64) -> Result<Option<(i64, Vec<u8>)>>` — Get specific entry without advancing cursor
+- `close(&mut self) -> Result<()>` — Close the consumer
+
+---
+
+## 6. Configuration
+
+### 6.1 StoreConfig
+
+```rust
+use std::time::Duration;
+use timslite::StoreConfig;
+
+let config = StoreConfig::builder()
+    .flush_interval(Duration::from_secs(15))     // mmap sync interval
+    .idle_timeout(Duration::from_secs(1800))     // segment idle-close timeout
+    .data_segment_size(64 * 1024 * 1024)        // 64 MiB
+    .index_segment_size(16 * 1024 * 1024)       // 16 MiB
+    .initial_data_segment_size(256 * 1024)      // 256 KiB
+    .initial_index_segment_size(16 * 1024)      // 16 KiB
+    .compress_level(6)                          // 0-9
+    .compress_type(0)                           // 0=zstd, 1=deflate
+    .cache_max_memory(256 * 1024 * 1024)        // 256 MiB
+    .cache_idle_timeout(Duration::from_secs(1800))
+    .retention_check_hour(0)                    // UTC hour 0-23
+    .enable_background_thread(true)
+    .enable_journal(true)
+    .read_only(None)                            // None=auto, Some(false)=require writable, Some(true)=force RO
+    .build();
+```
+
+**Defaults**:
+- `flush_interval`: 15s
+- `idle_timeout`: 30min
+- `data_segment_size`: 64 MiB
+- `index_segment_size`: 16 MiB
+- `initial_data_segment_size`: 256 KiB
+- `initial_index_segment_size`: 16 KiB
+- `compress_level`: 6
+- `compress_type`: zstd (0)
+- `cache_max_memory`: 256 MiB
+- `cache_idle_timeout`: 30min
+- `retention_check_hour`: 0 (UTC 00:00)
+- `enable_background_thread`: true
+- `enable_journal`: true
+- `read_only`: None (auto)
+
+### 6.2 DataSetConfigBuilder
+
+```rust
+use timslite::DataSetConfigBuilder;
+
+// Pre-fill from store defaults
+let builder = DataSetConfigBuilder::from_store(&store.config())
+    .data_segment_size(128 * 1024 * 1024)
+    .compress_level(9)
+    .index_continuous(1)
+    .retention_window(86400)
+    .enable_journal(true);
+
+// Or create from scratch
+let builder = DataSetConfigBuilder::new()
+    .data_segment_size(64 * 1024 * 1024)
+    .index_segment_size(4 * 1024 * 1024)
+    .initial_data_segment_size(256 * 1024)
+    .initial_index_segment_size(4096)
+    .compress_level(6)
+    .compress_type(0)
+    .index_continuous(0)
+    .retention_window(0)
+    .enable_journal(false);
+```
+
+**Methods**:
+- `from_store(config: &StoreConfig) -> Self` — Pre-fill with store defaults
+- `new() -> Self` — Create empty builder
+- `data_segment_size(size: u64) -> Self`
+- `index_segment_size(size: u64) -> Self`
+- `initial_data_segment_size(size: u64) -> Self`
+- `initial_index_segment_size(size: u64) -> Self`
+- `compress_level(level: u8) -> Self` — 0-9 (clamped)
+- `compress_type(compress_type: u8) -> Self` — 0=zstd, 1=deflate
+- `index_continuous(value: u8) -> Self` — 0=sparse, 1=continuous (clamped)
+- `retention_window(units: u64) -> Self` — 0=no limit
+- `enable_journal(enable: bool) -> Self`
+
+---
+
+## 7. Inspection Types
+
+### 7.1 DataSetInfo (Immutable Config)
+
+```rust
+pub struct DataSetInfo {
+    pub name: String,
+    pub dataset_type: String,
+    pub identifier: u64,
+    pub data_segment_size: u64,
+    pub index_segment_size: u64,
+    pub initial_data_segment_size: u64,
+    pub initial_index_segment_size: u64,
+    pub compress_type: u8,
+    pub compress_level: u8,
+    pub index_continuous: u8,
+    pub retention_window: u64,
+    pub enable_journal: bool,
+    pub create_time: i64,  // Unix milliseconds
+}
+```
+
+### 7.2 DataSetState (Mutable Runtime State)
+
+```rust
+pub struct DataSetState {
+    pub latest_written_timestamp: Option<i64>,
+    pub open_data_segments: u32,
+    pub data_segments: u32,
+    pub total_record_count: u64,
+    pub total_data_size: u64,
+    pub total_uncompressed_size: u64,
+    pub total_invalid_record_count: u64,
+    pub min_timestamp: Option<i64>,
+    pub max_timestamp: Option<i64>,
+    pub open_index_segments: u32,
+    pub index_segments: u32,
+    pub pending_index_entries: u32,  // always 0
+    pub base_timestamp: Option<i64>,
+    pub read_only: bool,
+    pub has_block_cache: bool,
+    pub has_journal: bool,
+    pub has_queue: bool,
+    pub queue_consumer_groups: u32,
+}
+```
+
+### 7.3 DataSetInspectResult
+
+```rust
+pub struct DataSetInspectResult {
+    pub info: DataSetInfo,
+    pub state: DataSetState,
 }
 ```
 
 ---
 
-## 7. Background Tasks
+## 8. Background Tasks
 
-### 7.1 Manual Tick
+### 8.1 TickResult
 
 ```rust
-let (executed, delay_ms) = store.tick_background_tasks()?;
-println!("Executed {} tasks, next in {}ms", executed, delay_ms);
-
-let delay = store.next_background_delay()?;
-println!("Next task due in {}ms", delay);
+pub struct TickResult {
+    pub executed_tasks: u32,  // number of tasks executed
+    pub next_delay_ms: u64,   // ms until next task is due
+}
 ```
-
-### 7.2 Automatic Thread
-
-When `enable_background_thread = true` (default), a background thread automatically runs:
-- Flush (every `flush_interval` seconds)
-- Idle-close (segments idle for `idle_timeout` seconds)
-- Cache eviction (entries idle for `cache_idle_timeout` seconds)
-- Retention reclaim (daily at `retention_check_hour` UTC)
 
 ---
 
-## 8. Error Types
+## 9. Error Types
 
 ```rust
 pub enum TmslError {
-    AlreadyExists,
-    NotFound,
+    Io(io::Error),
+    InvalidMagic,
+    InvalidVersion(u16),
+    MmapError(String),
+    CompressionError(String),
+    DecompressionError(String),
     InvalidData(String),
+    NotFound(String),
+    Expired(String),
+    AlreadyExists(String),
     SegmentFull,
-    ReadOnly,
-    Io(std::io::Error),
-    // ... other variants
+    QueueAlreadyOpen(String),
+    QueueNotOpen(String),
+    ConsumerGroupNotFound(String),
+    ConsumerGroupExists(String),
+    QueueClosed(String),
+    PendingFull(String),
 }
 ```
 
-All operations return `Result<T, TmslError>`. Use pattern matching or `?` operator for error handling.
+All variants implement `Display` and `Error`.
 
 ---
 
-## 9. Index Modes
+## 10. Constants
 
-### Sparse Mode (`index_continuous = 0`)
+```rust
+pub const QUEUE_STATE_MAGIC: [u8; 4] = *b"QSTF";
+pub const QUEUE_STATE_VERSION: u32 = 1;
+pub const QUEUE_STATE_FILE_SIZE: usize = 4096;
 
-- Binary search on `(timestamp, block_offset)` pairs
-- Supports arbitrary timestamp values
-- Out-of-order writes allowed (if timestamp already exists)
-- Choose when: timestamps are irregular, event-driven, or have large gaps
-
-### Continuous Mode (`index_continuous = 1`)
-
-- Mathematical formula: `position = (timestamp - base_timestamp) / time_step`
-- Timestamps must be dense sequential integers
-- `write(ts)` fills the appropriate position, creating filler prefixes as needed
-- O(1) timestamp-to-position calculation within a segment
-- Choose when: timestamps are dense sequential integers (e.g., per-second sensor readings with few gaps)
+pub const JOURNAL_DATASET_NAME: &str = ".journal";
+pub const JOURNAL_DATASET_TYPE: &str = "logs";
+```

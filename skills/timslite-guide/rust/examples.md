@@ -14,7 +14,8 @@ use timslite::{Store, StoreConfig};
 let mut store = Store::open("/data/sensors", StoreConfig::default())?;
 
 // Create a dataset for sensor readings (sparse mode for irregular timestamps)
-store.create_dataset("temp_sensor", "readings",
+let ds = store.create_dataset(
+    "temp_sensor", "readings",
     64 * 1024 * 1024,  // 64MB data segments
     4 * 1024 * 1024,   // 4MB index segments
     6,                 // compress level
@@ -22,19 +23,23 @@ store.create_dataset("temp_sensor", "readings",
     0,                 // no retention
 )?;
 
-let handle = store.open_dataset("temp_sensor", "readings")?;
-let ds = store.get_dataset(&handle)?;
-
 // Write sensor readings (timestamps must be monotonically increasing)
 for i in 0..1000i64 {
     let data = format!("{{\"temp\": {:.1}, \"ts\": {}}}", 20.0 + i as f64 * 0.1, i).into_bytes();
     ds.write(i + 1, &data)?;
 }
 
-// Query a range
+// Query a range (eager - loads all into memory)
 let entries = ds.query(100, 200)?;
 for (ts, data) in &entries {
     println!("ts={ts}: {}", String::from_utf8_lossy(data));
+}
+
+// Query with lazy iterator (for large ranges)
+let iter = ds.query_iter(100, 200)?;
+for result in iter {
+    let (ts, data) = result?;
+    println!("ts={ts}: {}", String::from_utf8_lossy(&data));
 }
 
 // Read a specific timestamp
@@ -65,16 +70,14 @@ store.close()?;
 let mut store = Store::open("/data/metrics", StoreConfig::default())?;
 
 // Create with index_continuous = 1
-store.create_dataset("cpu_usage", "per_second",
+let ds = store.create_dataset(
+    "cpu_usage", "per_second",
     64 * 1024 * 1024,
     4 * 1024 * 1024,
     6,
     1,   // continuous mode — time_step = 1
     0,
 )?;
-
-let handle = store.open_dataset("cpu_usage", "per_second")?;
-let ds = store.get_dataset(&handle)?;
 
 // Write sequential timestamps (no gaps allowed in continuous mode)
 for i in 1..=1000i64 {
@@ -85,493 +88,450 @@ for i in 1..=1000i64 {
 let (_, data) = ds.read(500)?.unwrap();
 println!("Record 500: {}", String::from_utf8_lossy(&data));
 
-// Continuous mode auto-fills gaps with None on read
-// If you write ts=1 and ts=100, reading ts=50 returns None (filler)
-```
+// Continuous mode is ideal for evenly-spaced data
+// Gaps waste space but are allowed (sparse mode is better for irregular data)
 
-**Key points**:
-- Continuous mode assumes timestamps are dense sequential integers
-- Missing timestamps become filler entries (read returns `None`)
-- O(1) timestamp-to-position calculation within a segment
-
----
-
-## Scenario 3: Queue (FIFO Consumer Groups)
-
-**When**: You need ordered delivery with consumer group semantics (like Kafka consumer groups).
-
-```rust
-use std::time::Duration;
-use timslite::{Store, StoreConfig};
-
-let mut store = Store::open("/data/app", StoreConfig::default())?;
-store.create_dataset("tasks", "jobs", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-let handle = store.open_dataset("tasks", "jobs")?;
-
-// Open queue for a dataset
-let q = store.open_queue(handle)?;
-
-// Push data (auto-assigns next timestamp)
-let ts1 = store.queue_push(&q, b"task_1")?;
-let ts2 = store.queue_push(&q, b"task_2")?;
-
-// Open a consumer group
-let consumer = store.open_consumer(&q, "worker_group")?;
-
-// Poll for records (with timeout)
-if let Some((ts, data)) = store.queue_poll(&consumer, Duration::from_secs(5))? {
-    println!("Got task at {ts}: {}", String::from_utf8_lossy(&data));
-    // Acknowledge processing
-    store.queue_ack(&consumer, ts)?;
-}
-
-store.close_queue(q)?;
 store.close()?;
 ```
 
 **Key points**:
-- `queue_push` auto-assigns `timestamp = latest_written_timestamp + 1`
-- Multiple consumer groups are independent
-- Multiple consumers in the same group share progress (mutual exclusion)
+- Continuous mode enables O(1) timestamp lookup
+- Best for evenly-spaced timestamps with minimal gaps
+- Gaps are allowed but waste index space
 
 ---
 
-## Scenario 4: Queue with Retry and Expiry
+## Scenario 3: Append to Existing Record
 
-**When**: You need automatic retry for failed tasks and expiry for stuck tasks.
+**When**: You need to extend a record's data incrementally (e.g., building a payload in chunks).
+
+```rust
+let mut store = Store::open("/data/append", StoreConfig::default())?;
+let ds = store.create_dataset("events", "chunked", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+
+// Write initial record
+ds.write(1, b"chunk1")?;
+
+// Append to the same timestamp (must be >= latest_written_timestamp)
+ds.append(1, b",chunk2")?;
+ds.append(1, b",chunk3")?;
+
+// Read the full record
+let (_, data) = ds.read(1)?.unwrap();
+println!("{}", String::from_utf8_lossy(&data)); // "chunk1,chunk2,chunk3"
+
+// Forward append (ts > latest_written_timestamp) creates new record
+ds.append(2, b"new_record")?;
+
+store.close()?;
+```
+
+**Key points**:
+- `append(ts, data)` with `ts == latest_written_timestamp` extends the existing tail record
+- `append(ts, data)` with `ts > latest_written_timestamp` creates a new record
+- Append only works on uncompressed tail records
+
+---
+
+## Scenario 4: Correction and Deletion
+
+**When**: You need to fix or remove previously written records.
+
+```rust
+let mut store = Store::open("/data/corrections", StoreConfig::default())?;
+let ds = store.create_dataset("metrics", "correctable", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+
+// Write some records
+ds.write(1, b"original_value")?;
+ds.write(2, b"another_value")?;
+
+// Correct a record (overwrites data at existing timestamp)
+ds.correct(1, b"corrected_value")?;
+
+// Verify correction
+let (_, data) = ds.read(1)?.unwrap();
+println!("{}", String::from_utf8_lossy(&data)); // "corrected_value"
+
+// Delete a record
+ds.delete(2)?;
+
+// Verify deletion
+let deleted = ds.read(2)?;
+println!("{:?}", deleted); // None
+
+store.close()?;
+```
+
+**Key points**:
+- `correct(ts, data)` overwrites an existing record's data
+- `delete(ts)` removes a record (soft delete — data remains until reclaimed)
+- Deleted records return `None` from `read()`
+
+---
+
+## Scenario 5: Query Length (Header-Only Scan)
+
+**When**: You need record sizes without reading full data (e.g., for capacity planning or selective reads).
+
+```rust
+let mut store = Store::open("/data/length", StoreConfig::default())?;
+let ds = store.create_dataset("logs", "entries", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+
+// Write records of varying sizes
+ds.write(1, b"short")?;
+ds.write(2, b"a much longer record with more data")?;
+ds.write(3, b"medium length")?;
+
+// Query lengths only (no data transfer)
+let lengths = ds.query_length(1, 3)?;
+for (ts, length) in &lengths {
+    println!("ts={ts}: {length} bytes");
+}
+
+// Use read_length for single record
+let len = ds.read_length(2)?;
+println!("Record 2 length: {:?}", len);
+
+// Selective read based on length
+for (ts, length) in &lengths {
+    if *length > 10 {
+        let (_, data) = ds.read(*ts)?.unwrap();
+        println!("Large record at {ts}: {}", String::from_utf8_lossy(&data));
+    }
+}
+
+store.close()?;
+```
+
+**Key points**:
+- `query_length()` returns `(timestamp, length)` pairs without reading data
+- `read_length(ts)` returns length for a single timestamp
+- Useful for capacity planning and selective reads
+
+---
+
+## Scenario 6: Queue Consumer Pattern
+
+**When**: You need reliable task processing with consumer groups.
 
 ```rust
 use std::time::Duration;
 use timslite::{Store, StoreConfig, QueueConsumerConfig};
 
-let mut store = Store::open("/data/app", StoreConfig::default())?;
-store.create_dataset("retry_queue", "jobs", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-let handle = store.open_dataset("retry_queue", "jobs")?;
-let q = store.open_queue(handle)?;
+let mut store = Store::open("/data/queue", StoreConfig::default())?;
+let ds = store.create_dataset("tasks", "jobs", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
 
-// Push some tasks
-store.queue_push(&q, b"important_task")?;
+let queue = ds.open_queue()?;
 
-// Open consumer with retry config
-let config = QueueConsumerConfig {
-    running_expired_seconds: 60,  // re-deliver after 60s if not acked
-    max_retry_count: 3,           // drop after 3 retries
-};
-let consumer = store.open_consumer_with_config(&q, "retry_group", config)?;
-
-// Poll and process
-if let Some((ts, data)) = store.queue_poll(&consumer, Duration::from_secs(5))? {
-    println!("Processing: {}", String::from_utf8_lossy(&data));
-    // If processing fails, don't ack — it will be re-delivered after 60s
-    // After 3 failures, the entry is dropped
-    store.queue_ack(&consumer, ts)?;
+// Producer: push tasks
+for i in 0..100 {
+    let payload = format!("{{\"taskId\": {}, \"action\": \"process\"}}", i).into_bytes();
+    let ts = queue.push(&payload)?;
+    println!("Pushed task {i} at ts={ts}");
 }
 
-store.close_queue(q)?;
+// Consumer: process tasks
+let config = QueueConsumerConfig {
+    running_expired_secs: 60,  // 60s before stuck task is retried
+    max_retry_count: 3,        // max 3 retries before parked
+};
+let mut consumer = queue.open_consumer("worker_group", config)?;
+
+// Poll and process
+if let Some((ts, data)) = consumer.poll(Duration::from_secs(5))? {
+    let task: serde_json::Value = serde_json::from_slice(&data)?;
+    println!("Processing task {}", task["taskId"]);
+
+    // Acknowledge successful processing
+    consumer.ack(ts)?;
+}
+
+// Inspect consumer state
+let inspect = consumer.inspect()?;
+println!("Processed up to: {:?}", inspect.state.processed_ts);
+println!("Pending entries: {}", inspect.state.pending_entries.len());
+
+consumer.flush()?;
+consumer.close()?;
+queue.close()?;
+ds.close()?;
 store.close()?;
 ```
 
 **Key points**:
-- `running_expired_seconds`: re-deliver pending entries after this timeout
-- `max_retry_count`: drop entries after this many retries (0 = unlimited)
+- Each consumer group tracks its own position independently
+- `poll()` blocks up to timeout
+- `ack(ts)` advances the consumer position
+- Stuck tasks are automatically retried after `running_expired_secs`
 
 ---
 
-## Scenario 5: Journal for Change Tracking / Hot Migration
+## Scenario 7: Iterator Control
 
-**When**: You need to track all data changes for audit, sync to another system, or recovery.
+**When**: You need fine-grained control over query iteration (reverse, skip, collect).
+
+```rust
+let mut store = Store::open("/data/iter", StoreConfig::default())?;
+let ds = store.create_dataset("events", "controlled", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
+
+// Write test data
+for i in 1..=100i64 {
+    ds.write(i, &format!("event_{i}").into_bytes())?;
+}
+
+// Forward iteration (default)
+let iter = ds.query_iter(1, 10)?;
+for result in iter {
+    let (ts, _) = result?;
+    println!("Forward: ts={ts}");
+}
+
+// Reverse iteration
+let mut iter = ds.query_iter(1, 10)?;
+iter.reverse();
+for result in iter {
+    let (ts, _) = result?;
+    println!("Reverse: ts={ts}");
+}
+
+// Skip records
+let mut iter = ds.query_iter(1, 10)?;
+iter.skip(5); // skip first 5
+for result in iter {
+    let (ts, _) = result?;
+    println!("After skip: ts={ts}"); // starts at 6
+}
+
+// Collect all into vector
+let mut iter = ds.query_iter(1, 10)?;
+let collected = iter.collect_all()?;
+println!("Collected {} records", collected.len());
+
+// QueryLengthIterator with same controls
+let mut iter = ds.query_length_iter(1, 100)?;
+iter.reverse();
+iter.skip(10);
+let lengths = iter.collect_all()?;
+println!("Got {} length entries", lengths.len());
+
+store.close()?;
+```
+
+**Key points**:
+- `reverse()` must be called before first `next()`
+- `skip(count)` must be called before first `next()`
+- `collect_all()` eagerly loads all remaining records
+- Iterators close automatically when iteration completes
+
+---
+
+## Scenario 8: Inspection and Monitoring
+
+**When**: You need to inspect dataset state, consumer progress, or system health.
+
+```rust
+use timslite::Store;
+
+let mut store = Store::open("/data/monitor", StoreConfig::default())?;
+
+// List all datasets
+let names = store.get_dataset_names()?;
+println!("Datasets: {:?}", names);
+
+// List types for a dataset
+let types = store.get_dataset_types("sensor")?;
+println!("Sensor types: {:?}", types);
+
+// Inspect dataset
+let ds = store.create_dataset(
+    "sensor", "waveform",
+    64 * 1024 * 1024,
+    4 * 1024 * 1024,
+    6, 0, 0,
+)?;
+
+let inspect = ds.inspect()?;
+
+println!("=== Dataset Info ===");
+println!("Name: {}", inspect.info.name);
+println!("Type: {}", inspect.info.dataset_type);
+println!("Identifier: {}", inspect.info.identifier);
+println!("Compression: {}", if inspect.info.compress_type == 0 { "zstd" } else { "deflate" });
+println!("Index mode: {}", if inspect.info.index_continuous == 0 { "sparse" } else { "continuous" });
+println!("Retention: {}", inspect.info.retention_window);
+println!("Journal: {}", inspect.info.enable_journal);
+
+println!("\n=== Dataset State ===");
+println!("Latest timestamp: {:?}", inspect.state.latest_written_timestamp);
+println!("Data segments: {} ({} open)", inspect.state.data_segments, inspect.state.open_data_segments);
+println!("Index segments: {} ({} open)", inspect.state.index_segments, inspect.state.open_index_segments);
+println!("Total records: {}", inspect.state.total_record_count);
+println!("Data size: {} bytes", inspect.state.total_data_size);
+println!("Read-only: {}", inspect.state.read_only);
+println!("Queue groups: {}", inspect.state.queue_consumer_groups);
+
+ds.close()?;
+store.close()?;
+```
+
+**Key points**:
+- `inspect()` returns both static config and runtime state
+- Useful for monitoring, debugging, and capacity planning
+
+---
+
+## Scenario 9: Journal Queue for Audit/Sync
+
+**When**: You need to consume journal entries for audit logging or cross-system sync.
 
 ```rust
 use std::time::Duration;
 use timslite::{Store, StoreConfig};
 
-let mut store = Store::open("/data/app", StoreConfig::default())?;
+let mut store = Store::open("/data/journal", StoreConfig::default())?;
+let ds = store.create_dataset(
+    "events", "audited",
+    64 * 1024 * 1024,
+    4 * 1024 * 1024,
+    6, 0, 0,
+)?;
 
-// Journal is enabled by default. Create a dataset.
-store.create_dataset("events", "user_actions",
-    64 * 1024 * 1024, 4 * 1024 * 1024, 6, 0, 0)?;
-let handle = store.open_dataset("events", "user_actions")?;
-let ds = store.get_dataset(&handle)?;
-
-// Every write/delete/append automatically appends to the journal
+// Write events (automatically journaled)
 ds.write(1, b"user_login")?;
 ds.write(2, b"page_view")?;
-ds.delete(1)?;
+ds.write(3, b"purchase")?;
 
-// Read journal records
-let latest = store.journal_latest_sequence()?;  // e.g., Some(4) — create + 2 writes + delete
-println!("Latest journal seq: {:?}", latest);
-
-// Read individual journal record
-if let Some((seq, payload)) = store.journal_read(1)? {
-    println!("Journal record {seq}: {} bytes", payload.len());
+// Query journal directly
+if let Some(seq) = store.journal_latest_sequence()? {
+    println!("Latest journal sequence: {seq}");
 }
 
-// Query a range of journal records
-let records = store.journal_query(1, latest.unwrap())?;
-for (seq, payload) in &records {
-    println!("Seq {seq}: {} bytes", payload.len());
+let records = store.journal_query(1, 10)?;
+for (seq, data) in &records {
+    println!("Journal #{seq}: {} bytes", data.len());
 }
 
-// Consume journal via queue (for downstream sync)
+// Open journal queue for reliable consumption
 let jq = store.open_journal_queue()?;
-let consumer = jq.open_consumer("sync_worker")?;
+let mut jc = jq.open_consumer()?;
 
-// Each journal record is delivered as a queue entry
-while let Some((seq, payload)) = consumer.poll(Duration::from_millis(100))? {
-    println!("Consumed journal seq {seq}");
-    // Use store.read_journal_source_record() to fetch the actual business data
-    consumer.ack(seq)?;
+// Process journal entries
+for _ in 0..10 {
+    match jc.poll(Duration::from_secs(1))? {
+        Some((seq, payload)) => {
+            println!("Journal #{seq}: {} bytes", payload.len());
+            jc.ack(seq)?;
+        }
+        None => break,
+    }
 }
 
+// Get specific journal record without advancing cursor
+if let Some((seq, data)) = jc.get(42)? {
+    println!("Journal #{seq}: {} bytes", data.len());
+}
+
+jc.close()?;
+jq.close()?;
+ds.close()?;
 store.close()?;
 ```
 
-**Important journal semantics**:
-- Journal is NOT a WAL — no transaction guarantees
-- Journal records do NOT contain business payload; they reference source data via `index_info`
-- Use `Store::read_journal_source_record(dataset_identifier, index_info)` to dereference
-- Journal append failure does NOT roll back the main operation
-- Disable per-dataset with `DataSetConfigBuilder::enable_journal(false)`
-
----
-
-## Scenario 6: Retention Window (Time-Based Data Expiry)
-
-**When**: You want old data to automatically expire and be reclaimed.
-
-```rust
-use timslite::{Store, StoreConfig, DataSetConfigBuilder};
-
-let mut store = Store::open("/data/app", StoreConfig::default())?;
-
-// Create dataset with 1-day retention (in timestamp units)
-let builder = DataSetConfigBuilder::new()
-    .retention_window(86400)  // 86400 seconds = 1 day
-    .enable_journal(true);
-
-store.create_dataset_with_config("metrics", "per_second", Some(builder))?;
-let handle = store.open_dataset("metrics", "per_second")?;
-let ds = store.get_dataset(&handle)?;
-
-// Write data with timestamps
-for i in 1..=1000i64 {
-    ds.write(i, &format!("value={i}").into_bytes())?;
-}
-
-// Read old data (may be expired if retention_window > 0)
-if let Some((ts, data)) = ds.read(1)? {
-    println!("Old record: ts={ts}");
-}
-
-// Expired records return None on read
-// Reclaim happens during background tasks (daily at retention_check_hour UTC)
-```
-
 **Key points**:
-- `retention_window` uses the same units as dataset timestamps
-- `retention_window = 0` means no limit
-- `retention_check_hour` is UTC hour (0-23) for daily reclaim
-- Expired records return `None` on read
-- Reclaim deletes entire segments when all records are expired
+- Journal entries are automatically created for write/delete/append operations
+- `open_journal_queue()` creates a persistent consumer
+- `poll()` returns `(sequence, payload)` tuples
+- `get(sequence)` reads without advancing the cursor
 
 ---
 
-## Scenario 7: Read-Only Mode
+## Scenario 10: Background Tasks
 
-**When**: You want multiple processes to read the same store, or need to inspect data safely.
+**When**: You need manual control over background maintenance (flush, eviction, retention).
 
 ```rust
 use timslite::{Store, StoreConfig};
 
-// Force read-only mode
-let config = StoreConfig {
-    read_only: Some(true),
-    ..Default::default()
-};
+// Disable background thread for manual control
+let mut store = Store::open(
+    "/data/manual",
+    StoreConfig::builder()
+        .enable_background_thread(false)
+        .build(),
+)?;
 
-let store = Store::open("/data/app", config)?;
+let ds = store.create_dataset("metrics", "cpu", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
 
-// Read operations work normally
-let handle = store.open_dataset("metrics", "cpu")?;
-let ds = store.get_dataset(&handle)?;
-let entries = ds.query(1, 100)?;
-let info = ds.inspect()?;
-println!("Dataset: {} records", info.state.total_record_count);
-
-// Cannot write, create, drop, or open queues in read-only mode
-// ds.write(1, b"data") would return an error
-```
-
-**Auto read-only mode** (default):
-- If `.lock` can be acquired → writable
-- If `.lock` is already held → falls back to read-only
-- Use `read_only(Some(false))` to require writable (fail if locked)
-
----
-
-## Scenario 8: Append (In-Place Tail Growth)
-
-**When**: You want to append data to the latest record without creating a new timestamp.
-
-```rust
-let mut store = Store::open("/data/logs", StoreConfig::default())?;
-store.create_dataset("app_log", "lines", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-let handle = store.open_dataset("app_log", "lines")?;
-let ds = store.get_dataset(&handle)?;
-
-// Create initial record at timestamp 1
-ds.append(1, b"line1\n")?;
-
-// Append more data to the same timestamp (in-place tail growth)
-ds.append(1, b"line2\n")?;
-ds.append(1, b"line3\n")?;
-
-// Read the combined record
-let (_, data) = ds.read(1)?.unwrap();
-assert_eq!(data, b"line1\nline2\nline3\n");
-
-// Forward append creates a new record
-ds.append(2, b"new_record")?;
-```
-
-**Append rules**:
-- `timestamp < latest_written_timestamp` → error
-- `timestamp > latest_written_timestamp` → forward append (new record)
-- `timestamp == latest_written_timestamp` → in-place append (only if latest record is in uncompressed pending block)
-- Empty data is a no-op (after timestamp/retention checks)
-- `old_len + append_len <= 4 MiB`
-- Appended data must fit within the current pending block's capacity
-- Does NOT re-notify queue when appending to existing record
-
----
-
-## Scenario 9: Correction Write (Fix Latest Record)
-
-**When**: You wrote data and need to correct the latest record's content.
-
-```rust
-let ds = /* ... */;
-
-// Write a record
-ds.write(100, b"wrong_data")?;
-
-// Correct it by writing to the same timestamp
-// (only works if latest_written_timestamp == 100 and the record is in a pending raw block)
-ds.write(100, b"corrected_data")?;
-
-// If the block has already been sealed/compressed, the correction
-// automatically falls back to an "update write": new data is appended
-// to the latest data segment, the index is updated, and the old
-// record's segment gets invalid_record_count incremented.
-```
-
-**Correction behavior**:
-- Triggers when `timestamp == latest_written_timestamp`
-- If latest record is in pending raw block → in-place correction
-- If latest record is in sealed/compressed block → update write (new data + index update)
-- Cache invalidation occurs for affected blocks
-
----
-
-## Scenario 10: Out-of-Order Write (Sparse Mode)
-
-**When**: You need to update an existing timestamp (not the latest).
-
-```rust
-let ds = /* ... */;
-
-// Write some records
-ds.write(1, b"data_1")?;
-ds.write(2, b"data_2")?;
-ds.write(3, b"data_3")?;
-
-// Update timestamp 1 (out-of-order write)
-// Only works in sparse mode, and only if timestamp 1 already has an index entry
-ds.write(1, b"updated_data_1")?;
-
-// Out-of-order write to a timestamp with NO index entry → ERROR
-// ds.write(1, b"data")?;  // would fail if timestamp 1 didn't exist
-```
-
-**In continuous mode**: Out-of-order writes are not supported. Timestamps must be `>= latest_written_timestamp`.
-
----
-
-## Scenario 11: Large Record (Single-Record Block)
-
-**When**: A single record's encoded size exceeds 64KB (the normal block payload limit).
-
-```rust
-let ds = /* ... */;
-
-// Records larger than 64KB get their own exclusive block
-// (SINGLE_RECORD flag set, immediately compressed)
-let large_data = vec![0u8; 100_000];  // ~100KB
-ds.write(1, &large_data)?;
-
-// Reading works normally
-let (_, data) = ds.read(1)?.unwrap();
-assert_eq!(data.len(), 100_000);
-```
-
-**Rules**:
-- Single record max: 4 MiB (`write` and `append` both enforce this)
-- Records > 64KB encoded → exclusive single-record block (SINGLE_RECORD | SEALED | COMPRESSED)
-- Records ≤ 64KB → aggregated into normal blocks (pending → sealed on overflow)
-
----
-
-## Scenario 12: Multi-Dataset Isolation
-
-**When**: You have multiple data streams that need independent storage.
-
-```rust
-let mut store = Store::open("/data/app", StoreConfig::default())?;
-
-// Each (name, type) pair is an independent dataset
-store.create_dataset("sensors", "temperature", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-store.create_dataset("sensors", "humidity",    64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-store.create_dataset("sensors", "pressure",    64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-store.create_dataset("events",  "user_action", 64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-store.create_dataset("events",  "system",      64*1024*1024, 4*1024*1024, 6, 0, 0)?;
-
-// List all datasets
-for (name, dtype) in store.list_datasets()? {
-    println!("{name}/{dtype}");
+// Write data
+for i in 1..=1000i64 {
+    ds.write(i, &format!("cpu={:.2}", i as f64 * 0.01).into_bytes())?;
 }
 
-// Open and use each independently
-let h1 = store.open_dataset("sensors", "temperature")?;
-let h2 = store.open_dataset("events", "user_action")?;
+// Manually trigger background tasks
+let result = store.tick_background_tasks()?;
+println!("Executed {} tasks", result.executed_tasks);
+println!("Next run in {}ms", result.next_delay_ms);
 
-let ds1 = store.get_dataset(&h1)?;
-let ds2 = store.get_dataset(&h2)?;
+// Run again to flush
+let result2 = store.tick_background_tasks()?;
+println!("Executed {} tasks", result2.executed_tasks);
 
-ds1.write(1, b"23.5C")?;
-ds2.write(1, b"login")?;
+// Check next delay without executing
+let delay = store.next_background_delay()?;
+println!("Next task due in {}ms", delay.as_millis());
 
-// Inspect a dataset
-let inspect = store.inspect_dataset("sensors", "temperature")?;
-println!("Records: {}", inspect.state.total_record_count);
-println!("Data size: {} bytes", inspect.state.total_data_size);
-```
-
-**Directory layout**: Each dataset gets its own `{name}/{type}/` directory with independent `meta`, `data/`, `index/`, `state`, and optional `queue/`.
-
----
-
-## Scenario 13: Efficient Existence Checking
-
-**When**: You need to check if records exist without loading data (e.g., for deduplication or coverage checks).
-
-```rust
-let ds = /* ... */;
-
-// Single record existence (index only, no data I/O)
-let exists = ds.read_exist(12345)?;
-
-// Range existence bitmap (index only, no data I/O)
-let bitmap = ds.query_exist(1, 1000)?;
-// bitmap[i] is set if record at (start_ts + i) exists
-
-// Record length (reads 12-byte header only)
-let len = ds.read_length(12345)?;  // Option<u32>
-
-// Range lengths (reads headers only)
-let lengths = ds.query_length(1, 1000)?;  // Vec<(i64, u32)>
-```
-
-**Performance hierarchy** (fastest to slowest):
-1. `read_exist` / `query_exist` — index only, no data segment I/O
-2. `read_length` / `query_length` / `query_length_iter` — reads 12-byte record header only
-3. `read` / `query` / `query_iter` — reads full data
-
----
-
-## Scenario 14: Using DataSetConfigBuilder for Fine Control
-
-**When**: You need non-default dataset configuration.
-
-```rust
-use timslite::{Store, StoreConfig, DataSetConfigBuilder};
-
-let mut store = Store::open("/data/app", StoreConfig::default())?;
-
-let builder = DataSetConfigBuilder::new()
-    .data_segment_size(128 * 1024 * 1024)   // 128MB data segments
-    .index_segment_size(8 * 1024 * 1024)    // 8MB index segments
-    .initial_data_segment_size(512 * 1024)  // 512KB initial (lazy alloc)
-    .compress_level(9)                      // max compression
-    .compress_type(0)                       // zstd
-    .index_continuous(1)                    // continuous mode
-    .retention_window(86400)                // 1 day (in timestamp units)
-    .enable_journal(true);
-
-store.create_dataset_with_config("metrics", "per_second", Some(builder))?;
-
-// Using store defaults (pass None)
-store.create_dataset_with_config("simple", "events", None)?;
-```
-
----
-
-## Scenario 15: Cross-Language via C FFI
-
-**When**: You need to use timslite from C, C++, Go, or other languages with C interop.
-
-```c
-#include "timslite.h"
-#include <stdio.h>
-#include <string.h>
-
-int main() {
-    char err[256];
-
-    // Open store with defaults
-    void* store = tmsl_store_open("/data/timslite", err, sizeof(err));
-    if (!store) { fprintf(stderr, "Open failed: %s\n", err); return 1; }
-
-    // Create dataset
-    if (tmsl_dataset_create(store, "sensors", "temp",
-            67108864, 4194304, 6, 0, 0, err, sizeof(err)) != 0) {
-        fprintf(stderr, "Create failed: %s\n", err); return 1;
-    }
-
-    // Open dataset
-    uint64_t handle = 0;
-    if (tmsl_dataset_open(store, "sensors", "temp", &handle, err, sizeof(err)) != 0) {
-        fprintf(stderr, "Open failed: %s\n", err); return 1;
-    }
-
-    // Write a record
-    const char* data = "temperature=23.5";
-    if (tmsl_dataset_write(store, handle, 1, (const uint8_t*)data, strlen(data),
-                           err, sizeof(err)) != 0) {
-        fprintf(stderr, "Write failed: %s\n", err); return 1;
-    }
-
-    // Read a record
-    uint8_t* out_data = NULL;
-    size_t out_len = 0;
-    int64_t out_ts = 0;
-    int found = tmsl_dataset_read(store, handle, 1,
-                                  &out_ts, &out_data, &out_len,
-                                  err, sizeof(err));
-    if (found == 1) {
-        printf("Read: ts=%lld, data=%.*s\n", (long long)out_ts, (int)out_len, out_data);
-        tmsl_free_string(out_data);
-    }
-
-    // Close
-    tmsl_dataset_close(store, handle, err, sizeof(err));
-    tmsl_store_close(store, err, sizeof(err));
-    return 0;
-}
+ds.close()?;
+store.close()?;
 ```
 
 **Key points**:
-- All FFI functions return `int` (0=success, -1=error) or `void*` (opaque pointer)
-- Error messages written to caller-provided buffer
-- String outputs must be freed with `tmsl_free_string`
-- See `include/timslite.h` for complete API
+- `enable_background_thread: false` disables automatic background tasks
+- `tick_background_tasks()` manually triggers flush, idle-close, eviction, retention
+- Returns `TickResult` with execution count and next recommended delay
+
+---
+
+## Scenario 11: Error Handling
+
+**When**: You need robust error handling for production use.
+
+```rust
+use timslite::{Store, StoreConfig, TmslError};
+
+match Store::open("/data/errors", StoreConfig::default()) {
+    Ok(mut store) => {
+        // AlreadyExists error
+        match store.create_dataset("test", "data", 64*1024*1024, 4*1024*1024, 6, 0, 0) {
+            Ok(_) => println!("Created"),
+            Err(TmslError::AlreadyExists(msg)) => println!("Already exists: {msg}"),
+            Err(e) => println!("Error: {e}"),
+        }
+
+        // NotFound error
+        match store.open_dataset("nonexistent", "data") {
+            Ok(_) => println!("Opened"),
+            Err(TmslError::NotFound(msg)) => println!("Not found: {msg}"),
+            Err(e) => println!("Error: {e}"),
+        }
+
+        // InvalidData error
+        match store.create_dataset("", "data", 64*1024*1024, 4*1024*1024, 6, 0, 0) {
+            Ok(_) => println!("Created"),
+            Err(TmslError::InvalidData(msg)) => println!("Invalid: {msg}"),
+            Err(e) => println!("Error: {e}"),
+        }
+
+        store.close().ok();
+    }
+    Err(e) => println!("Failed to open store: {e}"),
+}
+```
+
+**Error variants**:
+- `AlreadyExists`: Dataset already exists
+- `NotFound`: Dataset or record not found
+- `InvalidData`: Invalid parameters
+- `Expired`: Timestamp outside retention window
+- `SegmentFull`: Segment is full
+- `QueueAlreadyOpen`: Queue already opened
+- `QueueClosed`: Queue closed
