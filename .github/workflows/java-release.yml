@@ -71,7 +71,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       CARGO_PROFILE_RELEASE_PANIC: abort
-      CARGO_TARGET_DIR: wrapper/java/native/target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/wrapper/java/native/target
     steps:
       - uses: actions/checkout@v4
         with:
