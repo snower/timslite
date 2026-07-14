@@ -103,17 +103,17 @@ wrapper/dotnet/
   - `uniffi = 0.31` 与当前 `wrapper/java/native` 对齐。
   - `uniffi-bindgen-cs v0.11.0+v0.31.0` 作为 C# generator 候选。
   - `.NET SDK 8.0+`, `TargetFramework=net8.0`, `AllowUnsafeBlocks=true`。
-- [ ] 验证本地 Rust toolchain 是否满足 `uniffi-bindgen-cs` 安装要求。
+- [x] 验证本地 Rust toolchain 是否满足 `uniffi-bindgen-cs` 安装要求。
   - Run: `rustc --version`
   - Expected: version is compatible with generator requirement or CI/toolchain plan documents how to install a compatible toolchain for this wrapper.
-- [ ] 安装或缓存 C# generator。
+- [x] 安装或缓存 C# generator。
   - Run: `cargo install uniffi-bindgen-cs --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag v0.11.0+v0.31.0`
   - Expected: `uniffi-bindgen-cs --help` exits successfully.
-- [ ] 用最小 UDL 验证 C# 生成路径。
+- [x] 用最小 UDL 验证 C# 生成路径。
   - Input UDL exposes only `string version()`.
   - Run: `uniffi-bindgen-cs wrapper/dotnet/native/src/timslite.udl --config wrapper/dotnet/native/uniffi.toml`
   - Expected: `generated/Timslite.Uniffi.cs` is generated and compiles in `net8.0`.
-- [ ] 确认 NuGet package ID。
+- [x] 确认 NuGet package ID。
   - Preferred: `Timslite`.
   - If unavailable before release, update design, plan, README and workflow to the final ID.
 
@@ -139,22 +139,22 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] 创建 Rust bridge crate。
+- [x] 创建 Rust bridge crate。
   - `[lib] crate-type = ["cdylib", "rlib"]`。
   - `name = "timslite_dotnet"`。
   - `timslite = { path = "../../..", version = "=0.1.4" }`。
   - `uniffi = { version = "0.31", features = ["cli"] }`。
-- [ ] 创建最小 UDL。
+- [x] 创建最小 UDL。
   - namespace 使用 `timslite`。
   - 暴露 `version() -> string`。
   - 暴露基础 `TmslError` error enum。
-- [ ] 创建 `src/lib.rs` scaffolding root。
+- [x] 创建 `src/lib.rs` scaffolding root。
   - 注册 UniFFI scaffolding。
   - 只接入 smoke function, 不暴露 Store/Dataset。
-- [ ] 创建 `uniffi.toml`。
+- [x] 创建 `uniffi.toml`。
   - C# namespace 使用 `Timslite.Uniffi`。
   - cdylib name 使用 `timslite_dotnet`。
-- [ ] 验证 Rust bridge 编译。
+- [x] 验证 Rust bridge 编译。
   - Run: `cargo check --manifest-path wrapper/dotnet/native/Cargo.toml`
   - Expected: exit code 0.
 
@@ -179,23 +179,23 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] 创建 .NET solution 和 class library。
+- [x] 创建 .NET solution 和 class library。
   - `TargetFramework=net8.0`。
   - `Nullable=enable`。
   - `AllowUnsafeBlocks=true`。
   - package metadata 使用 `PackageId=Timslite`, version `0.1.4`。
-- [ ] 添加 generated C# binding 到编译输入。
+- [x] 添加 generated C# binding 到编译输入。
   - Generated file stays under `generated/`.
   - Public facade does not expose generated types.
-- [ ] 实现 `NativeLibraryLoader` smoke path。
+- [x] 实现 `NativeLibraryLoader` smoke path。
   - 支持 `TIMSLITE_NATIVE_LIBRARY_PATH` override。
   - 无 override 时回退 .NET default P/Invoke probing。
-- [ ] 实现 `TimsliteInfo.Version()`。
+- [x] 实现 `TimsliteInfo.Version()`。
   - Calls native loader before generated `version()`.
-- [ ] 添加 smoke test。
+- [x] 添加 smoke test。
   - Verifies native library loads.
   - Verifies `TimsliteInfo.Version()` returns non-empty.
-- [ ] 验证 .NET build/test。
+- [x] 验证 .NET build/test。
   - Run: `dotnet build wrapper/dotnet/Timslite.sln`
   - Run: `dotnet test wrapper/dotnet/Timslite.sln`
 
@@ -224,26 +224,26 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] 设计 .NET-facing UniFFI dictionaries。
+- [x] 设计 .NET-facing UniFFI dictionaries。
   - Store config 覆盖当前 `StoreConfig` 字段。
   - Dataset config 覆盖当前 `DataSetConfigBuilder` 字段。
   - Queue consumer options 覆盖 retry config 字段。
   - Inspect records 覆盖 `DataSetInfo` / `DataSetState` / queue inspect state。
-- [ ] 实现 Rust config conversion。
+- [x] 实现 Rust config conversion。
   - 缺省字段使用 root crate defaults。
   - `StoreReadOnly` 映射到 Rust `Option<bool>`。
   - `TimeSpan` facade 转为 seconds/milliseconds 后再进入 generated dictionary。
-- [ ] 实现 Rust error conversion。
+- [x] 实现 Rust error conversion。
   - 覆盖所有当前 `TmslError` 变体。
   - closed-state wrapper errors 有稳定 code。
-- [ ] 实现 C# options/value objects。
+- [x] 实现 C# options/value objects。
   - Options 使用 init-only properties 或 immutable records。
   - Public records defensively copy `byte[]` where needed。
-- [ ] 实现 C# exception hierarchy。
+- [x] 实现 C# exception hierarchy。
   - Base: `TmslException : Exception`。
   - Enum: `TmslErrorCode`。
   - Generated exceptions converted by `TmslException.FromUniFFI(...)` helper.
-- [ ] 添加配置和错误测试。
+- [x] 添加配置和错误测试。
   - defaults。
   - custom values。
   - invalid negative/overflow conversion where applicable。
@@ -271,32 +271,32 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] 实现 bridge `StoreBridge`。
+- [x] 实现 bridge `StoreBridge`。
   - `open(path, config)`。
   - `close()`。
   - `is_closed()`。
   - `is_read_only()`。
   - closed guard。
-- [ ] 实现 Store dataset lifecycle。
+- [x] 实现 Store dataset lifecycle。
   - `create_dataset`。
   - `open_dataset`。
   - `open_dataset_by_identifier`。
   - `drop_dataset`。
-- [ ] 实现 listing and inspect。
+- [x] 实现 listing and inspect。
   - `get_dataset_names`。
   - `get_dataset_types`。
   - `inspect_dataset`。
   - `tick_background_tasks`。
   - `next_background_delay_ms`。
-- [ ] 实现 C# `Store` facade。
+- [x] 实现 C# `Store` facade。
   - `IDisposable`。
   - `using var` 示例可运行。
   - close 后方法抛 stable closed exception。
-- [ ] 实现 C# `Dataset` facade lifecycle shell。
+- [x] 实现 C# `Dataset` facade lifecycle shell。
   - 持有 internal `DatasetBridge`。
   - `Close()` / `Dispose()`。
   - getters: id, identifier, dataDir, latestTimestamp, isClosed。
-- [ ] 添加 lifecycle tests。
+- [x] 添加 lifecycle tests。
   - open/close。
   - create/open/drop/recreate。
   - open by identifier。
@@ -326,34 +326,34 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] 实现 Dataset write APIs。
+- [x] 实现 Dataset write APIs。
   - `Write(long, byte[])`。
   - `WriteNow(byte[])`。
   - `Append(long, byte[])`。
   - `AppendNow(byte[])`。
   - `Delete(long)`。
   - `Flush()`。
-- [ ] 实现 Dataset read APIs。
+- [x] 实现 Dataset read APIs。
   - `Read(long) -> Record?`。
   - `ReadLatest() -> Record?`。
   - Returned `byte[]` 独立拥有。
-- [ ] 实现 query iterator bridge。
+- [x] 实现 query iterator bridge。
   - `query_iter(start, end) -> QueryIteratorBridge`。
   - `next() -> Record?`。
   - `reverse()`。
   - `skip(count)`。
   - `collect_all()` / `collect_take(count)`。
-- [ ] 实现 C# query iterators。
+- [x] 实现 C# query iterators。
   - Implement `IEnumerable<T>` / `IEnumerator<T>` where practical。
   - Implement `IDisposable`。
   - Exhaustion and explicit dispose both safe。
-- [ ] 实现 lightweight reads。
+- [x] 实现 lightweight reads。
   - `ReadExist`。
   - `QueryExist`。
   - `ReadLength`。
   - `QueryLength`。
   - `QueryLengthAll`。
-- [ ] 添加数据和查询测试。
+- [x] 添加数据和查询测试。
   - write/read。
   - write now and append now。
   - append forward and append latest。
@@ -390,35 +390,35 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] 实现 Dataset queue。
+- [x] 实现 Dataset queue。
   - `Store.OpenQueue(dataset)`。
   - `DatasetQueue.Push(byte[]) -> long`。
   - `DatasetQueue.OpenConsumer(groupName, options)`。
   - `DatasetQueue.GetConsumerGroupNames()`。
   - `DatasetQueue.DropConsumer(groupName)`。
   - `DatasetQueue.Close()`。
-- [ ] 实现 queue consumer。
+- [x] 实现 queue consumer。
   - `Poll(TimeSpan) -> Record?`。
   - `PollAsync(TimeSpan, CancellationToken) -> Task<Record?>` in C# facade。
   - `Ack(long)`。
   - `Flush()`。
   - `Inspect()`。
-- [ ] 实现 journal APIs。
+- [x] 实现 journal APIs。
   - `JournalLatestSequence()`。
   - `JournalRead(sequence)`。
   - `JournalQuery(start, end)`。
   - `ReadJournalSourceRecord(identifier, indexInfo)`。
-- [ ] 实现 journal queue。
+- [x] 实现 journal queue。
   - `OpenJournalQueue()`。
   - `JournalQueue.OpenConsumer(...)`。
   - `JournalQueueConsumer.Poll / PollAsync / Ack`。
-- [ ] 实现 poll callback only after callback gate passes。
+- [x] 实现 poll callback only after callback gate passes。
   - Set callback。
   - Clear callback。
   - Duplicate non-null registration raises stable exception。
   - Delegate remains alive while registered。
   - Callback invocation is safe from Rust notification path。
-- [ ] 添加 queue/journal tests。
+- [x] 添加 queue/journal tests。
   - open consumer before push, then poll。
   - ack prevents redelivery。
   - timeout returns null。
@@ -450,12 +450,12 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] Configure NuGet metadata。
+- [x] Configure NuGet metadata。
   - `PackageId=Timslite` unless final package ID changes。
   - `TargetFramework=net8.0`。
   - XML docs included。
   - Source link / repository metadata included if consistent with existing release setup。
-- [ ] Configure native asset packaging。
+- [x] Configure native asset packaging。
   - `runtimes/win-x64/native/timslite_dotnet.dll`。
   - `runtimes/win-arm64/native/timslite_dotnet.dll`。
   - `runtimes/linux-x64/native/libtimslite_dotnet.so`。
@@ -463,15 +463,15 @@ wrapper/dotnet/
   - `runtimes/linux-musl-x64/native/libtimslite_dotnet.so`。
   - `runtimes/linux-musl-arm64/native/libtimslite_dotnet.so`。
   - `runtimes/osx-arm64/native/libtimslite_dotnet.dylib`。
-- [ ] Add native library loader tests。
+- [x] Add native library loader tests。
   - Current RID selects native library。
   - Missing native library produces actionable error。
   - `TIMSLITE_NATIVE_LIBRARY_PATH` override works。
-- [ ] Add publish preparation scripts。
+- [x] Add publish preparation scripts。
   - Verify root crate and wrapper versions match。
   - Rewrite `timslite = { path = "../../.." }` to exact crates.io dependency in a release copy.
   - Do not mutate the live development manifest except in an explicit release workspace.
-- [ ] Verify local NuGet package。
+- [x] Verify local NuGet package。
   - Run: `dotnet pack wrapper/dotnet/src/Timslite/Timslite.csproj -c Release`
   - Create temporary consumer project.
   - Add local `.nupkg`.
@@ -494,7 +494,7 @@ wrapper/dotnet/
 
 任务:
 
-- [ ] 完成 .NET integration tests。
+- [x] 完成 .NET integration tests。
   - Smoke。
   - Config。
   - Lifecycle。
@@ -506,18 +506,18 @@ wrapper/dotnet/
   - Journal。
   - Errors。
   - Packaging/load。
-- [ ] 完成 Rust bridge tests。
+- [x] 完成 Rust bridge tests。
   - Config conversion。
   - Error conversion。
   - Closed guard。
   - Iterator exhaustion。
-- [ ] 运行 .NET wrapper verification。
+- [x] 运行 .NET wrapper verification。
   - `cargo check --manifest-path wrapper/dotnet/native/Cargo.toml`
   - `cargo test --manifest-path wrapper/dotnet/native/Cargo.toml`
   - `dotnet build wrapper/dotnet/Timslite.sln`
   - `dotnet test wrapper/dotnet/Timslite.sln`
   - `dotnet pack wrapper/dotnet/src/Timslite/Timslite.csproj -c Release`
-- [ ] 运行 root regression ladder。
+- [x] 运行 root regression ladder。
   - `cargo fmt -- --check`
   - `cargo clippy --all-targets -- -D warnings`
   - `cargo test -- --test-threads=1`
