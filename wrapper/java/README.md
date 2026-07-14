@@ -10,7 +10,7 @@ Java/Kotlin UniFFI bindings for the [timslite](https://github.com/snower/timslit
 <dependency>
     <groupId>io.github.snower</groupId>
     <artifactId>timslite</artifactId>
-    <version>0.1.3</version>
+    <version>0.1.4</version>
 </dependency>
 ```
 

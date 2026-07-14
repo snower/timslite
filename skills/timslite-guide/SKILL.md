@@ -84,7 +84,7 @@ Choose your language for detailed documentation, quick start guides, API referen
 
 ### Java
 
-- **Installation**: Maven dependency `io.github.snower:timslite:0.1.3`
+- **Installation**: Maven dependency `io.github.snower:timslite:0.1.4`
 - **[Quick Start](java/quick-start.md)** — Getting started with Java
 - **[API Reference](java/api-reference.md)** — Complete Java API signatures
 - **[Examples](java/examples.md)** — Feature scenarios with Java examples

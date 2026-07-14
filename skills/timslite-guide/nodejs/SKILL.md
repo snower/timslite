@@ -149,7 +149,7 @@ const {
 
 ### Functions
 
-- `version()` — Returns the native library version string (e.g., `"0.1.3"`)
+- `version()` — Returns the native library version string (e.g., `"0.1.4"`)
 
 ## Error Handling
 

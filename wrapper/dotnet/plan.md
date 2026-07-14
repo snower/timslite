@@ -142,7 +142,7 @@ wrapper/dotnet/
 - [ ] 创建 Rust bridge crate。
   - `[lib] crate-type = ["cdylib", "rlib"]`。
   - `name = "timslite_dotnet"`。
-  - `timslite = { path = "../../..", version = "=0.1.3" }`。
+  - `timslite = { path = "../../..", version = "=0.1.4" }`。
   - `uniffi = { version = "0.31", features = ["cli"] }`。
 - [ ] 创建最小 UDL。
   - namespace 使用 `timslite`。
@@ -183,7 +183,7 @@ wrapper/dotnet/
   - `TargetFramework=net8.0`。
   - `Nullable=enable`。
   - `AllowUnsafeBlocks=true`。
-  - package metadata 使用 `PackageId=Timslite`, version `0.1.3`。
+  - package metadata 使用 `PackageId=Timslite`, version `0.1.4`。
 - [ ] 添加 generated C# binding 到编译输入。
   - Generated file stays under `generated/`.
   - Public facade does not expose generated types.

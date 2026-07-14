@@ -1,6 +1,6 @@
 [package]
 name = "timslitecffi"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 publish = false
 description = "C ABI wrapper for the timslite Rust time-series storage library."
@@ -19,7 +19,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 libc = "0.2"
-timslite = { path = "../..", version = "=0.1.3" }
+timslite = { path = "../..", version = "=0.1.4" }
 
 [dev-dependencies]
 tempfile = "3"

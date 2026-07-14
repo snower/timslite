@@ -155,7 +155,7 @@ dependencies = [
 
 [[package]]
 name = "jobserver"
-version = "0.1.34"
+version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9afb3de4395d6b3e67a780b6de64b51c978ecf11cb9a462c66be7d4ca9039d33"
 dependencies = [
@@ -346,7 +346,7 @@ dependencies = [
 
 [[package]]
 name = "timslite"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "log",
  "memmap2",
@@ -356,7 +356,7 @@ dependencies = [
 
 [[package]]
 name = "timslite-node"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "napi",
  "napi-build",

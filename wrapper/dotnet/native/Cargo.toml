@@ -1,6 +1,6 @@
 [package]
 name = "timslite-dotnet"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 publish = false
 description = ".NET UniFFI bindings for the timslite time-series storage engine."
@@ -20,7 +20,7 @@ name = "timslite_dotnet"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-timslite = { path = "../../..", version = "=0.1.3" }
+timslite = { path = "../../..", version = "=0.1.4" }
 uniffi = { version = "0.31", features = ["cli"] }
 thiserror = "1"
 

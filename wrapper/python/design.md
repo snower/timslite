@@ -560,7 +560,7 @@ class DatasetQueueConsumer:
 ```toml
 [package]
 name = "timslite-python"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2021"
 
 [lib]
@@ -569,7 +569,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.23", features = ["extension-module"] }
-timslite = { path = "../..", version = "=0.1.3" }
+timslite = { path = "../..", version = "=0.1.4" }
 ```
 
 The wrapper uses the repository root as a path dependency during development,
@@ -591,7 +591,7 @@ build-backend = "maturin"
 
 [project]
 name = "timslite"
-version = "0.1.3"
+version = "0.1.4"
 description = "High-performance time-series data storage"
 requires-python = ">=3.9"
 license = { text = "MIT" }
