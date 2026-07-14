@@ -560,6 +560,106 @@ impl Store {
         self.open_dataset(&key.name, &key.dataset_type)
     }
 
+    /// Rename an existing dataset while preserving its Store-assigned identifier.
+    pub fn rename_dataset(
+        &mut self,
+        from_name: &str,
+        from_dataset_type: &str,
+        to_name: &str,
+        to_dataset_type: &str,
+    ) -> Result<()> {
+        self.ensure_writable("rename dataset")?;
+        if (from_name == JOURNAL_DATASET_NAME && from_dataset_type == JOURNAL_DATASET_TYPE)
+            || (to_name == JOURNAL_DATASET_NAME && to_dataset_type == JOURNAL_DATASET_TYPE)
+        {
+            return Err(TmslError::InvalidData("journal dataset is reserved".into()));
+        }
+        validate_dataset_path_components(from_name, from_dataset_type)?;
+        validate_dataset_path_components(to_name, to_dataset_type)?;
+
+        let from_key = DataSetKey {
+            name: from_name.to_string(),
+            dataset_type: from_dataset_type.to_string(),
+        };
+        let to_key = DataSetKey {
+            name: to_name.to_string(),
+            dataset_type: to_dataset_type.to_string(),
+        };
+        if from_key == to_key {
+            return Err(TmslError::AlreadyExists(format!(
+                "dataset {}/{} already exists",
+                to_name, to_dataset_type
+            )));
+        }
+
+        {
+            let guard = self.datasets.read().unwrap();
+            if guard.contains_key(&to_key) {
+                return Err(TmslError::AlreadyExists(format!(
+                    "dataset {}/{} is already open",
+                    to_name, to_dataset_type
+                )));
+            }
+        }
+
+        let from_dir = self.dataset_dir(&from_key);
+        let to_dir = self.dataset_dir(&to_key);
+        if to_dir.exists() {
+            return Err(TmslError::AlreadyExists(format!(
+                "dataset already exists at {:?}",
+                to_dir
+            )));
+        }
+
+        let identifier = read_dataset_identifier(&from_dir)?;
+        self.validate_identifier_within_max(identifier, &from_key)?;
+        if let Some(existing) = self.identifier_to_key.get(&identifier) {
+            if existing != &from_key {
+                return Err(TmslError::InvalidData(format!(
+                    "duplicate dataset identifier {identifier}: {:?} and {:?}",
+                    existing, from_key
+                )));
+            }
+        }
+
+        let already_open = {
+            let guard = self.datasets.read().unwrap();
+            guard.get(&from_key).cloned()
+        };
+        if let Some(ds) = already_open {
+            ds.close()?;
+        }
+        {
+            let mut guard = self.datasets.write().unwrap();
+            guard.remove(&from_key);
+        }
+
+        let to_parent = self.data_dir.join(to_name);
+        let created_parent = !to_parent.exists();
+        std::fs::create_dir_all(&to_parent)?;
+        if let Err(err) = std::fs::rename(&from_dir, &to_dir) {
+            if created_parent {
+                let _ = std::fs::remove_dir(&to_parent);
+            }
+            return Err(err.into());
+        }
+
+        self.identifier_to_key
+            .retain(|_, existing| existing != &from_key);
+        self.identifier_to_key.insert(identifier, to_key.clone());
+        if from_name != to_name {
+            let _ = std::fs::remove_dir(self.data_dir.join(from_name));
+        }
+        log::info!(
+            "[store] renamed dataset: {}/{} -> {}/{}",
+            from_name,
+            from_dataset_type,
+            to_name,
+            to_dataset_type
+        );
+        Ok(())
+    }
+
     /// Drop (delete) an entire dataset by name and type.
     pub fn drop_dataset(&mut self, name: &str, dataset_type: &str) -> Result<()> {
         self.ensure_writable("drop dataset")?;

@@ -32,7 +32,7 @@
 | 18.1 | [Journal 专用存储](docs/design/journal-storage.md) | JournalSegment/JournalLog/JournalQueue、sequence 路由、无索引分段存储、crash 可见边界 | Journal 存储优化 |
 | 19 | [数据集读操作](docs/design/dataset-read-operations.md) | read/query/query_iter 及新增 read_exist/query_exist/read_length/query_length/query_length_iter 统一描述 | 读操作 API 设计/选型 |
 | 20 | [数据集 Inspect](docs/design/dataset-inspect.md) | DataSetInfo (不变配置) + DataSetState (可变状态)、dataset state 文件、Rust/FFI/Python API | 数据集状态监控/运维 |
-| 21 | [Dataset Identifier](docs/design/dataset-identifier.md) | Store 级 `max_identifier`、dataset 级 `identifier` 文件、按 id 打开 dataset API、crash 边界 | 外部系统需要稳定数字 dataset id |
+| 21 | [Dataset Identifier](docs/design/dataset-identifier.md) | Store 级 `max_identifier`、dataset 级 `identifier` 文件、按 id 打开/重命名 dataset API、crash 边界 | 外部系统需要稳定数字 dataset id |
 | W-NODE | [Node.js Wrapper](wrapper/nodejs/design.md) | Node 官方 Node-API 原生包装、TypeScript API、bigint/Buffer 映射、queue/journal 异步 poll | Node.js 集成 |
 | W-DOTNET | [\.NET Wrapper](wrapper/dotnet/design.md) | UniFFI C# binding、C# facade、.NET 8+、NuGet 包装、queue/journal 支持 | .NET 集成 |
 
@@ -58,7 +58,7 @@
 ### 按模块查找
 | 模块 | 对应文档 |
 |------|---------|
-| `Store` + `create_dataset` + `open_dataset` | [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md) |
+| `Store` + `create_dataset` + `open_dataset` + `rename_dataset` | [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md) |
 | `StoreConfig.read_only` + `.lock` | [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md#1121-store-read-only-and-lock-contract) |
 | Rust public API boundary | [Store 与 C ABI Wrapper](docs/design/store-and-ffi.md#111-rust-public-api-boundary) |
 | `DataSet` | [数据集操作](docs/design/dataset-operations.md) |

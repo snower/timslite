@@ -103,6 +103,103 @@ fn direct_dataset_close_removes_store_entry_and_invalidates_handle() {
 }
 
 #[test]
+fn rename_dataset_closes_old_handle_and_moves_between_names() {
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let dataset = store
+        .create_dataset("rename_src", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    dataset.write(10, b"before rename").unwrap();
+
+    store
+        .rename_dataset("rename_src", "data", "rename_dst", "metrics")
+        .unwrap();
+
+    assert!(!dir.join("rename_src").join("data").exists());
+    assert!(dir.join("rename_dst").join("metrics").join("meta").exists());
+    assert!(matches!(dataset.read(10), Err(TmslError::InvalidData(_))));
+    assert!(store.open_dataset("rename_src", "data").is_err());
+
+    let reopened = store.open_dataset("rename_dst", "metrics").unwrap();
+    assert_eq!(reopened.read(10).unwrap().unwrap().1, b"before rename");
+
+    store.close().unwrap();
+}
+
+#[test]
+fn rename_dataset_moves_type_within_same_name() {
+    use timslite::{Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    let dataset = store
+        .create_dataset("rename_same", "raw", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    dataset.write(1, b"same name").unwrap();
+
+    store
+        .rename_dataset("rename_same", "raw", "rename_same", "metrics")
+        .unwrap();
+
+    assert!(!dir.join("rename_same").join("raw").exists());
+    assert!(dir
+        .join("rename_same")
+        .join("metrics")
+        .join("meta")
+        .exists());
+    assert_eq!(store.get_dataset_names().unwrap(), vec!["rename_same"]);
+    assert_eq!(
+        store.get_dataset_types("rename_same").unwrap(),
+        vec!["metrics"]
+    );
+
+    let reopened = store.open_dataset("rename_same", "metrics").unwrap();
+    assert_eq!(reopened.read(1).unwrap().unwrap().1, b"same name");
+
+    store.close().unwrap();
+}
+
+#[test]
+fn rename_dataset_rejects_existing_or_identical_target() {
+    use timslite::{Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store = Store::open(&dir, StoreConfig::default()).unwrap();
+    store
+        .create_dataset("rename_conflict", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    store
+        .create_dataset("rename_target", "data", 1024 * 1024, 64 * 1024, 6, 0, 0)
+        .unwrap();
+    store
+        .create_dataset(
+            "rename_conflict",
+            "metrics",
+            1024 * 1024,
+            64 * 1024,
+            6,
+            0,
+            0,
+        )
+        .unwrap();
+
+    assert!(matches!(
+        store.rename_dataset("rename_conflict", "data", "rename_target", "data"),
+        Err(TmslError::AlreadyExists(_))
+    ));
+    assert!(matches!(
+        store.rename_dataset("rename_conflict", "data", "rename_conflict", "metrics"),
+        Err(TmslError::AlreadyExists(_))
+    ));
+    assert!(matches!(
+        store.rename_dataset("rename_conflict", "data", "rename_conflict", "data"),
+        Err(TmslError::AlreadyExists(_))
+    ));
+}
+
+#[test]
 fn t8_2_3_drop_deletes_dataset() {
     use timslite::{Store, StoreConfig};
 

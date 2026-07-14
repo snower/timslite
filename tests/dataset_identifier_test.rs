@@ -74,6 +74,43 @@ fn dataset_identifier_create_reopen_and_open_by_id() {
 }
 
 #[test]
+fn dataset_identifier_rename_preserves_identifier_and_updates_cached_lookup() {
+    let dir = temp_dir("rename_preserves_identifier");
+    let mut store = Store::open(&dir, store_config()).unwrap();
+    let dataset = store
+        .create_dataset_with_config("alpha", "data", None)
+        .unwrap();
+    dataset.write(1, b"alpha").unwrap();
+    let identifier = dataset.identifier();
+
+    let cached = store.open_dataset_by_identifier(identifier).unwrap();
+    assert_eq!(cached.read(1).unwrap().unwrap().1, b"alpha");
+
+    store
+        .rename_dataset("alpha", "data", "beta", "metrics")
+        .unwrap();
+
+    assert!(!dataset_identifier_path(&dir, "alpha", "data").exists());
+    assert_eq!(
+        fs::read_to_string(dataset_identifier_path(&dir, "beta", "metrics"))
+            .unwrap()
+            .trim(),
+        identifier.to_string()
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("max_identifier"))
+            .unwrap()
+            .trim(),
+        "1"
+    );
+    assert!(store.open_dataset("alpha", "data").is_err());
+
+    let reopened = store.open_dataset_by_identifier(identifier).unwrap();
+    assert_eq!(reopened.identifier(), identifier);
+    assert_eq!(reopened.read(1).unwrap().unwrap().1, b"alpha");
+}
+
+#[test]
 fn dataset_identifier_treats_lagging_max_identifier_as_authoritative() {
     let dir = temp_dir("lagging_max_authoritative");
     {

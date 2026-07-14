@@ -85,6 +85,13 @@ Rust Store 新增:
 ```rust
 impl Store {
     pub fn open_dataset_by_identifier(&mut self, identifier: u64) -> Result<DataSet>;
+    pub fn rename_dataset(
+        &mut self,
+        from_name: &str,
+        from_dataset_type: &str,
+        to_name: &str,
+        to_dataset_type: &str,
+    ) -> Result<()>;
 }
 
 impl DataSet {
@@ -101,6 +108,23 @@ impl DataSet {
 - 找到后等价于按对应 `(name,type)` 调用 `open_dataset`。
 - 如果目标 dataset 已经在 registry 中打开, 返回指向同一 Store-managed dataset 的 `DataSet` wrapper, 行为应与 `open_dataset(name,type)` 一致。
 - `.journal/logs` 不支持通过 id 打开。
+
+## Dataset rename 流程
+
+`Store::rename_dataset(from_name, from_dataset_type, to_name, to_dataset_type)` 是 Store 级生命周期 API:
+
+1. read-only Store 返回 `InvalidData`。
+2. 校验 source 和 target 的 public name/type, 并拒绝 `.journal/logs`。
+3. 若 target 已在 registry 中打开或 `{data_dir}/{to_name}/{to_dataset_type}` 已存在, 返回 `AlreadyExists`; source/target 完全相同也按 target 已存在处理。
+4. 读取 source dataset 的 `identifier` 并校验不超过权威 `max_identifier`。
+5. 如果 source dataset 已打开, 先调用 `DataSet::close()` 关闭 dataset/queue、flush segment、释放 mmap, 并通过 lifecycle hook 从 Store registry 移除旧 key。
+6. 移动目录:
+   - `from_name == to_name` 时只重命名同一 name 下的 dataset type 目录。
+   - `from_name != to_name` 时先创建 `{data_dir}/{to_name}`, 再把 source type 目录移动到目标 name 目录下。
+7. 保留原 `{dataset_dir}/identifier` 文件内容, 不分配新 identifier, 不修改 `max_identifier`。
+8. 更新 Store 内存中的 `identifier -> DataSetKey` cache: 旧 key 改为新 key; rename 后调用方需要通过新 name/type 重新 `open_dataset`。
+
+Rename 不是 journal v1 lifecycle 事件: 不追加 create/drop journal record, 避免把同一 identifier 的路径变更表达成删除重建。
 
 FFI 后续应同步增加:
 
@@ -142,6 +166,9 @@ Journal record 使用 `identifier` 作为高频数据变更记录的紧凑 datas
 
 - 创建多个 dataset 后 identifier 从 1 开始递增。
 - reopen 后可通过 identifier 打开 dataset。
+- rename 后 identifier 保持不变, `open_dataset_by_identifier` 解析到新 `(name,type)`。
+- rename 会关闭已打开的旧 handle; 旧 handle 后续操作返回 closed 错误, 新 name/type 可以重新打开读取原数据。
+- rename 到已存在 target 或完全相同 source/target 返回 `AlreadyExists`。
 - `max_identifier` 缺失时, 创建首个 dataset 生成 `1`。
 - `max_identifier` 落后于 dataset identifier 时, Store open 不修正; 访问该 dataset 返回 `InvalidData`。
 - `open_dataset_by_identifier` 扫描发现重复 identifier 时返回 `InvalidData`。

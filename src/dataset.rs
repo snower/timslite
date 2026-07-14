@@ -1709,11 +1709,13 @@ impl DataSetInner {
             }
         }
         if self.runtime_context.read_only {
+            self.dataset_state.close()?;
             self.closed = true;
             return Ok(());
         }
         self.close_queue()?;
         self.idle_close_segments()?;
+        self.dataset_state.close()?;
         self.closed = true;
         Ok(())
     }

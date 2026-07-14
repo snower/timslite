@@ -72,6 +72,13 @@
 - [x] `get_dataset_names()` / `get_dataset_types(name)` 直接扫描合法 public 目录, 不打开 dataset。
 - [x] `inspect_dataset(name,type)` 未打开时按 `open_dataset` 语义加载并保留在 registry。
 
+### 5.1 Rename extension
+
+- [x] `Store::rename_dataset(from_name, from_dataset_type, to_name, to_dataset_type)` 保留原 `identifier`, 不推进 `max_identifier`。
+- [x] rename 后更新 `identifier_to_key`, 使 `open_dataset_by_identifier` 解析到新 `(name,type)`。
+- [x] rename 已打开 source 时先关闭旧 handle; 旧 handle 后续操作失败, 新 name/type 可重新打开。
+- [x] rename 到已存在 target 或完全相同 source/target 返回 `AlreadyExists`。
+
 ### 6. FFI
 
 - [x] `wrapper/cffi/include/timslite.h` 增加 `tmsl_dataset_open_by_identifier`。
@@ -90,6 +97,9 @@
 
 - [x] 创建多个 dataset 后 identifier 从 1 开始递增。
 - [x] reopen 后通过 identifier 打开 dataset。
+- [x] rename 后通过 identifier 打开新路径并读回原数据。
+- [x] rename 已打开 dataset 后旧 handle 失效, 新 handle 可读。
+- [x] rename 到已存在 target 和完全相同 source/target 返回 `AlreadyExists`。
 - [x] `max_identifier` 缺失时创建首个 dataset 得到 1。
 - [x] `max_identifier` 落后于 dataset identifier 时, Store open 不修正, 访问该 dataset 返回 `InvalidData`。
 - [x] `open_dataset_by_identifier` 扫描发现重复 identifier 返回 `InvalidData`。

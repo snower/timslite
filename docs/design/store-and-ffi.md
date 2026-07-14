@@ -13,6 +13,7 @@
 - `Store::create_dataset_with_config(..., Option<DataSetConfigBuilder>) -> Result<DataSet>`
 - `Store::open_dataset(name, dataset_type) -> Result<DataSet>`
 - `Store::open_dataset_by_identifier(identifier) -> Result<DataSet>`
+- `Store::rename_dataset(from_name, from_dataset_type, to_name, to_dataset_type) -> Result<()>`
 - `Store::drop_dataset(name, dataset_type) -> Result<()>`
 - `Store::get_dataset_names() -> Result<Vec<String>>`
 - `Store::get_dataset_types(name) -> Result<Vec<String>>`
@@ -92,6 +93,7 @@ dataset.write(1, b"21.5")?;
 | `Store::create_dataset*` | 校验 public name/type, 分配 Store 级 identifier, 写入 meta/data/index/identifier, 注入 runtime context, 成功后按配置写 journal create record |
 | `Store::open_dataset` | 读取并校验 dataset `identifier` 和 `meta`, 加载已有 segments, 注入 runtime context, 缓存到 registry |
 | `Store::open_dataset_by_identifier` | 扫描合法 public dataset 目录查找 identifier, 找到后复用 `open_dataset` 语义 |
+| `Store::rename_dataset` | 校验 source/target public name/type, 若 target 已存在则返回 `AlreadyExists`, 关闭已打开的 source dataset/queue, 移动 `{from_name}/{from_type}` 目录到 `{to_name}/{to_type}`, 保留原 `identifier`, 更新 `identifier -> DataSetKey` cache; 完全相同的 source/target 也视为 target 已存在 |
 | `Store::drop_dataset` | 按 name/type 加载并关闭 dataset/queue, 删除 `{name}/{type}` 目录, 成功后按配置写 journal drop record |
 | `DataSet::write/write_now/append/append_now/delete` | 执行 record 操作、cache invalidation、queue notify 和 journal hook |
 | `DataSet::read/read_latest/query` | 使用 Store 注入的 cache 和 read-only context 执行读取 |
@@ -110,7 +112,7 @@ dataset.write(1, b"21.5")?;
 
 The acquired lock handle is stored inside `Store` as `Option<File>` and is released by normal Store drop/close semantics. Read-only Stores store no lock handle.
 
-Read-only Store mode rejects every mutating Store or Store-managed `DataSet` operation, including create/drop/write/write_now/append/append_now/delete, retention reclaim, queue open/close/push/poll/ack, and `open_journal_queue`. `read`, `read_latest`, `query`, inspect/list operations, and journal latest/read/query remain read-capable. Background tasks are not started in read-only mode, and manual background task APIs are unavailable for that Store.
+Read-only Store mode rejects every mutating Store or Store-managed `DataSet` operation, including create/rename/drop/write/write_now/append/append_now/delete, retention reclaim, queue open/close/push/poll/ack, and `open_journal_queue`. `read`, `read_latest`, `query`, inspect/list operations, and journal latest/read/query remain read-capable. Background tasks are not started in read-only mode, and manual background task APIs are unavailable for that Store.
 
 The read-only view is an open-time persisted view, not a live reader. It only needs to read bytes already flushed to the Store files before the read-only Store opened.
 

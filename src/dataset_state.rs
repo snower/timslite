@@ -254,6 +254,12 @@ impl DatasetStateFile {
         Ok(())
     }
 
+    pub(crate) fn close(&mut self) -> Result<()> {
+        self.sync()?;
+        self.mmap = None;
+        Ok(())
+    }
+
     fn flush_snapshot(&mut self) -> Result<()> {
         if self.read_only {
             self.is_flushed = true;
