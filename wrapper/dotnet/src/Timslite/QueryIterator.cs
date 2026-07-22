@@ -57,7 +57,7 @@ public sealed class QueryIterator : IEnumerator<Record>, IEnumerable<Record>, ID
         throw new NotSupportedException("QueryIterator does not support Reset");
     }
 
-    public void Reverse()
+    public QueryIterator Reverse()
     {
         CheckNotDisposed();
         try
@@ -68,9 +68,10 @@ public sealed class QueryIterator : IEnumerator<Record>, IEnumerable<Record>, ID
         {
             throw TmslException.FromUniFFI(e);
         }
+        return this;
     }
 
-    public void Skip(uint count)
+    public QueryIterator Skip(uint count)
     {
         CheckNotDisposed();
         try
@@ -81,6 +82,7 @@ public sealed class QueryIterator : IEnumerator<Record>, IEnumerable<Record>, ID
         {
             throw TmslException.FromUniFFI(e);
         }
+        return this;
     }
 
     public IReadOnlyList<Record> CollectAll()

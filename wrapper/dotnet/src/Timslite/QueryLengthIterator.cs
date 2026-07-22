@@ -57,7 +57,7 @@ public sealed class QueryLengthIterator : IEnumerator<LengthEntry>, IEnumerable<
         throw new NotSupportedException("QueryLengthIterator does not support Reset");
     }
 
-    public void Reverse()
+    public QueryLengthIterator Reverse()
     {
         CheckNotDisposed();
         try
@@ -68,9 +68,10 @@ public sealed class QueryLengthIterator : IEnumerator<LengthEntry>, IEnumerable<
         {
             throw TmslException.FromUniFFI(e);
         }
+        return this;
     }
 
-    public void Skip(uint count)
+    public QueryLengthIterator Skip(uint count)
     {
         CheckNotDisposed();
         try
@@ -81,6 +82,7 @@ public sealed class QueryLengthIterator : IEnumerator<LengthEntry>, IEnumerable<
         {
             throw TmslException.FromUniFFI(e);
         }
+        return this;
     }
 
     public IReadOnlyList<LengthEntry> CollectAll()
