@@ -117,8 +117,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-            wrapper/python/target
           key: ${{ runner.os }}-cargo-py-release-${{ matrix.platform.name }}-${{ matrix.python-version }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-py-release-${{ matrix.platform.name }}-${{ matrix.python-version }}-

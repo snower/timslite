@@ -26,7 +26,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
@@ -64,7 +63,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-cov-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-cov-
@@ -105,7 +103,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-py${{ matrix.python-version }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-py${{ matrix.python-version }}-
@@ -146,8 +143,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-            wrapper/nodejs/target
           key: ${{ runner.os }}-cargo-node${{ matrix.node-version }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-node${{ matrix.node-version }}-
@@ -213,7 +208,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            wrapper/dotnet/native/target
           key: ${{ runner.os }}-cargo-dotnet-${{ hashFiles('wrapper/dotnet/native/Cargo.lock', 'Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-dotnet-
