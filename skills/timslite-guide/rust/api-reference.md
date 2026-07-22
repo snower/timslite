@@ -392,9 +392,14 @@ let iter = ds.query_iter(start_ts, end_ts)?;
 
 **Methods**:
 - `next() -> Option<Result<(i64, Vec<u8>)>>` — Yield next record
-- `reverse(&mut self)` — Reverse iteration direction (must call before first `next()`)
-- `skip(&mut self, count: usize)` — Skip N records (must call before first `next()`)
-- `collect_all(&mut self) -> Result<Vec<(i64, Vec<u8>)>>` — Collect all remaining records
+- `reverse(self) -> Self` — Reverse iteration direction (must call before first `next()`). Returns `self` for chaining.
+- `skip(self, count: usize) -> Self` — Skip N records (must call before first `next()`). Returns `self` for chaining.
+- `collect_all(self) -> Result<Vec<(i64, Vec<u8>)>>` — Collect all remaining records
+
+**Chaining example**:
+```rust
+let results = ds.query_iter(1, 1000)?.reverse().skip(5).collect_all()?;
+```
 
 **Behavior**:
 - Skips filler entries automatically
@@ -409,9 +414,14 @@ let iter = ds.query_length_iter(start_ts, end_ts)?;
 
 **Methods**:
 - `next() -> Option<Result<(i64, u32)>>` — Yield next (timestamp, length)
-- `reverse(&mut self)` — Reverse direction
-- `skip(&mut self, count: usize)` — Skip N entries
-- `collect_all(&mut self) -> Result<Vec<(i64, u32)>>` — Collect all remaining
+- `reverse(self) -> Self` — Reverse direction. Returns `self` for chaining.
+- `skip(self, count: usize) -> Self` — Skip N entries. Returns `self` for chaining.
+- `collect_all(self) -> Result<Vec<(i64, u32)>>` — Collect all remaining
+
+**Chaining example**:
+```rust
+let results = ds.query_length_iter(1, 1000)?.reverse().skip(5).collect_all()?;
+```
 
 ---
 

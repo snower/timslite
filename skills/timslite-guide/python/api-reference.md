@@ -268,11 +268,16 @@ for ts, data in ds.query(1, 1000):
 - Automatically releases resources when dropped
 
 **Methods**:
-- `reverse()` — Reverse the iteration direction
-- `skip(count: int)` — Skip the first `count` records
+- `reverse() -> QueryIterator` — Reverse the iteration direction, returns `self` for chaining
+- `skip(count: int) -> QueryIterator` — Skip the first `count` records, returns `self` for chaining
 - `collect_all() -> List[Tuple[int, bytes]]` — Collect all remaining records into a list
 - `collect_take(count: int) -> List[Tuple[int, bytes]]` — Collect up to `count` records
 - `close()` — Explicitly release the iterator resources
+
+**Chaining example**:
+```python
+results = ds.query(1, 1000).reverse().skip(5).collect_all()
+```
 
 ---
 
@@ -291,11 +296,16 @@ for ts, length in ds.query_length(1, 1000):
 - Automatically releases resources when dropped
 
 **Methods**:
-- `reverse()` — Reverse the iteration direction
-- `skip(count: int)` — Skip the first `count` records
+- `reverse() -> QueryLengthIterator` — Reverse the iteration direction, returns `self` for chaining
+- `skip(count: int) -> QueryLengthIterator` — Skip the first `count` records, returns `self` for chaining
 - `collect_all() -> List[Tuple[int, int]]` — Collect all remaining entries into a list
 - `collect_take(count: int) -> List[Tuple[int, int]]` — Collect up to `count` entries
 - `close()` — Explicitly release the iterator resources
+
+**Chaining example**:
+```python
+results = ds.query_length(1, 1000).reverse().skip(5).collect_all()
+```
 
 ---
 

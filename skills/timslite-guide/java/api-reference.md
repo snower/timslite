@@ -533,13 +533,13 @@ Returns `true` if more records are available.
 
 Returns the next record, or `null` if exhausted.
 
-#### `it.reverse() -> void`
+#### `it.reverse() -> QueryIterator`
 
-Reverses the iteration direction.
+Reverses the iteration direction. Returns `this` for chaining.
 
-#### `it.skip(long count) -> void`
+#### `it.skip(long count) -> QueryIterator`
 
-Skips the next `count` records.
+Skips the next `count` records. Returns `this` for chaining.
 
 #### `it.close() -> void`
 
@@ -548,6 +548,13 @@ Closes the iterator and releases native resources.
 #### `it.isClosed() -> boolean`
 
 Returns whether the iterator is closed.
+
+**Chaining example**:
+```java
+try (QueryIterator it = ds.queryIter(startTs, endTs)) {
+    List<Record> results = it.reverse().skip(5).collectAll();
+}
+```
 
 ---
 
@@ -574,19 +581,28 @@ Returns `true` if more entries are available.
 
 Returns the next length entry, or `null` if exhausted.
 
-#### `it.reverse() -> void`
+#### `it.reverse() -> QueryLengthIterator`
 
-Reverses the iteration direction.
+Reverses the iteration direction. Returns `this` for chaining.
 
-#### `it.skip(long count) -> void`
+#### `it.skip(long count) -> QueryLengthIterator`
 
-Skips the next `count` entries.
+Skips the next `count` entries. Returns `this` for chaining.
 
 #### `it.close() -> void`
 
 Closes the iterator and releases native resources.
 
 #### `it.isClosed() -> boolean`
+
+Returns whether the iterator is closed.
+
+**Chaining example**:
+```java
+try (QueryLengthIterator it = ds.queryLength(startTs, endTs)) {
+    List<LengthEntry> results = it.reverse().skip(5).collectAll();
+}
+```
 
 Returns whether the iterator is closed.
 

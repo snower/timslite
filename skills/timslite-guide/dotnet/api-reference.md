@@ -391,13 +391,13 @@ Advances to the next record. Returns `false` when exhausted.
 
 Returns the current record. Throws `InvalidOperationException` if no current record.
 
-#### `QueryIterator.Reverse()`
+#### `QueryIterator.Reverse() -> QueryIterator`
 
-Reverses iteration order. Must be called before first `MoveNext()`.
+Reverses iteration order. Must be called before first `MoveNext()`. Returns `this` for chaining.
 
-#### `QueryIterator.Skip(uint count)`
+#### `QueryIterator.Skip(uint count) -> QueryIterator`
 
-Skips the first `count` records. Must be called before first `MoveNext()`.
+Skips the first `count` records. Must be called before first `MoveNext()`. Returns `this` for chaining.
 
 **Parameters**:
 - `count`: Number of records to skip
@@ -407,6 +407,11 @@ Skips the first `count` records. Must be called before first `MoveNext()`.
 Collects all remaining records into a list. Exhausts the iterator.
 
 **Returns**: List of remaining records.
+
+**Chaining example**:
+```csharp
+var results = ds.QueryIter(startTs, endTs).Reverse().Skip(5).CollectAll();
+```
 
 ---
 
@@ -424,13 +429,13 @@ Advances to the next entry. Returns `false` when exhausted.
 
 Returns the current entry. Throws `InvalidOperationException` if no current entry.
 
-#### `QueryLengthIterator.Reverse()`
+#### `QueryLengthIterator.Reverse() -> QueryLengthIterator`
 
-Reverses iteration order. Must be called before first `MoveNext()`.
+Reverses iteration order. Must be called before first `MoveNext()`. Returns `this` for chaining.
 
-#### `QueryLengthIterator.Skip(uint count)`
+#### `QueryLengthIterator.Skip(uint count) -> QueryLengthIterator`
 
-Skips the first `count` entries. Must be called before first `MoveNext()`.
+Skips the first `count` entries. Must be called before first `MoveNext()`. Returns `this` for chaining.
 
 **Parameters**:
 - `count`: Number of entries to skip
@@ -440,6 +445,11 @@ Skips the first `count` entries. Must be called before first `MoveNext()`.
 Collects all remaining entries into a list. Exhausts the iterator.
 
 **Returns**: List of remaining entries.
+
+**Chaining example**:
+```csharp
+var results = ds.QueryLengthIter(startTs, endTs).Reverse().Skip(5).CollectAll();
+```
 
 ---
 

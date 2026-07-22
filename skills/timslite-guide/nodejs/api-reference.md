@@ -277,13 +277,13 @@ for (const [ts, data] of iter) {
 
 Advances to the next record.
 
-#### `iter.reverse(): void`
+#### `iter.reverse(): QueryIterator`
 
-Reverses iteration order. Must be called before first `next()`.
+Reverses iteration order. Must be called before first `next()`. Returns `this` for chaining.
 
-#### `iter.skip(count: number): void`
+#### `iter.skip(count: number): QueryIterator`
 
-Skips the next `count` records. Must be called before first `next()`.
+Skips the next `count` records. Must be called before first `next()`. Returns `this` for chaining.
 
 #### `iter.collectAll(): [bigint, Uint8Array][]`
 
@@ -292,6 +292,11 @@ Eagerly collects all remaining records into an array.
 #### `iter.close(): void`
 
 Closes the iterator and releases native resources. Automatically called when iteration completes.
+
+**Chaining example**:
+```js
+const results = dataset.queryIter(1n, 100n).reverse().skip(5).collectAll();
+```
 
 ---
 
@@ -317,13 +322,13 @@ for await (const [ts, length] of iter) {
 
 Advances to the next entry.
 
-#### `iter.reverse(): void`
+#### `iter.reverse(): QueryLengthIterator`
 
-Reverses iteration order. Must be called before first `next()`.
+Reverses iteration order. Must be called before first `next()`. Returns `this` for chaining.
 
-#### `iter.skip(count: number): void`
+#### `iter.skip(count: number): QueryLengthIterator`
 
-Skips the next `count` entries. Must be called before first `next()`.
+Skips the next `count` entries. Must be called before first `next()`. Returns `this` for chaining.
 
 #### `iter.collectAll(): [bigint, number][]`
 
@@ -332,6 +337,11 @@ Eagerly collects all remaining entries into an array.
 #### `iter.close(): void`
 
 Closes the iterator and releases native resources.
+
+**Chaining example**:
+```js
+const results = dataset.queryLengthIter(1n, 100n).reverse().skip(5).collectAll();
+```
 
 ---
 
