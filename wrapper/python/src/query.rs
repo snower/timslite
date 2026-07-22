@@ -1,15 +1,16 @@
 //! Python query iterators backed by lazy DataSet query iterators.
 
 use pyo3::prelude::*;
+use std::sync::RwLock;
 
 #[pyclass(name = "QueryIterator")]
 pub struct PyQueryIterator {
-    iter: Option<timslite::QueryIterator>,
+    iter: RwLock<Option<timslite::QueryIterator>>,
 }
 
 impl PyQueryIterator {
     pub fn new(iter: timslite::QueryIterator) -> Self {
-        Self { iter: Some(iter) }
+        Self { iter: RwLock::new(Some(iter)) }
     }
 }
 
@@ -19,38 +20,44 @@ impl PyQueryIterator {
         slf
     }
 
-    fn __next__(&mut self) -> PyResult<Option<(i64, Vec<u8>)>> {
-        let Some(iter) = self.iter.as_mut() else {
+    fn __next__(&self) -> PyResult<Option<(i64, Vec<u8>)>> {
+        let mut iter_ref = self.iter.write().unwrap();
+        let Some(iter) = iter_ref.as_mut() else {
             return Ok(None);
         };
         match iter.next_entry() {
             Ok(Some(entry)) => Ok(Some(entry)),
             Ok(None) => {
-                self.iter = None;
+                *iter_ref = None;
                 Ok(None)
             }
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
         }
     }
 
-    fn reverse(&mut self) -> PyResult<()> {
-        let Some(iter) = self.iter.take() else {
-            return Ok(());
-        };
-        self.iter = Some(iter.reverse());
-        Ok(())
+    fn reverse(slf: PyRef<'_, Self>) -> PyResult<PyRef<'_, Self>> {
+        {
+            let mut iter_ref = slf.iter.write().unwrap();
+            if let Some(iter) = iter_ref.take() {
+                *iter_ref = Some(iter.reverse());
+            }
+        }
+        Ok(slf)
     }
 
-    fn skip(&mut self, count: usize) -> PyResult<()> {
-        let Some(iter) = self.iter.take() else {
-            return Ok(());
-        };
-        self.iter = Some(iter.skip(count));
-        Ok(())
+    fn skip(slf: PyRef<'_, Self>, count: usize) -> PyResult<PyRef<'_, Self>> {
+        {
+            let mut iter_ref = slf.iter.write().unwrap();
+            if let Some(iter) = iter_ref.take() {
+                *iter_ref = Some(iter.skip(count));
+            }
+        }
+        Ok(slf)
     }
 
-    fn collect_all(&mut self) -> PyResult<Vec<(i64, Vec<u8>)>> {
-        let Some(iter) = self.iter.take() else {
+    fn collect_all(&self) -> PyResult<Vec<(i64, Vec<u8>)>> {
+        let mut iter_ref = self.iter.write().unwrap();
+        let Some(iter) = iter_ref.take() else {
             return Ok(Vec::new());
         };
         match iter.collect_all() {
@@ -59,8 +66,9 @@ impl PyQueryIterator {
         }
     }
 
-    fn collect_take(&mut self, count: usize) -> PyResult<Vec<(i64, Vec<u8>)>> {
-        let Some(iter) = self.iter.take() else {
+    fn collect_take(&self, count: usize) -> PyResult<Vec<(i64, Vec<u8>)>> {
+        let mut iter_ref = self.iter.write().unwrap();
+        let Some(iter) = iter_ref.take() else {
             return Ok(Vec::new());
         };
         match iter.collect_take(count) {
@@ -69,19 +77,20 @@ impl PyQueryIterator {
         }
     }
 
-    fn close(&mut self) {
-        self.iter = None;
+    fn close(&self) {
+        let mut iter_ref = self.iter.write().unwrap();
+        *iter_ref = None;
     }
 }
 
 #[pyclass(name = "QueryLengthIterator")]
 pub struct PyQueryLengthIterator {
-    iter: Option<timslite::QueryLengthIterator>,
+    iter: RwLock<Option<timslite::QueryLengthIterator>>,
 }
 
 impl PyQueryLengthIterator {
     pub fn new(iter: timslite::QueryLengthIterator) -> Self {
-        Self { iter: Some(iter) }
+        Self { iter: RwLock::new(Some(iter)) }
     }
 }
 
@@ -91,38 +100,44 @@ impl PyQueryLengthIterator {
         slf
     }
 
-    fn __next__(&mut self) -> PyResult<Option<(i64, u32)>> {
-        let Some(iter) = self.iter.as_mut() else {
+    fn __next__(&self) -> PyResult<Option<(i64, u32)>> {
+        let mut iter_ref = self.iter.write().unwrap();
+        let Some(iter) = iter_ref.as_mut() else {
             return Ok(None);
         };
         match iter.next_entry() {
             Ok(Some(entry)) => Ok(Some(entry)),
             Ok(None) => {
-                self.iter = None;
+                *iter_ref = None;
                 Ok(None)
             }
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(e.to_string())),
         }
     }
 
-    fn reverse(&mut self) -> PyResult<()> {
-        let Some(iter) = self.iter.take() else {
-            return Ok(());
-        };
-        self.iter = Some(iter.reverse());
-        Ok(())
+    fn reverse(slf: PyRef<'_, Self>) -> PyResult<PyRef<'_, Self>> {
+        {
+            let mut iter_ref = slf.iter.write().unwrap();
+            if let Some(iter) = iter_ref.take() {
+                *iter_ref = Some(iter.reverse());
+            }
+        }
+        Ok(slf)
     }
 
-    fn skip(&mut self, count: usize) -> PyResult<()> {
-        let Some(iter) = self.iter.take() else {
-            return Ok(());
-        };
-        self.iter = Some(iter.skip(count));
-        Ok(())
+    fn skip(slf: PyRef<'_, Self>, count: usize) -> PyResult<PyRef<'_, Self>> {
+        {
+            let mut iter_ref = slf.iter.write().unwrap();
+            if let Some(iter) = iter_ref.take() {
+                *iter_ref = Some(iter.skip(count));
+            }
+        }
+        Ok(slf)
     }
 
-    fn collect_all(&mut self) -> PyResult<Vec<(i64, u32)>> {
-        let Some(iter) = self.iter.take() else {
+    fn collect_all(&self) -> PyResult<Vec<(i64, u32)>> {
+        let mut iter_ref = self.iter.write().unwrap();
+        let Some(iter) = iter_ref.take() else {
             return Ok(Vec::new());
         };
         match iter.collect_all() {
@@ -131,8 +146,9 @@ impl PyQueryLengthIterator {
         }
     }
 
-    fn collect_take(&mut self, count: usize) -> PyResult<Vec<(i64, u32)>> {
-        let Some(iter) = self.iter.take() else {
+    fn collect_take(&self, count: usize) -> PyResult<Vec<(i64, u32)>> {
+        let mut iter_ref = self.iter.write().unwrap();
+        let Some(iter) = iter_ref.take() else {
             return Ok(Vec::new());
         };
         match iter.collect_take(count) {
@@ -141,7 +157,8 @@ impl PyQueryLengthIterator {
         }
     }
 
-    fn close(&mut self) {
-        self.iter = None;
+    fn close(&self) {
+        let mut iter_ref = self.iter.write().unwrap();
+        *iter_ref = None;
     }
 }
