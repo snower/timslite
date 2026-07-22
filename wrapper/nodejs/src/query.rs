@@ -38,21 +38,21 @@ impl Generator for QueryIterator {
 #[napi]
 impl QueryIterator {
     #[napi]
-    pub fn reverse(&mut self) -> Result<&mut Self> {
+    pub fn reverse(&mut self) -> &Self {
         let Some(iter) = self.iter.take() else {
-            return Ok(self);
+            return self;
         };
         self.iter = Some(iter.reverse());
-        Ok(self)
+        self
     }
 
     #[napi]
-    pub fn skip(&mut self, count: u32) -> Result<&mut Self> {
+    pub fn skip(&mut self, count: u32) -> &Self {
         let Some(iter) = self.iter.take() else {
-            return Ok(self);
+            return self;
         };
         self.iter = Some(iter.skip(count as usize));
-        Ok(self)
+        self
     }
 
     #[napi]
@@ -119,21 +119,21 @@ impl Generator for QueryLengthIterator {
 #[napi]
 impl QueryLengthIterator {
     #[napi]
-    pub fn reverse(&mut self) -> Result<&mut Self> {
+    pub fn reverse(&mut self) -> &Self {
         let Some(iter) = self.iter.take() else {
-            return Ok(self);
+            return self;
         };
         self.iter = Some(iter.reverse());
-        Ok(self)
+        self
     }
 
     #[napi]
-    pub fn skip(&mut self, count: u32) -> Result<&mut Self> {
+    pub fn skip(&mut self, count: u32) -> &Self {
         let Some(iter) = self.iter.take() else {
-            return Ok(self);
+            return self;
         };
         self.iter = Some(iter.skip(count as usize));
-        Ok(self)
+        self
     }
 
     #[napi]

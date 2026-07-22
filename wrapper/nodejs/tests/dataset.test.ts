@@ -628,6 +628,108 @@ describe("dataset", () => {
     });
   });
 
+  describe("query iterator reverse/skip support fluent chaining", () => {
+    it("QueryIterator.reverse returns same iterator for chaining", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 3n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 3n);
+        assert.equal(iter.reverse(), iter);
+        const results = iter.collectAll();
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 3);
+        ds.close();
+      });
+    });
+
+    it("QueryIterator.skip returns same iterator for chaining", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 5n);
+        assert.equal(iter.skip(2), iter);
+        const results = iter.collectAll();
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 3);
+        ds.close();
+      });
+    });
+
+    it("QueryLengthIterator.reverse returns same iterator for chaining", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 3n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.queryLength(1n, 3n);
+        assert.equal(iter.reverse(), iter);
+        const results = iter.collectAll();
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 3);
+        ds.close();
+      });
+    });
+
+    it("QueryLengthIterator.skip returns same iterator for chaining", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.queryLength(1n, 5n);
+        assert.equal(iter.skip(2), iter);
+        const results = iter.collectAll();
+        assert.equal(results.length, 3);
+        assert.equal(results[0][0], 3);
+        ds.close();
+      });
+    });
+
+    it("QueryIterator.skip(...).reverse().collectAll() fluent chain", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.query(1n, 5n);
+        const results = iter.skip(1).reverse().collectAll();
+        assert.equal(results.length, 4);
+        assert.equal(results[0][0], 5);
+        assert.equal(results[1][0], 4);
+        assert.equal(results[2][0], 3);
+        assert.equal(results[3][0], 2);
+        ds.close();
+      });
+    });
+
+    it("QueryLengthIterator.skip(...).reverse().collectAll() fluent chain", () => {
+      withStore((store) => {
+        store.createDataset("test", "data");
+        const ds = store.openDataset("test", "data");
+        for (let i = 1n; i <= 5n; i++) {
+          ds.write(i, Buffer.from(`r${i}`));
+        }
+        const iter = ds.queryLength(1n, 5n);
+        const results = iter.skip(1).reverse().collectAll();
+        assert.equal(results.length, 4);
+        assert.equal(results[0][0], 5);
+        assert.equal(results[1][0], 4);
+        assert.equal(results[2][0], 3);
+        assert.equal(results[3][0], 2);
+        ds.close();
+      });
+    });
+  });
+
   describe("flush and inspect", () => {
     it("flush does not throw", () => {
       withStore((store) => {
