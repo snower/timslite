@@ -82,9 +82,10 @@ public final class QueryLengthIterator implements AutoCloseable {
     /**
      * Reverses the iteration direction.
      *
+     * @return this iterator for chaining
      * @throws IllegalStateException if the iterator is closed
      */
-    public void reverse() {
+    public QueryLengthIterator reverse() {
         if (closed) {
             throw new IllegalStateException("QueryLengthIterator is closed");
         }
@@ -95,15 +96,17 @@ public final class QueryLengthIterator implements AutoCloseable {
         }
         exhausted = false;
         nextEntry = advance();
+        return this;
     }
 
     /**
      * Skips the next count entries.
      *
      * @param count number of entries to skip
+     * @return this iterator for chaining
      * @throws IllegalStateException if the iterator is closed
      */
-    public void skip(int count) {
+    public QueryLengthIterator skip(int count) {
         if (closed) {
             throw new IllegalStateException("QueryLengthIterator is closed");
         }
@@ -117,6 +120,7 @@ public final class QueryLengthIterator implements AutoCloseable {
             throw e;
         }
         nextEntry = null;
+        return this;
     }
 
     /**
