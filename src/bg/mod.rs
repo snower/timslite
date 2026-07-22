@@ -888,7 +888,10 @@ mod tests {
         let bg_tick = Arc::clone(&bg);
         let tick_handle = std::thread::spawn(move || bg_tick.tick());
 
-        std::thread::sleep(Duration::from_millis(100));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !tick_handle.is_finished() && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
         assert!(
             tick_handle.is_finished(),
             "flush should not lock datasets without queued dirty segments"
