@@ -159,8 +159,8 @@ export class Dataset {
 export class QueryIterator implements Iterable<[bigint, Buffer]> {
   [Symbol.iterator](): QueryIterator
   next(): IteratorResult<[bigint, Buffer]>
-  reverse(): void
-  skip(count: number): void
+  reverse(): this
+  skip(count: number): this
   collectAll(): Array<[bigint, Buffer]>
   collectTake(count: number): Array<[bigint, Buffer]>
 }
@@ -168,8 +168,8 @@ export class QueryIterator implements Iterable<[bigint, Buffer]> {
 export class QueryLengthIterator implements Iterable<[bigint, number]> {
   [Symbol.iterator](): QueryLengthIterator
   next(): IteratorResult<[bigint, number]>
-  reverse(): void
-  skip(count: number): void
+  reverse(): this
+  skip(count: number): this
   collectAll(): Array<[bigint, number]>
   collectTake(count: number): Array<[bigint, number]>
 }
