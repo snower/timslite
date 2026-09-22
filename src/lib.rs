@@ -1,7 +1,7 @@
 ﻿//! timslite - Rust time-series data storage library.
 //!
 //! A high-performance, mmap-backed time-series data store with:
-//! - Block-level aggregation (max 64KB per block)
+//! - Block-level aggregation (uncompressed payload max 256KB per block)
 //! - Delayed compression (seal on overflow)
 //! - Lazy segment lifecycle (on-demand open, idle-close after 30min)
 //! - Time-indexed queries with binary search
@@ -120,8 +120,8 @@ mod tests {
         assert_eq!(crate::DATA_HEADER_SIZE, 124);
         assert_eq!(crate::INDEX_HEADER_SIZE, 128);
         assert_eq!(crate::BLOCK_HEADER_SIZE, 16);
-        assert_eq!(crate::BLOCK_MAX_SIZE, 65_536);
-        assert_eq!(crate::INDEX_ENTRY_SIZE, 14);
+        assert_eq!(crate::BLOCK_MAX_SIZE, 262_144);
+        assert_eq!(crate::INDEX_ENTRY_SIZE, 32);
         assert_eq!(&crate::MAGIC, b"TMSL");
         assert_eq!(crate::VERSION, 1);
         assert_eq!(crate::INDEX_VERSION, 1);

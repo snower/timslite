@@ -2460,8 +2460,10 @@ mod tests {
         assert_eq!(ds.latest_written_timestamp(), Some(100));
         assert_eq!(ds.read(100).unwrap().unwrap().1, b"abcd");
         let seg = ds.segments.open_segments().last().unwrap();
-        assert_eq!(seg.data_wrote_position, before.0 + 2);
-        assert_eq!(seg.pending_wrote_position, before.1 + 2);
+        // "ab" span = align_up(14,4) = 16; "abcd" span = align_up(16,4) = 16,
+        // so the append is absorbed by zero padding: physical growth is 0.
+        assert_eq!(seg.data_wrote_position, before.0);
+        assert_eq!(seg.pending_wrote_position, before.1);
         assert_eq!(seg.total_uncompressed_size, before.2 + 2);
         assert_eq!(seg.invalid_record_count, 0);
     }
@@ -2535,7 +2537,7 @@ mod tests {
     #[test]
     fn test_append_compressed_latest_returns_error() {
         let mut ds = make_cache_dataset("append_compressed_latest");
-        let data = vec![0xAB; 70_000];
+        let data = vec![0xAB; 300_000];
         ds.write(100, &data).unwrap();
 
         assert!(ds.append(100, b"x").is_err());
@@ -4130,11 +4132,11 @@ mod tests {
         .unwrap();
 
         // Exceed the fixed block payload limit to force a compressed single-record block.
-        let compressible = vec![0xAB_u8; 70_000];
+        let compressible = vec![0xAB_u8; 300_000];
         ds.write(100, &compressible).unwrap();
 
         // Correction write at ts=100 targets a SEALED+COMPRESSED block and falls back.
-        let corrected = vec![0xCD_u8; 70_100];
+        let corrected = vec![0xCD_u8; 300_100];
         ds.write(100, &corrected).unwrap();
 
         // Query should return the corrected data
@@ -4154,8 +4156,8 @@ mod tests {
     fn test_correction_fallback_invalidates_cached_compressed_block() {
         let mut ds = make_cache_dataset("cache_correction_fallback");
         let cache = BlockCache::new(1024 * 1024);
-        let original = vec![0xAB_u8; 70_000];
-        let corrected = vec![0xCD_u8; 70_100];
+        let original = vec![0xAB_u8; 300_000];
+        let corrected = vec![0xCD_u8; 300_100];
 
         ds.write(100, &original).unwrap();
         assert_eq!(
@@ -4174,8 +4176,8 @@ mod tests {
     fn test_out_of_order_invalidates_cached_compressed_block() {
         let mut ds = make_cache_dataset("cache_out_of_order");
         let cache = BlockCache::new(1024 * 1024);
-        let original = vec![0xAB_u8; 70_000];
-        let updated = vec![0xEF_u8; 70_100];
+        let original = vec![0xAB_u8; 300_000];
+        let updated = vec![0xEF_u8; 300_100];
 
         ds.write(100, &original).unwrap();
         ds.write(200, b"latest").unwrap();
@@ -4195,7 +4197,7 @@ mod tests {
     fn test_delete_invalidates_cached_compressed_block() {
         let mut ds = make_cache_dataset("cache_delete");
         let cache = BlockCache::new(1024 * 1024);
-        let original = vec![0xAB_u8; 70_000];
+        let original = vec![0xAB_u8; 300_000];
 
         ds.write(100, &original).unwrap();
         assert_eq!(

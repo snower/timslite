@@ -291,7 +291,7 @@ impl DataSegmentSet {
         // 2. Seek to block start position
         // 3. Read block header (validate magic/flags)
         // 4. For single-record block: read record header at block data start
-        //    For multi-record block: iterate to find target record by in_block_offset
+        //    For multi-record block: decode in_block_offset_units * 4 to locate target record
         // 5. Return data_len from record header
     }
 }

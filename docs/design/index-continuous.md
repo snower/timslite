@@ -22,7 +22,7 @@
 连续模式使用固定的逻辑分段网格:
 
 ```text
-index_entry_size      = 14
+index_entry_size      = 32
 index_entry_area_start = 128
 segment_capacity      = floor((index_segment_size - index_entry_area_start) / index_entry_size)
 time_step             = 1
@@ -39,7 +39,7 @@ entry_index(ts)       = (ts - segment_start(ts)) / time_step
 - index segment 文件前 128 字节统一保留给 fixed prefix、Meta TLV、state 与未来扩展; 所有 index entry 无论连续/非连续模式都从文件内绝对偏移 128 开始。
 - index segment 文件名仍使用 `segment_start` 的 20 位十进制格式。
 - 每个 index segment 的 `start_timestamp` 表示该 segment 的逻辑起点, 不一定表示第一条真实数据的时间戳。
-- index entry 落盘时不再保存完整 `timestamp:i64`, 而是保存 `timestamp_delta:u32 = timestamp - segment_start`。连续模式的 `entry_index` 与 `timestamp_delta` 数值一致; 读取时用 `segment_start + timestamp_delta` 还原业务 timestamp。
+- index entry 落盘保存完整 `timestamp:i64 LE`，不使用 segment-relative timestamp delta。连续模式仍以 `entry_index` 计算该条目的固定槽位，读取时直接校验 entry timestamp。
 
 ## 23.3 缺失时间戳表示
 
@@ -116,7 +116,7 @@ DataSet::write(timestamp, data):
 | 字段 | 哨兵值 | 含义 | 合法性保证 |
 |------|--------|------|-----------|
 | `block_offset: u64` | `0xFFFFFFFFFFFFFFFF` | 此位置无真实数据 (filler 或已删除) | 字段语义为数据区逻辑全局 offset; 合法全局偏移远低于 u64::MAX |
-| `in_block_offset: u16` | `0xFFFF` | 此位置无真实数据 (filler 或已删除) | 普通聚合 Block 的 payload 硬上限为 64KB, 真实 record 起始偏移不会达到 `0xFFFF`; 超大独占 Block 只含一条 record, offset 固定为 0 |
+| `in_block_offset_units: u16` | `0xFFFF` | 此位置无真实数据 (filler 或已删除) | 普通聚合 Block 未压缩 payload 上限为 256KiB; record stored span 按 4 字节对齐，真实 record 起始单位不会达到 `0xFFFF`; 超大独占 Block 只含一条 record，单位值固定为 0 |
 
 **哨兵值使用场景**:
 - 已物化 filler 条目: 同一 segment 内为保持 O(1) entry_index 定位而写入。

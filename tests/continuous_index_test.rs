@@ -168,14 +168,14 @@ fn t32_3_correction_on_filler_position() {
 
 #[test]
 fn t32_4_segment_capacity_calculation() {
-    // segment_capacity = floor((index_segment_size - 128) / 14)
-    // For index_segment_size = 4096: floor((4096 - 128) / 14) = floor(3968 / 14) = 283
-    let segment_capacity: i64 = (4096 - 128) / 14;
-    assert_eq!(segment_capacity, 283);
+    // segment_capacity = floor((index_segment_size - 128) / 32)
+    // For index_segment_size = 4096: floor((4096 - 128) / 32) = floor(3968 / 32) = 124
+    let segment_capacity: i64 = (4096 - 128) / 32;
+    assert_eq!(segment_capacity, 124);
 
     // Verify by filling exactly segment_capacity entries in one segment.
-    // base_timestamp = 0, so segment covers ts 0..282 (283 entries).
-    // Writing ts=0..282 should fit in 1 segment; writing ts=283 should create a 2nd.
+    // base_timestamp = 0, so segment covers ts 0..123 (124 entries).
+    // Writing ts=0..123 should fit in 1 segment; writing ts=124 should create a 2nd.
     let (store, ds) = setup_continuous("capacity_test");
 
     for ts in 0..segment_capacity {
@@ -256,15 +256,16 @@ fn t32_5_reopen_base_timestamp_preserved() {
 fn t32_6_negative_base_timestamp() {
     let (store, ds) = setup_continuous("neg_ts");
 
+    // ts -100..20 stays within one 124-entry segment (capacity with 32B entries).
     ds.write(-100, b"neg").unwrap();
     ds.write(-50, b"less_neg").unwrap();
     ds.write(0, b"zero").unwrap();
-    ds.write(50, b"pos").unwrap();
+    ds.write(20, b"pos").unwrap();
     ds.flush().unwrap();
 
     let info = store.inspect_dataset("neg_ts", "data").unwrap();
     assert_eq!(info.state.base_timestamp, Some(-100));
-    assert_eq!(info.state.latest_written_timestamp, Some(50));
+    assert_eq!(info.state.latest_written_timestamp, Some(20));
     assert_eq!(
         info.state.index_segments, 1,
         "all 4 entries should fit in 1 segment"
@@ -274,7 +275,7 @@ fn t32_6_negative_base_timestamp() {
     assert_eq!(ds.read(-100).unwrap().unwrap().1, b"neg");
     assert_eq!(ds.read(-50).unwrap().unwrap().1, b"less_neg");
     assert_eq!(ds.read(0).unwrap().unwrap().1, b"zero");
-    assert_eq!(ds.read(50).unwrap().unwrap().1, b"pos");
+    assert_eq!(ds.read(20).unwrap().unwrap().1, b"pos");
 
     // Filler positions should be None
     assert!(ds.read(-75).unwrap().is_none());
@@ -282,7 +283,7 @@ fn t32_6_negative_base_timestamp() {
     assert!(ds.read(25).unwrap().is_none());
 
     // Query across all
-    let entries = ds.query(-100, 50).unwrap();
+    let entries = ds.query(-100, 20).unwrap();
     assert_eq!(entries.len(), 4);
 
     store.close().unwrap();
@@ -290,26 +291,23 @@ fn t32_6_negative_base_timestamp() {
 
 #[test]
 fn t32_7_multiple_segments_with_gaps() {
-    // segment_capacity = 283 for index_segment_size=4096.
+    // segment_capacity = 124 for index_segment_size=4096 (32-byte entries).
     // Write at ts=0, ts=500, ts=1500 to span 3 segments:
-    //   segment 0: ts 0..282     (ts=0 is here)
-    //   segment 1: ts 283..565   (ts=500 is here)
-    //   segment 5: ts 1415..1697 (ts=1500 is here)
-    //   seg_ord(ts) = floor((ts - 0) / 283)
-    //   seg_ord(0) = 0
-    //   seg_ord(500) = floor(500/283) = 1  鈫?segment start = 283
-    //   seg_ord(1500) = floor(1500/283) = 5 鈫?segment start = 1415
-    // So writes at ts=0, 500, 1500 span segments 0, 1, 5 鈫?3 segments on disk.
+    //   seg_ord(ts) = floor((ts - 0) / 124)
+    //   seg_ord(0) = 0    -> segment start 0
+    //   seg_ord(500) = 4  -> segment start 496
+    //   seg_ord(1500) = 12 -> segment start 1488
+    // So writes at ts=0, 500, 1500 span 3 segments on disk.
     let (store, ds) = setup_continuous("multi_seg_gap");
 
     ds.write(0, b"seg0").unwrap();
     ds.flush().unwrap();
 
-    // ts=500 is in segment 1 (ordinal 1).
+    // ts=500 is in segment ordinal 4 (start 496).
     ds.write(500, b"seg2").unwrap();
     ds.flush().unwrap();
 
-    // ts=1500 is in segment 5 (ordinal 5). Gap: segments 2-4 are logical holes.
+    // ts=1500 is ordinal 12. Gap: ordinals 5-11 are logical holes.
     ds.write(1500, b"seg6").unwrap();
     ds.flush().unwrap();
 
@@ -329,15 +327,15 @@ fn t32_7_multiple_segments_with_gaps() {
     // Logical hole positions should be None
     assert!(
         ds.read(300).unwrap().is_none(),
-        "ts=300 is filler in segment 1"
+        "ts=300 is in a logical hole (segment ordinal 2)"
     );
     assert!(
         ds.read(800).unwrap().is_none(),
-        "ts=800 in logical hole (segment 2)"
+        "ts=800 in logical hole (segment ordinal 6)"
     );
     assert!(
         ds.read(1200).unwrap().is_none(),
-        "ts=1200 in logical hole (segment 4)"
+        "ts=1200 in logical hole (segment ordinal 9)"
     );
 
     // Query should return exactly 3 entries

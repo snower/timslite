@@ -112,9 +112,9 @@ impl DataSet {
 ```
 写入 record(timestamp, data)
     │
-    ├─ record_size = 4 + 8 + data.len()
+    ├─ record_stored_span = align_up(4 + 8 + data.len(), 4)
     │
-    ├─ record_size > 64KB? ──Yes──→ 独占 Block
+    ├─ record_stored_span > 256KiB? ──Yes──→ 独占 Block
     │    │                            1. 密封当前 pending (如果有)
     │    │                            2. 使用 selected algorithm 压缩 record payload
     │    │                            3. 写入 BlockHeader(flags=SEALED|COMPRESSED|SINGLE_RECORD)
@@ -130,7 +130,7 @@ impl DataSet {
     │
     Yes
     │
-    ├─ pending_size + record_size > 64KB? ──Yes──→ 强制压缩并密封 pending Block
+    ├─ pending_size + record_stored_span > 256KiB? ──Yes──→ 强制压缩并密封 pending Block
     │    │                                             1. 读取 raw payload
     │    │                                             2. selected algorithm 压缩
     │    │                                             3. 写回 compressed payload
@@ -170,7 +170,7 @@ physical_file_offset = segment.header_len + block_segment_offset
 
 **meta 真源与固定 block 上限**:
 
-`DataSet::open()` 只从 `{dataset}/meta` 读取创建参数, 不接收也不比较当前 `StoreConfig` 的 dataset 默认值。`block_max_size` 不是 dataset 参数, 普通聚合 Block payload 上限固定为 `BLOCK_MAX_SIZE=65536`; 超过该上限的单条 record 使用独占 block。
+`DataSet::open()` 只从 `{dataset}/meta` 读取创建参数, 不接收也不比较当前 `StoreConfig` 的 dataset 默认值。`block_max_size` 不是 dataset 参数, 普通聚合 Block 未压缩 payload 上限固定为 `BLOCK_MAX_SIZE=256KiB`; 超过该上限的单条 record stored span 使用独占 block。该上限不要求 Block 在磁盘上固定预分配 256KiB。
 
 ### 9.1 时间戳验证与写入分支
 
@@ -312,7 +312,7 @@ DataSet::write(timestamp, data):
 //   1. 新数据追加到最新数据段 (正常写入到 pending block 或创建新 block)
 //      → (segment.file_offset, block_segment_offset, in_block_offset)
 //   2. 更新索引:
-//      → 非连续模式: 查找现有索引条目, 原地覆盖 14 字节 delta entry 为新的 (block_offset, in_block_offset)
+//      → 非连续模式: 查找现有索引条目, 原地覆盖 32 字节 entry 为新的 (block_offset, in_block_offset_units)
 //      → 连续模式: 目标可为真实 entry / filler / 逻辑空洞; 逻辑空洞按需创建 segment
 //      → 返回 old_entry: Option<IndexEntry>
 //   3. if old_entry 存在且 block_offset ≠ FILLER (旧索引引用了实际数据):
@@ -325,10 +325,10 @@ DataSet::write(timestamp, data):
 //        // 无旧索引和旧数据, invalid_record_count 不变
 ```
 
-> **索引原地更新**: 索引条目 14 字节通过 mmap 直接覆盖, 不改变条目总数。
+> **索引原地更新**: 索引条目 32 字节通过 mmap 直接覆盖, 不改变条目总数。
 > - **连续模式**: 先用 `base_timestamp` 计算逻辑 `seg_start_ts` 和 `entry_index`; 如果 segment 不存在或 `entry_index >= wrote_count`, 该位置是逻辑空洞
 > - **非连续模式**: 在 IndexSegment 中二分查找; 若目标在 closed segment 中, 临时打开 → 覆盖 → idle_close
-> - **崩溃边界**: 14 字节索引条目不是原子事务写入。本库不保证 crash 后保留该次更新; reopen/query 必须依靠 entry 边界、filler sentinel 和 record timestamp 校验避免返回错位数据。
+> - **崩溃边界**: 32 字节索引条目不是原子事务写入。本库不保证 crash 后保留该次更新; reopen/query 必须依靠 entry 边界、reserved zero 校验、filler sentinel 和 record timestamp 校验避免返回错位数据。
 >
 > **invalid_record_count 更新**: 通过 `block_offset` 计算旧数据所在数据段 (段路由: `segment.file_offset = (block_offset / segment_size) × segment_size`), 再对该段 `invalid_record_count` 字段 +1。段可能已关闭, 需通过 `lazy_open` 临时打开以更新 mmap state 字段。
 >

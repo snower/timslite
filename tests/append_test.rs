@@ -1,4 +1,4 @@
-﻿//! Append tests: pending block capacity, sealed block, empty data, timestamp order.
+//! Append tests: pending block capacity, sealed block, empty data, timestamp order.
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,11 +67,12 @@ fn t32_1_append_existing_latest_exceeding_pending_capacity_errors() {
         assert_eq!(data.len(), 7 + 10 * 1024);
     }
 
-    // Try to append until we exceed BLOCK_MAX_SIZE (65536 bytes)
+    // Try to append until we exceed BLOCK_MAX_SIZE (256 KiB uncompressed payload)
     {
         let lock = arc.clone();
-        // Current size is ~10KB, need to append ~55KB more to exceed 64KB
-        let big_append = vec![0xCDu8; 60 * 1024]; // 60KB
+        // Current size is ~10KB; appending 250KB pushes the final record
+        // (10247 + 256000 bytes) past the 262144-byte block payload cap.
+        let big_append = vec![0xCDu8; 250 * 1024]; // 250KB
         let result = lock.append(100, &big_append);
         // This should fail because final record would exceed block capacity
         assert!(
@@ -258,20 +259,21 @@ fn t32_4_append_timestamp_order() {
             "append with timestamp < latest should fail"
         );
 
-        // timestamp == latest_written_timestamp should work (append to existing)
+        // timestamp == latest_written_timestamp: record 300 is the uncompressed
+        // tail of the pending block, so in-place append is allowed per spec.
         let result = lock.append(300, b"_appended");
         assert!(
-            result.is_err(),
-            "append to latest timestamp should fail for non-tail record"
+            result.is_ok(),
+            "append to uncompressed tail record should succeed"
         );
     }
 
-    // Verify all data is unchanged
+    // Verify earlier records are unchanged and the tail grew in place
     {
         let lock = arc.clone();
         assert_eq!(lock.read(100).unwrap().unwrap().1, b"data_100");
         assert_eq!(lock.read(200).unwrap().unwrap().1, b"data_200");
-        assert_eq!(lock.read(300).unwrap().unwrap().1, b"data_300");
+        assert_eq!(lock.read(300).unwrap().unwrap().1, b"data_300_appended");
     }
 
     store.close().unwrap();

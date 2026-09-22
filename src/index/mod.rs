@@ -393,13 +393,20 @@ impl TimeIndex {
         if let Some(previous_latest) = previous_latest {
             let prev_segment_start = self.segment_start_for(previous_latest)?;
             let curr_segment_start = self.segment_start_for(timestamp)?;
-            if prev_segment_start == curr_segment_start {
-                self.push_filler_range(previous_latest + 1, timestamp - 1)?;
-            } else {
-                let segment_capacity = self.segment_capacity()? as i64;
-                let prev_segment_end = prev_segment_start + segment_capacity - 1;
-                self.push_filler_range(previous_latest + 1, prev_segment_end)?;
-                self.push_filler_range(curr_segment_start, timestamp - 1)?;
+            // checked: i64::MIN timestamps have no predecessor, so the
+            // filler gap before them is empty rather than an overflow.
+            if let (Some(gap_start), Some(gap_end)) =
+                (previous_latest.checked_add(1), timestamp.checked_sub(1))
+            {
+                if prev_segment_start == curr_segment_start {
+                    self.push_filler_range(gap_start, gap_end)?;
+                } else {
+                    let segment_capacity = self.segment_capacity()? as i64;
+                    // A boundary segment truncated by i64::MAX ends at MAX.
+                    let prev_segment_end = prev_segment_start.saturating_add(segment_capacity - 1);
+                    self.push_filler_range(gap_start, prev_segment_end)?;
+                    self.push_filler_range(curr_segment_start, gap_end)?;
+                }
             }
         }
 
@@ -450,9 +457,18 @@ impl TimeIndex {
                 timestamp, base
             )));
         }
-        let capacity = self.segment_capacity()? as i64;
-        let ordinal = (timestamp - base) / capacity;
-        Ok(base + ordinal * capacity)
+        // base and timestamp are valid i64 values whose span can exceed the
+        // i64 range; segment math runs in i128 and the boundary must stay
+        // representable as an i64 timestamp.
+        let capacity = self.segment_capacity()? as i128;
+        let ordinal = (timestamp as i128 - base as i128) / capacity;
+        let start = base as i128 + ordinal * capacity;
+        i64::try_from(start).map_err(|_| {
+            TmslError::InvalidData(format!(
+                "continuous segment boundary {} for timestamp {} is not representable",
+                start, timestamp
+            ))
+        })
     }
 
     pub(crate) fn flush_target_start_for_timestamp(&self, timestamp: i64) -> Result<i64> {
@@ -627,7 +643,10 @@ impl TimeIndex {
             )));
         }
 
-        self.push_filler_range(segment_start + materialized_count as i64, timestamp - 1)?;
+        // checked_sub: timestamp i64::MIN leaves no room for a gap before it.
+        if let Some(gap_end) = timestamp.checked_sub(1) {
+            self.push_filler_range(segment_start + materialized_count as i64, gap_end)?;
+        }
         let entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
         self.append_continuous_entry_to_disk(&entry, archived_range_sink)?;
 
@@ -757,9 +776,8 @@ impl TimeIndex {
         if let Some(latest_key) = self.index_segments.last_key_value().map(|(key, _)| *key) {
             let latest_available = {
                 let latest = self.open_index_segment(latest_key)?;
+                // Global i64 timestamps: only capacity gates segment rotation now.
                 !latest.is_full()
-                    && IndexEntry::timestamp_delta_for_segment(start_ts, latest.start_timestamp)
-                        .is_ok()
             };
             if latest_available {
                 return self.open_index_segment(latest_key);
@@ -1147,7 +1165,7 @@ impl TimeIndex {
                         if pos + INDEX_ENTRY_SIZE <= mmap.len() {
                             let buf: [u8; INDEX_ENTRY_SIZE] =
                                 mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
-                            IndexEntry::from_bytes_for_segment(metadata.file_offset, &buf)
+                            IndexEntry::from_bytes_for_segment(&buf)
                                 .ok()
                                 .map(|entry| entry.timestamp)
                         } else {
@@ -1235,7 +1253,8 @@ mod tests {
     #[test]
     fn test_time_index_archived_range_sink_runs_before_new_segment_create() {
         let sub = fresh_subdir("archived_range_sink_before_index_create");
-        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        // 288-byte segment = capacity 5 with 32-byte entries.
+        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
         let mut sink = CaptureArchivedRangeSink::default();
 
         for ts in 100..105 {
@@ -1255,16 +1274,16 @@ mod tests {
     #[test]
     fn test_index_entry_roundtrip() {
         let entry = IndexEntry::new(1234567890, 1024, 42);
-        let bytes = entry.to_bytes_for_segment(1234567000).unwrap();
-        let parsed = IndexEntry::from_bytes_for_segment(1234567000, &bytes).unwrap();
+        let bytes = entry.to_bytes_for_segment();
+        let parsed = IndexEntry::from_bytes_for_segment(&bytes).unwrap();
         assert_eq!(entry, parsed);
     }
 
     #[test]
     fn test_index_entry_binary_size() {
-        assert_eq!(INDEX_ENTRY_SIZE, 14);
+        assert_eq!(INDEX_ENTRY_SIZE, 32);
         let entry = IndexEntry::new(42, u64::MAX, u16::MAX);
-        assert_eq!(entry.to_bytes_for_segment(0).unwrap().len(), 14);
+        assert_eq!(entry.to_bytes_for_segment().len(), 32);
     }
 
     #[test]
@@ -1274,7 +1293,8 @@ mod tests {
         let _ = fs::remove_dir_all(&sub);
         fs::create_dir_all(&sub).unwrap();
 
-        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        // 288-byte segment = capacity 5 with 32-byte entries.
+        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
         idx.ensure_base_timestamp(1000).unwrap();
 
         assert_eq!(idx.segment_capacity().unwrap(), 5);
@@ -1306,7 +1326,8 @@ mod tests {
     #[test]
     fn test_time_index_registries_stay_sorted_across_lazy_open() {
         let sub = fresh_subdir("ordered_registry_lazy_open");
-        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        // 288-byte segment = capacity 5 with 32-byte entries.
+        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
         }
@@ -1461,18 +1482,26 @@ mod tests {
         assert!(idx.find_and_delete_entry(101).is_err());
     }
 
+    // Global i64 entry timestamps: a delta beyond u32 range no longer forces a
+    // segment split; only capacity does.
     #[test]
-    fn test_noncontinuous_flush_splits_segment_when_delta_exceeds_u32() {
-        let sub = fresh_subdir("noncontinuous_delta_split");
+    fn test_noncontinuous_global_i64_timestamp_does_not_split_segment() {
+        let sub = fresh_subdir("noncontinuous_global_ts_no_split");
         let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
 
         idx.add_entry(0, 100, 0).unwrap();
         idx.add_entry(u32::MAX as i64 + 1, 200, 0).unwrap();
         idx.sync_all().unwrap();
 
-        assert_eq!(idx.total_len(), 2);
+        assert_eq!(idx.total_len(), 1);
         assert!(idx.index_segments.contains_key(&0));
-        assert!(idx.index_segments.contains_key(&(u32::MAX as i64 + 1)));
+        assert_eq!(
+            idx.find_entry(u32::MAX as i64 + 1)
+                .unwrap()
+                .unwrap()
+                .block_offset,
+            200
+        );
     }
 
     #[test]
@@ -1752,7 +1781,8 @@ mod tests {
     #[test]
     fn test_active_timestamp_range_snapshot() {
         let sub = fresh_subdir("active_ts_range");
-        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        // 288-byte segment = capacity 5 with 32-byte entries.
+        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
 
         // Nothing active when empty
         assert_eq!(idx.active_timestamp_range_snapshot(), None);
@@ -1775,7 +1805,8 @@ mod tests {
     #[test]
     fn test_open_len_closed_len() {
         let sub = fresh_subdir("open_closed_len");
-        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        // 288-byte segment = capacity 5 with 32-byte entries.
+        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
 
         // Start: all segments are open, none closed
         idx.add_entry(100, 100, 0).unwrap();
@@ -1799,7 +1830,8 @@ mod tests {
     #[test]
     fn test_timestamp_range_snapshot_with_closed_segments() {
         let sub = fresh_subdir("ts_range_closed");
-        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        // 288-byte segment = capacity 5 with 32-byte entries.
+        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
 
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
@@ -1813,5 +1845,22 @@ mod tests {
         // Close all and verify range still works
         idx.idle_close_all().unwrap();
         assert_eq!(idx.timestamp_range_snapshot(), Some((100, 107)));
+    }
+
+    #[test]
+    fn test_continuous_segment_start_for_i64_extremes() {
+        let sub = fresh_subdir("continuous_i64_extremes");
+        // segment_size 512 -> capacity = (512 - 128) / 32 = 12 entries.
+        let mut idx = TimeIndex::new(&sub, 512, 512, true).unwrap();
+        idx.add_filler_entry(i64::MIN).unwrap();
+
+        // MAX - MIN exceeds i64 range: boundary math must not overflow/panic.
+        let start = idx.segment_start_for(i64::MAX).unwrap();
+        let cap = ((512 - INDEX_HEADER_SIZE) / INDEX_ENTRY_SIZE as u64) as i128;
+        let diff = i64::MAX as i128 - i64::MIN as i128;
+        assert_eq!(start as i128, i64::MIN as i128 + (diff / cap) * cap);
+        let entry_index = idx.entry_index_for(i64::MAX).unwrap();
+        assert!((entry_index as i128) < cap);
+        assert_eq!(start as i128 + entry_index as i128, i64::MAX as i128);
     }
 }

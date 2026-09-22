@@ -31,7 +31,7 @@
   - 初始化 DataSegmentSet (空, 首个 segment 未创建)
   - 初始化 TimeIndex (空, 首个 segment 未创建)
   - 记录 last_used_at
-- 参数验证: data_segment_size > 0, index_segment_size > 0, compress_level 1-9, block_max_size <= 64KB
+- 参数验证: data_segment_size > 0, index_segment_size > 0, compress_level 1-9；普通聚合 Block 未压缩 payload 上限固定为 256KiB，不作为 dataset 可配置参数，也不固定预分配 Block 磁盘空间
 
 ## 5.8 DataSet::open
 

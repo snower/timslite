@@ -125,17 +125,19 @@ mod tests {
             )
             .unwrap();
         let ds = store.open_dataset("hot_length_iter", "data").unwrap();
-        let data = vec![0xCDu8; 4096];
+        // 20 records × 20012 bytes overflow the 256 KiB cap so entries 1..2
+        // land in a sealed+compressed block (only compressed blocks fill hot cache).
+        let data = vec![0xCDu8; 20_000];
         for ts in 1..=20 {
             ds.write(ts, &data).unwrap();
         }
 
         let mut iter = ds.query_length_iter(1, 2).unwrap();
-        assert_eq!(iter.next_entry().unwrap(), Some((1, 4096)));
+        assert_eq!(iter.next_entry().unwrap(), Some((1, 20_000)));
 
         test_hooks::reset_find_or_open_segment_calls();
 
-        assert_eq!(iter.next_entry().unwrap(), Some((2, 4096)));
+        assert_eq!(iter.next_entry().unwrap(), Some((2, 20_000)));
         assert_eq!(test_hooks::find_or_open_segment_calls(), 0);
     }
 }

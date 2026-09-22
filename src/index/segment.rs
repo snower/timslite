@@ -1,7 +1,8 @@
 //! IndexSegment: single index file with memory-mapped entries and lifecycle management.
 //!
-//! Each index segment stores 14-byte IndexEntry records
-//! (timestamp_delta, block_offset, in_block_offset) in a sorted, append-only fashion.
+//! Each index segment stores fixed 32-byte IndexEntry records
+//! (timestamp: i64, block_offset: u64, in_block_offset_units: u16, 14 reserved zero
+//! bytes) in a sorted, append-only fashion.
 
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
@@ -11,75 +12,51 @@ use std::time::Instant;
 use crate::bg::{SegmentDirtySink, SegmentFlushTarget};
 use crate::error::{Result, TmslError};
 use crate::header::{write_index_wrote_position_to_mmap, IndexFileMetadata, FIXED_PREFIX_SIZE};
-use crate::util::read_u32_from_mmap;
 
 // ─── IndexEntry ──────────────────────────────────────────────────────────────
 
-pub const INDEX_ENTRY_SIZE: usize = 14;
+pub const INDEX_ENTRY_SIZE: usize = 32;
+
+/// Number of trailing reserved (must-be-zero) bytes in an on-disk index entry.
+const INDEX_ENTRY_RESERVED_BYTES: usize = 14;
 
 /// Sentinel value for filler entry block_offset (no real data).
 pub const BLOCK_OFFSET_FILLER: u64 = 0xFFFFFFFFFFFFFFFF;
 /// Sentinel value for filler entry in_block_offset (no real data).
 pub const IN_BLOCK_OFFSET_FILLER: u16 = 0xFFFF;
 
-/// A single index entry in memory. On disk, timestamp is stored as a u32 delta
-/// from the containing index segment's start timestamp.
+/// A single index entry in memory. On disk (32 bytes, little-endian):
+/// `[timestamp: i64][block_offset: u64][in_block_offset_units: u16][14 reserved zeros]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexEntry {
     pub timestamp: i64,
     pub block_offset: u64,    // logical offset relative to the data area start
-    pub in_block_offset: u16, // relative to block payload start
+    pub in_block_offset: u16, // 4-byte units relative to block payload start
 }
 
 impl IndexEntry {
-    pub fn timestamp_delta_for_segment(
-        timestamp: i64,
-        segment_start_timestamp: i64,
-    ) -> Result<u32> {
-        let delta = timestamp
-            .checked_sub(segment_start_timestamp)
-            .ok_or_else(|| TmslError::InvalidData("index timestamp delta overflow".into()))?;
-        u32::try_from(delta).map_err(|_| {
-            TmslError::InvalidData(format!(
-                "index timestamp {} is outside u32 delta range for segment {}",
-                timestamp, segment_start_timestamp
-            ))
-        })
-    }
-
-    fn timestamp_from_delta(segment_start_timestamp: i64, delta: u32) -> Result<i64> {
-        segment_start_timestamp
-            .checked_add(delta as i64)
-            .ok_or_else(|| TmslError::InvalidData("index timestamp delta overflow".into()))
-    }
-
-    fn timestamp_from_delta_opt(segment_start_timestamp: i64, delta: u32) -> Option<i64> {
-        segment_start_timestamp.checked_add(delta as i64)
-    }
-
-    /// Serialize an entry to exactly 14 bytes.
-    pub fn to_bytes_for_segment(
-        &self,
-        segment_start_timestamp: i64,
-    ) -> Result<[u8; INDEX_ENTRY_SIZE]> {
+    /// Serialize an entry to exactly 32 bytes.
+    pub fn to_bytes_for_segment(&self) -> [u8; INDEX_ENTRY_SIZE] {
         let mut buf = [0u8; INDEX_ENTRY_SIZE];
-        let delta = Self::timestamp_delta_for_segment(self.timestamp, segment_start_timestamp)?;
-        buf[0..4].copy_from_slice(&delta.to_le_bytes());
-        buf[4..12].copy_from_slice(&self.block_offset.to_le_bytes());
-        buf[12..14].copy_from_slice(&self.in_block_offset.to_le_bytes());
-        Ok(buf)
+        buf[0..8].copy_from_slice(&self.timestamp.to_le_bytes());
+        buf[8..16].copy_from_slice(&self.block_offset.to_le_bytes());
+        buf[16..18].copy_from_slice(&self.in_block_offset.to_le_bytes());
+        // buf[18..32] stays zero: reserved bytes.
+        buf
     }
 
-    /// Parse an entry from exactly 14 bytes.
-    pub fn from_bytes_for_segment(
-        segment_start_timestamp: i64,
-        buf: &[u8; INDEX_ENTRY_SIZE],
-    ) -> Result<Self> {
-        let delta = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+    /// Parse an entry from exactly 32 bytes. Rejects non-zero reserved bytes.
+    pub fn from_bytes_for_segment(buf: &[u8; INDEX_ENTRY_SIZE]) -> Result<Self> {
+        if buf[INDEX_ENTRY_SIZE - INDEX_ENTRY_RESERVED_BYTES..] != [0u8; INDEX_ENTRY_RESERVED_BYTES]
+        {
+            return Err(TmslError::InvalidData(
+                "index entry reserved bytes must be zero".into(),
+            ));
+        }
         Ok(Self {
-            timestamp: Self::timestamp_from_delta(segment_start_timestamp, delta)?,
-            block_offset: u64::from_le_bytes(buf[4..12].try_into().unwrap()),
-            in_block_offset: u16::from_le_bytes(buf[12..14].try_into().unwrap()),
+            timestamp: i64::from_le_bytes(buf[0..8].try_into().unwrap()),
+            block_offset: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+            in_block_offset: u16::from_le_bytes(buf[16..18].try_into().unwrap()),
         })
     }
 
@@ -224,10 +201,42 @@ impl IndexSegment {
             )));
         }
 
+        // Reject files whose state does not match the fixed 32-byte entry
+        // grid, then structurally validate every materialized entry against
+        // the new-format layout (zero reserved bytes). Under the
+        // no-compatibility contract this deterministically rejects old 14-byte
+        // delta-format segments instead of silently reinterpreting them, even
+        // when a 14-byte entry count happens to land on the 32-byte grid.
+        let entry_area_used = metadata.wrote_position.saturating_sub(header_size);
+        if metadata.wrote_position < header_size
+            || !entry_area_used.is_multiple_of(INDEX_ENTRY_SIZE as u64)
+        {
+            return Err(TmslError::InvalidData(format!(
+                "index wrote_position {} is not aligned to {}-byte entries",
+                metadata.wrote_position, INDEX_ENTRY_SIZE
+            )));
+        }
+
         let entries_capacity =
             ((actual_file_size.saturating_sub(header_size)) / INDEX_ENTRY_SIZE as u64) as usize;
-        let wrote_count = ((metadata.wrote_position.saturating_sub(header_size))
-            / INDEX_ENTRY_SIZE as u64) as usize;
+        let wrote_count = (entry_area_used / INDEX_ENTRY_SIZE as u64) as usize;
+        for i in 0..wrote_count {
+            let pos = header_size as usize + i * INDEX_ENTRY_SIZE;
+            if pos + INDEX_ENTRY_SIZE > mmap.len() {
+                return Err(TmslError::InvalidData(format!(
+                    "index entry {i} at {pos} is beyond file bounds"
+                )));
+            }
+            let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE]
+                .try_into()
+                .expect("entry-sized slice");
+            IndexEntry::from_bytes_for_segment(&buf).map_err(|e| {
+                TmslError::InvalidData(format!(
+                    "index segment {} entry {i} malformed: {e}",
+                    path.display()
+                ))
+            })?;
+        }
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -257,7 +266,7 @@ impl IndexSegment {
             .as_mut()
             .ok_or_else(|| TmslError::MmapError("index segment closed".into()))?;
 
-        let bytes = entry.to_bytes_for_segment(self.start_timestamp)?;
+        let bytes = entry.to_bytes_for_segment();
         let pos = self.header_size as usize + self.wrote_count * INDEX_ENTRY_SIZE;
         mmap[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&bytes);
         self.wrote_count += 1;
@@ -319,38 +328,34 @@ impl IndexSegment {
     /// directly calculates the entry position, reads and validates the timestamp.
     pub fn direct_lookup(&self, target_ts: i64) -> Option<IndexEntry> {
         let mmap = self.mmap.as_ref()?;
-        let end_ts = self.start_timestamp + self.wrote_count as i64;
-        if target_ts < self.start_timestamp || target_ts >= end_ts {
+        // i128: a segment materialized to i64::MAX has end_ts beyond i64.
+        let end_ts = self.start_timestamp as i128 + self.wrote_count as i128;
+        if (target_ts as i128) < self.start_timestamp as i128 || (target_ts as i128) >= end_ts {
             return None;
         }
         let entry_index = (target_ts - self.start_timestamp) as usize;
         let pos = self.header_size as usize + entry_index * INDEX_ENTRY_SIZE;
-        let ts = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos)?;
+        let ts = Self::read_timestamp_at_pos(mmap, pos)?;
         if ts != target_ts {
             return None; // Defensive: should never happen in continuous mode
         }
         let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
-        IndexEntry::from_bytes_for_segment(self.start_timestamp, &buf).ok()
+        IndexEntry::from_bytes_for_segment(&buf).ok()
     }
 
-    fn read_timestamp_at_pos(segment_start_timestamp: i64, mmap: &[u8], pos: usize) -> Option<i64> {
-        if pos + 4 > mmap.len() {
+    fn read_timestamp_at_pos(mmap: &[u8], pos: usize) -> Option<i64> {
+        if pos + 8 > mmap.len() {
             return None;
         }
-        let delta = read_u32_from_mmap(mmap, pos);
-        IndexEntry::timestamp_from_delta_opt(segment_start_timestamp, delta)
+        Some(i64::from_le_bytes(mmap[pos..pos + 8].try_into().ok()?))
     }
 
-    fn read_entry_at_pos(
-        segment_start_timestamp: i64,
-        mmap: &[u8],
-        pos: usize,
-    ) -> Option<IndexEntry> {
+    fn read_entry_at_pos(mmap: &[u8], pos: usize) -> Option<IndexEntry> {
         if pos + INDEX_ENTRY_SIZE > mmap.len() {
             return None;
         }
         let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().ok()?;
-        IndexEntry::from_bytes_for_segment(segment_start_timestamp, &buf).ok()
+        IndexEntry::from_bytes_for_segment(&buf).ok()
     }
 
     /// Binary search: find the first entry with timestamp >= target_ts.
@@ -360,8 +365,7 @@ impl IndexSegment {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let pos = self.header_size as usize + mid * INDEX_ENTRY_SIZE;
-            let ts =
-                Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos).unwrap_or(i64::MAX);
+            let ts = Self::read_timestamp_at_pos(mmap, pos).unwrap_or(i64::MAX);
             if ts < target_ts {
                 lo = mid + 1;
             } else {
@@ -383,8 +387,8 @@ impl IndexSegment {
         if target_ts < self.start_timestamp {
             return 0;
         }
-        let end_ts = self.start_timestamp + self.wrote_count as i64;
-        if target_ts >= end_ts {
+        let end_ts = self.start_timestamp as i128 + self.wrote_count as i128;
+        if (target_ts as i128) >= end_ts {
             return self.wrote_count;
         }
         (target_ts - self.start_timestamp) as usize
@@ -397,8 +401,7 @@ impl IndexSegment {
         while lo < hi {
             let mid = lo + (hi - lo) / 2;
             let pos = self.header_size as usize + mid * INDEX_ENTRY_SIZE;
-            let ts =
-                Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos).unwrap_or(i64::MAX);
+            let ts = Self::read_timestamp_at_pos(mmap, pos).unwrap_or(i64::MAX);
             if ts <= target_ts {
                 lo = mid + 1;
             } else {
@@ -420,11 +423,13 @@ impl IndexSegment {
         if target_ts < self.start_timestamp {
             return 0;
         }
-        let end_ts = self.start_timestamp + self.wrote_count as i64;
-        if target_ts >= end_ts {
+        let end_ts = self.start_timestamp as i128 + self.wrote_count as i128;
+        if (target_ts as i128) >= end_ts {
             return self.wrote_count;
         }
-        ((target_ts + 1 - self.start_timestamp) as usize).min(self.wrote_count)
+        // i128: target_ts may be i64::MAX.
+        let next = (target_ts as i128 + 1 - self.start_timestamp as i128) as usize;
+        next.min(self.wrote_count)
     }
 
     /// Exact match: find entry with timestamp == target_ts.
@@ -437,12 +442,12 @@ impl IndexSegment {
         while lo <= hi {
             let mid = lo + (hi - lo) / 2;
             let pos = self.header_size as usize + mid * INDEX_ENTRY_SIZE;
-            let ts = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos)?;
+            let ts = Self::read_timestamp_at_pos(mmap, pos)?;
             match ts.cmp(&target_ts) {
                 std::cmp::Ordering::Equal => {
                     let buf: [u8; INDEX_ENTRY_SIZE] =
                         mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
-                    return IndexEntry::from_bytes_for_segment(self.start_timestamp, &buf).ok();
+                    return IndexEntry::from_bytes_for_segment(&buf).ok();
                 }
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => {
@@ -467,7 +472,7 @@ impl IndexSegment {
         while lo <= hi {
             let mid = lo + (hi - lo) / 2;
             let pos = self.header_size as usize + mid * INDEX_ENTRY_SIZE;
-            let ts = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos)?;
+            let ts = Self::read_timestamp_at_pos(mmap, pos)?;
             match ts.cmp(&target_ts) {
                 std::cmp::Ordering::Equal => return Some(mid),
                 std::cmp::Ordering::Less => lo = mid + 1,
@@ -505,13 +510,13 @@ impl IndexSegment {
             if wc == 0 {
                 return None;
             }
-            let end_ts = self.start_timestamp + wc as i64;
-            if target_ts >= self.start_timestamp && target_ts < end_ts {
+            let end_ts = self.start_timestamp as i128 + wc as i128;
+            if (target_ts as i128) >= self.start_timestamp as i128 && (target_ts as i128) < end_ts {
                 let entry_index = (target_ts - self.start_timestamp) as usize;
                 // Validate that the entry exists (in case mmap has different data)
                 if let Some(mmap) = self.mmap.as_ref() {
                     let pos = self.header_size as usize + entry_index * INDEX_ENTRY_SIZE;
-                    let ts = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos)?;
+                    let ts = Self::read_timestamp_at_pos(mmap, pos)?;
                     if ts == target_ts {
                         return Some(entry_index);
                     }
@@ -535,18 +540,17 @@ impl IndexSegment {
             if wc == 0 {
                 return None;
             }
-            let end_ts = self.start_timestamp + wc as i64;
-            if target_ts < self.start_timestamp || target_ts >= end_ts {
+            let end_ts = self.start_timestamp as i128 + wc as i128;
+            if (target_ts as i128) < self.start_timestamp as i128 || (target_ts as i128) >= end_ts {
                 return None;
             }
             let entry_index = (target_ts - self.start_timestamp) as usize;
             let pos = self.header_size as usize + entry_index * INDEX_ENTRY_SIZE;
-            let ts = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos)?;
+            let ts = Self::read_timestamp_at_pos(mmap, pos)?;
             if ts != target_ts {
                 return None;
             }
-            return Self::read_entry_at_pos(self.start_timestamp, mmap, pos)
-                .map(|entry| (entry_index, entry));
+            return Self::read_entry_at_pos(mmap, pos).map(|entry| (entry_index, entry));
         }
 
         if self.wrote_count == 0 {
@@ -556,11 +560,10 @@ impl IndexSegment {
         while lo <= hi {
             let mid = lo + (hi - lo) / 2;
             let pos = self.header_size as usize + mid * INDEX_ENTRY_SIZE;
-            let ts = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos)?;
+            let ts = Self::read_timestamp_at_pos(mmap, pos)?;
             match ts.cmp(&target_ts) {
                 std::cmp::Ordering::Equal => {
-                    return Self::read_entry_at_pos(self.start_timestamp, mmap, pos)
-                        .map(|entry| (mid, entry));
+                    return Self::read_entry_at_pos(mmap, pos).map(|entry| (mid, entry));
                 }
                 std::cmp::Ordering::Less => lo = mid + 1,
                 std::cmp::Ordering::Greater => {
@@ -587,7 +590,7 @@ impl IndexSegment {
             .mmap
             .as_mut()
             .ok_or_else(|| TmslError::MmapError("index segment closed".into()))?;
-        let bytes = new_entry.to_bytes_for_segment(self.start_timestamp)?;
+        let bytes = new_entry.to_bytes_for_segment();
         let pos = self.header_size as usize + entry_index * INDEX_ENTRY_SIZE;
         mmap[pos..pos + INDEX_ENTRY_SIZE].copy_from_slice(&bytes);
         // No header update needed — record_count stays the same
@@ -612,7 +615,7 @@ impl IndexSegment {
         let pos = self.header_size as usize + entry_index * INDEX_ENTRY_SIZE;
         let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
         self.last_accessed_at = Instant::now();
-        IndexEntry::from_bytes_for_segment(self.start_timestamp, &buf)
+        IndexEntry::from_bytes_for_segment(&buf)
     }
 
     pub(crate) fn last_timestamp(&mut self) -> Option<i64> {
@@ -630,11 +633,7 @@ impl IndexSegment {
         }
         let mmap = self.mmap.as_ref()?;
         let pos = self.header_size as usize + (self.wrote_count - 1) * INDEX_ENTRY_SIZE;
-        if pos + 4 > mmap.len() {
-            return None;
-        }
-        let delta = u32::from_le_bytes(mmap[pos..pos + 4].try_into().ok()?);
-        IndexEntry::timestamp_from_delta_opt(self.start_timestamp, delta)
+        Self::read_timestamp_at_pos(mmap, pos)
     }
 
     /// Range query: all entries with timestamp in [start_ts, end_ts].
@@ -644,14 +643,14 @@ impl IndexSegment {
         let start_idx = self.lower_bound(start_ts);
         for i in start_idx..self.wrote_count {
             let pos = self.header_size as usize + i * INDEX_ENTRY_SIZE;
-            let Some(ts) = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos) else {
+            let Some(ts) = Self::read_timestamp_at_pos(mmap, pos) else {
                 break;
             };
             if ts > end_ts {
                 break;
             }
             let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
-            if let Ok(entry) = IndexEntry::from_bytes_for_segment(self.start_timestamp, &buf) {
+            if let Ok(entry) = IndexEntry::from_bytes_for_segment(&buf) {
                 results.push(entry);
             }
         }
@@ -670,14 +669,14 @@ impl IndexSegment {
         let start_idx = self.lower_bound_cs(start_ts, index_continuous);
         for i in start_idx..self.wrote_count {
             let pos = self.header_size as usize + i * INDEX_ENTRY_SIZE;
-            let Some(ts) = Self::read_timestamp_at_pos(self.start_timestamp, mmap, pos) else {
+            let Some(ts) = Self::read_timestamp_at_pos(mmap, pos) else {
                 break;
             };
             if ts > end_ts {
                 break;
             }
             let buf: [u8; INDEX_ENTRY_SIZE] = mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
-            if let Ok(entry) = IndexEntry::from_bytes_for_segment(self.start_timestamp, &buf) {
+            if let Ok(entry) = IndexEntry::from_bytes_for_segment(&buf) {
                 results.push(entry);
             }
         }
@@ -830,11 +829,10 @@ pub fn last_entry_timestamp(path: &Path) -> Result<Option<i64>> {
     }
 
     let last_offset = header_size as usize + (wrote_count - 1) * INDEX_ENTRY_SIZE;
-    if last_offset + 4 > mmap.len() {
+    if last_offset + 8 > mmap.len() {
         return Err(TmslError::InvalidData("truncated last index entry".into()));
     }
-    let delta = u32::from_le_bytes(mmap[last_offset..last_offset + 4].try_into().unwrap());
-    let last_ts = IndexEntry::timestamp_from_delta(metadata.file_offset, delta)?;
+    let last_ts = i64::from_le_bytes(mmap[last_offset..last_offset + 8].try_into().unwrap());
     Ok(Some(last_ts))
 }
 
@@ -878,6 +876,115 @@ mod tests {
     }
 
     #[test]
+    fn test_open_rejects_old_14byte_entry_segment() {
+        let dir = temp_dir();
+        let sub = dir.join("old14_open_reject");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+        let path = sub.join(format!("{:020}", 1_000i64));
+
+        // Old 14-byte entry layout: [delta:u32][block_offset:u64][in_block:u16].
+        // 16 entries make the area 224 bytes, a multiple of the new 32-byte
+        // grid, so alignment alone cannot distinguish it from a valid file.
+        const OLD_ENTRIES: usize = 16;
+        let file_len = INDEX_HEADER_SIZE as usize + OLD_ENTRIES * 14;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        file.set_len(file_len as u64).unwrap();
+        let mut mmap = unsafe { MmapMut::map_mut(&file).unwrap() };
+        let mut meta =
+            IndexFileMetadata::create_default(1_000, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        meta.wrote_position = INDEX_HEADER_SIZE + (OLD_ENTRIES * 14) as u64;
+        meta.write_to(&mut mmap);
+        for i in 0..OLD_ENTRIES {
+            let base = INDEX_HEADER_SIZE as usize + i * 14;
+            mmap[base..base + 4].copy_from_slice(&(i as u32).to_le_bytes());
+            mmap[base + 4..base + 12].copy_from_slice(&((i as u64) * 32).to_le_bytes());
+            mmap[base + 12..base + 14].copy_from_slice(&0u16.to_le_bytes());
+        }
+        mmap.flush().unwrap();
+        drop(mmap);
+        drop(file);
+
+        let err = IndexSegment::open(&path, 1_000, 4096)
+            .err()
+            .expect("old 14-byte entry segments must fail to open, not be reinterpreted");
+        assert!(
+            matches!(err, TmslError::InvalidData(_)),
+            "expected structural rejection, got {err:?}"
+        );
+    }
+
+    // Spec-encodes the not-yet-implemented 32-byte global-i64 index entry format.
+    #[test]
+    fn test_index_entry_on_disk_is_32_bytes_with_global_i64_timestamp() {
+        let dir = temp_dir();
+        let sub = dir.join("idx32_global_ts");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut seg = IndexSegment::create(&sub, 1_000, 4096, 4096).unwrap();
+        let entry = IndexEntry::new(2_000, 0x0102_0304_0506_0708, 0x0A0B);
+        seg.append_entry(&entry).unwrap();
+
+        let base = seg.header_size as usize;
+        let mmap = seg.mmap.as_ref().unwrap();
+        let bytes = &mmap[base..base + 32];
+
+        assert_eq!(
+            &bytes[0..8],
+            &2_000i64.to_le_bytes(),
+            "timestamp must be stored as a global signed i64, not a u32 delta"
+        );
+        assert_eq!(
+            &bytes[8..16],
+            &0x0102_0304_0506_0708u64.to_le_bytes(),
+            "block_offset must be a u64 at bytes 8..16"
+        );
+        assert_eq!(
+            &bytes[16..18],
+            &0x0A0Bu16.to_le_bytes(),
+            "in_block_offset_units must be a u16 at bytes 16..18"
+        );
+        assert_eq!(
+            &bytes[18..32],
+            &[0u8; 14],
+            "trailing 14 reserved bytes must be written as zero"
+        );
+        assert_eq!(
+            INDEX_ENTRY_SIZE, 32,
+            "index entry on-disk size must be 32 bytes"
+        );
+    }
+
+    // Below-segment-start timestamp: u32 delta cannot encode it, global i64 must.
+    #[test]
+    fn test_index_entry_stores_global_i64_timestamp_below_segment_start() {
+        let dir = temp_dir();
+        let sub = dir.join("idx32_below_start");
+        let _ = std::fs::remove_dir_all(&sub);
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let mut seg = IndexSegment::create(&sub, 1_000, 4096, 4096).unwrap();
+        let entry = IndexEntry::new(-50, 0x10, 3);
+        seg.append_entry(&entry)
+            .expect("a global i64 timestamp below the segment start must serialize");
+
+        let base = seg.header_size as usize;
+        let mmap = seg.mmap.as_ref().unwrap();
+        assert_eq!(
+            &mmap[base..base + 8],
+            &(-50i64).to_le_bytes(),
+            "negative global timestamp must be stored as signed i64 LE"
+        );
+    }
+
+    #[test]
     fn test_index_segment_find_entry_index() {
         let dir = temp_dir();
         let sub = dir.join("find_entry_index");
@@ -900,46 +1007,11 @@ mod tests {
     }
 
     #[test]
-    fn test_index_segment_writes_timestamp_delta_format() {
-        let dir = temp_dir();
-        let sub = dir.join("delta_format");
-        let _ = std::fs::remove_dir_all(&sub);
-        std::fs::create_dir_all(&sub).unwrap();
-
-        let mut seg = IndexSegment::create(&sub, 1000, 4096, 4096).unwrap();
-        seg.append_entry(&IndexEntry::new(1007, 12345, 42)).unwrap();
-
-        assert_eq!(INDEX_ENTRY_SIZE, 14);
-        let mmap = seg.mmap.as_ref().unwrap();
-        let pos = seg.header_size as usize;
-        assert_eq!(
-            u32::from_le_bytes(mmap[pos..pos + 4].try_into().unwrap()),
-            7
-        );
-        assert_eq!(
-            u64::from_le_bytes(mmap[pos + 4..pos + 12].try_into().unwrap()),
-            12345
-        );
-        assert_eq!(
-            u16::from_le_bytes(mmap[pos + 12..pos + 14].try_into().unwrap()),
-            42
-        );
-
-        let found = seg.find_exact(1007).unwrap();
-        assert_eq!(found, IndexEntry::new(1007, 12345, 42));
-    }
-
-    #[test]
-    fn test_index_segment_rejects_delta_out_of_range() {
-        let dir = temp_dir();
-        let sub = dir.join("delta_out_of_range");
-        let _ = std::fs::remove_dir_all(&sub);
-        std::fs::create_dir_all(&sub).unwrap();
-
-        let mut seg = IndexSegment::create(&sub, 0, 4096, 4096).unwrap();
-        let err = seg
-            .append_entry(&IndexEntry::new(u32::MAX as i64 + 1, 1, 0))
-            .unwrap_err();
+    fn test_index_entry_rejects_nonzero_reserved_bytes() {
+        let entry = IndexEntry::new(7, 8, 9);
+        let mut buf = entry.to_bytes_for_segment();
+        buf[INDEX_ENTRY_SIZE - 1] = 1;
+        let err = IndexEntry::from_bytes_for_segment(&buf).unwrap_err();
         assert!(matches!(err, TmslError::InvalidData(_)));
     }
 
@@ -1023,8 +1095,8 @@ mod tests {
         ) {
             let timestamp = segment_start + delta as i64;
             let entry = IndexEntry::new(timestamp, block_offset, in_block_offset);
-            let bytes = entry.to_bytes_for_segment(segment_start).unwrap();
-            let parsed = IndexEntry::from_bytes_for_segment(segment_start, &bytes).unwrap();
+            let bytes = entry.to_bytes_for_segment();
+            let parsed = IndexEntry::from_bytes_for_segment(&bytes).unwrap();
             assert_eq!(parsed.timestamp, timestamp);
             assert_eq!(parsed.block_offset, block_offset);
             assert_eq!(parsed.in_block_offset, in_block_offset);

@@ -210,8 +210,10 @@ fn t21_5_cache_eviction_via_background_tick() {
     let arc = ds.clone();
 
     // Write enough data with large records to trigger block cache population
+    // (50 × 6012 spans overflow the 262144-byte block cap, sealing blocks so
+    // queries can populate the global compressed-block cache).
     for i in 0..50i64 {
-        let data = vec![0xAA_u8; 2000];
+        let data = vec![0xAA_u8; 6000];
         arc.write(i + 1, &data).unwrap();
     }
 

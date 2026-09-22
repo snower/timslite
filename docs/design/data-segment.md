@@ -133,9 +133,9 @@ impl DataSegment {
         data: &[u8],
         compress_level: u8,
     ) -> io::Result<(u64, u16)> {
-        let record_size = 4 + 8 + data.len();
+        let record_size = align_up(4 + 8 + data.len(), 4);
 
-        // 情况1: 单条 record 超过 BLOCK_MAX_SIZE(65536) → 独占 Block
+        // 情况1: 单条 record stored span 超过 BLOCK_MAX_SIZE(256KiB) → 独占 Block
         if record_size > BLOCK_MAX_SIZE as usize {
             if let Some(off) = self.pending_block_offset {
                 self.seal_pending_block(off, compress_level)?;
@@ -154,11 +154,11 @@ impl DataSegment {
                 return self.create_pending_and_append(timestamp, data);
             }
 
-            let in_block_offset = self.pending_block_uncomp_size;
+            let in_block_offset_units = self.pending_block_uncomp_size / 4;
             self.write_raw_record_to_pending(timestamp, data)?;
             self.pending_block_uncomp_size = new_total;
             self.pending_block_record_count += 1;
-            return Ok((pending_off, in_block_offset));
+            return Ok((pending_off, in_block_offset_units));
         }
 
         // 情况3: 创建新 pending block

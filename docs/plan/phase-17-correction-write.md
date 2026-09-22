@@ -70,13 +70,13 @@ pub fn overwrite_in_last_block(
     }
 
     // 3. 读取 record 并验证为块内最末 record
-    let record_pos = block_abs_start + BLOCK_HEADER_SIZE as usize + in_block_offset as usize;
+    let record_pos = block_abs_start + BLOCK_HEADER_SIZE as usize + in_block_offset_units as usize * 4;
     let old_data_len = u32::from_le_bytes(
         mmap[record_pos..record_pos + 4].try_into().unwrap()
     ) as usize;
-    let record_size = 12 + old_data_len;  // record_overhead=12
+    let record_stored_span = align_up(12 + old_data_len, 4);
 
-    if in_block_offset as usize + record_size != hdr.payload_size as usize {
+    if in_block_offset_units as usize * 4 + record_stored_span != hdr.payload_size as usize {
         return Err(TmslError::InvalidData(
             "correction write: target record is not the last in block".into()
         ));

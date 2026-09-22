@@ -8,7 +8,11 @@ use crate::util::*;
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 pub const BLOCK_HEADER_SIZE: u64 = 16;
-pub const BLOCK_MAX_SIZE: u32 = 65_536;
+/// Byte size of one `in_block_offset` unit stored in index entries.
+pub const RECORD_OFFSET_UNIT_BYTES: usize = 4;
+/// Max uncompressed payload of a normal aggregated block (256 KiB).
+/// Not a fixed on-disk allocation per block.
+pub const BLOCK_MAX_SIZE: u32 = 262_144;
 
 /// Block flags
 pub const BLOCK_FLAG_COMPRESSED: u16 = 0x0001;

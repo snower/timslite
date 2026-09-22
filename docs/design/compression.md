@@ -50,7 +50,7 @@
 flags = 0
 pending raw block
     │
-    ├─ append 且未超过 BLOCK_MAX_SIZE(65536)
+    ├─ append 且未超过普通聚合 Block 未压缩 payload 上限 (256KiB)
     │     └─ 继续保持 pending raw, 更新 pending_wrote_position / pending_record_count
     │
     ├─ next write 导致 pending overflow

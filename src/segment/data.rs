@@ -1,7 +1,9 @@
 //! DataSegment: single data file with Block management, aggregation, and mmap lifecycle.
 //!
-//! This is the core storage module: records are aggregated into blocks (max 64KB),
-//! blocks are compressed when sealed, and files use mmap with lazy open/close.
+//! Records are aggregated into blocks (uncompressed payload cap 256 KiB).
+//! Each record's stored span is `align_up(12 + data_len, 4)` bytes with zero
+//! padding, so in-block record positions are addressable in 4-byte units.
+//! Blocks are compressed when sealed; files use mmap with lazy open/close.
 
 use memmap2::MmapMut;
 use std::fs::OpenOptions;
@@ -419,12 +421,46 @@ fn checked_record_size(data_len: usize) -> Result<usize> {
     Ok(record_size)
 }
 
+/// On-disk stored span of a record: 4-byte-aligned `12 + data_len` bytes.
+/// Trailing padding bytes must be zero.
+fn record_stored_span(data_len: usize) -> Result<usize> {
+    let logical = checked_record_size(data_len)?;
+    let unit = crate::block::RECORD_OFFSET_UNIT_BYTES;
+    logical
+        .checked_add(unit - 1)
+        .map(|v| v & !(unit - 1))
+        .ok_or_else(|| TmslError::InvalidData("record span overflow".into()))
+}
+
+/// Decode an index-entry `in_block_offset` (4-byte units) to a byte offset
+/// relative to the block payload start.
+fn in_block_units_to_bytes(in_block_offset: u16) -> usize {
+    (in_block_offset as usize)
+        .checked_mul(crate::block::RECORD_OFFSET_UNIT_BYTES)
+        .expect("u16 * 4 cannot overflow usize")
+}
+
+/// Encode a byte offset within a pending block payload into index-entry
+/// `in_block_offset` units. Byte offset must be a 4-byte multiple.
+fn in_block_bytes_to_units(byte_offset: u64) -> Result<u16> {
+    let unit = crate::block::RECORD_OFFSET_UNIT_BYTES as u64;
+    if !byte_offset.is_multiple_of(unit) {
+        return Err(TmslError::InvalidData(format!(
+            "pending record byte offset {} is not {}-byte aligned",
+            byte_offset, unit
+        )));
+    }
+    u16::try_from(byte_offset / unit)
+        .map_err(|_| TmslError::InvalidData("pending record offset exceeds u16 units".into()))
+}
+
 impl DataSegment {
     /// Append a record to this segment.
     ///
     /// Returns `(block_relative_offset, in_block_offset)` where:
     /// - `block_relative_offset` is the block's offset relative to the data area start
-    /// - `in_block_offset` is the record's position within the block payload
+    /// - `in_block_offset` is the record's position within the block payload,
+    ///   in 4-byte units (matches the index-entry on-disk format)
     ///
     /// If the segment file does not have enough space, returns `Err(TmslError::SegmentFull)`.
     /// The caller (DataSegmentSet) should call `expand()` and retry, or seal+create new segment.
@@ -434,7 +470,7 @@ impl DataSegment {
         data: &[u8],
         compress_level: u8,
     ) -> Result<(u64, u16)> {
-        let record_size = checked_record_size(data.len())?;
+        let record_size = record_stored_span(data.len())?;
         let total_needed = crate::block::BLOCK_HEADER_SIZE + record_size as u64;
 
         // Case 1: single record exceeds the fixed block payload limit.
@@ -469,9 +505,9 @@ impl DataSegment {
                 return Err(TmslError::SegmentFull);
             }
 
-            // Append to pending (raw, no compression)
-            let in_block_offset = u16::try_from(self.pending_wrote_position)
-                .map_err(|_| TmslError::InvalidData("pending record offset exceeds u16".into()))?;
+            // Append to pending (raw, no compression). Position is reported in
+            // 4-byte units to match the index-entry on-disk semantics.
+            let in_block_offset = in_block_bytes_to_units(self.pending_wrote_position)?;
             self.write_raw_record_to_pending(timestamp, data)?;
             self.last_accessed_at = Instant::now();
             return Ok((self.pending_block_offset.unwrap(), in_block_offset));
@@ -495,27 +531,33 @@ impl DataSegment {
         let mmap = self.mmap.as_mut().unwrap();
         let data_len = u32::try_from(data.len())
             .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?;
-        let record_size = RECORD_OVERHEAD + data.len() as u64;
+        let record_size = record_stored_span(data.len())? as u64;
+        let logical_size = RECORD_OVERHEAD + data.len() as u64;
         let new_pending_wrote_position = self.pending_wrote_position + record_size;
         let new_pending_record_count = self.pending_record_count + 1;
 
-        // [data_len: u32][timestamp: i64][data]
+        // [data_len: u32][timestamp: i64][data][zero padding to 4-byte alignment]
         mmap[base..base + 4].copy_from_slice(&data_len.to_le_bytes());
         mmap[base + 4..base + 12].copy_from_slice(&timestamp.to_le_bytes());
         mmap[base + 12..base + 12 + data.len()].copy_from_slice(data);
+        for b in &mut mmap[base + 12 + data.len()..base + record_size as usize] {
+            *b = 0;
+        }
 
-        // Update block header: payload_size + record_count
+        // Pending raw blocks keep uncompressed_size == payload_size (padding
+        // included); the append-tail validation path relies on this invariant.
         let hdr = (self.header_size + self.pending_block_offset.unwrap()) as usize;
         let new_size = u32::try_from(new_pending_wrote_position)
             .map_err(|_| TmslError::InvalidData("pending payload exceeds u32".into()))?;
         mmap[hdr..hdr + 4].copy_from_slice(&new_size.to_le_bytes());
         mmap[hdr + 6..hdr + 8].copy_from_slice(&(new_pending_record_count as u16).to_le_bytes());
+        mmap[hdr + 8..hdr + 12].copy_from_slice(&new_size.to_le_bytes());
 
         self.pending_wrote_position = new_pending_wrote_position;
         self.pending_record_count = new_pending_record_count;
         self.data_wrote_position += record_size;
         self.record_count += 1;
-        self.total_uncompressed_size += record_size;
+        self.total_uncompressed_size += logical_size;
 
         // Update timestamp range
         if timestamp < self.min_timestamp {
@@ -534,7 +576,8 @@ impl DataSegment {
     /// Create a new pending block and write the first record.
     fn create_pending_and_append(&mut self, timestamp: i64, data: &[u8]) -> Result<(u64, u16)> {
         let block_pos = self.header_size + self.data_wrote_position;
-        let rec_size = RECORD_OVERHEAD + data.len() as u64;
+        let rec_size = record_stored_span(data.len())? as u64;
+        let logical_size = RECORD_OVERHEAD + data.len() as u64;
 
         // Write BlockHeader (flags=0, not sealed)
         let hdr = BlockHeader::new(rec_size as u32, 0, 1, rec_size as u32);
@@ -545,20 +588,23 @@ impl DataSegment {
             .ok_or_else(|| TmslError::MmapError("segment closed during write".into()))?;
         hdr.write_to(mmap, hdr_start);
 
-        // Write record payload
+        // Write record payload with zero padding to the 4-byte aligned span
         let data_pos = hdr_start + crate::block::BLOCK_HEADER_SIZE as usize;
         let data_len = u32::try_from(data.len())
             .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?;
         mmap[data_pos..data_pos + 4].copy_from_slice(&data_len.to_le_bytes());
         mmap[data_pos + 4..data_pos + 12].copy_from_slice(&timestamp.to_le_bytes());
         mmap[data_pos + 12..data_pos + 12 + data.len()].copy_from_slice(data);
+        for b in &mut mmap[data_pos + 12 + data.len()..data_pos + rec_size as usize] {
+            *b = 0;
+        }
 
         self.pending_block_offset = Some(block_pos - self.header_size);
         self.pending_wrote_position = rec_size;
         self.pending_record_count = 1;
         self.data_wrote_position += crate::block::BLOCK_HEADER_SIZE + rec_size;
         self.record_count += 1;
-        self.total_uncompressed_size += rec_size;
+        self.total_uncompressed_size += logical_size;
         self.last_accessed_at = Instant::now();
 
         // Update timestamp range
@@ -622,10 +668,11 @@ impl DataSegment {
         compress_level: u8,
     ) -> Result<(u64, u16)> {
         let rec_size = checked_record_size(data.len())?;
+        let rec_span = record_stored_span(data.len())?;
         let block_pos = self.header_size + self.data_wrote_position;
 
-        // Build record payload: [data_len:4][ts:8][data]
-        let mut raw = Vec::with_capacity(rec_size);
+        // Build record payload: [data_len:4][ts:8][data][zero padding]
+        let mut raw = Vec::with_capacity(rec_span);
         raw.extend_from_slice(
             &u32::try_from(data.len())
                 .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?
@@ -633,6 +680,7 @@ impl DataSegment {
         );
         raw.extend_from_slice(&timestamp.to_le_bytes());
         raw.extend_from_slice(data);
+        raw.resize(rec_span, 0);
 
         let payload = compress(&raw, compress_level, self.compress_type)?;
         let payload_len = u32::try_from(payload.len())
@@ -649,7 +697,7 @@ impl DataSegment {
             payload_len,
             BLOCK_FLAG_SEALED | BLOCK_FLAG_COMPRESSED | BLOCK_FLAG_SINGLE_RECORD,
             1,
-            rec_size as u32,
+            rec_span as u32,
         );
         header.write_to(mmap, hdr_pos);
 
@@ -712,8 +760,9 @@ impl DataSegment {
             ));
         }
 
-        let record_pos =
-            block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + in_block_offset as usize;
+        let record_pos = block_abs_start
+            + crate::block::BLOCK_HEADER_SIZE as usize
+            + in_block_units_to_bytes(in_block_offset);
         if record_pos + RECORD_HEADER_SIZE > mmap.len() {
             return Err(TmslError::InvalidData("cannot read record header".into()));
         }
@@ -722,7 +771,8 @@ impl DataSegment {
                 .try_into()
                 .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
         ) as usize;
-        let record_end_in_payload = in_block_offset as usize + RECORD_HEADER_SIZE + old_data_len;
+        let old_span = record_stored_span(old_data_len)?;
+        let record_end_in_payload = in_block_units_to_bytes(in_block_offset) + old_span;
         if record_end_in_payload != hdr.payload_size as usize {
             return Err(TmslError::InvalidData(
                 "append: target record is not the last in block".into(),
@@ -742,17 +792,20 @@ impl DataSegment {
         let final_data_len = old_data_len
             .checked_add(append_data.len())
             .ok_or_else(|| TmslError::InvalidData("append data_len overflow".into()))?;
-        let final_record_size = checked_record_size(final_data_len)?;
-        if final_record_size > crate::block::BLOCK_MAX_SIZE as usize {
+        let final_span = record_stored_span(final_data_len)?;
+        if final_span > crate::block::BLOCK_MAX_SIZE as usize {
             return Err(TmslError::InvalidData(
                 "append: final record exceeds pending block capacity".into(),
             ));
         }
-        let delta = append_data.len();
+        let old_span = record_stored_span(old_data_len)?;
+        // Physical growth is the span difference: appended bytes may be partly
+        // absorbed by the old record's zero padding.
+        let delta_bytes = final_span - old_span;
         let required = self
             .header_size
             .checked_add(self.data_wrote_position)
-            .and_then(|v| v.checked_add(delta as u64))
+            .and_then(|v| v.checked_add(delta_bytes as u64))
             .ok_or_else(|| TmslError::InvalidData("append wrote_position overflow".into()))?;
         if required > self.file_size {
             return Err(TmslError::SegmentFull);
@@ -760,11 +813,19 @@ impl DataSegment {
 
         let new_payload_size = hdr
             .payload_size
-            .checked_add(delta as u32)
+            .checked_add(delta_bytes as u32)
             .ok_or_else(|| TmslError::InvalidData("append block payload overflow".into()))?;
+        // Pending targets are always normal aggregated blocks, so the whole
+        // block payload must stay within BLOCK_MAX_SIZE, not just the final
+        // record span. Checked before any mmap mutation to preserve state.
+        if new_payload_size > crate::block::BLOCK_MAX_SIZE {
+            return Err(TmslError::InvalidData(
+                "append: aggregated block payload exceeds pending block capacity".into(),
+            ));
+        }
         let new_uncompressed_size = hdr
             .uncompressed_size
-            .checked_add(delta as u32)
+            .checked_add(delta_bytes as u32)
             .ok_or_else(|| TmslError::InvalidData("append block uncompressed overflow".into()))?;
         let new_data_len = u32::try_from(final_data_len)
             .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))?;
@@ -774,9 +835,14 @@ impl DataSegment {
                 .mmap
                 .as_mut()
                 .ok_or_else(|| TmslError::MmapError("segment mmap not open".into()))?;
+
             mmap[record_pos..record_pos + 4].copy_from_slice(&new_data_len.to_le_bytes());
             let append_pos = record_pos + RECORD_HEADER_SIZE + old_data_len;
             mmap[append_pos..append_pos + append_data.len()].copy_from_slice(append_data);
+            let pad_start = record_pos + RECORD_HEADER_SIZE + final_data_len;
+            for b in &mut mmap[pad_start..record_pos + final_span] {
+                *b = 0;
+            }
             let new_hdr = BlockHeader::new(
                 new_payload_size,
                 hdr.flags,
@@ -786,9 +852,9 @@ impl DataSegment {
             new_hdr.write_to(mmap, block_abs_start);
         }
 
-        self.data_wrote_position += delta as u64;
-        self.total_uncompressed_size += delta as u64;
-        self.pending_wrote_position += delta as u64;
+        self.data_wrote_position += delta_bytes as u64;
+        self.total_uncompressed_size += append_data.len() as u64;
+        self.pending_wrote_position += delta_bytes as u64;
         self.update_file_header_for_pending(block_rel_offset)?;
         self.last_accessed_at = Instant::now();
         u32::try_from(old_data_len)
@@ -843,8 +909,9 @@ impl DataSegment {
         }
 
         // 3. Read old record and verify it is the last record in the block
+        let in_block_bytes = in_block_units_to_bytes(in_block_offset);
         let record_pos =
-            block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + in_block_offset as usize;
+            block_abs_start + crate::block::BLOCK_HEADER_SIZE as usize + in_block_bytes;
         if record_pos + RECORD_HEADER_SIZE > mmap.len() {
             return Err(TmslError::InvalidData("cannot read record header".into()));
         }
@@ -854,16 +921,16 @@ impl DataSegment {
                 .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
         ) as usize;
 
-        let old_record_bytes = RECORD_OVERHEAD as usize + old_data_len;
-        let record_end_in_payload = in_block_offset as usize + old_record_bytes;
+        let old_record_bytes = record_stored_span(old_data_len)?;
+        let record_end_in_payload = in_block_bytes + old_record_bytes;
         if record_end_in_payload != hdr.payload_size as usize {
             return Err(TmslError::InvalidData(
                 "correction write: target record is not the last in block".into(),
             ));
         }
 
-        // 4. Compute delta
-        let new_record_bytes = checked_record_size(new_data.len())?;
+        // 4. Compute delta over physical stored spans (padding included)
+        let new_record_bytes = record_stored_span(new_data.len())?;
         let delta = new_record_bytes as i64 - old_record_bytes as i64;
         let new_payload_size_i64 = hdr.payload_size as i64 + delta;
         let new_uncomp_size_i64 = hdr.uncompressed_size as i64 + delta;
@@ -899,6 +966,10 @@ impl DataSegment {
         );
         // timestamp at record_pos+4..record_pos+12 is preserved
         mmap[record_pos + 12..record_pos + 12 + new_data.len()].copy_from_slice(new_data);
+        let pad_start = record_pos + RECORD_HEADER_SIZE + new_data.len();
+        for b in &mut mmap[pad_start..record_pos + new_record_bytes] {
+            *b = 0;
+        }
 
         // 6. Update block header: payload_size + uncompressed_size
         let new_hdr = BlockHeader::new(
@@ -909,15 +980,20 @@ impl DataSegment {
         );
         new_hdr.write_to(mmap, block_abs_start);
 
-        // 7. Update segment-level counters
+        // 7. Update segment-level counters: positions track the physical span
+        // delta, total_uncompressed_size tracks the logical data delta.
         if delta >= 0 {
-            let d = delta as u64;
-            self.data_wrote_position += d;
-            self.total_uncompressed_size += d;
+            self.data_wrote_position += delta as u64;
         } else {
-            let d = (-delta) as u64;
-            self.data_wrote_position = self.data_wrote_position.saturating_sub(d);
-            self.total_uncompressed_size = self.total_uncompressed_size.saturating_sub(d);
+            self.data_wrote_position = self.data_wrote_position.saturating_sub((-delta) as u64);
+        }
+        let logical_delta = new_data.len() as i64 - old_data_len as i64;
+        if logical_delta >= 0 {
+            self.total_uncompressed_size += logical_delta as u64;
+        } else {
+            self.total_uncompressed_size = self
+                .total_uncompressed_size
+                .saturating_sub((-logical_delta) as u64);
         }
 
         // 8. Update pending_wrote_position if this block is the pending block
@@ -994,7 +1070,7 @@ impl DataSegment {
 pub struct ReadIndexEntry {
     pub timestamp: i64,
     pub block_offset: u64,    // relative to the data area start
-    pub in_block_offset: u16, // relative to block payload start
+    pub in_block_offset: u16, // 4-byte units relative to block payload start
 }
 
 fn is_sealed_compressed_or_pending_raw(flags: u16) -> Result<bool> {
@@ -1044,7 +1120,7 @@ impl DataSegment {
         // Only compressed blocks are globally cached; raw blocks may still be mutable.
         if is_compressed {
             if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
-                let pos = entry.in_block_offset as usize;
+                let pos = in_block_units_to_bytes(entry.in_block_offset);
                 if pos + RECORD_HEADER_SIZE > cached.len() {
                     return Err(TmslError::InvalidData("record index out of bounds".into()));
                 }
@@ -1182,7 +1258,7 @@ impl DataSegment {
 
         if is_compressed {
             if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
-                let pos = entry.in_block_offset as usize;
+                let pos = in_block_units_to_bytes(entry.in_block_offset);
                 if pos + RECORD_HEADER_SIZE > cached.len() {
                     return Err(TmslError::InvalidData("record index out of bounds".into()));
                 }
@@ -1307,6 +1383,41 @@ mod tests {
         (seg, path)
     }
 
+    #[test]
+    fn test_append_to_last_record_rejects_aggregate_payload_overflow() {
+        let (mut seg, _path) = make_segment("append_agg_payload_cap");
+        // r1: span = align4(12 + 250_000) = 250_012 -> fresh pending block.
+        let (b0, _i0) = seg.append_record(1_000, &vec![0xA1u8; 250_000], 6).unwrap();
+        // r2: span = 10_012; aggregate 260_024 <= 262_144 so same block.
+        let (b1, i1) = seg.append_record(2_000, &vec![0xB2u8; 10_000], 6).unwrap();
+        assert_eq!(b0, b1, "r2 must aggregate into r1's pending block");
+
+        // Appending 5_000 bytes keeps the final record span (15_012) under the
+        // cap, but would grow the normal aggregated block payload to
+        // 265_024 > BLOCK_MAX_SIZE. Must be rejected.
+        let err = seg
+            .append_to_last_record(b1, i1, &vec![0xC3u8; 5_000])
+            .unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+
+        // State must be preserved: block header and pending counters intact.
+        assert_eq!(seg.pending_wrote_position, 260_024);
+        let mmap = seg.mmap.as_ref().unwrap();
+        let hdr_pos = (seg.header_size + b0) as usize;
+        let hdr = BlockHeader::read_from(mmap, hdr_pos);
+        assert_eq!(hdr.payload_size, 260_024);
+        assert_eq!(hdr.uncompressed_size, 260_024);
+        assert_eq!(hdr.record_count, 2);
+        // Tail record data_len is still the old 10_000, r1 bytes untouched.
+        let tail_pos = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize + 250_012;
+        assert_eq!(
+            u32::from_le_bytes(mmap[tail_pos..tail_pos + 4].try_into().unwrap()),
+            10_000
+        );
+        let r1_data = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize + RECORD_HEADER_SIZE;
+        assert!(mmap[r1_data..r1_data + 1] == [0xA1]);
+    }
+
     fn rewrite_segment_with_extended_header(seg: &mut DataSegment) {
         let extra_meta = [0xEE, 4, 0, 1, 2, 3, 4];
         let old_header = DATA_HEADER_SIZE as usize;
@@ -1339,6 +1450,42 @@ mod tests {
         let mmap = seg.mmap.as_ref().unwrap();
         let hdr_pos = (seg.header_size + block_rel_offset) as usize;
         read_u16_from_mmap(mmap, hdr_pos + 4)
+    }
+
+    // Spec-encodes 4-byte-aligned in-block units and the 256 KiB cap; current build differs.
+    #[test]
+    fn test_multi_record_block_stores_second_offset_in_four_byte_units() {
+        let (mut seg, _path) = make_segment("units_align");
+        // record 1: data_len 5 -> stored span align_up(12 + 5, 4) = 20 bytes.
+        let (b0, ib0) = seg.append_record(1_000, b"hello", 6).unwrap();
+        // record 2 starts at payload byte 20 -> in-block offset units = 20 / 4 = 5.
+        let (b1, ib1) = seg.append_record(2_000, b"world", 6).unwrap();
+
+        assert_eq!(b0, 0);
+        assert_eq!(b1, 0, "both records aggregate into one block");
+        assert_eq!(ib0, 0, "first record sits at payload start");
+        assert_eq!(
+            ib1, 5,
+            "second record in-block offset must be in 4-byte units"
+        );
+
+        let payload = (seg.header_size + crate::block::BLOCK_HEADER_SIZE) as usize;
+        let mmap = seg.mmap.as_ref().unwrap();
+        assert_eq!(
+            &mmap[payload + 20..payload + 24],
+            &5u32.to_le_bytes(),
+            "second record data_len must live at aligned byte 20 (units * 4)"
+        );
+        assert_eq!(
+            &mmap[payload + 32..payload + 37],
+            b"world",
+            "second record data must round-trip at the 4-byte-unit aligned position"
+        );
+        assert_eq!(
+            crate::block::BLOCK_MAX_SIZE,
+            262_144,
+            "planned block payload cap is 256 KiB"
+        );
     }
 
     #[test]
@@ -1395,7 +1542,7 @@ mod tests {
     #[test]
     fn test_block_overflow_triggers_seal() {
         let (mut seg, _path) = make_segment("test_overflow");
-        let data1 = vec![0xAAu8; 65_520]; // record_size = 12 + 65520 = 65532
+        let data1 = vec![0xAAu8; 262_132]; // span = align_up(12 + 262132, 4) = 262144
         let data2 = vec![0xBBu8; 4]; // adding this record crosses BLOCK_MAX_SIZE
         let (off0, _) = seg.append_record(1000, &data1, 6).unwrap();
         let (off1, ib1) = seg.append_record(2000, &data2, 6).unwrap();
@@ -1411,7 +1558,7 @@ mod tests {
     #[test]
     fn test_large_record_exclusive_block() {
         let (mut seg, _path) = make_segment("test_large");
-        let data = vec![0xABu8; 70_000];
+        let data = vec![0xABu8; 300_000];
         let (off, ib) = seg.append_record(5000, &data, 6).unwrap();
         assert_eq!(ib, 0);
         // Single record, in its own block (compressed because all 0xAB)
@@ -1428,7 +1575,7 @@ mod tests {
     #[test]
     fn test_large_record_above_u16_roundtrip() {
         let (mut seg, _path) = make_segment("test_large_above_u16");
-        let data: Vec<u8> = (0..70_000).map(|i| (i % 251) as u8).collect();
+        let data: Vec<u8> = (0..300_000).map(|i| (i % 251) as u8).collect();
 
         let (off, ib) = seg.append_record(6000, &data, 6).unwrap();
         assert_eq!(ib, 0);
@@ -1447,7 +1594,7 @@ mod tests {
     #[test]
     fn test_single_record_block_is_always_compressed() {
         let (mut seg, _path) = make_segment("test_single_record_always_compressed");
-        let data: Vec<u8> = (0..70_000).map(|i| (i % 251) as u8).collect();
+        let data: Vec<u8> = (0..300_000).map(|i| (i % 251) as u8).collect();
         let (off, ib) = seg.append_record(6001, &data, 6).unwrap();
         assert_eq!(ib, 0);
         assert_eq!(
@@ -1472,7 +1619,7 @@ mod tests {
         let _ = fs::remove_file(&path);
         let file_size = DATA_HEADER_SIZE + 1024;
         let mut seg = DataSegment::create(&path, 0, file_size, file_size).unwrap();
-        let data = vec![0u8; 70_000];
+        let data = vec![0u8; 300_000];
 
         let (off, ib) = seg.append_record(6002, &data, 6).unwrap();
 
@@ -1556,7 +1703,7 @@ mod tests {
     #[test]
     fn test_compressed_block_read_enters_global_cache() {
         let (mut seg, _path) = make_segment("test_compressed_global_cache");
-        let data = vec![0u8; 70_000];
+        let data = vec![0u8; 300_000];
         let (block_off, in_block_off) = seg.append_record(7002, &data, 6).unwrap();
         let cache = BlockCache::new(1024 * 1024);
         let entry = ReadIndexEntry {

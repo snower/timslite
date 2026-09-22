@@ -6,7 +6,7 @@
 
 ## 4.1 IndexEntry 定义 (index/mod.rs)
 
-- 14 字节: timestamp_delta(u32, 4B) + block_offset(u64, 8B) + in_block_offset(u16, 2B)
+- 32 字节: timestamp(i64, 8B) + block_offset(u64, 8B) + in_block_offset_units(u16, 2B) + reserved(14B zero)
 
 ## 4.2 IndexSegment 结构 (index/segment.rs)
 
@@ -21,7 +21,7 @@
 ## 4.4 IndexSegment 写入
 
 - `fn append_entry(timestamp, block_offset, in_block_offset) -> Result<()>`
-- 检查容量, 写入 index entry (14 字节) 到 mmap
+- 检查容量, 写入 index entry (32 字节) 到 mmap
 - 更新 wrote_count 和 wrote_position
 
 ## 4.5 IndexSegment 查询 (二分查找)

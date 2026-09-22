@@ -1025,7 +1025,8 @@ mod tests {
     #[test]
     fn journal_segment_uses_single_record_block_for_max_tlv_payload() {
         let (mut segment, _path) = make_segment("single_record");
-        let payload = vec![0xAB; 65_538];
+        // 12 + 300_000 > BLOCK_MAX_SIZE (262_144) → exclusive single-record block.
+        let payload = vec![0xAB; 300_000];
 
         segment.append_record(1, &payload).unwrap();
 
@@ -1088,12 +1089,17 @@ mod tests {
 
     #[test]
     fn seal_pending_block_when_block_overflow_triggers_compression() {
-        let (mut segment, _path) = make_segment("seal_pending");
+        let dir = temp_dir("seal_pending");
+        let path = dir.join("00000000000000000001");
+        // Pending raw payload can reach 256 KiB before overflow-seal, so the
+        // segment file must hold that much before compression kicks in.
+        let mut segment =
+            JournalSegment::create(&path, 1, 512, 4 * 1024 * 1024, 3, COMPRESS_TYPE_ZSTD).unwrap();
         let payload = vec![0xAB; 2000]; // 2012 bytes per record (12 header + 2000 payload)
 
-        // BLOCK_MAX_SIZE = 65536. 32 records * 2012 = 64384 ≤ 65536.
-        // 33rd record = 66396 > 65536 → seal_pending_block triggers.
-        let total: i64 = 33;
+        // BLOCK_MAX_SIZE = 262144. 130 records * 2012 = 261560 ≤ 262144.
+        // 131st record = 263572 > 262144 → seal_pending_block triggers.
+        let total: i64 = 131;
         for i in 1i64..=total {
             segment.append_record(i, &payload).unwrap();
         }

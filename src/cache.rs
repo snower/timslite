@@ -400,8 +400,10 @@ impl HotBlockCache {
         Self::extract_record_from(data.as_slice(), in_block_offset)
     }
 
+    /// `in_block_offset` is in 4-byte units (index-entry semantics); the byte
+    /// position within the block payload is `in_block_offset * 4`.
     pub fn extract_record_from(block_data: &[u8], in_block_offset: u16) -> Result<(i64, Vec<u8>)> {
-        let pos = in_block_offset as usize;
+        let pos = in_block_offset as usize * crate::block::RECORD_OFFSET_UNIT_BYTES;
         if pos + RECORD_HEADER_SIZE > block_data.len() {
             return Err(TmslError::InvalidData(
                 "hot block: record index out of bounds".into(),
@@ -431,8 +433,9 @@ impl HotBlockCache {
         Ok((timestamp, data))
     }
 
+    /// `in_block_offset` is in 4-byte units (index-entry semantics).
     pub fn read_data_len_from(block_data: &[u8], in_block_offset: u16) -> Result<u32> {
-        let pos = in_block_offset as usize;
+        let pos = in_block_offset as usize * crate::block::RECORD_OFFSET_UNIT_BYTES;
         if pos + RECORD_HEADER_SIZE > block_data.len() {
             return Err(TmslError::InvalidData(
                 "hot block: record index out of bounds".into(),
@@ -461,14 +464,16 @@ mod hot_block_tests {
 
     fn test_block_data() -> Vec<u8> {
         let mut data = Vec::new();
-        // record 1 at offset 0: data_len=5, ts=100, data=[1,2,3,4,5]
+        // record 1 at byte 0 (units 0): data_len=5, ts=100, span=align_up(17,4)=20
         data.extend_from_slice(&5u32.to_le_bytes());
         data.extend_from_slice(&100i64.to_le_bytes());
         data.extend_from_slice(&[1, 2, 3, 4, 5]);
-        // record 2 at offset 17: data_len=3, ts=200, data=[6,7,8]
+        data.extend_from_slice(&[0u8; 3]);
+        // record 2 at byte 20 (units 5): data_len=3, ts=200, span=align_up(15,4)=16
         data.extend_from_slice(&3u32.to_le_bytes());
         data.extend_from_slice(&200i64.to_le_bytes());
         data.extend_from_slice(&[6, 7, 8]);
+        data.extend_from_slice(&[0u8; 1]);
         data
     }
 
@@ -502,7 +507,8 @@ mod hot_block_tests {
     #[test]
     fn test_extract_second_record() {
         let (_block_cache, cache) = make_cache();
-        let (ts, data) = cache.extract_record(17).unwrap();
+        // units 5 -> byte 20: second record start
+        let (ts, data) = cache.extract_record(5).unwrap();
         assert_eq!(ts, 200);
         assert_eq!(data, vec![6, 7, 8]);
     }
@@ -516,7 +522,7 @@ mod hot_block_tests {
     #[test]
     fn test_extract_record_from_shared_payload() {
         let data = test_block_data();
-        let (ts, record_data) = HotBlockCache::extract_record_from(&data, 17).unwrap();
+        let (ts, record_data) = HotBlockCache::extract_record_from(&data, 5).unwrap();
         assert_eq!(ts, 200);
         assert_eq!(record_data, vec![6, 7, 8]);
     }

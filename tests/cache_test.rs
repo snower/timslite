@@ -51,8 +51,10 @@ fn global_block_cache_is_isolated_by_dataset_identifier() {
 
     let ds_a = store.open_dataset("cache_scope_a", "data").unwrap();
     let ds_b = store.open_dataset("cache_scope_b", "data").unwrap();
-    let payload_a = vec![b'a'; 70 * 1024];
-    let payload_b = vec![b'b'; 70 * 1024];
+    // > 256 KiB payload cap → exclusive single-record compressed block, which
+    // is the only kind that may enter the global cache.
+    let payload_a = vec![b'a'; 300 * 1024];
+    let payload_b = vec![b'b'; 300 * 1024];
 
     ds_a.write(100, &payload_a).unwrap();
     ds_b.write(100, &payload_b).unwrap();

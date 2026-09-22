@@ -59,7 +59,7 @@ const META_TYPE_ENABLE_JOURNAL: u8     = 0x0A;  // u8 (0=false, 1=true)
 | 0x09 | compress_type | 1 | u8 | Compression algorithm: 0=zstd, 1=deflate |
 | 0x0A | enable_journal | 1 | u8 | 是否记录本 dataset 的 journal, 0=false, 1=true |
 
-> `block_max_size` 无 TLV type。普通聚合 Block 上限由 `BLOCK_MAX_SIZE=65536` 固定定义, 不是 dataset 创建参数。
+> `block_max_size` 无 TLV type。普通聚合 Block 的未压缩 payload 上限由 `BLOCK_MAX_SIZE=256KiB` 固定定义, 不是 dataset 创建参数，也不要求每个 Block 在磁盘上固定预分配 256KiB。
 > `retention_window` 磁盘编码为 `u64 LE`, 但有效范围是 `0..=i64::MAX`。builder、FFI config decode、dataset create 和 `DataSetMeta::from_bytes` 均必须拒绝超过 `i64::MAX` 的值, 避免与 signed timestamp 阈值计算发生 wrap 或错误过期。
 > `enable_journal` 是 dataset 级不可变创建参数, 默认 `false`。新 meta 必须写入 canonical 值 `0` 或 `1`; 解析到其它值必须返回 `InvalidData`。缺失该 TLV 的旧 meta 按 `true` 处理。
 >
