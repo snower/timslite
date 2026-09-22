@@ -5,9 +5,7 @@ use crate::errors;
 pub fn bigint_to_i64(v: &BigInt) -> napi::Result<i64> {
     let (val, lossless) = v.get_i64();
     if !lossless {
-        return Err(errors::invalid_data(
-            "BigInt value exceeds i64 range",
-        ));
+        return Err(errors::invalid_data("BigInt value exceeds i64 range"));
     }
     Ok(val)
 }

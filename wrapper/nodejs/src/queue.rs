@@ -40,7 +40,9 @@ pub struct QueueConsumerInspectResult {
     pub state: QueueConsumerState,
 }
 
-fn build_consumer_config(opts: &Option<QueueConsumerOptions>) -> napi::Result<timslite::QueueConsumerConfig> {
+fn build_consumer_config(
+    opts: &Option<QueueConsumerOptions>,
+) -> napi::Result<timslite::QueueConsumerConfig> {
     let mut builder = timslite::QueueConsumerConfig::builder();
     if let Some(ref o) = opts {
         if let Some(v) = o.running_expired_seconds {
@@ -176,10 +178,7 @@ impl QueueConsumer {
     }
 
     #[napi]
-    pub fn poll_callback(
-        &self,
-        callback: Option<ThreadsafeFunction<(), ()>>,
-    ) -> napi::Result<()> {
+    pub fn poll_callback(&self, callback: Option<ThreadsafeFunction<(), ()>>) -> napi::Result<()> {
         let consumer = self.inner.as_ref().ok_or_else(errors::store_closed)?;
         let cb: Option<timslite::QueuePollCallback> = callback.map(|tsfn| {
             Arc::new(move || {
@@ -255,10 +254,7 @@ impl JournalQueueConsumer {
     }
 
     #[napi]
-    pub fn poll_callback(
-        &self,
-        callback: Option<ThreadsafeFunction<(), ()>>,
-    ) -> napi::Result<()> {
+    pub fn poll_callback(&self, callback: Option<ThreadsafeFunction<(), ()>>) -> napi::Result<()> {
         let consumer = self.inner.as_ref().ok_or_else(errors::store_closed)?;
         let cb: Option<timslite::QueuePollCallback> = callback.map(|tsfn| {
             Arc::new(move || {

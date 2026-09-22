@@ -3,8 +3,8 @@ use napi_derive::napi;
 use std::sync::Arc;
 
 use crate::errors;
-use crate::types;
 use crate::store::InspectResult;
+use crate::types;
 
 #[napi]
 pub struct Dataset {
@@ -15,11 +15,7 @@ pub struct Dataset {
 
 #[napi]
 impl Dataset {
-    pub(crate) fn new(
-        inner: Arc<timslite::DataSet>,
-        identifier: u64,
-        read_only: bool,
-    ) -> Self {
+    pub(crate) fn new(inner: Arc<timslite::DataSet>, identifier: u64, read_only: bool) -> Self {
         Self {
             inner,
             identifier,
@@ -96,7 +92,11 @@ impl Dataset {
     }
 
     #[napi]
-    pub fn query(&self, start_ts: BigInt, end_ts: BigInt) -> napi::Result<crate::query::QueryIterator> {
+    pub fn query(
+        &self,
+        start_ts: BigInt,
+        end_ts: BigInt,
+    ) -> napi::Result<crate::query::QueryIterator> {
         let s = types::bigint_to_i64(&start_ts)?;
         let e = types::bigint_to_i64(&end_ts)?;
         let iter = errors::wrap(self.inner.query_iter(s, e))?;
@@ -104,7 +104,11 @@ impl Dataset {
     }
 
     #[napi]
-    pub fn query_all(&self, start_ts: BigInt, end_ts: BigInt) -> napi::Result<Vec<(BigInt, Buffer)>> {
+    pub fn query_all(
+        &self,
+        start_ts: BigInt,
+        end_ts: BigInt,
+    ) -> napi::Result<Vec<(BigInt, Buffer)>> {
         let s = types::bigint_to_i64(&start_ts)?;
         let e = types::bigint_to_i64(&end_ts)?;
         let rows = errors::wrap(self.inner.query(s, e))?;
@@ -185,7 +189,9 @@ impl Dataset {
 
     #[napi(getter)]
     pub fn latest_timestamp(&self) -> Option<BigInt> {
-        self.inner.latest_written_timestamp().map(types::i64_to_bigint)
+        self.inner
+            .latest_written_timestamp()
+            .map(types::i64_to_bigint)
     }
 
     #[napi(getter)]

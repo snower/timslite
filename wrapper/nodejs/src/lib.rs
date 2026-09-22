@@ -1,8 +1,8 @@
 pub mod config;
 pub mod dataset;
 pub mod errors;
-pub mod queue;
 pub mod query;
+pub mod queue;
 pub mod store;
 pub mod types;
 

@@ -157,11 +157,7 @@ impl Store {
     }
 
     #[napi]
-    pub fn open_dataset(
-        &mut self,
-        name: String,
-        dataset_type: String,
-    ) -> napi::Result<Dataset> {
+    pub fn open_dataset(&mut self, name: String, dataset_type: String) -> napi::Result<Dataset> {
         let store = self.inner.as_mut().ok_or_else(errors::store_closed)?;
         let ds = errors::wrap(store.open_dataset(&name, &dataset_type))?;
         let identifier = ds.identifier();
@@ -173,7 +169,9 @@ impl Store {
         let store = self.inner.as_mut().ok_or_else(errors::store_closed)?;
         let (_sign, id_u64, lossless) = identifier.get_u64();
         if !lossless {
-            return Err(errors::invalid_data("identifier must be a non-negative u64"));
+            return Err(errors::invalid_data(
+                "identifier must be a non-negative u64",
+            ));
         }
         let ds = errors::wrap(store.open_dataset_by_identifier(id_u64))?;
         Ok(Dataset::new(Arc::new(ds), id_u64, store.is_read_only()))
@@ -215,7 +213,11 @@ impl Store {
     }
 
     #[napi]
-    pub fn inspect_dataset(&self, name: String, dataset_type: String) -> napi::Result<InspectResult> {
+    pub fn inspect_dataset(
+        &self,
+        name: String,
+        dataset_type: String,
+    ) -> napi::Result<InspectResult> {
         let store = self.inner.as_ref().ok_or_else(errors::store_closed)?;
         let result = errors::wrap(store.inspect_dataset(&name, &dataset_type))?;
         Ok(InspectResult {
@@ -273,7 +275,9 @@ impl Store {
         let store = self.inner.as_mut().ok_or_else(errors::store_closed)?;
         let (_sign, id_u64, lossless) = identifier.get_u64();
         if !lossless {
-            return Err(errors::invalid_data("identifier must be a non-negative u64"));
+            return Err(errors::invalid_data(
+                "identifier must be a non-negative u64",
+            ));
         }
         let info = timslite::JournalIndexInfo {
             timestamp: index_info.timestamp,

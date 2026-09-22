@@ -16,8 +16,12 @@ pub fn from_tmsl(err: timslite::TmslError) -> Error {
         timslite::TmslError::SegmentFull => ("TMSL_SEGMENT_FULL", err.to_string()),
         timslite::TmslError::QueueAlreadyOpen(_) => ("TMSL_QUEUE_ALREADY_OPEN", err.to_string()),
         timslite::TmslError::QueueNotOpen(_) => ("TMSL_QUEUE_NOT_OPEN", err.to_string()),
-        timslite::TmslError::ConsumerGroupNotFound(_) => ("TMSL_CONSUMER_GROUP_NOT_FOUND", err.to_string()),
-        timslite::TmslError::ConsumerGroupExists(_) => ("TMSL_CONSUMER_GROUP_EXISTS", err.to_string()),
+        timslite::TmslError::ConsumerGroupNotFound(_) => {
+            ("TMSL_CONSUMER_GROUP_NOT_FOUND", err.to_string())
+        }
+        timslite::TmslError::ConsumerGroupExists(_) => {
+            ("TMSL_CONSUMER_GROUP_EXISTS", err.to_string())
+        }
         timslite::TmslError::QueueClosed(_) => ("TMSL_QUEUE_CLOSED", err.to_string()),
         timslite::TmslError::PendingFull(_) => ("TMSL_PENDING_FULL", err.to_string()),
     };
@@ -25,7 +29,10 @@ pub fn from_tmsl(err: timslite::TmslError) -> Error {
 }
 
 pub fn store_closed() -> Error {
-    Error::new(Status::GenericFailure, "[TMSL_STORE_CLOSED] Store is closed")
+    Error::new(
+        Status::GenericFailure,
+        "[TMSL_STORE_CLOSED] Store is closed",
+    )
 }
 
 pub fn invalid_data(msg: &str) -> Error {
