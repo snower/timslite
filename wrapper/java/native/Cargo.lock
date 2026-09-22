@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "timslite"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "log",
  "memmap2",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "timslite-java"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "timslite",
  "uniffi",

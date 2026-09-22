@@ -47,7 +47,7 @@ UniFFI 官方主线内置 Kotlin、Swift、Python 和 Ruby binding; C# binding �
 - root namespace: `Timslite`
 - generated binding namespace: `Timslite.Uniffi`
 - public exception namespace: `Timslite.Errors`
-- version: `0.1.4` (与 Rust crate 同步)
+- version: `0.1.5` (与 Rust crate 同步)
 
 如果发布前 `Timslite` NuGet ID 不可用, 需要在发布阶段统一改为 `Snower.Timslite` 或其它确认后的 ID, 并同步 README、plan 和 release workflow。
 
@@ -500,13 +500,13 @@ The generated binding should use the logical native name `timslite_dotnet`. .NET
 Development checkout should use:
 
 ```toml
-timslite = { path = "../../..", version = "=0.1.4" }
+timslite = { path = "../../..", version = "=0.1.5" }
 ```
 
 Before publishing source/native artifacts, release automation should rewrite the dependency to the exact crates.io version:
 
 ```toml
-timslite = { version = "=0.1.4" }
+timslite = { version = "=0.1.5" }
 ```
 
 This mirrors the Python、Node.js and Java release model and prevents published source/native packages from depending on repository-relative paths. The NuGet package itself should normally contain prebuilt native libraries; unsupported platforms fail with an actionable `PlatformNotSupportedException` or native-load exception until source-build fallback is explicitly designed.
