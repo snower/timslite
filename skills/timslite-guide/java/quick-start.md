@@ -8,7 +8,7 @@
 <dependency>
     <groupId>io.github.snower</groupId>
     <artifactId>timslite</artifactId>
-    <version>0.1.5</version>
+    <version>0.1.6</version>
 </dependency>
 ```
 

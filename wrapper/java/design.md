@@ -40,7 +40,7 @@ Java wrapper 应当是 timslite 的薄包装层, 不重新实现存储、索引�
 
 - `groupId`: `io.github.snower`
 - `artifactId`: `timslite`
-- `version`: `0.1.5` (与 Rust crate 同步)
+- `version`: `0.1.6` (与 Rust crate 同步)
 
 **运行依赖:**
 
@@ -444,7 +444,7 @@ The preferred Maven layout is a single JAR containing all platform native librar
 <dependency>
     <groupId>io.github.snower</groupId>
     <artifactId>timslite</artifactId>
-    <version>0.1.5</version>
+    <version>0.1.6</version>
 </dependency>
 ```
 
@@ -463,13 +463,13 @@ The `NativeLibraryLoader` detects the current OS/architecture and loads the corr
 Development checkout should use:
 
 ```toml
-timslite = { path = "../../..", version = "=0.1.5" }
+timslite = { path = "../../..", version = "=0.1.6" }
 ```
 
 Before publishing source/native artifacts, release automation should rewrite the dependency to the exact crates.io version:
 
 ```toml
-timslite = { version = "=0.1.5" }
+timslite = { version = "=0.1.6" }
 ```
 
 This mirrors the Python and Node release model and prevents published Java source builds from depending on repository-relative paths.
