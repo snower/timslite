@@ -15,7 +15,7 @@ public sealed record DataSetInfo(
     byte CompressLevel,
     byte IndexContinuous,
     ulong RetentionWindow,
-    ulong TimestampUnitsPerSecond,
+    ulong TimestampUnitsPerSeconds,
     bool EnableJournal,
     long CreateTime
 );

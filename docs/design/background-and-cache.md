@@ -183,8 +183,8 @@ retention-reclaim (每日 retention_check_hour):
         - 先 flush(), 再对 data/index segment 执行 idle_close_all()
         - 该步骤只 sync + unmap 分段 mmap, 不调用 public lifecycle DataSet::close()
          - `retention_window == 0` 时跳过, 不计算 threshold、不推进 floor、不删除文件
-         - `timestamp_units_per_second == 0` 时保持 legacy 行为: 若 latest_written_timestamp 为 None 则跳过; 否则计算 `threshold = latest.saturating_sub(retention_window as i64)`, 不读取 wall clock
-         - `timestamp_units_per_second != 0` 时读取当前 Unix seconds, 以 checked `i128` arithmetic 计算 `now_units = unix_seconds * timestamp_units_per_second`, 仅在结果可转为 `i64` 时继续。epoch 前时钟或任何溢出返回 `TmslError::InvalidData`
+         - `timestamp_units_per_seconds == 0` 时保持 legacy 行为: 若 latest_written_timestamp 为 None 则跳过; 否则计算 `threshold = latest.saturating_sub(retention_window as i64)`, 不读取 wall clock
+         - `timestamp_units_per_seconds != 0` 时读取当前 Unix seconds, 以 checked `i128` arithmetic 计算 `now_units = unix_seconds * timestamp_units_per_seconds`, 仅在结果可转为 `i64` 时继续。epoch 前时钟或任何溢出返回 `TmslError::InvalidData`
          - wall-clock candidate 为 `now_units.saturating_sub(retention_window as i64)`; effective threshold 为 `max(persisted_retention_floor, candidate_floor)`
          - 若 effective floor 高于 persisted floor, 必须先更新并 flush mmap state, 再关闭或删除任何 index/data segment。回拨时钟、重启和 failed reclaim 都不能降低 floor
         - 删除 data 分段 (max_timestamp < threshold)

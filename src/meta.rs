@@ -23,10 +23,10 @@ const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 const META_RETENTION_WINDOW: u8 = 0x08; // u64 LE (0 = no limit)
 const META_COMPRESS_TYPE: u8 = 0x09; // u8
 const META_ENABLE_JOURNAL: u8 = 0x0A; // u8 (0=false, 1=true)
-const META_TIMESTAMP_UNITS_PER_SECOND: u8 = 0x0B; // u64 LE (0 = legacy retention)
+const META_timestamp_units_per_seconds: u8 = 0x0B; // u64 LE (0 = legacy retention)
 
 pub(crate) const META_VALUES_LEN_V1: usize = 82;
-/// V1 entries plus the 11-byte `timestamp_units_per_second` TLV.
+/// V1 entries plus the 11-byte `timestamp_units_per_seconds` TLV.
 pub(crate) const META_VALUES_LEN_V2: usize = META_VALUES_LEN_V1 + 11;
 
 /// Immutable dataset configuration. Written once at creation.
@@ -42,7 +42,7 @@ pub struct DataSetMeta {
     pub initial_index_segment_size: u64, // 0 = uninitialized (backward compat)
     pub retention_window: u64,          // 0 = no limit (same unit as timestamp)
     pub enable_journal: bool,
-    pub timestamp_units_per_second: u64, // 0 = legacy retention scale
+    pub timestamp_units_per_seconds: u64, // 0 = legacy retention scale
 }
 
 impl DataSetMeta {
@@ -57,7 +57,7 @@ impl DataSetMeta {
         initial_index_segment_size: u64,
         retention_window: u64,
         enable_journal: bool,
-        timestamp_units_per_second: u64,
+        timestamp_units_per_seconds: u64,
     ) -> Self {
         Self {
             data_segment_size,
@@ -69,7 +69,7 @@ impl DataSetMeta {
             initial_index_segment_size,
             retention_window,
             enable_journal,
-            timestamp_units_per_second,
+            timestamp_units_per_seconds,
             create_time: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
@@ -83,7 +83,7 @@ impl DataSetMeta {
         // 11 TLV entries: data_seg_size(11) + idx_seg_size(11) + compress_level(4)
         //               + compress_type(4) + create_time(11)
         //               + index_continuous(4) + initial_data_seg_size(11) + initial_idx_seg_size(11)
-        //               + retention_window(11) + enable_journal(4) + timestamp_units_per_second(11) = 93
+        //               + retention_window(11) + enable_journal(4) + timestamp_units_per_seconds(11) = 93
         // Each u64 TLV: type(1) + length(2) + value(8) = 11 bytes
         // Each u8 TLV:  type(1) + length(2) + value(1) = 4 bytes
         let meta_data_length: u16 = META_VALUES_LEN_V2 as u16;
@@ -148,10 +148,10 @@ impl DataSetMeta {
         buf.push(META_ENABLE_JOURNAL);
         buf.extend_from_slice(&1u16.to_le_bytes());
         buf.push(u8::from(self.enable_journal));
-        // timestamp_units_per_second
-        buf.push(META_TIMESTAMP_UNITS_PER_SECOND);
+        // timestamp_units_per_seconds
+        buf.push(META_timestamp_units_per_seconds);
         buf.extend_from_slice(&8u16.to_le_bytes());
-        buf.extend_from_slice(&self.timestamp_units_per_second.to_le_bytes());
+        buf.extend_from_slice(&self.timestamp_units_per_seconds.to_le_bytes());
 
         buf
     }
@@ -188,7 +188,7 @@ impl DataSetMeta {
         let mut initial_index_segment_size = 0u64;
         let mut retention_window = 0u64;
         let mut enable_journal = true;
-        let mut timestamp_units_per_second = 0u64;
+        let mut timestamp_units_per_seconds = 0u64;
 
         let mut off = 8;
         let end = 8 + meta_data_length;
@@ -228,8 +228,8 @@ impl DataSetMeta {
                 META_RETENTION_WINDOW if len == 8 => {
                     retention_window = read_u64_le(buf[off..off + 8].try_into().unwrap());
                 }
-                META_TIMESTAMP_UNITS_PER_SECOND if len == 8 => {
-                    timestamp_units_per_second = read_u64_le(buf[off..off + 8].try_into().unwrap());
+                META_timestamp_units_per_seconds if len == 8 => {
+                    timestamp_units_per_seconds = read_u64_le(buf[off..off + 8].try_into().unwrap());
                 }
                 META_ENABLE_JOURNAL if len == 1 => {
                     enable_journal = match buf[off] {
@@ -304,7 +304,7 @@ impl DataSetMeta {
             initial_index_segment_size,
             retention_window,
             enable_journal,
-            timestamp_units_per_second,
+            timestamp_units_per_seconds,
         })
     }
 
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn test_meta_timestamp_units_per_second_roundtrip() {
+    fn test_meta_timestamp_units_per_seconds_roundtrip() {
         let meta = DataSetMeta::new(
             1024,
             512,
@@ -363,10 +363,10 @@ mod tests {
             128,
             0,
             true,
-            1_000_000, // timestamp_units_per_second
+            1_000_000, // timestamp_units_per_seconds
         );
         let parsed = DataSetMeta::from_bytes(&meta.to_bytes()).unwrap();
-        assert_eq!(parsed.timestamp_units_per_second, 1_000_000);
+        assert_eq!(parsed.timestamp_units_per_seconds, 1_000_000);
         // Other fields must remain intact with the new TLV appended.
         assert_eq!(parsed.data_segment_size, 1024);
         assert_eq!(parsed.retention_window, 0);
@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn test_meta_missing_timestamp_units_per_second_decodes_as_zero() {
+    fn test_meta_missing_timestamp_units_per_seconds_decodes_as_zero() {
         // Hand-encode a legacy v1 meta (tags 0x01..0x0A, no 0x0B entry).
         fn push_u64(buf: &mut Vec<u8>, tag: u8, value: u64) {
             buf.push(tag);
@@ -409,7 +409,7 @@ mod tests {
         buf.extend_from_slice(&values);
 
         let parsed = DataSetMeta::from_bytes(&buf).unwrap();
-        assert_eq!(parsed.timestamp_units_per_second, 0);
+        assert_eq!(parsed.timestamp_units_per_seconds, 0);
         assert_eq!(parsed.retention_window, 3600);
     }
 

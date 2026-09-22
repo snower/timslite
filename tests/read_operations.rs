@@ -949,7 +949,7 @@ fn test_write_now_and_append_now_use_scaled_wall_clock_timestamps() {
     let dir = temp_dir();
     let mut store =
         Store::open(&dir, StoreConfig::builder().enable_journal(false).build()).unwrap();
-    let config = DataSetConfig::builder().timestamp_units_per_second(1_000);
+    let config = DataSetConfig::builder().timestamp_units_per_seconds(1_000);
     store
         .create_dataset_with_config("ds", "type", Some(config))
         .unwrap();
@@ -996,7 +996,7 @@ fn test_wall_clock_retention_threshold_independent_of_latest_written_timestamp()
         Store::open(&dir, StoreConfig::builder().enable_journal(false).build()).unwrap();
     let config = DataSetConfig::builder()
         .retention_window(50_000)
-        .timestamp_units_per_second(1_000);
+        .timestamp_units_per_seconds(1_000);
     store
         .create_dataset_with_config("ds", "type", Some(config))
         .unwrap();
@@ -1025,7 +1025,7 @@ fn test_scaled_write_now_overflow_returns_invalid_data() {
     let dir = temp_dir();
     let mut store =
         Store::open(&dir, StoreConfig::builder().enable_journal(false).build()).unwrap();
-    let config = DataSetConfig::builder().timestamp_units_per_second(u64::MAX);
+    let config = DataSetConfig::builder().timestamp_units_per_seconds(u64::MAX);
     store
         .create_dataset_with_config("ds", "type", Some(config))
         .unwrap();

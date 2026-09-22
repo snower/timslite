@@ -76,18 +76,18 @@ class ConfigTest {
     }
 
     @Test
-    void datasetConfigTimestampUnitsPerSecondPreserved() {
+    void datasetConfigTimestampUnitsPerSecondsPreserved() {
         DatasetConfig config = DatasetConfigBuilder.builder()
                 .dataSegmentSize(65536)
-                .timestampUnitsPerSecond(1_000_000L)
+                .timestampUnitsPerSeconds(1_000_000L)
                 .build();
         assertNotNull(config);
     }
 
     @Test
-    void negativeTimestampUnitsPerSecondThrows() {
+    void negativeTimestampUnitsPerSecondsThrows() {
         assertThrows(IllegalArgumentException.class, () ->
-                DatasetConfigBuilder.builder().timestampUnitsPerSecond(-1L));
+                DatasetConfigBuilder.builder().timestampUnitsPerSeconds(-1L));
     }
 
     @Test

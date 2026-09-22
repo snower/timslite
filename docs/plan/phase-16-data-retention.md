@@ -1,6 +1,6 @@
 # Phase 16: 数据保留 (Retention) — 有效期回收 + 查询约束
 
-> **目标**: 为每个数据集添加 `retention_window` 与 `timestamp_units_per_second: u64` 不可变配置, 支持 legacy 与 wall-clock retention, Store 级可配置每日回收时间点, 后台线程执行回收任务删除过期分段文件, 查询自动钳制到有效时间范围内。
+> **目标**: 为每个数据集添加 `retention_window` 与 `timestamp_units_per_seconds: u64` 不可变配置, 支持 legacy 与 wall-clock retention, Store 级可配置每日回收时间点, 后台线程执行回收任务删除过期分段文件, 查询自动钳制到有效时间范围内。
 
 ## 1. 背景与动机
 
@@ -16,7 +16,7 @@
 
 | 维度 | 设计决策 |
 |------|---------|
-| retention 存储 | 数据集 meta 文件保存 `retention_window` 与 `timestamp_units_per_second: u64` (0=legacy scale) |
+| retention 存储 | 数据集 meta 文件保存 `retention_window` 与 `timestamp_units_per_seconds: u64` (0=legacy scale) |
 | 回收调度 | StoreConfig 新增 `retention_check_hour` (u8, 0-23, 默认 0=午夜) |
 | 回收基准 | scale 为 `0` 时为 `latest_written_timestamp.saturating_sub(retention_window)`; 非零时为持久化 monotonic floor 与 scaled Unix-time candidate 的最大值 |
 | 回收粒度 | 整个分段文件 (数据段/索引段), 不拆分 block |
@@ -29,12 +29,12 @@
 
 **新增字段**:
 - `pub retention_window: u64` — 数据有效期 (与 timestamp 同单位, 0=不限)
-- `pub timestamp_units_per_second: u64` — 不可变 wall-clock scale, `0` 保持 legacy retention
+- `pub timestamp_units_per_seconds: u64` — 不可变 wall-clock scale, `0` 保持 legacy retention
 - `pub persisted_retention_floor: i64` — dataset state 中持久化的 nonzero-scale 单调 floor, 不属于 `DataSetMeta`
 
 **变更**:
-- `DataSetMeta::new()`: 接收 `retention_window` 与 `timestamp_units_per_second`, 两者均为不可变配置
-- `DataSetMeta::to_bytes()` / `from_bytes()`: 持久化并恢复两个配置值; 缺失 `timestamp_units_per_second` 时默认为 `0`, 保持 legacy 行为
+- `DataSetMeta::new()`: 接收 `retention_window` 与 `timestamp_units_per_seconds`, 两者均为不可变配置
+- `DataSetMeta::to_bytes()` / `from_bytes()`: 持久化并恢复两个配置值; 缺失 `timestamp_units_per_seconds` 时默认为 `0`, 保持 legacy 行为
 - `persisted_retention_floor` 存在 dataset state 中, 不属于 immutable meta; 新 floor 必须先持久化并 flush
 
 ### 2.2 `src/config.rs` — StoreConfig + DataSetConfig
@@ -56,28 +56,28 @@ pub fn retention_check_hour(mut self, hour: u8) -> Self
 **DataSetConfig 新增字段**:
 ```rust
     pub retention_window: u64,
-    pub timestamp_units_per_second: u64,
+    pub timestamp_units_per_seconds: u64,
 ```
 
 **DataSetConfigBuilder 新增方法**:
 ```rust
     pub fn retention_window(mut self, window: u64) -> Self
-    pub fn timestamp_units_per_second(mut self, units: u64) -> Self
+    pub fn timestamp_units_per_seconds(mut self, units: u64) -> Self
 ```
 
 ### 2.3 `src/dataset.rs` — DataSet
 
 **新增字段**:
 - `retention_window: u64` — 从 meta 读取或 create 时传入
-- `timestamp_units_per_second: u64` — 从 meta 读取或 create 时传入
+- `timestamp_units_per_seconds: u64` — 从 meta 读取或 create 时传入
 - `persisted_retention_floor: i64` — 从 state 恢复, 只可单调推进
 
 **DataSet::create()**:
-- 新增 `retention_window: u64` 和 `timestamp_units_per_second: u64` 参数
+- 新增 `retention_window: u64` 和 `timestamp_units_per_seconds: u64` 参数
 - 写入 meta 时包含两个不可变配置
 
 **DataSet::open()**:
-- 从 meta 读取 retention_window 与 timestamp_units_per_second
+- 从 meta 读取 retention_window 与 timestamp_units_per_seconds
 - 从 state 恢复 persisted_retention_floor
 
 **DataSet::query_iter()**:
@@ -101,7 +101,7 @@ pub fn query_iter(...) {
 ```rust
 pub fn reclaim_expired_segments(&mut self) -> Result<usize> {
     if self.retention_window == 0 { return Ok(0); }
-    let threshold = if self.timestamp_units_per_second == 0 {
+    let threshold = if self.timestamp_units_per_seconds == 0 {
         let Some(latest) = self.latest_written_timestamp else { return Ok(0); };
         latest.saturating_sub(self.retention_window as i64)
     } else {
@@ -301,23 +301,23 @@ if Instant::now() >= next_retention {
 
 **Store::open()**:
 - 传递 `config.retention_check_hour` 到 `BackgroundTasks::start()`
-- create_dataset_with_config() 传递 `config.retention_window` 与 `config.timestamp_units_per_second`
+- create_dataset_with_config() 传递 `config.retention_window` 与 `config.timestamp_units_per_seconds`
 
 **Store::create_dataset()**:
-- 向后兼容: retention_window = 0 时禁用 retention; 旧 meta 缺少 scale 时以 timestamp_units_per_second = 0 使用 legacy 行为
+- 向后兼容: retention_window = 0 时禁用 retention; 旧 meta 缺少 scale 时以 timestamp_units_per_seconds = 0 使用 legacy 行为
 
 **Store::create_dataset_with_config()**:
-- 从 DataSetConfig 提取 retention_window 与 timestamp_units_per_second 传递到 DataSet::create()
+- 从 DataSetConfig 提取 retention_window 与 timestamp_units_per_seconds 传递到 DataSet::create()
 
 ### 2.9 `wrapper/cffi/src/lib.rs` — FFI
 
 **tmsl_dataset_create()**:
-- 新增 `retention_window: u64` 和 `timestamp_units_per_second: u64` 参数
+- 新增 `retention_window: u64` 和 `timestamp_units_per_seconds: u64` 参数
 - 传递到 `store.create_dataset()` 或通过 DataSetConfigBuilder
 
 **向后兼容**:
 - `tmsl_store_open()` 使用 StoreConfig::default() (retention_check_hour=0)
-- 旧 FFI 调用者传入 `timestamp_units_per_second = 0` 时保持 legacy retention
+- 旧 FFI 调用者传入 `timestamp_units_per_seconds = 0` 时保持 legacy retention
 
 ### 2.10 `wrapper/cffi/include/timslite.h` — C 头文件
 
@@ -328,7 +328,7 @@ void* tmsl_dataset_create(
     uint64_t data_segment_size, uint64_t index_segment_size,
     unsigned char compress_level, unsigned char index_continuous,
     uint64_t retention_window,
-    uint64_t timestamp_units_per_second,
+    uint64_t timestamp_units_per_seconds,
     char* err_buf, size_t err_buf_len);
 ```
 
@@ -338,10 +338,10 @@ void* tmsl_dataset_create(
 
 | 测试 | 文件 | 描述 |
 |------|------|------|
-| `test_meta_retention_config_roundtrip` | meta.rs | retention_window 和 timestamp_units_per_second 序列化/反序列化 |
+| `test_meta_retention_config_roundtrip` | meta.rs | retention_window 和 timestamp_units_per_seconds 序列化/反序列化 |
 | `test_meta_retention_scale_default_zero` | meta.rs | 缺失 scale 时默认 0, 保持 legacy 行为 |
 | `test_config_retention_check_hour` | config.rs | StoreConfig builder 设置 retention_check_hour |
-| `test_config_retention_window_and_scale` | config.rs | DataSetConfigBuilder 设置 retention_window 与 timestamp_units_per_second |
+| `test_config_retention_window_and_scale` | config.rs | DataSetConfigBuilder 设置 retention_window 与 timestamp_units_per_seconds |
 | `test_dataset_retention_config_stored` | dataset.rs | create → open → 验证 retention 配置一致 |
 | `test_next_retention_time` | bg/mod.rs | 计算下次回收时间正确性 |
 
@@ -350,13 +350,13 @@ void* tmsl_dataset_create(
 | 测试 | 描述 |
 |------|------|
 | `t16_1_retention_no_reclaim_when_zero` | retention_window=0 → 不回收且不推进 floor |
-| `t16_2_retention_legacy_scale_zero` | timestamp_units_per_second=0 → latest-based threshold, 不读取 wall clock |
+| `t16_2_retention_legacy_scale_zero` | timestamp_units_per_seconds=0 → latest-based threshold, 不读取 wall clock |
 | `t16_3_retention_wall_clock_threshold` | nonzero scale → checked i128 的 current Unix seconds × units, 再减 retention_window |
 | `t16_4_retention_strict_boundary` | threshold 以下过期, threshold 相等仍可读且不回收 |
 | `t16_5_retention_monotonic_floor` | 时钟回拨、重启和 failed reclaim 后 floor 均不降低 |
 | `t16_6_retention_floor_persisted_before_reclaim` | floor 先写入并 flush state, 随后才允许物理删除 |
 | `t16_7_retention_invalid_clock_or_overflow` | epoch 前时钟、i128 乘法或 i64 转换失败均为 InvalidData |
-| `t16_8_retention_backward_compat` | 旧 meta 缺少 timestamp_units_per_second → 默认 0 并使用 legacy 行为 |
+| `t16_8_retention_backward_compat` | 旧 meta 缺少 timestamp_units_per_seconds → 默认 0 并使用 legacy 行为 |
 
 ### 3.3 验证清单
 
@@ -368,7 +368,7 @@ void* tmsl_dataset_create(
 
 | Step | 描述 | 依赖 |
 |------|------|------|
-| 1 | meta.rs: retention_window 与 timestamp_units_per_second 持久化 | — |
+| 1 | meta.rs: retention_window 与 timestamp_units_per_seconds 持久化 | — |
 | 2 | config.rs: retention_check_hour + DataSetConfig retention 配置 | Step 1 |
 | 3 | dataset.rs: scale 分支、wall-clock threshold、单调 floor 持久化和 query 钳制 | Step 1, 2 |
 | 4 | segment/mod.rs: reclaim_expired_segments | Step 3 |
@@ -390,7 +390,7 @@ void* tmsl_dataset_create(
 | 回收文件时 Windows 文件锁定 | 删除失败 | read-only mmap + 立即 drop 后 remove |
 
 ## 6. 验收标准
-- [x] `meta.rs`: retention_window 与 timestamp_units_per_second 完整序列化/反序列化, 缺失 scale 时默认 0
+- [x] `meta.rs`: retention_window 与 timestamp_units_per_seconds 完整序列化/反序列化, 缺失 scale 时默认 0
 - [x] `config.rs`: StoreConfig.retention_check_hour + DataSetConfigBuilder retention 配置
 - [x] `dataset.rs`: legacy/wall-clock threshold、持久化单调 floor、query 钳制和 reclaim_expired_segments
 - [x] `segment/mod.rs`: DataSegmentSet.reclaim_expired_segments (max_timestamp 判断)
@@ -398,7 +398,7 @@ void* tmsl_dataset_create(
 - [x] `index/segment.rs`: last_entry_timestamp() 读取后立即释放 mmap+file
 - [x] `bg/mod.rs`: retention_reclaim 任务每日执行 + next_retention 计算
 - [x] `store.rs`: retention_check_hour 传递到 BackgroundTasks
-- [x] `ffi.rs + timslite.h`: tmsl_dataset_create 新增 retention_window 与 timestamp_units_per_second 参数
+- [x] `ffi.rs + timslite.h`: tmsl_dataset_create 新增 retention_window 与 timestamp_units_per_seconds 参数
 - [x] 集成测试: legacy、wall-clock、strict boundary、monotonic floor 与 overflow 测试全部通过
 - [x] `cargo clippy -- -D warnings` clean
 - [x] `cargo test -- --test-threads=1` 全部通过

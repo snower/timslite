@@ -4,7 +4,7 @@
 
 **Goal:** Make retention use an explicit wall-clock unit scale while preserving legacy datasets and preventing expired data from reappearing after clock rollback or restart.
 
-**Architecture:** Add `timestamp_units_per_second: u64` to the immutable dataset configuration and persisted metadata. A value of `0` keeps the legacy latest-written-timestamp retention algorithm. A nonzero value derives the expiration threshold from current Unix seconds scaled into dataset timestamp units with checked `i128` arithmetic, then advances a persistent monotonic retention floor before any index or data segment is physically reclaimed. The core `write_now` and `append_now` methods use the same scale so their records and wall-clock retention share one timestamp domain.
+**Architecture:** Add `timestamp_units_per_seconds: u64` to the immutable dataset configuration and persisted metadata. A value of `0` keeps the legacy latest-written-timestamp retention algorithm. A nonzero value derives the expiration threshold from current Unix seconds scaled into dataset timestamp units with checked `i128` arithmetic, then advances a persistent monotonic retention floor before any index or data segment is physically reclaimed. The core `write_now` and `append_now` methods use the same scale so their records and wall-clock retention share one timestamp domain.
 
 **Tech Stack:** Rust 2021, mmap dataset state file, Cargo tests, C ABI crate, PyO3, Node-API, UniFFI with Java and .NET bindings.
 
@@ -13,13 +13,13 @@
 ## Global Constraints
 
 - Implement documentation updates before implementation changes. Update `design.md`, the relevant files in `docs/design/`, `plan.md`, and the related `docs/plan/` checklist before changing Rust or wrapper code.
-- `timestamp_units_per_second` is an immutable `u64` dataset configuration value persisted in `DataSetMeta`.
-- `timestamp_units_per_second == 0` means legacy retention. Its threshold remains based on `latest_written_timestamp - retention_window` and must not read wall-clock time.
-- When `timestamp_units_per_second != 0`, obtain Unix seconds, calculate `now_units = unix_seconds * timestamp_units_per_second` through checked `i128` multiplication, convert only if the result fits `i64`, and return `TmslError::InvalidData` on overflow or a clock before the Unix epoch.
+- `timestamp_units_per_seconds` is an immutable `u64` dataset configuration value persisted in `DataSetMeta`.
+- `timestamp_units_per_seconds == 0` means legacy retention. Its threshold remains based on `latest_written_timestamp - retention_window` and must not read wall-clock time.
+- When `timestamp_units_per_seconds != 0`, obtain Unix seconds, calculate `now_units = unix_seconds * timestamp_units_per_seconds` through checked `i128` multiplication, convert only if the result fits `i64`, and return `TmslError::InvalidData` on overflow or a clock before the Unix epoch.
 - For wall-clock retention, calculate `candidate_floor = now_units.saturating_sub(retention_window as i64)`. The effective floor is monotonic: `max(persisted_retention_floor, candidate_floor)`.
 - Persist a newly advanced wall-clock retention floor and flush its mmap state before reclaiming any index or data segment. A later clock rollback, a process restart, or a failed reclaim must never lower the effective floor.
 - Retention remains disabled when `retention_window == 0`. Do not reclaim or advance a floor in that case.
-- `write_now` and `append_now` must use the same scaled wall-clock timestamp when `timestamp_units_per_second != 0`; they retain Unix seconds when it is `0`.
+- `write_now` and `append_now` must use the same scaled wall-clock timestamp when `timestamp_units_per_seconds != 0`; they retain Unix seconds when it is `0`.
 - Keep public explicit timestamp APIs unchanged. Explicit `write`, `append`, read, query, correction, delete, and queue timestamps remain caller supplied dataset timestamps.
 - Propagate the new dataset creation option through C FFI, Python, Node.js, Java, and .NET APIs, generated or handwritten declarations, documentation, and tests.
 - Do not alter existing callers' behavior when the option is omitted. Its default is `0`.
@@ -38,7 +38,7 @@
 | `docs/design/store-and-ffi.md` | Document the new dataset-create option across public wrappers. |
 | `plan.md`, `docs/plan/...` | Add and check off the scoped implementation checklist according to the repository's active plan layout. |
 | `src/config.rs` | Add configuration storage, builder setter, default, validation, and store-derived configuration propagation. |
-| `src/meta.rs` | Encode and decode the immutable `timestamp_units_per_second` metadata field with backward-compatible default `0`. |
+| `src/meta.rs` | Encode and decode the immutable `timestamp_units_per_seconds` metadata field with backward-compatible default `0`. |
 | `src/dataset_state.rs` | Extend the state snapshot and mmap encoding with the persisted wall-clock retention floor, keeping old state-file compatibility intentional and tested. |
 | `src/dataset.rs` | Centralize scaled wall-clock conversion, choose legacy or wall-clock thresholds, advance and persist the floor, reclaim only after durability, and scale now-based writes. |
 | `src/store.rs`, `src/bg/...` | Update only if their create, inspect, or scheduled reclaim paths require the new field or test hooks. |
@@ -47,7 +47,7 @@
 | `wrapper/python/...` | Expose the option in PyO3 create options and add Python tests. |
 | `wrapper/nodejs/...` | Expose the option in Rust binding conversion, TypeScript declarations, JavaScript docs, and Node tests. |
 | `wrapper/java/...` | Add the UniFFI config field and Java builder mapping, then test native and Java-facing propagation. |
-| `wrapper/dotnet/...` | Add `ulong? TimestampUnitsPerSecond`, map it in `ToNative`, and add .NET tests. |
+| `wrapper/dotnet/...` | Add `ulong? TimestampUnitsPerSeconds`, map it in `ToNative`, and add .NET tests. |
 
 ### Task 1: Document the Approved Contract First
 
@@ -62,11 +62,11 @@
 
 **Interfaces:**
 - Consumes: the approved constraints in this plan.
-- Produces: an implementation contract that names `timestamp_units_per_second: u64`, its default, persistence model, threshold rules, floor ordering, now-method behavior, and wrapper option.
+- Produces: an implementation contract that names `timestamp_units_per_seconds: u64`, its default, persistence model, threshold rules, floor ordering, now-method behavior, and wrapper option.
 
 - [ ] **Step 1: Update the top-level and data-model documentation**
 
-State that dataset timestamps remain `i64`, while `timestamp_units_per_second: u64` maps Unix seconds into a dataset timestamp domain. State exactly that zero preserves legacy retention and nonzero is immutable metadata with a default of zero for old metadata files.
+State that dataset timestamps remain `i64`, while `timestamp_units_per_seconds: u64` maps Unix seconds into a dataset timestamp domain. State exactly that zero preserves legacy retention and nonzero is immutable metadata with a default of zero for old metadata files.
 
 - [ ] **Step 2: Update dataset-operation documentation**
 
@@ -74,8 +74,8 @@ Document these rules verbatim in behavior-oriented form:
 
 ```text
 retention_window == 0: retention disabled.
-timestamp_units_per_second == 0: threshold is latest_written_timestamp - retention_window.
-timestamp_units_per_second != 0: threshold candidate is
+timestamp_units_per_seconds == 0: threshold is latest_written_timestamp - retention_window.
+timestamp_units_per_seconds != 0: threshold candidate is
   checked_i64(checked_i128(unix_seconds) * checked_i128(units_per_second))
   - retention_window.
 effective floor is max(persisted_retention_floor, candidate_floor).
@@ -106,7 +106,7 @@ grep -nE 'latest[_ -]written[_ -]timestamp.*retention|retention.*latest[_ -]writ
   plan.md \
   docs/plan/*
 
-grep -nE 'timestamp_units_per_second == 0|timestamp_units_per_second != 0|retention_window == 0|legacy retention|wall-clock retention' \
+grep -nE 'timestamp_units_per_seconds == 0|timestamp_units_per_seconds != 0|retention_window == 0|legacy retention|wall-clock retention' \
   design.md \
   docs/design/data-model.md \
   docs/design/dataset-operations.md \
@@ -116,7 +116,7 @@ grep -nE 'timestamp_units_per_second == 0|timestamp_units_per_second != 0|retent
   docs/plan/*
 ```
 
-Expected results: the first command may report the legacy branch, but every match must explicitly limit latest-written-timestamp thresholding to `timestamp_units_per_second == 0`; it must report no unconditional latest-write-relative retention statement. The second command must report all three modes: `retention_window == 0` disables retention independently, `timestamp_units_per_second == 0` selects legacy latest-written-timestamp thresholding, and `timestamp_units_per_second != 0` selects wall-clock thresholding from scaled Unix seconds.
+Expected results: the first command may report the legacy branch, but every match must explicitly limit latest-written-timestamp thresholding to `timestamp_units_per_seconds == 0`; it must report no unconditional latest-write-relative retention statement. The second command must report all three modes: `retention_window == 0` disables retention independently, `timestamp_units_per_seconds == 0` selects legacy latest-written-timestamp thresholding, and `timestamp_units_per_seconds != 0` selects wall-clock thresholding from scaled Unix seconds.
 
 ### Task 2: Add Configuration and Metadata Persistence
 
@@ -127,8 +127,8 @@ Expected results: the first command may report the legacy branch, but every matc
 - Test: unit tests in `src/config.rs` and `src/meta.rs`
 
 **Interfaces:**
-- Consumes: documented field `DataSetConfig::timestamp_units_per_second() -> u64`.
-- Produces: a persisted `DataSetMeta` value and a builder setter equivalent to `DataSetConfigBuilder::timestamp_units_per_second(u64)`.
+- Consumes: documented field `DataSetConfig::timestamp_units_per_seconds() -> u64`.
+- Produces: a persisted `DataSetMeta` value and a builder setter equivalent to `DataSetConfigBuilder::timestamp_units_per_seconds(u64)`.
 
 - [ ] **Step 1: Write failing configuration tests**
 
@@ -136,16 +136,16 @@ Add tests proving the builder preserves a nonzero value and that omitted configu
 
 ```rust
 #[test]
-fn dataset_config_defaults_timestamp_units_per_second_to_zero() {
-    assert_eq!(DataSetConfig::builder().build().timestamp_units_per_second(), 0);
+fn dataset_config_defaults_timestamp_units_per_seconds_to_zero() {
+    assert_eq!(DataSetConfig::builder().build().timestamp_units_per_seconds(), 0);
 }
 
 #[test]
-fn dataset_config_preserves_timestamp_units_per_second() {
+fn dataset_config_preserves_timestamp_units_per_seconds() {
     let config = DataSetConfig::builder()
-        .timestamp_units_per_second(1_000)
+        .timestamp_units_per_seconds(1_000)
         .build();
-    assert_eq!(config.timestamp_units_per_second(), 1_000);
+    assert_eq!(config.timestamp_units_per_seconds(), 1_000);
 }
 ```
 
@@ -235,7 +235,7 @@ Expected: PASS.
 - Test: existing retention tests in `src/dataset.rs` or their current integration-test file
 
 **Interfaces:**
-- Consumes: `DataSetConfig::timestamp_units_per_second()`, metadata value, and `DatasetStateFile::advance_retention_floor`.
+- Consumes: `DataSetConfig::timestamp_units_per_seconds()`, metadata value, and `DatasetStateFile::advance_retention_floor`.
 - Produces: one internal current-time conversion helper, one retention-floor selection path, and unchanged public signatures for `DataSet::write_now` and `DataSet::append_now`.
 
 - [ ] **Step 1: Write failing unit tests for scaled time conversion**
@@ -254,7 +254,7 @@ Assert overflow produces `TmslError::InvalidData`, not wrapping or saturation. R
 
 Add deterministic tests that prove all of the following:
 
-1. A dataset with `timestamp_units_per_second == 0` retains legacy latest-written timestamp semantics even if the clock source would be far ahead.
+1. A dataset with `timestamp_units_per_seconds == 0` retains legacy latest-written timestamp semantics even if the clock source would be far ahead.
 2. A nonzero scale uses a wall-clock candidate floor, not the newest record timestamp.
 3. `retention_window == 0` returns no threshold and leaves the persisted floor unchanged.
 4. A candidate lower than the saved floor does not make an earlier record readable, writable through correction, deletable, or eligible for a lower reclaim threshold.
@@ -296,12 +296,12 @@ Expected: PASS.
 - Modify: `wrapper/dotnet/src/Timslite/DatasetConfig.cs`, the UniFFI interface inputs, and .NET tests
 
 **Interfaces:**
-- Consumes: core builder setter `timestamp_units_per_second(u64)`.
+- Consumes: core builder setter `timestamp_units_per_seconds(u64)`.
 - Produces: optional wrapper create options mapping absent values to Rust default `0` and present values to the exact `u64` value.
 
 - [ ] **Step 1: Write failing C ABI propagation tests**
 
-Create a dataset through the C ABI with `timestamp_units_per_second = 1_000`, inspect or reopen it through the ABI, and assert the persisted option is visible through the appropriate info route. Add a default-value test for callers that leave the field unset according to the ABI's established optional-field convention.
+Create a dataset through the C ABI with `timestamp_units_per_seconds = 1_000`, inspect or reopen it through the ABI, and assert the persisted option is visible through the appropriate info route. Add a default-value test for callers that leave the field unset according to the ABI's established optional-field convention.
 
 - [ ] **Step 2: Implement C ABI structure, conversion, header, and test updates**
 
@@ -309,11 +309,11 @@ Add the field without reordering existing ABI fields. Update the public C header
 
 - [ ] **Step 3: Write and implement Python and Node propagation tests**
 
-In Python and Node tests, create a dataset with `timestamp_units_per_second: 1_000`, reopen or inspect it, and assert it retains the value. Assert omitted options produce `0`. Update PyO3 option parsing, Node Rust conversion, and `wrapper/nodejs/index.d.ts` with `timestampUnitsPerSecond?: number | bigint` following existing naming conventions.
+In Python and Node tests, create a dataset with `timestamp_units_per_seconds: 1_000`, reopen or inspect it, and assert it retains the value. Assert omitted options produce `0`. Update PyO3 option parsing, Node Rust conversion, and `wrapper/nodejs/index.d.ts` with `timestampUnitsPerSeconds?: number | bigint` following existing naming conventions.
 
 - [ ] **Step 4: Write and implement Java and .NET propagation tests**
 
-Add the optional unsigned field to the UniFFI config record and bridge mapping. In Java, add the builder field and test its native configuration conversion. In .NET, add `public ulong? TimestampUnitsPerSecond { get; init; }` and pass it as `TimestampUnitsPerSecond:` in `DatasetConfig.ToNative()`. Add tests that create datasets and verify the value survives the binding boundary.
+Add the optional unsigned field to the UniFFI config record and bridge mapping. In Java, add the builder field and test its native configuration conversion. In .NET, add `public ulong? TimestampUnitsPerSeconds { get; init; }` and pass it as `TimestampUnitsPerSeconds:` in `DatasetConfig.ToNative()`. Add tests that create datasets and verify the value survives the binding boundary.
 
 - [ ] **Step 5: Run wrapper-focused tests**
 
@@ -372,7 +372,7 @@ Inspect the final diff for accidental API changes, field reordering, non-little-
 
 | Requirement | Test evidence |
 | --- | --- |
-| `timestamp_units_per_second: u64` defaults to zero | config builder and metadata omission tests |
+| `timestamp_units_per_seconds: u64` defaults to zero | config builder and metadata omission tests |
 | Zero scale preserves legacy retention | core legacy threshold test |
 | Nonzero scale uses checked `i128` Unix-second scaling | helper normal, overflow, and pre-epoch tests |
 | Floor is monotonic and restart safe | dataset-state reopen and clock-rollback tests |

@@ -26,7 +26,7 @@ export interface CreateDatasetOptions {
   compressType?: 0 | 1
   indexContinuous?: boolean
   retentionWindow?: number | bigint
-  timestampUnitsPerSecond?: number | bigint
+  timestampUnitsPerSeconds?: number | bigint
   enableJournal?: boolean
 }
 
@@ -71,7 +71,7 @@ export interface DataSetInfo {
   compressLevel: number
   indexContinuous: number
   retentionWindow: bigint
-  timestampUnitsPerSecond: bigint
+  timestampUnitsPerSeconds: bigint
   enableJournal: boolean
   createTime: bigint
 }

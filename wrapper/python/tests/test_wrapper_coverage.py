@@ -188,7 +188,7 @@ class TestFFICoverage:
             assert hasattr(result.info, "dataset_type")
             assert hasattr(result.info, "compress_level")
             assert hasattr(result.info, "retention_window")
-            assert hasattr(result.info, "timestamp_units_per_second")
+            assert hasattr(result.info, "timestamp_units_per_seconds")
 
             # Check state fields
             assert hasattr(result, "state")

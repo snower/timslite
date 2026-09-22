@@ -110,19 +110,19 @@ class TestConfig:
             store.drop_dataset("quiet", "data")
             assert store.journal_query(1, 100) == []
 
-    def test_timestamp_units_per_second_defaults_to_zero(self, tmpdir):
+    def test_timestamp_units_per_seconds_defaults_to_zero(self, tmpdir):
         """Immutable u64 setting defaults to 0 (legacy retention)."""
         with timslite.Store.open(tmpdir) as store:
             store.create_dataset("legacy", "data")
             inspect = store.inspect_dataset("legacy", "data")
-            assert inspect.info.timestamp_units_per_second == 0
+            assert inspect.info.timestamp_units_per_seconds == 0
 
-    def test_timestamp_units_per_second_kwarg_roundtrip(self, tmpdir):
-        """create_dataset timestamp_units_per_second persists and inspect returns it."""
+    def test_timestamp_units_per_seconds_kwarg_roundtrip(self, tmpdir):
+        """create_dataset timestamp_units_per_seconds persists and inspect returns it."""
         with timslite.Store.open(tmpdir) as store:
-            store.create_dataset("scale", "data", timestamp_units_per_second=1_000_000)
+            store.create_dataset("scale", "data", timestamp_units_per_seconds=1_000_000)
             inspect = store.inspect_dataset("scale", "data")
-            assert inspect.info.timestamp_units_per_second == 1_000_000
+            assert inspect.info.timestamp_units_per_seconds == 1_000_000
 
     def test_create_dataset_enable_journal_true(self, tmpdir):
         """Dataset-level enable_journal=True records this dataset's records."""

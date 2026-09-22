@@ -228,11 +228,11 @@ StoreConfig config = StoreConfig.builder()
 CreateDatasetOptions options = CreateDatasetOptions.builder()
     .indexContinuous(true)
     .retentionWindow(0L)
-    .timestampUnitsPerSecond(0L)
+    .timestampUnitsPerSeconds(0L)
     .build();
 ```
 
-`timestampUnitsPerSecond` defaults to `0L`. At `0L`, `retentionWindow` keeps legacy retention based on the latest written timestamp. A nonzero value specifies dataset timestamp units per Unix second and makes retention wall-clock based.
+`timestampUnitsPerSeconds` defaults to `0L`. At `0L`, `retentionWindow` keeps legacy retention based on the latest written timestamp. A nonzero value specifies dataset timestamp units per Unix second and makes retention wall-clock based.
 
 `StoreReadOnly` is a Java enum:
 

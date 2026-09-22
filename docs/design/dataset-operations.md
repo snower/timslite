@@ -20,7 +20,7 @@ struct DataSet {
     base_dir: PathBuf,
     config: DataSetConfig,     // 从 meta 文件读取 (创建时写入, 之后不可变)
     retention_window: u64,     // 数据保留窗口 (timestamp unit, 0=不限)
-    timestamp_units_per_second: u64, // 不可变 wall-clock scale, 0=legacy retention
+    timestamp_units_per_seconds: u64, // 不可变 wall-clock scale, 0=legacy retention
     segments: DataSegmentSet,
     time_index: TimeIndex,
     runtime_context: DataSetRuntimeContext, // Store 注入的 BlockCache + JournalSink
@@ -44,7 +44,7 @@ impl DataSet {
         index_continuous: u8,
         initial_data_segment_size: u64, initial_index_segment_size: u64,
         retention_window: u64,
-        timestamp_units_per_second: u64,
+        timestamp_units_per_seconds: u64,
     ) -> io::Result<Self>;
 
     /// 打开已有数据集 (参数从 meta 文件读取, 不能设置)
@@ -609,7 +609,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 
 ### 11.1 retention_window 配置
 
-`retention_window` 与 `timestamp_units_per_second: u64` 都是数据集级不可变配置, 存储在 `meta` 文件中。`retention_window` 的单位必须与业务 timestamp 完全相同, 不绑定固定秒或毫秒。`timestamp_units_per_second` 定义该业务 timestamp 与 wall clock 的换算比例。
+`retention_window` 与 `timestamp_units_per_seconds: u64` 都是数据集级不可变配置, 存储在 `meta` 文件中。`retention_window` 的单位必须与业务 timestamp 完全相同, 不绑定固定秒或毫秒。`timestamp_units_per_seconds` 定义该业务 timestamp 与 wall clock 的换算比例。
 
 | 值 | 含义 |
 |---|------|
@@ -619,18 +619,18 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > **单位说明**: `retention_window` 不表示固定毫秒。其值必须使用 timestamp unit: 如果业务 timestamp 按秒递增, retention 也按秒; 如果业务 timestamp 按其它单位递增, retention 也按同一单位。调用方需确保二者单位一致。
 > **范围说明**: `retention_window` 的磁盘和 FFI 类型是 `u64`, 但有效范围固定为 `0..=i64::MAX`。builder、DataSetMeta 解析、dataset create/open 和 FFI config decode 都必须拒绝超过 `i64::MAX` 的值, 因为过期阈值与 signed `i64` timestamp 同域计算。
 
-| `timestamp_units_per_second` | retention 基准 |
+| `timestamp_units_per_seconds` | retention 基准 |
 |---|---|
 | `0` | legacy 行为, `latest_written_timestamp.saturating_sub(retention_window as i64)`; 不读取 wall clock |
 | `> 0` | wall-clock 行为, 每秒对应的业务 timestamp units; 以当前 Unix seconds 计算阈值 |
 
-`timestamp_units_per_second` 为非零时, `write_now` 和 `append_now` 也使用相同 scale 生成业务 timestamp。这样这些 API 写入的 timestamp 与 wall-clock retention 处于同一时间域。
+`timestamp_units_per_seconds` 为非零时, `write_now` 和 `append_now` 也使用相同 scale 生成业务 timestamp。这样这些 API 写入的 timestamp 与 wall-clock retention 处于同一时间域。
 
 ### 11.2 过期阈值计算
 
 `retention_window == 0` 时 retention 完全禁用, 不计算 threshold、不推进 floor、不回收任何分段。
 
-`timestamp_units_per_second == 0` 保持 legacy 行为:
+`timestamp_units_per_seconds == 0` 保持 legacy 行为:
 
 ```
 expiration_threshold = latest_written_timestamp.map(|latest| latest.saturating_sub(retention_window as i64))
@@ -640,7 +640,7 @@ expiration_threshold = latest_written_timestamp.map(|latest| latest.saturating_s
 - `saturating_sub` 防止下溢; `retention_window as i64` 已在进入计算前校验
 - legacy 数据集不读取 wall clock, 也不使用或推进持久化 floor
 
-`timestamp_units_per_second != 0` 时使用 wall-clock 行为。先读取当前 Unix seconds, 再以 checked `i128` arithmetic 计算 `now_units = unix_seconds * timestamp_units_per_second`; 只有结果可表示为 `i64` 才能继续。Unix epoch 之前的系统时间或乘法、转换溢出均返回 `TmslError::InvalidData`。随后计算:
+`timestamp_units_per_seconds != 0` 时使用 wall-clock 行为。先读取当前 Unix seconds, 再以 checked `i128` arithmetic 计算 `now_units = unix_seconds * timestamp_units_per_seconds`; 只有结果可表示为 `i64` 才能继续。Unix epoch 之前的系统时间或乘法、转换溢出均返回 `TmslError::InvalidData`。随后计算:
 
 ```
 candidate_floor = now_units.saturating_sub(retention_window as i64)

@@ -59,7 +59,7 @@ pub struct DataSetInfo {
     /// 数据保留窗口 (与 timestamp 同单位，0=不限制)
     pub retention_window: u64,
     /// 每 Unix 秒对应的 timestamp 单位数 (0=legacy retention, 创建后不可变)
-    pub timestamp_units_per_second: u64,
+    pub timestamp_units_per_seconds: u64,
     /// 是否记录本 dataset 的 journal (创建后不可变)
     pub enable_journal: bool,
 
@@ -182,7 +182,7 @@ active index segment 使用相同思路：当前仍可能追加 index entry 的�
 - 当从 `file_offset = X` 滚动到新 data segment `Y` 时，将 `X` 的统计加入 state，并设置 `archived_until_offset = Y`。
 - 对于 `file_offset < archived_until_offset` 的 data segment，其统计必须已体现在 state 文件中，除非该 segment 后续被 retention 删除并从 state 中扣减。
 
-`retention_floor` 是可变的持久化 state，不是 `DataSetInfo.timestamp_units_per_second` 的副本。后者是创建时写入 meta 的不可变整数比例，`0` 保持 legacy retention。只有非零 scale 且 `retention_window != 0` 的 wall-clock retention 才使用该 floor。floor 只能向上推进，候选值较低时保持已有值；推进后必须同步 flush state mmap，之后才能 reclaim index 或 data segment。时钟回拨、重启或 reclaim 失败都不能降低已持久化 floor。
+`retention_floor` 是可变的持久化 state，不是 `DataSetInfo.timestamp_units_per_seconds` 的副本。后者是创建时写入 meta 的不可变整数比例，`0` 保持 legacy retention。只有非零 scale 且 `retention_window != 0` 的 wall-clock retention 才使用该 floor。floor 只能向上推进，候选值较低时保持已有值；推进后必须同步 flush state mmap，之后才能 reclaim index 或 data segment。时钟回拨、重启或 reclaim 失败都不能降低已持久化 floor。
 
 ### 4.4 更新规则
 

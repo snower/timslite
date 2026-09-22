@@ -52,7 +52,7 @@ dictionary DatasetConfig {
     u8? compress_type;
     u8? index_continuous;
     u64? retention_window;
-    u64? timestamp_units_per_second;
+    u64? timestamp_units_per_seconds;
     boolean? enable_journal;
 };
 
@@ -82,7 +82,7 @@ dictionary DataSetInfo {
     u8 compress_level;
     u8 index_continuous;
     u64 retention_window;
-    u64 timestamp_units_per_second;
+    u64 timestamp_units_per_seconds;
     boolean enable_journal;
     i64 create_time;
 };

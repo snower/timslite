@@ -139,7 +139,7 @@ class Store:
         compress_level: int = None,
         index_continuous: bool = False,
         retention_window: int = None,
-        timestamp_units_per_second: int = 0,
+        timestamp_units_per_seconds: int = 0,
         initial_data_segment_size: int = None,
         initial_index_segment_size: int = None,
     ) -> None:
@@ -156,7 +156,7 @@ class Store:
             compress_level: Compression level 0-9, interpreted by the selected algorithm (default: 6).
             index_continuous: Allow out-of-order / backfill writes.
             retention_window: Retention duration in dataset timestamp units; 0 disables retention.
-            timestamp_units_per_second: Dataset timestamp units per Unix second. Default 0 keeps legacy latest-written-timestamp retention; a nonzero value makes retention wall-clock based.
+            timestamp_units_per_seconds: Dataset timestamp units per Unix second. Default 0 keeps legacy latest-written-timestamp retention; a nonzero value makes retention wall-clock based.
             initial_data_segment_size: Initial file size (lazy alloc).
             initial_index_segment_size: Initial index file size.
 

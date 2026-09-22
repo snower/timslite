@@ -47,18 +47,18 @@ fn current_unix_seconds() -> Result<i64> {
 }
 
 /// Map Unix seconds into dataset timestamp units via checked i128 math.
-/// `timestamp_units_per_second == 0` keeps the legacy identity mapping.
-fn scale_unix_seconds(unix_seconds: i64, timestamp_units_per_second: u64) -> Result<i64> {
+/// `timestamp_units_per_seconds == 0` keeps the legacy identity mapping.
+fn scale_unix_seconds(unix_seconds: i64, timestamp_units_per_seconds: u64) -> Result<i64> {
     if unix_seconds < 0 {
         return Err(TmslError::InvalidData(
             "system time is before Unix epoch".into(),
         ));
     }
-    if timestamp_units_per_second == 0 {
+    if timestamp_units_per_seconds == 0 {
         return Ok(unix_seconds);
     }
     let scaled = i128::from(unix_seconds)
-        .checked_mul(i128::from(timestamp_units_per_second))
+        .checked_mul(i128::from(timestamp_units_per_seconds))
         .ok_or_else(|| TmslError::InvalidData("wall-clock timestamp scale overflow".into()))?;
     i64::try_from(scaled).map_err(|_| {
         TmslError::InvalidData("wall-clock timestamp exceeds i64 timestamp range".into())
@@ -255,7 +255,7 @@ impl DataSet {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
-        timestamp_units_per_second: u64,
+        timestamp_units_per_seconds: u64,
     ) -> Result<Self> {
         DataSetInner::create(
             id,
@@ -267,7 +267,7 @@ impl DataSet {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
-            timestamp_units_per_second,
+            timestamp_units_per_seconds,
         )
         .map(Self::new)
     }
@@ -284,7 +284,7 @@ impl DataSet {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
-        timestamp_units_per_second: u64,
+        timestamp_units_per_seconds: u64,
         enable_journal: bool,
     ) -> Result<Self> {
         DataSetInner::create_with_compression(
@@ -298,7 +298,7 @@ impl DataSet {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
-            timestamp_units_per_second,
+            timestamp_units_per_seconds,
             enable_journal,
         )
         .map(Self::new)
@@ -579,7 +579,7 @@ impl DataSetInner {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
-        timestamp_units_per_second: u64,
+        timestamp_units_per_seconds: u64,
     ) -> Result<Self> {
         Self::create_with_compression(
             id,
@@ -592,7 +592,7 @@ impl DataSetInner {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
-            timestamp_units_per_second,
+            timestamp_units_per_seconds,
             true,
         )
     }
@@ -608,7 +608,7 @@ impl DataSetInner {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
-        timestamp_units_per_second: u64,
+        timestamp_units_per_seconds: u64,
         enable_journal: bool,
     ) -> Result<Self> {
         validate_dataset_config_values(
@@ -647,7 +647,7 @@ impl DataSetInner {
             initial_index_segment_size,
             retention_window,
             enable_journal,
-            timestamp_units_per_second,
+            timestamp_units_per_seconds,
         );
         meta.write_to_file(&meta_path)?;
 
@@ -681,7 +681,7 @@ impl DataSetInner {
                 initial_data_segment_size,
                 initial_index_segment_size,
                 retention_window,
-                timestamp_units_per_second,
+                timestamp_units_per_seconds,
                 enable_journal,
                 create_time: meta.create_time,
             },
@@ -731,7 +731,7 @@ impl DataSetInner {
             initial_data_segment_size: meta.initial_data_segment_size,
             initial_index_segment_size: meta.initial_index_segment_size,
             retention_window: meta.retention_window,
-            timestamp_units_per_second: meta.timestamp_units_per_second,
+            timestamp_units_per_seconds: meta.timestamp_units_per_seconds,
             enable_journal: meta.enable_journal,
             create_time: meta.create_time,
         };
@@ -1849,7 +1849,7 @@ impl DataSetInner {
     fn wall_clock_timestamp(&self) -> Result<i64> {
         scale_unix_seconds(
             current_unix_seconds()?,
-            self.config.timestamp_units_per_second,
+            self.config.timestamp_units_per_seconds,
         )
     }
 
@@ -1865,7 +1865,7 @@ impl DataSetInner {
 
     /// Compute retention expiration threshold, if retention is enabled.
     ///
-    /// Legacy (`timestamp_units_per_second == 0`): `latest_written_timestamp -
+    /// Legacy (`timestamp_units_per_seconds == 0`): `latest_written_timestamp -
     /// retention_window`, never reads the wall clock. Wall-clock mode:
     /// monotonic `max(persisted retention floor, now_units - retention_window)`.
     fn retention_threshold(&self) -> Result<Option<i64>> {
@@ -1878,7 +1878,7 @@ impl DataSetInner {
                 self.retention_window
             ))
         })?;
-        if self.config.timestamp_units_per_second == 0 {
+        if self.config.timestamp_units_per_seconds == 0 {
             return Ok(self
                 .latest_written_timestamp
                 .map(|latest| latest.saturating_sub(window)));
@@ -1919,7 +1919,7 @@ impl DataSetInner {
         let Some(threshold) = self.retention_threshold()? else {
             return Ok(0);
         };
-        if self.config.timestamp_units_per_second != 0 {
+        if self.config.timestamp_units_per_seconds != 0 {
             // Floor durability precedes physical reclaim: rollback, restart or a
             // failed reclaim must never lower the effective floor.
             self.dataset_state.advance_retention_floor(threshold)?;
@@ -1967,7 +1967,7 @@ impl DataSetInner {
             compress_level: self.config.compress_level,
             index_continuous: self.config.index_continuous,
             retention_window: self.retention_window,
-            timestamp_units_per_second: self.config.timestamp_units_per_second,
+            timestamp_units_per_seconds: self.config.timestamp_units_per_seconds,
             enable_journal: self.config.enable_journal,
             create_time: self.config.create_time,
         };
@@ -2063,7 +2063,7 @@ pub struct DataSetInfo {
     /// Data retention window (same unit as timestamp, 0=no limit)
     pub retention_window: u64,
     /// Dataset timestamp units per Unix second (0=legacy retention, immutable)
-    pub timestamp_units_per_second: u64,
+    pub timestamp_units_per_seconds: u64,
     /// Whether this dataset records journal entries when Store journal is enabled.
     pub enable_journal: bool,
     /// Dataset creation time (Unix milliseconds)
@@ -2950,7 +2950,7 @@ mod tests {
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
             0,          // retention_window
-            0,          // timestamp_units_per_second
+            0,          // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -2989,7 +2989,7 @@ mod tests {
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
             0,          // retention_window
-            0,          // timestamp_units_per_second
+            0,          // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3026,7 +3026,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3061,7 +3061,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3259,7 +3259,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3296,7 +3296,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3330,7 +3330,7 @@ mod tests {
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
             0,          // retention_window
-            0,          // timestamp_units_per_second
+            0,          // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3362,7 +3362,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3450,7 +3450,7 @@ mod tests {
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
             0,          // retention_window
-            0,          // timestamp_units_per_second
+            0,          // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3488,7 +3488,7 @@ mod tests {
                 256 * 1024, // initial_data_segment_size
                 4 * 1024,   // initial_index_segment_size
                 0,          // retention_window
-                0,          // timestamp_units_per_second
+                0,          // timestamp_units_per_seconds
             )
             .unwrap();
             ds.write(100, b"first").unwrap();
@@ -3518,7 +3518,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0, // retention_window = 0 (no limit)
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3652,7 +3652,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0, // retention_window = 0
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3688,7 +3688,7 @@ mod tests {
             data_segment_size, // initial = segment_size
             4096,              // initial_index_segment_size
             15,                // retention_window: threshold = latest_ts - 15
-            0,                 // timestamp_units_per_second
+            0,                 // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3780,7 +3780,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50_000, // retention_window
-            1_000,  // timestamp_units_per_second
+            1_000,  // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3811,7 +3811,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50_000, // retention_window
-            1_000,  // timestamp_units_per_second
+            1_000,  // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3855,7 +3855,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,     // retention_window = 0 (no limit)
-            1_000, // timestamp_units_per_second
+            1_000, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -3919,7 +3919,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50, // retention_window = 50
-            0,  // timestamp_units_per_second
+            0,  // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -4112,7 +4112,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 
@@ -4632,7 +4632,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
-            0, // timestamp_units_per_second
+            0, // timestamp_units_per_seconds
         )
         .unwrap();
 

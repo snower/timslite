@@ -82,31 +82,31 @@ public class ConfigTests : IDisposable
     }
 
     [Fact]
-    public void DatasetConfig_TimestampUnitsPerSecond_RoundTripsThroughInspect()
+    public void DatasetConfig_TimestampUnitsPerSeconds_RoundTripsThroughInspect()
     {
         var dsConfig = new DatasetConfig
         {
             DataSegmentSize = 2 * 1024 * 1024,
             IndexSegmentSize = 1024 * 1024,
             RetentionWindow = 3_600_000_000,
-            TimestampUnitsPerSecond = 1_000_000,
+            TimestampUnitsPerSeconds = 1_000_000,
         };
         using var store = Store.Open(_tempDir);
         store.CreateDataset("scale", "ds", new CreateDatasetOptions { Config = dsConfig });
 
         var result = store.InspectDataset("scale", "ds");
-        Assert.Equal(1_000_000UL, result.Info.TimestampUnitsPerSecond);
+        Assert.Equal(1_000_000UL, result.Info.TimestampUnitsPerSeconds);
         Assert.Equal(3_600_000_000UL, result.Info.RetentionWindow);
     }
 
     [Fact]
-    public void DatasetConfig_TimestampUnitsPerSecond_DefaultsToZero()
+    public void DatasetConfig_TimestampUnitsPerSeconds_DefaultsToZero()
     {
         using var store = Store.Open(_tempDir);
         store.CreateDataset("legacy", "ds", new CreateDatasetOptions());
 
         var result = store.InspectDataset("legacy", "ds");
-        Assert.Equal(0UL, result.Info.TimestampUnitsPerSecond);
+        Assert.Equal(0UL, result.Info.TimestampUnitsPerSeconds);
     }
 
     [Fact]

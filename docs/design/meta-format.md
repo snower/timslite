@@ -42,7 +42,7 @@ const META_TYPE_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 const META_TYPE_RETENTION_WINDOW: u8   = 0x08;  // u64 LE (timestamp unit)
 const META_TYPE_COMPRESS_TYPE: u8      = 0x09;  // u8 (0=zstd, 1=deflate)
 const META_TYPE_ENABLE_JOURNAL: u8     = 0x0A;  // u8 (0=false, 1=true)
-const META_TYPE_TIMESTAMP_UNITS_PER_SECOND: u8 = 0x0B; // u64 LE
+const META_TYPE_timestamp_units_per_seconds: u8 = 0x0B; // u64 LE
 ```
 
 ### TLV 类型定义
@@ -59,13 +59,13 @@ const META_TYPE_TIMESTAMP_UNITS_PER_SECOND: u8 = 0x0B; // u64 LE
 | 0x08 | retention_window | 8 | u64 LE | 数据保留窗口 (timestamp unit, 0=不限) |
 | 0x09 | compress_type | 1 | u8 | Compression algorithm: 0=zstd, 1=deflate |
 | 0x0A | enable_journal | 1 | u8 | 是否记录本 dataset 的 journal, 0=false, 1=true |
-| 0x0B | timestamp_units_per_second | 8 | u64 LE | timestamp 每 Unix 秒的单位数, 0=使用 legacy retention |
+| 0x0B | timestamp_units_per_seconds | 8 | u64 LE | timestamp 每 Unix 秒的单位数, 0=使用 legacy retention |
 
 > `block_max_size` 无 TLV type。普通聚合 Block 的未压缩 payload 上限由 `BLOCK_MAX_SIZE=256KiB` 固定定义, 不是 dataset 创建参数，也不要求每个 Block 在磁盘上固定预分配 256KiB。
 > `retention_window` 磁盘编码为 `u64 LE`, 但有效范围是 `0..=i64::MAX`。builder、FFI config decode、dataset create 和 `DataSetMeta::from_bytes` 均必须拒绝超过 `i64::MAX` 的值, 避免与 signed timestamp 阈值计算发生 wrap 或错误过期。
 > `enable_journal` 是 dataset 级不可变创建参数, 默认 `false`。新 meta 必须写入 canonical 值 `0` 或 `1`; 解析到其它值必须返回 `InvalidData`。缺失该 TLV 的旧 meta 按 `true` 处理。
 >
-> `timestamp_units_per_second` 是 dataset 级不可变创建参数, 默认 `0`。`0` 表示 legacy retention, retention threshold 仍基于 `latest_written_timestamp - retention_window`, 不读取 wall clock。非零值表示每个 Unix 秒对应的 dataset timestamp 单位数。缺失该 TLV 的旧 meta 必须兼容为 `0`。它是 meta 中的比例配置, 不保存或代替可变的 retention floor。
+> `timestamp_units_per_seconds` 是 dataset 级不可变创建参数, 默认 `0`。`0` 表示 legacy retention, retention threshold 仍基于 `latest_written_timestamp - retention_window`, 不读取 wall clock。非零值表示每个 Unix 秒对应的 dataset timestamp 单位数。缺失该 TLV 的旧 meta 必须兼容为 `0`。它是 meta 中的比例配置, 不保存或代替可变的 retention floor。
 >
 > 所有多字节 TLV length/value 均为 Little Endian, 不使用 float 表示。时间类字段使用 signed `i64 LE` (`create_time`), size/count/duration/scale 类字段使用 unsigned LE。解析时必须校验 TLV length 与字段类型长度一致; 未知 type 仅按 length 跳过, 但 length 不得越过 `meta_data_length` 边界。
 
@@ -83,7 +83,7 @@ pub struct DataSetMeta {
     pub initial_index_segment_size: u64,
     pub retention_window: u64,   // 数据保留窗口 (timestamp unit, 0=不限)
     pub enable_journal: bool,    // 是否记录本 dataset 的 journal, 默认 false
-    pub timestamp_units_per_second: u64, // 0=legacy retention
+    pub timestamp_units_per_seconds: u64, // 0=legacy retention
 }
 
 impl DataSetMeta {
@@ -92,7 +92,7 @@ impl DataSetMeta {
                compress_level: u8, compress_type: u8, index_continuous: u8,
                initial_data_segment_size: u64, initial_index_segment_size: u64,
                 retention_window: u64, enable_journal: bool,
-                timestamp_units_per_second: u64) -> Self;
+                timestamp_units_per_seconds: u64) -> Self;
 
     /// 序列化: magic + version + meta_data_length + TLV values
     pub fn to_bytes(&self) -> Vec<u8>;
@@ -131,7 +131,7 @@ impl DataSetMeta {
    - `initial_* > segment_size` → 返回错误
     - `enable_journal` 缺失 → 兼容为 `true`
     - `enable_journal` 值不为 0/1 → 返回错误
-    - `timestamp_units_per_second` 缺失 → 兼容为 `0`
+    - `timestamp_units_per_seconds` 缺失 → 兼容为 `0`
 
 读取成功后, `DataSet` 的 layout/压缩/索引/retention/journal/timestamp scale 配置全部来自 meta。当前 `StoreConfig` 中的 data/index segment 默认值、压缩默认值、retention 默认值或 dataset journal 默认值不会覆盖已存在数据集, 也不会触发“不一致”错误。
 

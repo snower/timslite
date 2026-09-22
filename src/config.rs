@@ -390,7 +390,7 @@ pub struct DataSetConfig {
     /// Data validity period in same unit as timestamps. 0 = no limit.
     pub(crate) retention_window: u64,
     /// Dataset timestamp units per Unix second. 0 = legacy wall-clock scale.
-    pub(crate) timestamp_units_per_second: u64,
+    pub(crate) timestamp_units_per_seconds: u64,
     /// Whether this dataset records journal entries when the Store journal is enabled.
     pub(crate) enable_journal: bool,
     /// Dataset creation time (Unix milliseconds).
@@ -409,7 +409,7 @@ impl DataSetConfig {
             initial_data_segment_size: config.initial_data_segment_size,
             initial_index_segment_size: config.initial_index_segment_size,
             retention_window: 0,
-            timestamp_units_per_second: 0,
+            timestamp_units_per_seconds: 0,
             enable_journal: false,
             create_time: 0,
         }
@@ -453,8 +453,8 @@ impl DataSetConfig {
     }
 
     /// Dataset timestamp units per Unix second (0 = legacy retention scale).
-    pub fn timestamp_units_per_second(&self) -> u64 {
-        self.timestamp_units_per_second
+    pub fn timestamp_units_per_seconds(&self) -> u64 {
+        self.timestamp_units_per_seconds
     }
 
     pub fn enable_journal(&self) -> bool {
@@ -509,7 +509,7 @@ pub struct DataSetConfigBuilder {
     initial_data_segment_size: Option<u64>,
     initial_index_segment_size: Option<u64>,
     retention_window: Option<u64>,
-    timestamp_units_per_second: Option<u64>,
+    timestamp_units_per_seconds: Option<u64>,
     enable_journal: Option<bool>,
 }
 
@@ -526,7 +526,7 @@ impl DataSetConfigBuilder {
             initial_data_segment_size: Some(store.initial_data_segment_size),
             initial_index_segment_size: Some(store.initial_index_segment_size),
             retention_window: Some(0),
-            timestamp_units_per_second: Some(0),
+            timestamp_units_per_seconds: Some(0),
             enable_journal: Some(false),
         }
     }
@@ -580,8 +580,8 @@ impl DataSetConfigBuilder {
     }
 
     /// Set the dataset timestamp units per Unix second (0 = legacy retention scale).
-    pub fn timestamp_units_per_second(mut self, units: u64) -> Self {
-        self.timestamp_units_per_second = Some(units);
+    pub fn timestamp_units_per_seconds(mut self, units: u64) -> Self {
+        self.timestamp_units_per_seconds = Some(units);
         self
     }
 
@@ -596,7 +596,7 @@ impl DataSetConfigBuilder {
         let defaults = DataSetConfig::from_store(&StoreConfig::default());
         let retention_window = self.retention_window.unwrap_or(0);
         validate_retention_window(retention_window)?;
-        let timestamp_units_per_second = self.timestamp_units_per_second.unwrap_or(0);
+        let timestamp_units_per_seconds = self.timestamp_units_per_seconds.unwrap_or(0);
         let config = DataSetConfig {
             data_segment_size: self.data_segment_size.unwrap_or(defaults.data_segment_size),
             index_segment_size: self
@@ -612,7 +612,7 @@ impl DataSetConfigBuilder {
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
             retention_window,
-            timestamp_units_per_second,
+            timestamp_units_per_seconds,
             enable_journal: self.enable_journal.unwrap_or(false),
             create_time: 0, // Set at dataset creation
         };
@@ -1232,17 +1232,17 @@ mod tests {
     }
 
     #[test]
-    fn dataset_config_defaults_timestamp_units_per_second_to_zero() {
+    fn dataset_config_defaults_timestamp_units_per_seconds_to_zero() {
         let config = DataSetConfig::builder().build().unwrap();
-        assert_eq!(config.timestamp_units_per_second(), 0);
+        assert_eq!(config.timestamp_units_per_seconds(), 0);
     }
 
     #[test]
-    fn dataset_config_preserves_timestamp_units_per_second() {
+    fn dataset_config_preserves_timestamp_units_per_seconds() {
         let config = DataSetConfig::builder()
-            .timestamp_units_per_second(1_000)
+            .timestamp_units_per_seconds(1_000)
             .build()
             .unwrap();
-        assert_eq!(config.timestamp_units_per_second(), 1_000);
+        assert_eq!(config.timestamp_units_per_seconds(), 1_000);
     }
 }

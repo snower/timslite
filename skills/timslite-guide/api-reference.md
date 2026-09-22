@@ -59,7 +59,7 @@ Creates a new dataset with explicit parameters.
 
 Creates a dataset with a full `DataSetConfigBuilder` for complete control. Pass `None` to use store defaults.
 
-Set `DataSetConfigBuilder::timestamp_units_per_second(u64)` when dataset timestamps are scaled Unix time. Its default is `0`, which retains legacy latest-written-timestamp retention; nonzero values make `retention_window` wall-clock based.
+Set `DataSetConfigBuilder::timestamp_units_per_seconds(u64)` when dataset timestamps are scaled Unix time. Its default is `0`, which retains legacy latest-written-timestamp retention; nonzero values make `retention_window` wall-clock based.
 
 **Returns**: `DataSet` instance.
 

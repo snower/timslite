@@ -56,7 +56,7 @@
 | 45 | Store Read-only Lock | ✅ 完成 | [phase-45-store-read-only-lock.md](docs/plan/phase-45-store-read-only-lock.md) |
 | 46 | Rust API 简化与 C ABI Wrapper 拆分 | ✅ 完成 | [phase-46-rust-api-simplify-cffi-split.md](docs/plan/phase-46-rust-api-simplify-cffi-split.md) |
 | 47 | 不兼容存储格式重设计 | ⏳ 待实现 | [phase-47-storage-format-redesign.md](docs/plan/phase-47-storage-format-redesign.md) |
-| 48 | Wall-clock Retention Timestamp Units | ⏳ 待实现 | `timestamp_units_per_second` 配置、持久化、retention 与 wrapper 同步 |
+| 48 | Wall-clock Retention Timestamp Units | ⏳ 待实现 | `timestamp_units_per_seconds` 配置、持久化、retention 与 wrapper 同步 |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 | NODE | Node.js Package (Node-API) | ✅ 完成 | [wrapper/nodejs/plan.md](wrapper/nodejs/plan.md) |
 | JAVA | Java Package (UniFFI) | ✅ 完成 | [wrapper/java/plan.md](wrapper/java/plan.md) |
@@ -76,7 +76,7 @@
 - [ ] 内存安全验证 — Windows 未 valgrind, 需 Linux/Valgrind 环境
 
 ### Phase 48: Wall-clock Retention Timestamp Units
-- [ ] 为 `DataSetConfig` 和持久化 metadata 增加不可变 `timestamp_units_per_second: u64` 配置
+- [ ] 为 `DataSetConfig` 和持久化 metadata 增加不可变 `timestamp_units_per_seconds: u64` 配置
 - [ ] 保持默认 `0` 的 legacy retention, 非零值按 Unix 秒缩放后启用 wall-clock retention
 - [ ] 同步 Rust、C ABI、Python、Node.js、Java 和 .NET 的配置 API、测试与文档
 

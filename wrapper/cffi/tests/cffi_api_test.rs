@@ -189,7 +189,7 @@ fn cffi_dataset_read_and_queue_roundtrip() {
 }
 
 #[test]
-fn cffi_dataset_create_with_config_and_inspect_timestamp_units_per_second() {
+fn cffi_dataset_create_with_config_and_inspect_timestamp_units_per_seconds() {
     let dir = tempfile::tempdir().unwrap();
     let dir = CString::new(dir.path().to_string_lossy().as_bytes()).unwrap();
     let name = CString::new("scale").unwrap();
@@ -206,7 +206,7 @@ fn cffi_dataset_create_with_config_and_inspect_timestamp_units_per_second() {
         initial_data_segment_size: 1024 * 1024,
         initial_index_segment_size: 256 * 1024,
         retention_window: 3_600_000_000,
-        timestamp_units_per_second: 1_000_000,
+        timestamp_units_per_seconds: 1_000_000,
         compress_level: 6,
         compress_type: 0,
         index_continuous: 0,
@@ -238,7 +238,7 @@ fn cffi_dataset_create_with_config_and_inspect_timestamp_units_per_second() {
         ),
         0
     );
-    assert_eq!(result.info.timestamp_units_per_second, 1_000_000);
+    assert_eq!(result.info.timestamp_units_per_seconds, 1_000_000);
     assert_eq!(result.info.retention_window, 3_600_000_000);
     tmsl_free_inspect_result(&mut result);
 

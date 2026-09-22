@@ -18,7 +18,7 @@ public final class DatasetInfo {
     private final short compressLevel;
     private final short indexContinuous;
     private final long retentionWindow;
-    private final long timestampUnitsPerSecond;
+    private final long timestampUnitsPerSeconds;
     private final boolean enableJournal;
     private final long createTime;
 
@@ -35,7 +35,7 @@ public final class DatasetInfo {
         this.compressLevel = (short) (KotlinConversions.getUByte(kotlinInfo, "getCompressLevel") & 0xFF);
         this.indexContinuous = (short) (KotlinConversions.getUByte(kotlinInfo, "getIndexContinuous") & 0xFF);
         this.retentionWindow = KotlinConversions.getULong(kotlinInfo, "getRetentionWindow");
-        this.timestampUnitsPerSecond = KotlinConversions.getULong(kotlinInfo, "getTimestampUnitsPerSecond");
+        this.timestampUnitsPerSeconds = KotlinConversions.getULong(kotlinInfo, "getTimestampUnitsPerSeconds");
         this.enableJournal = kotlinInfo.getEnableJournal();
         this.createTime = kotlinInfo.getCreateTime();
     }
@@ -155,8 +155,8 @@ public final class DatasetInfo {
      *
      * @return timestamp units per second
      */
-    public long getTimestampUnitsPerSecond() {
-        return timestampUnitsPerSecond;
+    public long getTimestampUnitsPerSeconds() {
+        return timestampUnitsPerSeconds;
     }
 
     /**
