@@ -17,7 +17,7 @@ use timslite::{
 };
 
 const TMSL_STORE_CONFIG_FFI_VERSION: u32 = 5;
-const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 3;
+const TMSL_DATASET_CONFIG_FFI_VERSION: u32 = 4;
 const TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION: u32 = 1;
 
 const TMSL_STORE_READ_ONLY_AUTO: u8 = 0;
@@ -53,6 +53,7 @@ pub struct TmslDatasetConfigFFI {
     pub initial_data_segment_size: u64,
     pub initial_index_segment_size: u64,
     pub retention_window: u64,
+    pub timestamp_units_per_second: u64,
     pub compress_level: u8,
     pub compress_type: u8,
     pub index_continuous: u8,
@@ -130,6 +131,7 @@ pub struct TmslDataSetInfo {
     pub compress_level: u8,
     pub index_continuous: u8,
     pub retention_window: u64,
+    pub timestamp_units_per_second: u64,
     pub enable_journal: u8,
     pub create_time: i64,
 }
@@ -567,6 +569,7 @@ fn dataset_config_from_ffi(
         .compress_type(config.compress_type)
         .index_continuous(config.index_continuous)
         .retention_window(config.retention_window)
+        .timestamp_units_per_second(config.timestamp_units_per_second)
         .enable_journal(config.enable_journal != 0))
 }
 
@@ -2192,6 +2195,7 @@ fn fill_inspect_result(
                 compress_level: inspect.info.compress_level,
                 index_continuous: inspect.info.index_continuous,
                 retention_window: inspect.info.retention_window,
+                timestamp_units_per_second: inspect.info.timestamp_units_per_second,
                 enable_journal: inspect.info.enable_journal as u8,
                 create_time: inspect.info.create_time,
             },

@@ -46,6 +46,25 @@ fn current_unix_seconds() -> Result<i64> {
     Ok(seconds as i64)
 }
 
+/// Map Unix seconds into dataset timestamp units via checked i128 math.
+/// `timestamp_units_per_second == 0` keeps the legacy identity mapping.
+fn scale_unix_seconds(unix_seconds: i64, timestamp_units_per_second: u64) -> Result<i64> {
+    if unix_seconds < 0 {
+        return Err(TmslError::InvalidData(
+            "system time is before Unix epoch".into(),
+        ));
+    }
+    if timestamp_units_per_second == 0 {
+        return Ok(unix_seconds);
+    }
+    let scaled = i128::from(unix_seconds)
+        .checked_mul(i128::from(timestamp_units_per_second))
+        .ok_or_else(|| TmslError::InvalidData("wall-clock timestamp scale overflow".into()))?;
+    i64::try_from(scaled).map_err(|_| {
+        TmslError::InvalidData("wall-clock timestamp exceeds i64 timestamp range".into())
+    })
+}
+
 impl DataSegmentArchiveSink for DatasetStateFile {
     fn archived_until_offset(&self) -> u64 {
         DatasetStateFile::archived_until_offset(self)
@@ -236,6 +255,7 @@ impl DataSet {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
+        timestamp_units_per_second: u64,
     ) -> Result<Self> {
         DataSetInner::create(
             id,
@@ -247,6 +267,7 @@ impl DataSet {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
+            timestamp_units_per_second,
         )
         .map(Self::new)
     }
@@ -263,6 +284,7 @@ impl DataSet {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
+        timestamp_units_per_second: u64,
         enable_journal: bool,
     ) -> Result<Self> {
         DataSetInner::create_with_compression(
@@ -276,6 +298,7 @@ impl DataSet {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
+            timestamp_units_per_second,
             enable_journal,
         )
         .map(Self::new)
@@ -337,7 +360,7 @@ impl DataSet {
 
     pub fn write_now(&self, data: &[u8]) -> Result<()> {
         self.with_open_inner(|inner| {
-            let timestamp = current_unix_seconds()?;
+            let timestamp = inner.wall_clock_timestamp()?;
             inner.write(timestamp, data)
         })
     }
@@ -348,7 +371,7 @@ impl DataSet {
 
     pub fn append_now(&self, data: &[u8]) -> Result<()> {
         self.with_open_inner(|inner| {
-            let timestamp = current_unix_seconds()?;
+            let timestamp = inner.wall_clock_timestamp()?;
             inner.append(timestamp, data)
         })
     }
@@ -395,7 +418,7 @@ impl DataSet {
 
     pub fn query_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryIterator> {
         let (start_ts, end_ts) = self.with_open_inner(|inner| {
-            let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts);
+            let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts)?;
             Ok((start_ts, end_ts))
         })?;
         Ok(QueryIterator::new(self.inner_arc(), start_ts, end_ts))
@@ -403,7 +426,7 @@ impl DataSet {
 
     pub fn query_length_iter(&self, start_ts: i64, end_ts: i64) -> Result<QueryLengthIterator> {
         let (start_ts, end_ts) = self.with_open_inner(|inner| {
-            let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts);
+            let (start_ts, end_ts) = inner.clamp_query_range(start_ts, end_ts)?;
             Ok((start_ts, end_ts))
         })?;
         Ok(QueryLengthIterator::new(self.inner_arc(), start_ts, end_ts))
@@ -556,6 +579,7 @@ impl DataSetInner {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
+        timestamp_units_per_second: u64,
     ) -> Result<Self> {
         Self::create_with_compression(
             id,
@@ -568,6 +592,7 @@ impl DataSetInner {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
+            timestamp_units_per_second,
             true,
         )
     }
@@ -583,6 +608,7 @@ impl DataSetInner {
         initial_data_segment_size: u64,
         initial_index_segment_size: u64,
         retention_window: u64,
+        timestamp_units_per_second: u64,
         enable_journal: bool,
     ) -> Result<Self> {
         validate_dataset_config_values(
@@ -621,6 +647,7 @@ impl DataSetInner {
             initial_index_segment_size,
             retention_window,
             enable_journal,
+            timestamp_units_per_second,
         );
         meta.write_to_file(&meta_path)?;
 
@@ -654,6 +681,7 @@ impl DataSetInner {
                 initial_data_segment_size,
                 initial_index_segment_size,
                 retention_window,
+                timestamp_units_per_second,
                 enable_journal,
                 create_time: meta.create_time,
             },
@@ -703,6 +731,7 @@ impl DataSetInner {
             initial_data_segment_size: meta.initial_data_segment_size,
             initial_index_segment_size: meta.initial_index_segment_size,
             retention_window: meta.retention_window,
+            timestamp_units_per_second: meta.timestamp_units_per_second,
             enable_journal: meta.enable_journal,
             create_time: meta.create_time,
         };
@@ -967,9 +996,7 @@ impl DataSetInner {
         cache: Option<&BlockCache>,
     ) -> Result<WriteOutcome> {
         validate_record_data_len(data.len())?;
-        if self.is_timestamp_expired(timestamp) {
-            return Err(self.expired_error(timestamp));
-        }
+        self.ensure_not_expired(timestamp)?;
 
         // Correction write: same timestamp as latest; in-place overwrite in
         // the last pending raw block of the latest data segment. Index unchanged.
@@ -1062,9 +1089,7 @@ impl DataSetInner {
         cache: Option<&BlockCache>,
     ) -> Result<Option<AppendOutcome>> {
         validate_record_data_len(data.len())?;
-        if self.is_timestamp_expired(timestamp) {
-            return Err(self.expired_error(timestamp));
-        }
+        self.ensure_not_expired(timestamp)?;
         if self
             .latest_written_timestamp
             .is_some_and(|latest| timestamp < latest)
@@ -1254,9 +1279,7 @@ impl DataSetInner {
                 timestamp
             )));
         }
-        if self.is_timestamp_expired(timestamp) {
-            return Err(self.expired_error(timestamp));
-        }
+        self.ensure_not_expired(timestamp)?;
 
         let old_entry = self.time_index.find_and_delete_entry(timestamp)?;
         self.invalidate_cache_for_entry(&old_entry, cache);
@@ -1297,7 +1320,7 @@ impl DataSetInner {
         timestamp: i64,
         cache: Option<&BlockCache>,
     ) -> Result<Option<(i64, Vec<u8>)>> {
-        if self.is_timestamp_expired(timestamp) {
+        if self.is_timestamp_expired(timestamp)? {
             return Ok(None);
         }
 
@@ -1331,7 +1354,7 @@ impl DataSetInner {
     /// `timestamp` is exact; `-1` is not a latest shortcut.
     /// Returns true only when the timestamp has visible data.
     pub fn read_exist(&mut self, timestamp: i64) -> Result<bool> {
-        if self.is_timestamp_expired(timestamp) {
+        if self.is_timestamp_expired(timestamp)? {
             return Ok(false);
         }
         let entry = self.time_index.find_entry(timestamp)?;
@@ -1342,7 +1365,7 @@ impl DataSetInner {
     /// `timestamp` is exact; `-1` is not a latest shortcut.
     /// Returns Some(data_len) if record exists, None if not found, filler, or expired.
     pub fn read_length(&mut self, timestamp: i64) -> Result<Option<u32>> {
-        if self.is_timestamp_expired(timestamp) {
+        if self.is_timestamp_expired(timestamp)? {
             return Ok(None);
         }
 
@@ -1580,7 +1603,7 @@ impl DataSetInner {
     }
 
     pub fn query_index_entries(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
-        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts)?;
         if start_ts > end_ts {
             return Ok(vec![]);
         }
@@ -1609,7 +1632,7 @@ impl DataSetInner {
         let mut bitmap = vec![0u8; byte_count];
 
         let effective_start = self
-            .retention_threshold()
+            .retention_threshold()?
             .map_or(start_ts, |threshold| start_ts.max(threshold));
         if effective_start > end_ts {
             return Ok(bitmap);
@@ -1633,7 +1656,7 @@ impl DataSetInner {
     /// Query data lengths for timestamps in [start_ts, end_ts].
     /// Returns Vec<(timestamp, data_len)> for valid records only (skips filler).
     pub fn query_length(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, u32)>> {
-        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts);
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts)?;
         if start_ts > end_ts {
             return Ok(Vec::new());
         }
@@ -1822,49 +1845,85 @@ impl DataSetInner {
         self.latest_written_timestamp
     }
 
+    /// Current wall-clock timestamp mapped into dataset timestamp units.
+    fn wall_clock_timestamp(&self) -> Result<i64> {
+        scale_unix_seconds(
+            current_unix_seconds()?,
+            self.config.timestamp_units_per_second,
+        )
+    }
+
     /// Clamp an inclusive query range to the data retention window.
-    /// Returns (effective_start, effective_end). If retention is disabled
-    /// or latest_written_timestamp is unknown, returns the original range.
-    fn clamp_query_range(&self, start_ts: i64, end_ts: i64) -> (i64, i64) {
-        if self.retention_window == 0 {
-            return (start_ts, end_ts);
+    /// Returns (effective_start, effective_end). When retention is disabled
+    /// (or legacy mode has no latest write), returns the original range.
+    fn clamp_query_range(&self, start_ts: i64, end_ts: i64) -> Result<(i64, i64)> {
+        match self.retention_threshold()? {
+            Some(threshold) => Ok((start_ts.max(threshold), end_ts)),
+            None => Ok((start_ts, end_ts)),
         }
-        let Some(latest) = self.latest_written_timestamp else {
-            return (start_ts, end_ts);
+    }
+
+    /// Compute retention expiration threshold, if retention is enabled.
+    ///
+    /// Legacy (`timestamp_units_per_second == 0`): `latest_written_timestamp -
+    /// retention_window`, never reads the wall clock. Wall-clock mode:
+    /// monotonic `max(persisted retention floor, now_units - retention_window)`.
+    fn retention_threshold(&self) -> Result<Option<i64>> {
+        if self.retention_window == 0 {
+            return Ok(None);
+        }
+        let window = i64::try_from(self.retention_window).map_err(|_| {
+            TmslError::InvalidData(format!(
+                "retention_window {} exceeds i64 range",
+                self.retention_window
+            ))
+        })?;
+        if self.config.timestamp_units_per_second == 0 {
+            return Ok(self
+                .latest_written_timestamp
+                .map(|latest| latest.saturating_sub(window)));
+        }
+        let candidate = self.wall_clock_timestamp()?.saturating_sub(window);
+        let persisted = self.dataset_state.snapshot().retention_floor;
+        let effective = if persisted == TIMESTAMP_MIN_SENTINEL {
+            candidate
+        } else {
+            persisted.max(candidate)
         };
-        let threshold = latest.saturating_sub(self.retention_window as i64);
-        (start_ts.max(threshold), end_ts)
+        Ok(Some(effective))
     }
 
-    /// Compute retention expiration threshold, if retention enabled and data exists.
-    fn retention_threshold(&self) -> Option<i64> {
-        if self.retention_window == 0 {
-            return None;
+    fn is_timestamp_expired(&self, timestamp: i64) -> Result<bool> {
+        Ok(self
+            .retention_threshold()?
+            .is_some_and(|threshold| timestamp < threshold))
+    }
+
+    /// Reject timestamps below the effective retention threshold.
+    fn ensure_not_expired(&self, timestamp: i64) -> Result<()> {
+        if let Some(threshold) = self.retention_threshold()? {
+            if timestamp < threshold {
+                return Err(TmslError::Expired(format!(
+                    "timestamp {} is older than retention threshold {}",
+                    timestamp, threshold
+                )));
+            }
         }
-        self.latest_written_timestamp
-            .map(|latest| latest.saturating_sub(self.retention_window as i64))
-    }
-
-    fn is_timestamp_expired(&self, timestamp: i64) -> bool {
-        self.retention_threshold()
-            .is_some_and(|threshold| timestamp < threshold)
-    }
-
-    fn expired_error(&self, timestamp: i64) -> TmslError {
-        TmslError::Expired(format!(
-            "timestamp {} is older than retention threshold {}",
-            timestamp,
-            self.retention_threshold().unwrap_or(i64::MIN)
-        ))
+        Ok(())
     }
 
     /// Reclaim expired data & index segments whose entries fall entirely before the
     /// retention threshold. Idle-closes segments first so they enter closed registries.
     /// Returns the total number of segment files deleted.
     pub fn reclaim_expired_segments(&mut self) -> Result<usize> {
-        let Some(threshold) = self.retention_threshold() else {
+        let Some(threshold) = self.retention_threshold()? else {
             return Ok(0);
         };
+        if self.config.timestamp_units_per_second != 0 {
+            // Floor durability precedes physical reclaim: rollback, restart or a
+            // failed reclaim must never lower the effective floor.
+            self.dataset_state.advance_retention_floor(threshold)?;
+        }
         let last_used_at = self.last_used_at;
 
         // Close all open segments so they become Closed entries in the registries.
@@ -1908,6 +1967,7 @@ impl DataSetInner {
             compress_level: self.config.compress_level,
             index_continuous: self.config.index_continuous,
             retention_window: self.retention_window,
+            timestamp_units_per_second: self.config.timestamp_units_per_second,
             enable_journal: self.config.enable_journal,
             create_time: self.config.create_time,
         };
@@ -1946,8 +2006,10 @@ impl DataSetInner {
             0
         };
 
+        let persisted_floor = self.dataset_state.snapshot().retention_floor;
         let state = DataSetState {
             latest_written_timestamp: self.latest_written_timestamp,
+            retention_floor: (persisted_floor != TIMESTAMP_MIN_SENTINEL).then_some(persisted_floor),
             open_data_segments: self.segments.open_len() as u32,
             data_segments: self.segments.total_len() as u32,
             total_record_count,
@@ -2000,6 +2062,8 @@ pub struct DataSetInfo {
     pub index_continuous: u8,
     /// Data retention window (same unit as timestamp, 0=no limit)
     pub retention_window: u64,
+    /// Dataset timestamp units per Unix second (0=legacy retention, immutable)
+    pub timestamp_units_per_second: u64,
     /// Whether this dataset records journal entries when Store journal is enabled.
     pub enable_journal: bool,
     /// Dataset creation time (Unix milliseconds)
@@ -2013,6 +2077,8 @@ pub struct DataSetInfo {
 pub struct DataSetState {
     /// Highest written timestamp (not latest valid record, deletion doesn't roll back)
     pub latest_written_timestamp: Option<i64>,
+    /// Persisted wall-clock retention floor; None = never advanced
+    pub retention_floor: Option<i64>,
     /// Number of currently open data segments
     pub open_data_segments: u32,
     /// Total number of data segments
@@ -2103,6 +2169,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap()
     }
@@ -2151,6 +2218,7 @@ mod tests {
             data_segment_size,
             512,
             0,
+            0,
         )
         .unwrap();
         ds.set_runtime_context(DataSetRuntimeContext::new(
@@ -2178,6 +2246,7 @@ mod tests {
             2,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         );
 
@@ -2244,7 +2313,7 @@ mod tests {
             name: "test".into(),
             dataset_type: "data".into(),
         };
-        let mut ds = DataSetInner::create(id, dir, 4096, 512, 0, 0, 4096, 512, 0).unwrap();
+        let mut ds = DataSetInner::create(id, dir, 4096, 512, 0, 0, 4096, 512, 0, 0).unwrap();
 
         ds.write(100, b"first").unwrap();
         ds.set_runtime_context(DataSetRuntimeContext::new(
@@ -2624,6 +2693,7 @@ mod tests {
             data_segment_size,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -2659,6 +2729,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -2692,6 +2763,7 @@ mod tests {
             1,
             256 * 1024,
             128,
+            0,
             0,
         )
         .unwrap();
@@ -2745,6 +2817,7 @@ mod tests {
             256 * 1024,
             128,
             0,
+            0,
         )
         .unwrap();
 
@@ -2787,6 +2860,7 @@ mod tests {
             256 * 1024,
             128,
             0,
+            0,
         )
         .unwrap();
 
@@ -2827,6 +2901,7 @@ mod tests {
                 1,
                 256 * 1024,
                 128,
+                0,
                 0,
             )
             .unwrap();
@@ -2875,6 +2950,7 @@ mod tests {
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
             0,          // retention_window
+            0,          // timestamp_units_per_second
         )
         .unwrap();
 
@@ -2913,6 +2989,7 @@ mod tests {
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
             0,          // retention_window
+            0,          // timestamp_units_per_second
         )
         .unwrap();
 
@@ -2949,6 +3026,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -2983,6 +3061,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3016,6 +3095,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -3048,6 +3128,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -3079,6 +3160,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -3107,6 +3189,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         )
         .unwrap();
@@ -3140,6 +3223,7 @@ mod tests {
                 0,
                 256 * 1024,
                 4 * 1024,
+                0,
                 0,
             )
             .unwrap();
@@ -3175,6 +3259,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3211,6 +3296,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3244,6 +3330,7 @@ mod tests {
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
             0,          // retention_window
+            0,          // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3275,6 +3362,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3312,6 +3400,7 @@ mod tests {
                 1,
                 256 * 1024,
                 4 * 1024,
+                0,
                 0,
             )
             .unwrap();
@@ -3361,6 +3450,7 @@ mod tests {
             256 * 1024, // initial_data_segment_size
             4 * 1024,   // initial_index_segment_size
             0,          // retention_window
+            0,          // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3398,6 +3488,7 @@ mod tests {
                 256 * 1024, // initial_data_segment_size
                 4 * 1024,   // initial_index_segment_size
                 0,          // retention_window
+                0,          // timestamp_units_per_second
             )
             .unwrap();
             ds.write(100, b"first").unwrap();
@@ -3427,6 +3518,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0, // retention_window = 0 (no limit)
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3466,6 +3558,7 @@ mod tests {
             data_segment_size,
             4096,
             ret,
+            0,
         )
         .unwrap();
         assert_eq!(ds.retention_window(), ret);
@@ -3511,6 +3604,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50,
+            0,
         )
         .unwrap();
 
@@ -3558,6 +3652,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0, // retention_window = 0
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3593,6 +3688,7 @@ mod tests {
             data_segment_size, // initial = segment_size
             4096,              // initial_index_segment_size
             15,                // retention_window: threshold = latest_ts - 15
+            0,                 // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3641,6 +3737,140 @@ mod tests {
     }
 
     #[test]
+    fn test_scale_unix_seconds_uses_requested_units() {
+        assert_eq!(scale_unix_seconds(123, 0).unwrap(), 123);
+        assert_eq!(scale_unix_seconds(123, 1).unwrap(), 123);
+        assert_eq!(scale_unix_seconds(123, 1_000).unwrap(), 123_000);
+    }
+
+    #[test]
+    fn test_scale_unix_seconds_overflow_is_invalid_data() {
+        assert!(matches!(
+            scale_unix_seconds(i64::MAX, u64::MAX),
+            Err(TmslError::InvalidData(_))
+        ));
+        assert!(matches!(
+            scale_unix_seconds(i64::MAX, 2),
+            Err(TmslError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn test_scale_unix_seconds_pre_epoch_is_invalid_data() {
+        assert!(matches!(
+            scale_unix_seconds(-1, 1_000),
+            Err(TmslError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn test_wall_clock_expired_write_rejected_without_latest_history() {
+        let dir = temp_dir("wallclock_expired_write");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSetInner::create(
+            id,
+            dir,
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            256 * 1024,
+            4 * 1024,
+            50_000, // retention_window
+            1_000,  // timestamp_units_per_second
+        )
+        .unwrap();
+
+        // latest_written_timestamp is None, so the legacy threshold would be
+        // "no limit"; the wall-clock floor (now * 1000 - 50_000) must reject ts 100.
+        assert!(matches!(ds.write(100, b"old"), Err(TmslError::Expired(_))));
+
+        let now_s = current_unix_seconds().unwrap();
+        ds.write(now_s * 1_000, b"fresh").unwrap();
+        assert_eq!(ds.latest_written_timestamp(), Some(now_s * 1_000));
+        assert!(matches!(ds.write(100, b"old"), Err(TmslError::Expired(_))));
+    }
+
+    #[test]
+    fn test_wall_clock_reclaim_advances_persisted_floor() {
+        let dir = temp_dir("wallclock_floor_persist");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSetInner::create(
+            id.clone(),
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            256 * 1024,
+            4 * 1024,
+            50_000, // retention_window
+            1_000,  // timestamp_units_per_second
+        )
+        .unwrap();
+
+        let before_s = current_unix_seconds().unwrap();
+        ds.write(before_s * 1_000, b"fresh").unwrap();
+        assert_eq!(
+            ds.dataset_state.snapshot().retention_floor,
+            TIMESTAMP_MIN_SENTINEL,
+            "no floor before reclaim"
+        );
+
+        let reclaimed = ds.reclaim_expired_segments().unwrap();
+        assert_eq!(reclaimed, 0, "fresh record must not be reclaimed");
+
+        let after_s = current_unix_seconds().unwrap();
+        let floor = ds.dataset_state.snapshot().retention_floor;
+        assert!(
+            floor >= before_s * 1_000 - 50_000 && floor <= after_s * 1_000 - 50_000,
+            "floor must equal the wall-clock candidate {floor}"
+        );
+
+        ds.close().unwrap();
+        let reopened = DataSetInner::open(id, dir).unwrap();
+        assert_eq!(reopened.dataset_state.snapshot().retention_floor, floor);
+    }
+
+    #[test]
+    fn test_wall_clock_zero_window_keeps_floor_untouched() {
+        let dir = temp_dir("wallclock_zero_window");
+        let id = DataSetKey {
+            name: "test".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSetInner::create(
+            id,
+            dir,
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            0,
+            256 * 1024,
+            4 * 1024,
+            0,     // retention_window = 0 (no limit)
+            1_000, // timestamp_units_per_second
+        )
+        .unwrap();
+
+        let now_s = current_unix_seconds().unwrap();
+        ds.write(now_s * 1_000, b"x").unwrap();
+        let reclaimed = ds.reclaim_expired_segments().unwrap();
+        assert_eq!(reclaimed, 0);
+        assert_eq!(
+            ds.dataset_state.snapshot().retention_floor,
+            TIMESTAMP_MIN_SENTINEL,
+            "retention_window == 0 must never advance the floor"
+        );
+    }
+
+    #[test]
     fn test_retention_reclaim_does_not_refresh_last_used_at() {
         let dir = temp_dir("retention_no_touch");
         let id = DataSetKey {
@@ -3658,6 +3888,7 @@ mod tests {
             data_segment_size,
             4096,
             15,
+            0,
         )
         .unwrap();
 
@@ -3688,6 +3919,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50, // retention_window = 50
+            0,  // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3727,6 +3959,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50,
+            0,
         )
         .unwrap();
 
@@ -3754,6 +3987,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50,
+            0,
         )
         .unwrap();
 
@@ -3785,6 +4019,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50,
+            0,
         )
         .unwrap();
 
@@ -3813,6 +4048,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             50,
+            0,
         )
         .unwrap();
 
@@ -3840,6 +4076,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         )
         .unwrap();
@@ -3875,6 +4112,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -3906,6 +4144,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -3934,6 +4173,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -3961,6 +4201,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         )
         .unwrap();
@@ -4000,6 +4241,7 @@ mod tests {
             1,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         )
         .unwrap();
@@ -4046,6 +4288,7 @@ mod tests {
                 256 * 1024,
                 4 * 1024,
                 0,
+                0,
             )
             .unwrap();
             ds.write(100, b"a").unwrap();
@@ -4084,6 +4327,7 @@ mod tests {
                 0,
                 256 * 1024,
                 4 * 1024,
+                0,
                 0,
             )
             .unwrap();
@@ -4127,6 +4371,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         )
         .unwrap();
@@ -4232,6 +4477,7 @@ mod tests {
                 256 * 1024,
                 4 * 1024,
                 0,
+                0,
             )
             .unwrap();
             ds.write(100, b"first").unwrap();
@@ -4282,6 +4528,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -4320,6 +4567,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -4346,6 +4594,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         )
         .unwrap();
@@ -4383,6 +4632,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0, // timestamp_units_per_second
         )
         .unwrap();
 
@@ -4423,6 +4673,7 @@ mod tests {
                 0,
                 256 * 1024,
                 4 * 1024,
+                0,
                 0,
             )
             .unwrap();
@@ -4466,6 +4717,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -4507,6 +4759,7 @@ mod tests {
                 256 * 1024,
                 4 * 1024,
                 0,
+                0,
             )
             .unwrap();
             ds.write(100, b"a").unwrap();
@@ -4539,6 +4792,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
 
@@ -4563,6 +4817,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         )
         .unwrap();
@@ -4603,6 +4858,7 @@ mod tests {
             0,
             256 * 1024,
             4 * 1024,
+            0,
             0,
         )
         .unwrap();
@@ -4647,6 +4903,7 @@ mod tests {
             data_segment_size,
             4096,
             retention_window,
+            0,
         )
         .unwrap();
 
@@ -4701,6 +4958,7 @@ mod tests {
                 0,
                 256 * 1024,
                 4 * 1024,
+                0,
                 0,
             )
             .unwrap();

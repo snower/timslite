@@ -22,6 +22,7 @@ public final class DatasetConfigBuilder {
     private Byte compressType;
     private Byte indexContinuous;
     private Long retentionWindow;
+    private Long timestampUnitsPerSecond;
     private Boolean enableJournal;
 
     private DatasetConfigBuilder() {
@@ -141,6 +142,22 @@ public final class DatasetConfigBuilder {
     }
 
     /**
+     * Sets the timestamp units per Unix second used for wall-clock retention.
+     * 0 keeps legacy retention based on the latest written timestamp.
+     *
+     * @param timestampUnitsPerSecond units per second, must be non-negative
+     * @return this builder
+     */
+    public DatasetConfigBuilder timestampUnitsPerSecond(long timestampUnitsPerSecond) {
+        if (timestampUnitsPerSecond < 0) {
+            throw new IllegalArgumentException(
+                    "timestampUnitsPerSecond must be non-negative, got " + timestampUnitsPerSecond);
+        }
+        this.timestampUnitsPerSecond = timestampUnitsPerSecond;
+        return this;
+    }
+
+    /**
      * Enables or disables journal for this dataset.
      *
      * @param enableJournal {@code true} to enable
@@ -166,6 +183,7 @@ public final class DatasetConfigBuilder {
                 compressType,
                 indexContinuous,
                 retentionWindow,
+                timestampUnitsPerSecond,
                 enableJournal
         );
     }

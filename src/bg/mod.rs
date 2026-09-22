@@ -545,6 +545,7 @@ mod tests {
             256 * 1024,
             4 * 1024,
             0,
+            0,
         )
         .unwrap();
         (key, Arc::new(ds))

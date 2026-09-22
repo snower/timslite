@@ -11,7 +11,7 @@
 | Flush | 可配置, 默认 15s | drain Store 级共享待 flush 队列同步普通 dataset dirty data/index/queue state; 直接调用 JournalManager 同步 dirty journal segment / journal queue state |
 | Idle Check | 60s | 扫描 dataset last_used_at, ≥30min → sync + unmmap + close |
 | Cache Eviction | 60s | 扫描缓存池, last_access_at ≥30min → 回收 + 释放内存 → LRU 检查 |
-| Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_window > 0 的 dataset, 回收过期分段 |
+| Retention Reclaim | 每日, 默认 0 点 | 扫描 retention_window > 0 的 dataset, 计算有效 floor 后回收过期分段 |
 
 Read-only Store mode does not create `BackgroundTasks` at all, even when `StoreConfig.enable_background_thread=true`. Manual background APIs are unavailable for that Store, and retention reclaim is rejected through the read-only dataset/runtime context.
 
@@ -175,14 +175,18 @@ fn next_retention_time(check_hour: u8) -> Instant {
 **执行流程**:
 ```
 retention-reclaim (每日 retention_check_hour):
-  1. 读锁遍历 datasets, 收集 retention_window > 0 的 dataset keys + retention_window
+  1. 读锁遍历 datasets, 收集 retention_window > 0 的 dataset keys + retention 配置
   2. 对每个 retention 启用的 dataset:
      a. Read lock → 获取 dataset Arc 引用
      b. Lock individual dataset mutex
      c. 调用 DataSet::reclaim_expired_segments()
         - 先 flush(), 再对 data/index segment 执行 idle_close_all()
         - 该步骤只 sync + unmap 分段 mmap, 不调用 public lifecycle DataSet::close()
-        - 若 latest_written_timestamp 为 None 则跳过; 否则计算 threshold = latest.saturating_sub(retention_window as i64)
+         - `retention_window == 0` 时跳过, 不计算 threshold、不推进 floor、不删除文件
+         - `timestamp_units_per_second == 0` 时保持 legacy 行为: 若 latest_written_timestamp 为 None 则跳过; 否则计算 `threshold = latest.saturating_sub(retention_window as i64)`, 不读取 wall clock
+         - `timestamp_units_per_second != 0` 时读取当前 Unix seconds, 以 checked `i128` arithmetic 计算 `now_units = unix_seconds * timestamp_units_per_second`, 仅在结果可转为 `i64` 时继续。epoch 前时钟或任何溢出返回 `TmslError::InvalidData`
+         - wall-clock candidate 为 `now_units.saturating_sub(retention_window as i64)`; effective threshold 为 `max(persisted_retention_floor, candidate_floor)`
+         - 若 effective floor 高于 persisted floor, 必须先更新并 flush mmap state, 再关闭或删除任何 index/data segment。回拨时钟、重启和 failed reclaim 都不能降低 floor
         - 删除 data 分段 (max_timestamp < threshold)
         - 删除 index 分段 (last_entry_timestamp < threshold)
      d. 释放 dataset mutex
@@ -199,9 +203,11 @@ retention-reclaim (每日 retention_check_hour):
 - 回收期间不更新 `last_used_at` (回收不应重置 idle 计时)
 
 **数据集级过期判断**:
-```
-expiration_threshold = ds.latest_written_timestamp.map(|latest| latest.saturating_sub(ds.retention_window))
-```
+legacy: `expiration_threshold = ds.latest_written_timestamp.map(|latest| latest.saturating_sub(ds.retention_window))`。
+
+wall-clock: `expiration_threshold = max(persisted_retention_floor, now_units.saturating_sub(ds.retention_window))`。
+
+两种模式均采用严格边界: `timestamp < expiration_threshold` 才过期, 相等 timestamp 保持有效。
 
 **分段级过期判断**:
 

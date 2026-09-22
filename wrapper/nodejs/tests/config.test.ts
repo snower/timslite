@@ -83,6 +83,7 @@ describe("config", () => {
         compressType: 0,
         indexContinuous: true,
         retentionWindow: 86400000n,
+        timestampUnitsPerSecond: 1000000n,
         enableJournal: true,
       });
       const ds = store.openDataset("custom", "events");
@@ -90,6 +91,7 @@ describe("config", () => {
       assert.equal(result.info.compressLevel, 6);
       assert.equal(result.info.indexContinuous, 1);
       assert.equal(result.info.retentionWindow, 86400000n);
+      assert.equal(result.info.timestampUnitsPerSecond, 1000000n);
       ds.close();
       store.close();
     } finally {
@@ -106,6 +108,34 @@ describe("config", () => {
       });
       const result = store.inspectDataset("retention", "data");
       assert.equal(result.info.retentionWindow, 3600000n);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("CreateDatasetOptions timestampUnitsPerSecond as bigint", () => {
+    const dir = makeTmpDir();
+    try {
+      const store = Store.open(dir, { enableBackgroundThread: false });
+      store.createDataset("scale", "data", {
+        timestampUnitsPerSecond: BigInt(1000000),
+      });
+      const result = store.inspectDataset("scale", "data");
+      assert.equal(result.info.timestampUnitsPerSecond, 1000000n);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("CreateDatasetOptions timestampUnitsPerSecond defaults to 0", () => {
+    const dir = makeTmpDir();
+    try {
+      const store = Store.open(dir, { enableBackgroundThread: false });
+      store.createDataset("legacy", "data", {});
+      const result = store.inspectDataset("legacy", "data");
+      assert.equal(result.info.timestampUnitsPerSecond, 0n);
       store.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });

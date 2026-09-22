@@ -58,6 +58,8 @@ pub struct DataSetInfo {
     // ─── 数据保留 ─────────────────────────────────────────────────────────
     /// 数据保留窗口 (与 timestamp 同单位，0=不限制)
     pub retention_window: u64,
+    /// 每 Unix 秒对应的 timestamp 单位数 (0=legacy retention, 创建后不可变)
+    pub timestamp_units_per_second: u64,
     /// 是否记录本 dataset 的 journal (创建后不可变)
     pub enable_journal: bool,
 
@@ -75,6 +77,8 @@ pub struct DataSetState {
     // ─── 写入状态 ─────────────────────────────────────────────────────────
     /// 最大已写入 timestamp (不是最新有效 record，删除不会回退；None 表示从未写入)
     pub latest_written_timestamp: Option<i64>,
+    /// 已持久化的 wall-clock retention floor；None 表示尚未设置
+    pub retention_floor: Option<i64>,
 
     // ─── 数据段状态 ───────────────────────────────────────────────────────
     /// 当前打开的数据段数量
@@ -157,12 +161,12 @@ active index segment 使用相同思路：当前仍可能追加 index entry 的�
 
 ### 4.3 文件格式
 
-`state` 文件为固定长度二进制文件，所有多字节整数均为 little-endian：
+`state` 文件为固定长度二进制文件，所有多字节整数均为 little-endian，不使用 float 表示：
 
 | Offset | 字段 | 类型 | 说明 |
 |--------|------|------|------|
 | 0 | magic | `[u8; 4]` | ASCII `DSSF` |
-| 4 | version | `u32` | 当前为 `1` |
+| 4 | version | `u32` | 当前为 `2` |
 | 8 | archived_until_offset | `u64` | 归档水位，语义为已纳入 state 的 data segment `file_offset` 排他上界 |
 | 16 | min_timestamp | `i64` | 已归档 index segment 的最小 timestamp；空范围使用 sentinel |
 | 24 | max_timestamp | `i64` | 已归档 index segment 的最大 timestamp；空范围使用 sentinel |
@@ -170,12 +174,15 @@ active index segment 使用相同思路：当前仍可能追加 index entry 的�
 | 40 | total_data_size | `u64` | 已归档 data segment 的数据区已用字节数，不含 header |
 | 48 | total_uncompressed_size | `u64` | 已归档 data segment 的未压缩逻辑大小 |
 | 56 | total_invalid_record_count | `u64` | 已归档 data segment 的无效 record 总数 |
+| 64 | retention_floor | `i64` | 已持久化 wall-clock retention 下界；`i64::MIN` 表示尚未设置 |
 
-总长度为 64 bytes。`archived_until_offset` 是排他水位：
+总长度为 72 bytes。`archived_until_offset` 是排他水位：
 
 - 初始 dataset 只有第一个 active tail 时，`archived_until_offset = 0`。
 - 当从 `file_offset = X` 滚动到新 data segment `Y` 时，将 `X` 的统计加入 state，并设置 `archived_until_offset = Y`。
 - 对于 `file_offset < archived_until_offset` 的 data segment，其统计必须已体现在 state 文件中，除非该 segment 后续被 retention 删除并从 state 中扣减。
+
+`retention_floor` 是可变的持久化 state，不是 `DataSetInfo.timestamp_units_per_second` 的副本。后者是创建时写入 meta 的不可变整数比例，`0` 保持 legacy retention。只有非零 scale 且 `retention_window != 0` 的 wall-clock retention 才使用该 floor。floor 只能向上推进，候选值较低时保持已有值；推进后必须同步 flush state mmap，之后才能 reclaim index 或 data segment。时钟回拨、重启或 reclaim 失败都不能降低已持久化 floor。
 
 ### 4.4 更新规则
 

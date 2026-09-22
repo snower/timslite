@@ -20,11 +20,13 @@ struct DataSet {
     base_dir: PathBuf,
     config: DataSetConfig,     // 从 meta 文件读取 (创建时写入, 之后不可变)
     retention_window: u64,     // 数据保留窗口 (timestamp unit, 0=不限)
+    timestamp_units_per_second: u64, // 不可变 wall-clock scale, 0=legacy retention
     segments: DataSegmentSet,
     time_index: TimeIndex,
     runtime_context: DataSetRuntimeContext, // Store 注入的 BlockCache + JournalSink
     last_used_at: Instant,
-    latest_written_timestamp: Option<i64>,  // 写入过的最大 timestamp, 不是最新有效 record, 同时作为回收基准
+    latest_written_timestamp: Option<i64>,  // 写入过的最大 timestamp, 不是最新有效 record
+    persisted_retention_floor: i64, // 非零 scale 的持久化单调过期 floor
 }
 
 struct DataSetRuntimeContext {
@@ -42,6 +44,7 @@ impl DataSet {
         index_continuous: u8,
         initial_data_segment_size: u64, initial_index_segment_size: u64,
         retention_window: u64,
+        timestamp_units_per_second: u64,
     ) -> io::Result<Self>;
 
     /// 打开已有数据集 (参数从 meta 文件读取, 不能设置)
@@ -97,7 +100,7 @@ impl DataSet {
     fn append_now(&self, data: &[u8]) -> io::Result<()>;
 
     /// 回收超过有效期的分段文件 (需先 close)
-    /// retention_window=0 时跳过; retention_window > 0 时计算过期阈值并删除过期分段
+    /// retention_window=0 时跳过; 否则计算有效过期 floor 并删除过期分段
     fn reclaim_expired_segments(&mut self) -> io::Result<usize>;
 
     /// 获取 retention_window 配置
@@ -245,7 +248,7 @@ DataSet::write(timestamp, data):
 
 **乱序写入**: 当 `latest_written_timestamp = Some(latest)` 且 `timestamp < latest` 时, 数据追加到最新数据段 (正常写入到 pending block), 同时更新该时间戳对应的索引位置。非连续模式要求索引中已有真实条目; 连续模式允许目标位置是已有真实 entry、已物化 filler 或逻辑空洞。逻辑空洞会按需创建目标 index segment, 只物化该分段内到目标 timestamp 前一位的 filler, 再写入真实 entry。
 
-**retention 写入约束**: 当 `retention_window > 0` 且 `latest_written_timestamp = Some(latest)` 时, `timestamp < latest.saturating_sub(retention_window as i64)` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。`retention_window` 在 builder、FFI、create/open/meta decode 阶段必须已校验为 `0..=i64::MAX`, 因此该 cast 不允许发生 wrap。正序写入仍允许推进 `latest_written_timestamp`, 并可能使更多旧数据进入过期窗口。
+**retention 写入约束**: 当 `retention_window > 0` 时, `timestamp < effective expiration threshold` 的乱序写入被视为过期写入, 不允许回填、替换 filler 或覆盖旧 entry, 返回 `Expired` 错误。scale 为 `0` 的 legacy threshold 由 `latest.saturating_sub(retention_window as i64)` 计算; 非零 scale 使用 wall-clock monotonic floor。`retention_window` 在 builder、FFI、create/open/meta decode 阶段必须已校验为 `0..=i64::MAX`, 因此该 cast 不允许发生 wrap。正序写入仍允许推进 `latest_written_timestamp`。
 
 **连续模式稀疏 filler 规则**:
 
@@ -585,7 +588,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > - 如果最大已写时间戳对应的 index entry 已被 delete 标记为 filler, `read_latest()` 仍返回 `None` (不会回退到更早的有效记录)
 > - FFI 保留独立的 `tmsl_dataset_read_latest` API; `tmsl_dataset_read(dataset, -1, ...)` 读取精确 timestamp `-1`
 >
-> **retention 语义**: 当 `latest_written_timestamp` 为 `Some(latest)` 时, 所有读取路径以 `retention_threshold = latest.saturating_sub(retention_window as i64)` 为可见性下界；为 `None` 时不产生 retention threshold。`retention_window` 在进入计算前必须已校验为 `0..=i64::MAX`。`read(ts)` 若 `ts < retention_threshold` 直接返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold。`read_entry_at_index(entry)` 是 crate 内部低层读取 helper, 调用方必须先通过 public 入口或已钳制的 index 查询确定 entry 可见。
+> **retention 语义**: `retention_window == 0` 时不产生 threshold。scale 为 `0` 时, `latest_written_timestamp = Some(latest)` 的 legacy 数据集以 `latest.saturating_sub(retention_window as i64)` 为可见性下界; `None` 时没有 threshold。非零 scale 的数据集以持久化单调 floor 和 current wall-clock candidate 的最大值为下界。`retention_window` 在进入计算前必须已校验为 `0..=i64::MAX`。`read(ts)` 仅在 `ts < threshold` 时返回 `Ok(None)`; `query/query_iter/query_index_entries` 将 start 钳制到 threshold。`read_entry_at_index(entry)` 是 crate 内部低层读取 helper, 调用方必须先通过 public 入口或已钳制的 index 查询确定 entry 可见。
 
 ### 10.4 `latest_written_timestamp`
 
@@ -597,7 +600,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 - 索引 entry 在写入路径中直接追加到 mmap-backed IndexSegment; `open` 恢复只需要读取最新非空 index segment 文件的最后一条 entry
 - 用于:
   - `read_latest()` 解析到最大已写 timestamp; 若该 entry 不存在、已删除或已过期, 返回 `None`, 不反向搜索更早有效记录
-  - 数据保留阈值计算 (`latest.saturating_sub(retention_window as i64)`)
+  - legacy 数据保留阈值计算 (`latest.saturating_sub(retention_window as i64)`, 仅 scale 为 `0`)
   - 连续模式稀疏 filler 的上一个真实写入边界判定
 
 > **读操作接口总览**: 完整的读操作接口文档（含新增的 read_exist/query_exist/read_length/query_length/query_length_iter）见 [数据集读操作](dataset-read-operations.md)。
@@ -606,7 +609,7 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 
 ### 11.1 retention_window 配置
 
-`retention_window` 是数据集级不可变配置, 存储在 `meta` 文件中 (TLV type `0x08`, u64 LE)。其单位必须与业务 timestamp 完全相同, 不绑定秒或毫秒。
+`retention_window` 与 `timestamp_units_per_second: u64` 都是数据集级不可变配置, 存储在 `meta` 文件中。`retention_window` 的单位必须与业务 timestamp 完全相同, 不绑定固定秒或毫秒。`timestamp_units_per_second` 定义该业务 timestamp 与 wall clock 的换算比例。
 
 | 值 | 含义 |
 |---|------|
@@ -616,23 +619,48 @@ read(timestamp) → Option<(i64, Vec<u8>)>
 > **单位说明**: `retention_window` 不表示固定毫秒。其值必须使用 timestamp unit: 如果业务 timestamp 按秒递增, retention 也按秒; 如果业务 timestamp 按其它单位递增, retention 也按同一单位。调用方需确保二者单位一致。
 > **范围说明**: `retention_window` 的磁盘和 FFI 类型是 `u64`, 但有效范围固定为 `0..=i64::MAX`。builder、DataSetMeta 解析、dataset create/open 和 FFI config decode 都必须拒绝超过 `i64::MAX` 的值, 因为过期阈值与 signed `i64` timestamp 同域计算。
 
+| `timestamp_units_per_second` | retention 基准 |
+|---|---|
+| `0` | legacy 行为, `latest_written_timestamp.saturating_sub(retention_window as i64)`; 不读取 wall clock |
+| `> 0` | wall-clock 行为, 每秒对应的业务 timestamp units; 以当前 Unix seconds 计算阈值 |
+
+`timestamp_units_per_second` 为非零时, `write_now` 和 `append_now` 也使用相同 scale 生成业务 timestamp。这样这些 API 写入的 timestamp 与 wall-clock retention 处于同一时间域。
+
 ### 11.2 过期阈值计算
+
+`retention_window == 0` 时 retention 完全禁用, 不计算 threshold、不推进 floor、不回收任何分段。
+
+`timestamp_units_per_second == 0` 保持 legacy 行为:
 
 ```
 expiration_threshold = latest_written_timestamp.map(|latest| latest.saturating_sub(retention_window as i64))
 ```
 
-- `latest_written_timestamp`: 数据集写入过的最大时间戳 (从索引最后位置恢复; 不存入 meta); `None` 表示从未写入
-- `saturating_sub`: 防止 timestamp < retention_window 时下溢; `retention_window as i64` 在进入计算前已由配置/meta 校验保证安全
-- 当 `latest_written_timestamp` 为 `None` 时无过期阈值, 不回收; 当 `latest < retention_window` 时, `saturating_sub` 将 threshold 钳制到 `i64::MIN`
+- `latest_written_timestamp` 是数据集写入过的最大时间戳; `None` 表示从未写入, 因而没有阈值也不回收
+- `saturating_sub` 防止下溢; `retention_window as i64` 已在进入计算前校验
+- legacy 数据集不读取 wall clock, 也不使用或推进持久化 floor
+
+`timestamp_units_per_second != 0` 时使用 wall-clock 行为。先读取当前 Unix seconds, 再以 checked `i128` arithmetic 计算 `now_units = unix_seconds * timestamp_units_per_second`; 只有结果可表示为 `i64` 才能继续。Unix epoch 之前的系统时间或乘法、转换溢出均返回 `TmslError::InvalidData`。随后计算:
+
+```
+candidate_floor = now_units.saturating_sub(retention_window as i64)
+expiration_threshold = max(persisted_retention_floor, candidate_floor)
+```
+
+`persisted_retention_floor` 是 wall-clock retention 的单调下界。时钟回拨、进程重启和失败的物理回收都不得降低 effective floor。
 
 ### 11.3 回收流程
 
 ```
 DataSet::reclaim_expired_segments():
   1. if retention_window == 0 → return Ok(0)
-  2. if latest_written_timestamp is None → return Ok(0)
-     threshold = latest_written_timestamp.unwrap().saturating_sub(retention_window as i64)
+   2. scale == 0:
+      if latest_written_timestamp is None → return Ok(0)
+      threshold = latest_written_timestamp.unwrap().saturating_sub(retention_window as i64)
+      scale != 0:
+      checked i128 计算 current Unix seconds * scale, 得到 candidate_floor
+      threshold = max(persisted_retention_floor, candidate_floor)
+      若 threshold 推进, 先写入并 flush mmap state 中的 persisted_retention_floor
   3. old_last_used_at = self.last_used_at
      self.flush()  -- 确保 dirty mmap segment 同步; flush 内部可能临时 touch
   4. self.time_index.idle_close_all()
@@ -651,13 +679,9 @@ DataSet::reclaim_expired_segments():
 
 ### 11.4 读取与写入约束
 
-当 `retention_window > 0` 时, 所有读路径共享同一个过期阈值:
+当 `retention_window > 0` 时, 所有读路径共享同一个 effective expiration threshold。legacy 数据集使用 latest-based threshold; wall-clock 数据集使用持久化单调 floor 与 current candidate 的最大值。
 
-```rust
-retention_threshold = latest_written_timestamp.map(|latest| latest.saturating_sub(retention_window as i64))
-```
-
-| 操作 | `timestamp < retention_threshold` 行为 |
+| 操作 | `timestamp < expiration_threshold` 行为 |
 |------|----------------------------------------|
 | `read(ts)` | 直接返回 `Ok(None)` |
 | `read_latest()` | 解析为 latest, 不回退到更早有效记录 |
@@ -672,6 +696,8 @@ retention_threshold = latest_written_timestamp.map(|latest| latest.saturating_su
 | `append(ts)` 且 `ts < latest` | 返回 append 顺序错误; 若同时过期, 可返回 `Expired` |
 | `append(ts)` 且 `ts == latest` | 仅当 latest record 仍是未压缩末尾 record 时可追加; 追加后 latest 不变 |
 | `append(ts)` 且 `ts > latest` | 按 append 创建新 record, 推进 latest/threshold |
+
+**严格边界**: `timestamp < expiration_threshold` 才过期, `timestamp == expiration_threshold` 仍有效。
 
 **效果**: 过期数据即使索引或数据物理文件尚未回收, 也不再通过读路径可见, 且不能被 delete 或 out-of-order rewrite 修改。
 

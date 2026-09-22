@@ -20,8 +20,9 @@
 | DOTNET-8 | 集成测试与回归验证 | ✅ 完成 | .NET tests plus Rust/root verification |
 | DOTNET-9 | CI/native 发布准备 | ✅ 完成 | release workflow, native matrix, publish prep scripts |
 | DOTNET-10 | 跨层文档同步 | ✅ 完成 | README/root design/plan references after implementation |
+| DOTNET-11 | Wall-clock retention timestamp units | ⏳ 待实现 | `TimestampUnitsPerSecond` config mapping, tests, and docs |
 
-所有阶段已完成。.NET wrapper 现已可用, 详见 [README.md](README.md)。
+除 DOTNET-11 外所有阶段已完成。.NET wrapper 现已可用, 详见 [README.md](README.md)。
 
 ---
 
@@ -254,6 +255,25 @@ wrapper/dotnet/
 
 - .NET config 覆盖当前 root `StoreConfig` / `DataSetConfig` 权威字段。
 - Generated exception type does not leak through public facade.
+
+---
+
+## Phase DOTNET-11: Wall-clock retention timestamp units
+
+文件:
+
+- Modify: `wrapper/dotnet/native/src/config.rs`
+- Modify: `wrapper/dotnet/native/src/timslite.udl`
+- Modify: `wrapper/dotnet/src/Timslite/DatasetConfig.cs`
+- Modify: `wrapper/dotnet/src/Timslite/CreateDatasetOptions.cs`
+- Modify: `wrapper/dotnet/tests/Timslite.Tests/ConfigTests.cs`
+
+任务:
+
+- [x] 将 `TimestampUnitsPerSecond: ulong` 映射到 root `timestamp_units_per_second` dataset 配置。
+- [x] 默认值为 `0`; `0` 保持按 latest written timestamp 的 legacy retention。
+- [x] 非零值表示每个 Unix 秒的 dataset timestamp units, 使 `RetentionWindow` 使用 wall-clock retention。
+- [x] 覆盖默认值、自定义值和 facade 到 UniFFI/Rust 的转换测试。
 
 ---
 

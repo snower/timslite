@@ -429,6 +429,7 @@ impl Store {
             config.initial_data_segment_size,
             config.initial_index_segment_size,
             config.retention_window,
+            config.timestamp_units_per_second,
             config.enable_journal,
         )?;
         write_identifier_file(&dataset_identifier_path(&dir), identifier)?;

@@ -133,6 +133,7 @@ Download prebuilt `libtimslite` from [GitHub Releases](https://github.com/snower
 | `compress_type` | from StoreConfig | 0=zstd, 1=deflate |
 | `index_continuous` | 0 (sparse) | 0=sparse, 1=continuous |
 | `retention_window` | 0 (no limit) | Retention in timestamp units |
+| `timestamp_units_per_second` | 0 | Dataset timestamp units per Unix second; 0 keeps legacy latest-written-timestamp retention, nonzero enables wall-clock retention |
 | `enable_journal` | true | Whether to journal this dataset |
 
 ## Common Mistakes

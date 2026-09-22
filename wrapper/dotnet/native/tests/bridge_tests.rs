@@ -51,6 +51,7 @@ fn dataset_config_apply_to_builder() {
         index_segment_size: Some(1024 * 1024),
         compress_level: Some(3),
         retention_window: Some(0),
+        timestamp_units_per_second: Some(1_000_000),
         enable_journal: Some(false),
         ..Default::default()
     };
@@ -60,6 +61,7 @@ fn dataset_config_apply_to_builder() {
     let built = builder.build().unwrap();
     assert_eq!(built.data_segment_size(), 2 * 1024 * 1024);
     assert_eq!(built.index_segment_size(), 1024 * 1024);
+    assert_eq!(built.timestamp_units_per_second(), 1_000_000);
 }
 
 #[test]

@@ -18,6 +18,7 @@ public final class DatasetInfo {
     private final short compressLevel;
     private final short indexContinuous;
     private final long retentionWindow;
+    private final long timestampUnitsPerSecond;
     private final boolean enableJournal;
     private final long createTime;
 
@@ -34,6 +35,7 @@ public final class DatasetInfo {
         this.compressLevel = (short) (KotlinConversions.getUByte(kotlinInfo, "getCompressLevel") & 0xFF);
         this.indexContinuous = (short) (KotlinConversions.getUByte(kotlinInfo, "getIndexContinuous") & 0xFF);
         this.retentionWindow = KotlinConversions.getULong(kotlinInfo, "getRetentionWindow");
+        this.timestampUnitsPerSecond = KotlinConversions.getULong(kotlinInfo, "getTimestampUnitsPerSecond");
         this.enableJournal = kotlinInfo.getEnableJournal();
         this.createTime = kotlinInfo.getCreateTime();
     }
@@ -145,6 +147,16 @@ public final class DatasetInfo {
      */
     public long getRetentionWindow() {
         return retentionWindow;
+    }
+
+    /**
+     * Returns the timestamp units per Unix second used for wall-clock retention.
+     * A value of 0 means legacy retention based on the latest written timestamp.
+     *
+     * @return timestamp units per second
+     */
+    public long getTimestampUnitsPerSecond() {
+        return timestampUnitsPerSecond;
     }
 
     /**

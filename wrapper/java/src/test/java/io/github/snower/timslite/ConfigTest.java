@@ -76,6 +76,21 @@ class ConfigTest {
     }
 
     @Test
+    void datasetConfigTimestampUnitsPerSecondPreserved() {
+        DatasetConfig config = DatasetConfigBuilder.builder()
+                .dataSegmentSize(65536)
+                .timestampUnitsPerSecond(1_000_000L)
+                .build();
+        assertNotNull(config);
+    }
+
+    @Test
+    void negativeTimestampUnitsPerSecondThrows() {
+        assertThrows(IllegalArgumentException.class, () ->
+                DatasetConfigBuilder.builder().timestampUnitsPerSecond(-1L));
+    }
+
+    @Test
     void defaultQueueConsumerConfigProducesNonNullResult() {
         QueueConsumerConfig config = QueueConsumerConfigBuilder.builder().build();
         assertNotNull(config);

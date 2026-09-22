@@ -76,7 +76,8 @@ let store_config = StoreConfig::builder()
 
 let dataset_config = DataSetConfigBuilder::from_store(&store_config)
     .index_continuous(0)
-    .retention_window(0);
+    .retention_window(0)
+    .timestamp_units_per_second(0);
 
 let mut store = Store::open("./data", store_config)?;
 let dataset = store.create_dataset_with_config("sensor", "temperature", Some(dataset_config))?;
@@ -84,6 +85,8 @@ dataset.write(1, b"21.5")?;
 ```
 
 `create_dataset_with_config` 接收 `Option<DataSetConfigBuilder>` 而不是已构造的 config, 这样 Store 可以统一套用 Store 默认值并执行 dataset config 校验。
+
+`timestamp_units_per_second: u64` 是创建时确定并持久化的 dataset 配置, 默认 `0`。`0` 保持按 `latest_written_timestamp` 计算的 legacy retention。非零值定义每个 Unix 秒对应的 dataset timestamp units, 使 `retention_window` 按 wall-clock 时间过期; `write_now` 和 `append_now` 使用相同缩放后的时间域。
 
 ### 11.2 Store 内部行为
 

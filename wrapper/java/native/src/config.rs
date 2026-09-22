@@ -73,6 +73,7 @@ pub struct DatasetConfig {
     pub compress_type: Option<u8>,
     pub index_continuous: Option<u8>,
     pub retention_window: Option<u64>,
+    pub timestamp_units_per_second: Option<u64>,
     pub enable_journal: Option<bool>,
 }
 
@@ -101,6 +102,9 @@ impl DatasetConfig {
         }
         if let Some(v) = self.retention_window {
             builder = builder.retention_window(v);
+        }
+        if let Some(v) = self.timestamp_units_per_second {
+            builder = builder.timestamp_units_per_second(v);
         }
         if let Some(v) = self.enable_journal {
             builder = builder.enable_journal(v);

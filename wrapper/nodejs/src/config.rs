@@ -30,6 +30,7 @@ pub struct CreateDatasetOptions {
     pub compress_type: Option<u8>,
     pub index_continuous: Option<bool>,
     pub retention_window: Option<BigInt>,
+    pub timestamp_units_per_second: Option<BigInt>,
     pub enable_journal: Option<bool>,
 }
 
@@ -131,6 +132,9 @@ pub fn build_dataset_config(
     }
     if let Some(ref v) = opts.retention_window {
         builder = builder.retention_window(bigint_to_u64(v, "retentionWindow")?);
+    }
+    if let Some(ref v) = opts.timestamp_units_per_second {
+        builder = builder.timestamp_units_per_second(bigint_to_u64(v, "timestampUnitsPerSecond")?);
     }
     if let Some(v) = opts.enable_journal {
         builder = builder.enable_journal(v);

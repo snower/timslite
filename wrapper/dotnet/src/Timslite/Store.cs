@@ -286,6 +286,7 @@ public sealed class Store : IDisposable
             result.Info.CompressLevel,
             result.Info.IndexContinuous,
             result.Info.RetentionWindow,
+            result.Info.TimestampUnitsPerSecond,
             result.Info.EnableJournal,
             result.Info.CreateTime
         );

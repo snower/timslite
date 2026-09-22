@@ -933,3 +933,142 @@ fn query_length_iter_reverse_skip_and_collect_take_chain() {
 
     store.close().unwrap();
 }
+
+#[test]
+fn test_write_now_and_append_now_use_scaled_wall_clock_timestamps() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use timslite::{DataSetConfig, Store, StoreConfig};
+
+    fn unix_secs() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
+    let dir = temp_dir();
+    let mut store =
+        Store::open(&dir, StoreConfig::builder().enable_journal(false).build()).unwrap();
+    let config = DataSetConfig::builder().timestamp_units_per_second(1_000);
+    store
+        .create_dataset_with_config("ds", "type", Some(config))
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    let before = unix_secs();
+    ds.write_now(b"aa").unwrap();
+    let after = unix_secs();
+    let ts_latest = ds
+        .latest_written_timestamp()
+        .expect("write_now must advance latest_written_timestamp");
+    assert!(
+        ts_latest >= before * 1_000 && ts_latest <= after * 1_000,
+        "write_now ts {ts_latest} must be in scaled domain [{}, {}]",
+        before * 1_000,
+        after * 1_000
+    );
+    assert!(ts_latest > after, "write_now must not use raw Unix seconds");
+
+    ds.append_now(b"bb").unwrap();
+    let after_append = unix_secs();
+    let (ts_appended, data) = ds
+        .read_latest()
+        .unwrap()
+        .expect("append_now record must exist");
+    assert!(
+        ts_appended >= before * 1_000 && ts_appended <= after_append * 1_000,
+        "append_now ts {ts_appended} must be in scaled wall-clock domain"
+    );
+    assert!(
+        data == b"aabb".to_vec() || data == b"bb".to_vec(),
+        "unexpected latest payload {data:?}"
+    );
+
+    store.close().unwrap();
+}
+
+#[test]
+fn test_wall_clock_retention_threshold_independent_of_latest_written_timestamp() {
+    use timslite::{DataSetConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store =
+        Store::open(&dir, StoreConfig::builder().enable_journal(false).build()).unwrap();
+    let config = DataSetConfig::builder()
+        .retention_window(50_000)
+        .timestamp_units_per_second(1_000);
+    store
+        .create_dataset_with_config("ds", "type", Some(config))
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write_now(b"now").unwrap();
+    let ts_now = ds.latest_written_timestamp().unwrap();
+    let future_ts = ts_now + 10_000_000;
+    ds.write(future_ts, b"future").unwrap();
+    assert_eq!(ds.latest_written_timestamp(), Some(future_ts));
+
+    // A latest-based threshold would be future_ts - 50_000 > ts_now.
+    // The wall-clock threshold stays near now * 1_000 - 50_000 within the test window.
+    assert!(
+        ds.read(ts_now).unwrap().is_some(),
+        "wall-clock threshold must not chase latest_written_timestamp"
+    );
+
+    store.close().unwrap();
+}
+
+#[test]
+fn test_scaled_write_now_overflow_returns_invalid_data() {
+    use timslite::{DataSetConfig, Store, StoreConfig, TmslError};
+
+    let dir = temp_dir();
+    let mut store =
+        Store::open(&dir, StoreConfig::builder().enable_journal(false).build()).unwrap();
+    let config = DataSetConfig::builder().timestamp_units_per_second(u64::MAX);
+    store
+        .create_dataset_with_config("ds", "type", Some(config))
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    let err = ds.write_now(b"x").unwrap_err();
+    assert!(
+        matches!(err, TmslError::InvalidData(_)),
+        "scaled overflow must be InvalidData, got {err}"
+    );
+
+    // Retention is disabled (window 0), so explicit timestamps bypass the clock.
+    ds.write(5, b"five").unwrap();
+    assert_eq!(ds.read(5).unwrap().map(|(ts, _)| ts), Some(5));
+
+    store.close().unwrap();
+}
+
+#[test]
+fn test_omitted_timestamp_units_keeps_legacy_latest_threshold() {
+    use timslite::{DataSetConfig, Store, StoreConfig};
+
+    let dir = temp_dir();
+    let mut store =
+        Store::open(&dir, StoreConfig::builder().enable_journal(false).build()).unwrap();
+    let config = DataSetConfig::builder().retention_window(50);
+    store
+        .create_dataset_with_config("ds", "type", Some(config))
+        .unwrap();
+    let ds = store.open_dataset("ds", "type").unwrap();
+
+    ds.write(100, b"old").unwrap();
+    ds.write(160, b"mid").unwrap();
+    ds.write(200, b"new").unwrap();
+
+    // Legacy threshold = latest(200) - 50 = 150; the real clock (year 2020+)
+    // must not expire any of these records because units stay 0.
+    assert!(
+        ds.read(100).unwrap().is_none(),
+        "ts 100 < legacy threshold 150"
+    );
+    assert!(ds.read(160).unwrap().is_some());
+    assert!(ds.read(200).unwrap().is_some());
+
+    store.close().unwrap();
+}

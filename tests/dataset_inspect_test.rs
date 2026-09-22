@@ -234,7 +234,7 @@ fn test_inspect_state_file_created_on_dataset_create() {
 
     let state_path = dir.join("sensor").join("temperature").join("state");
     assert!(state_path.exists(), "dataset state file should be created");
-    assert_eq!(std::fs::metadata(state_path).unwrap().len(), 64);
+    assert_eq!(std::fs::metadata(state_path).unwrap().len(), 72);
 }
 
 #[test]

@@ -220,11 +220,13 @@ interface CreateDatasetOptions {
   compressType?: 0 | 1;
   indexContinuous?: boolean;
   retentionWindow?: number | bigint;
+  timestampUnitsPerSecond?: number | bigint;
   enableJournal?: boolean;
 }
 ```
 
 缺省值来自 Store config。`compressType` 使用当前 Rust contract: `0=zstd`, `1=deflate`。
+`timestampUnitsPerSecond` defaults to `0`. At `0`, `retentionWindow` keeps legacy retention based on the latest written timestamp. A nonzero value specifies dataset timestamp units per Unix second and makes retention wall-clock based.
 
 ### 5.6 Dataset
 

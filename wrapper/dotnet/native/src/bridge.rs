@@ -64,6 +64,7 @@ pub struct DataSetInfo {
     pub compress_level: u8,
     pub index_continuous: u8,
     pub retention_window: u64,
+    pub timestamp_units_per_second: u64,
     pub enable_journal: bool,
     pub create_time: i64,
 }
@@ -289,6 +290,7 @@ impl StoreBridge {
                         compress_level: result.info.compress_level,
                         index_continuous: result.info.index_continuous,
                         retention_window: result.info.retention_window,
+                        timestamp_units_per_second: result.info.timestamp_units_per_second,
                         enable_journal: result.info.enable_journal,
                         create_time: result.info.create_time,
                     },

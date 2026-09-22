@@ -4347,8 +4347,10 @@ data class DataSetInfo (
     , 
     var `retentionWindow`: kotlin.ULong
     , 
+    var `timestampUnitsPerSecond`: kotlin.ULong
+    ,
     var `enableJournal`: kotlin.Boolean
-    , 
+    ,
     var `createTime`: kotlin.Long
     
 ){
@@ -4378,6 +4380,7 @@ public object FfiConverterTypeDataSetInfo: FfiConverterRustBuffer<DataSetInfo> {
             FfiConverterUByte.read(buf),
             FfiConverterUByte.read(buf),
             FfiConverterULong.read(buf),
+            FfiConverterULong.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterLong.read(buf),
         )
@@ -4396,6 +4399,7 @@ public object FfiConverterTypeDataSetInfo: FfiConverterRustBuffer<DataSetInfo> {
             FfiConverterUByte.allocationSize(value.`compressLevel`) +
             FfiConverterUByte.allocationSize(value.`indexContinuous`) +
             FfiConverterULong.allocationSize(value.`retentionWindow`) +
+            FfiConverterULong.allocationSize(value.`timestampUnitsPerSecond`) +
             FfiConverterBoolean.allocationSize(value.`enableJournal`) +
             FfiConverterLong.allocationSize(value.`createTime`)
     )
@@ -4413,6 +4417,7 @@ public object FfiConverterTypeDataSetInfo: FfiConverterRustBuffer<DataSetInfo> {
             FfiConverterUByte.write(value.`compressLevel`, buf)
             FfiConverterUByte.write(value.`indexContinuous`, buf)
             FfiConverterULong.write(value.`retentionWindow`, buf)
+            FfiConverterULong.write(value.`timestampUnitsPerSecond`, buf)
             FfiConverterBoolean.write(value.`enableJournal`, buf)
             FfiConverterLong.write(value.`createTime`, buf)
     }
@@ -4593,8 +4598,10 @@ data class DatasetConfig (
     , 
     var `retentionWindow`: kotlin.ULong?
     , 
+    var `timestampUnitsPerSecond`: kotlin.ULong?
+    ,
     var `enableJournal`: kotlin.Boolean?
-    
+
 ){
     
 
@@ -4618,6 +4625,7 @@ public object FfiConverterTypeDatasetConfig: FfiConverterRustBuffer<DatasetConfi
             FfiConverterOptionalUByte.read(buf),
             FfiConverterOptionalUByte.read(buf),
             FfiConverterOptionalULong.read(buf),
+            FfiConverterOptionalULong.read(buf),
             FfiConverterOptionalBoolean.read(buf),
         )
     }
@@ -4631,6 +4639,7 @@ public object FfiConverterTypeDatasetConfig: FfiConverterRustBuffer<DatasetConfi
             FfiConverterOptionalUByte.allocationSize(value.`compressType`) +
             FfiConverterOptionalUByte.allocationSize(value.`indexContinuous`) +
             FfiConverterOptionalULong.allocationSize(value.`retentionWindow`) +
+            FfiConverterOptionalULong.allocationSize(value.`timestampUnitsPerSecond`) +
             FfiConverterOptionalBoolean.allocationSize(value.`enableJournal`)
     )
 
@@ -4643,6 +4652,7 @@ public object FfiConverterTypeDatasetConfig: FfiConverterRustBuffer<DatasetConfi
             FfiConverterOptionalUByte.write(value.`compressType`, buf)
             FfiConverterOptionalUByte.write(value.`indexContinuous`, buf)
             FfiConverterOptionalULong.write(value.`retentionWindow`, buf)
+            FfiConverterOptionalULong.write(value.`timestampUnitsPerSecond`, buf)
             FfiConverterOptionalBoolean.write(value.`enableJournal`, buf)
     }
 }

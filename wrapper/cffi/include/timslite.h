@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 #define TMSL_STORE_CONFIG_FFI_VERSION 5u
-#define TMSL_DATASET_CONFIG_FFI_VERSION 3u
+#define TMSL_DATASET_CONFIG_FFI_VERSION 4u
 #define TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION 1u
 
 #define TMSL_STORE_READ_ONLY_AUTO 0u  /**< Auto: writable if .lock can be locked, otherwise read-only */
@@ -51,6 +51,7 @@ typedef struct TmslDatasetConfigFFI {
     uint64_t initial_data_segment_size;
     uint64_t initial_index_segment_size;
     uint64_t retention_window;
+    uint64_t timestamp_units_per_second; /* wall-clock scale, 0=legacy retention */
     uint8_t compress_level;
     uint8_t compress_type; /* 0=zstd (default), 1=deflate */
     uint8_t index_continuous;
@@ -1107,6 +1108,7 @@ typedef struct TmslDataSetInfo {
     uint8_t compress_level;           /**< Compression level (0-9) */
     uint8_t index_continuous;         /**< Index mode: 0=sparse, 1=continuous */
     uint64_t retention_window;        /**< Data retention window (0=no limit) */
+    uint64_t timestamp_units_per_second; /**< Timestamp units per Unix second (0=legacy retention) */
     uint8_t enable_journal;           /**< Whether this dataset records journal entries */
     int64_t create_time;              /**< Dataset creation time (Unix milliseconds) */
 } TmslDataSetInfo;

@@ -189,6 +189,63 @@ fn cffi_dataset_read_and_queue_roundtrip() {
 }
 
 #[test]
+fn cffi_dataset_create_with_config_and_inspect_timestamp_units_per_second() {
+    let dir = tempfile::tempdir().unwrap();
+    let dir = CString::new(dir.path().to_string_lossy().as_bytes()).unwrap();
+    let name = CString::new("scale").unwrap();
+    let kind = CString::new("micro").unwrap();
+    let mut err = err_buf();
+
+    let store = tmsl_store_open(dir.as_ptr(), err.as_mut_ptr(), err.len());
+    assert!(!store.is_null());
+
+    let config = TmslDatasetConfigFFI {
+        version: 4,
+        data_segment_size: 1024 * 1024,
+        index_segment_size: 256 * 1024,
+        initial_data_segment_size: 1024 * 1024,
+        initial_index_segment_size: 256 * 1024,
+        retention_window: 3_600_000_000,
+        timestamp_units_per_second: 1_000_000,
+        compress_level: 6,
+        compress_type: 0,
+        index_continuous: 0,
+        enable_journal: 0,
+    };
+
+    let dataset = tmsl_dataset_create_with_config(
+        store,
+        name.as_ptr(),
+        kind.as_ptr(),
+        &config,
+        err.as_mut_ptr(),
+        err.len(),
+    );
+    assert!(!dataset.is_null(), "create error: {:?}", unsafe {
+        CStr::from_ptr(err.as_ptr())
+    });
+    assert_eq!(tmsl_dataset_close(dataset, err.as_mut_ptr(), err.len()), 0);
+
+    let mut result: TmslInspectResult = unsafe { std::mem::zeroed() };
+    assert_eq!(
+        tmsl_store_inspect_dataset(
+            store,
+            name.as_ptr(),
+            kind.as_ptr(),
+            &mut result,
+            err.as_mut_ptr(),
+            err.len(),
+        ),
+        0
+    );
+    assert_eq!(result.info.timestamp_units_per_second, 1_000_000);
+    assert_eq!(result.info.retention_window, 3_600_000_000);
+    tmsl_free_inspect_result(&mut result);
+
+    assert_eq!(tmsl_store_close(store, err.as_mut_ptr(), err.len()), 0);
+}
+
+#[test]
 fn cffi_queue_consumer_group_names_inspect_flush_and_close() {
     let dir = tempfile::tempdir().unwrap();
     let dir = CString::new(dir.path().to_string_lossy().as_bytes()).unwrap();

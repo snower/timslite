@@ -389,6 +389,8 @@ pub struct DataSetConfig {
     pub(crate) initial_index_segment_size: u64,
     /// Data validity period in same unit as timestamps. 0 = no limit.
     pub(crate) retention_window: u64,
+    /// Dataset timestamp units per Unix second. 0 = legacy wall-clock scale.
+    pub(crate) timestamp_units_per_second: u64,
     /// Whether this dataset records journal entries when the Store journal is enabled.
     pub(crate) enable_journal: bool,
     /// Dataset creation time (Unix milliseconds).
@@ -407,6 +409,7 @@ impl DataSetConfig {
             initial_data_segment_size: config.initial_data_segment_size,
             initial_index_segment_size: config.initial_index_segment_size,
             retention_window: 0,
+            timestamp_units_per_second: 0,
             enable_journal: false,
             create_time: 0,
         }
@@ -447,6 +450,11 @@ impl DataSetConfig {
 
     pub fn retention_window(&self) -> u64 {
         self.retention_window
+    }
+
+    /// Dataset timestamp units per Unix second (0 = legacy retention scale).
+    pub fn timestamp_units_per_second(&self) -> u64 {
+        self.timestamp_units_per_second
     }
 
     pub fn enable_journal(&self) -> bool {
@@ -501,6 +509,7 @@ pub struct DataSetConfigBuilder {
     initial_data_segment_size: Option<u64>,
     initial_index_segment_size: Option<u64>,
     retention_window: Option<u64>,
+    timestamp_units_per_second: Option<u64>,
     enable_journal: Option<bool>,
 }
 
@@ -517,6 +526,7 @@ impl DataSetConfigBuilder {
             initial_data_segment_size: Some(store.initial_data_segment_size),
             initial_index_segment_size: Some(store.initial_index_segment_size),
             retention_window: Some(0),
+            timestamp_units_per_second: Some(0),
             enable_journal: Some(false),
         }
     }
@@ -569,6 +579,12 @@ impl DataSetConfigBuilder {
         self
     }
 
+    /// Set the dataset timestamp units per Unix second (0 = legacy retention scale).
+    pub fn timestamp_units_per_second(mut self, units: u64) -> Self {
+        self.timestamp_units_per_second = Some(units);
+        self
+    }
+
     /// Set whether this dataset records journal entries when the Store journal is enabled.
     pub fn enable_journal(mut self, enable: bool) -> Self {
         self.enable_journal = Some(enable);
@@ -580,6 +596,7 @@ impl DataSetConfigBuilder {
         let defaults = DataSetConfig::from_store(&StoreConfig::default());
         let retention_window = self.retention_window.unwrap_or(0);
         validate_retention_window(retention_window)?;
+        let timestamp_units_per_second = self.timestamp_units_per_second.unwrap_or(0);
         let config = DataSetConfig {
             data_segment_size: self.data_segment_size.unwrap_or(defaults.data_segment_size),
             index_segment_size: self
@@ -595,6 +612,7 @@ impl DataSetConfigBuilder {
                 .initial_index_segment_size
                 .unwrap_or(defaults.initial_index_segment_size),
             retention_window,
+            timestamp_units_per_second,
             enable_journal: self.enable_journal.unwrap_or(false),
             create_time: 0, // Set at dataset creation
         };
@@ -1211,5 +1229,20 @@ mod tests {
     fn test_validate_dataset_config_initial_equals_max_allowed() {
         let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 1024, 1024, 0);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn dataset_config_defaults_timestamp_units_per_second_to_zero() {
+        let config = DataSetConfig::builder().build().unwrap();
+        assert_eq!(config.timestamp_units_per_second(), 0);
+    }
+
+    #[test]
+    fn dataset_config_preserves_timestamp_units_per_second() {
+        let config = DataSetConfig::builder()
+            .timestamp_units_per_second(1_000)
+            .build()
+            .unwrap();
+        assert_eq!(config.timestamp_units_per_second(), 1_000);
     }
 }
