@@ -23,7 +23,7 @@ const META_INITIAL_INDEX_SEGMENT_SIZE: u8 = 0x07; // u64 LE
 const META_RETENTION_WINDOW: u8 = 0x08; // u64 LE (0 = no limit)
 const META_COMPRESS_TYPE: u8 = 0x09; // u8
 const META_ENABLE_JOURNAL: u8 = 0x0A; // u8 (0=false, 1=true)
-const META_timestamp_units_per_seconds: u8 = 0x0B; // u64 LE (0 = legacy retention)
+const META_TIMESTAMP_UNITS_PER_SECONDS: u8 = 0x0B; // u64 LE (0 = legacy retention)
 
 pub(crate) const META_VALUES_LEN_V1: usize = 82;
 /// V1 entries plus the 11-byte `timestamp_units_per_seconds` TLV.
@@ -149,7 +149,7 @@ impl DataSetMeta {
         buf.extend_from_slice(&1u16.to_le_bytes());
         buf.push(u8::from(self.enable_journal));
         // timestamp_units_per_seconds
-        buf.push(META_timestamp_units_per_seconds);
+        buf.push(META_TIMESTAMP_UNITS_PER_SECONDS);
         buf.extend_from_slice(&8u16.to_le_bytes());
         buf.extend_from_slice(&self.timestamp_units_per_seconds.to_le_bytes());
 
@@ -228,8 +228,9 @@ impl DataSetMeta {
                 META_RETENTION_WINDOW if len == 8 => {
                     retention_window = read_u64_le(buf[off..off + 8].try_into().unwrap());
                 }
-                META_timestamp_units_per_seconds if len == 8 => {
-                    timestamp_units_per_seconds = read_u64_le(buf[off..off + 8].try_into().unwrap());
+                META_TIMESTAMP_UNITS_PER_SECONDS if len == 8 => {
+                    timestamp_units_per_seconds =
+                        read_u64_le(buf[off..off + 8].try_into().unwrap());
                 }
                 META_ENABLE_JOURNAL if len == 1 => {
                     enable_journal = match buf[off] {
