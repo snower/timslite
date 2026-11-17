@@ -58,17 +58,30 @@ impl IndexQueryIterator {
     }
 
     pub(crate) fn next_entry(&mut self) -> Result<Option<IndexEntry>> {
-        self.apply_pending_skips()?;
-        if self.done {
-            return Ok(None);
-        }
+        self.next_with(|_inner, entry| Ok(Some(*entry)))
+    }
 
-        let next = {
-            let mut inner = self
-                .dataset
-                .lock()
-                .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-            match self.direction {
+    /// Advance the scan and read one result while holding the dataset lock once.
+    ///
+    /// Index seek and record read share the same lock acquisition, and filler
+    /// entries are skipped inside the loop instead of re-locking per filler.
+    pub(crate) fn next_with<T>(
+        &mut self,
+        mut read: impl FnMut(&mut DataSetInner, &IndexEntry) -> Result<Option<T>>,
+    ) -> Result<Option<T>> {
+        let dataset = Arc::clone(&self.dataset);
+        let mut inner = dataset
+            .lock()
+            .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
+
+        self.apply_pending_skips_locked(&mut inner)?;
+
+        loop {
+            if self.done {
+                return Ok(None);
+            }
+
+            let next = match self.direction {
                 QueryDirection::Forward => inner.next_query_index_entry_from_position(
                     self.start_ts,
                     self.end_ts,
@@ -79,35 +92,38 @@ impl IndexQueryIterator {
                     self.end_ts,
                     self.cursor,
                 )?,
-            }
-        };
+            };
 
-        let Some((cursor, entry)) = next else {
-            self.done = true;
-            return Ok(None);
-        };
+            let Some((cursor, entry)) = next else {
+                self.done = true;
+                return Ok(None);
+            };
 
-        self.cursor = Some(cursor);
-        match self.direction {
-            QueryDirection::Forward => {
-                if let Some(next) = entry.timestamp.checked_add(1) {
-                    self.start_ts = next;
-                } else {
-                    self.done = true;
+            self.cursor = Some(cursor);
+            match self.direction {
+                QueryDirection::Forward => {
+                    if let Some(next) = entry.timestamp.checked_add(1) {
+                        self.start_ts = next;
+                    } else {
+                        self.done = true;
+                    }
+                }
+                QueryDirection::Reverse => {
+                    if let Some(previous) = entry.timestamp.checked_sub(1) {
+                        self.end_ts = previous;
+                    } else {
+                        self.done = true;
+                    }
                 }
             }
-            QueryDirection::Reverse => {
-                if let Some(previous) = entry.timestamp.checked_sub(1) {
-                    self.end_ts = previous;
-                } else {
-                    self.done = true;
-                }
+
+            if let Some(value) = read(&mut inner, &entry)? {
+                return Ok(Some(value));
             }
         }
-        Ok(Some(entry))
     }
 
-    fn apply_pending_skips(&mut self) -> Result<()> {
+    fn apply_pending_skips_locked(&mut self, inner: &mut DataSetInner) -> Result<()> {
         if self.done {
             self.pending_skip_low = 0;
             self.pending_skip_high = 0;
@@ -116,14 +132,7 @@ impl IndexQueryIterator {
 
         if self.pending_skip_low > 0 {
             let count = std::mem::take(&mut self.pending_skip_low);
-            let next_start = {
-                let mut inner = self
-                    .dataset
-                    .lock()
-                    .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-                inner.skip_query_index_entries_forward(self.start_ts, self.end_ts, count)?
-            };
-            match next_start {
+            match inner.skip_query_index_entries_forward(self.start_ts, self.end_ts, count)? {
                 Some(next_start) => {
                     self.start_ts = next_start;
                     self.cursor = None;
@@ -138,14 +147,7 @@ impl IndexQueryIterator {
 
         if self.pending_skip_high > 0 {
             let count = std::mem::take(&mut self.pending_skip_high);
-            let next_end = {
-                let mut inner = self
-                    .dataset
-                    .lock()
-                    .map_err(|_| TmslError::InvalidData("dataset mutex poisoned".into()))?;
-                inner.skip_query_index_entries_reverse(self.start_ts, self.end_ts, count)?
-            };
-            match next_end {
+            match inner.skip_query_index_entries_reverse(self.start_ts, self.end_ts, count)? {
                 Some(next_end) => {
                     self.end_ts = next_end;
                     self.cursor = None;

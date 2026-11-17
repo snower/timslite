@@ -40,6 +40,8 @@
 
 ## 快速导航
 
+**存储加固与性能调整**: 当前实施边界与验证要求见 [storage-hardening-performance.md](docs/plan/storage-hardening-performance.md)。保持公开 API 和磁盘格式兼容；不自动截断不一致的 pending tail。
+
 ### 按功能查找
 - **写入数据**: [数据段管理](docs/design/data-segment.md) → [数据集操作·写入流程](docs/design/dataset-operations.md#九写入流程详解) → [压缩策略](docs/design/compression.md)
 - **Record 编码**: [数据模型·Block Payload 内部结构](docs/design/data-model.md#block-payload-内部结构-record-编码)

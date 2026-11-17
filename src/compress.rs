@@ -1,6 +1,6 @@
 //! Compression utilities.
 
-use std::io::Write;
+use std::io::{Read, Write};
 
 use crate::error::{Result, TmslError};
 
@@ -68,6 +68,69 @@ pub fn decompress(data: &[u8], compress_type: u8) -> Result<Vec<u8>> {
     }
 }
 
+/// Decompress data, rejecting output larger than `max_output` bytes.
+///
+/// Bounds are enforced during decoding so corrupt payloads cannot force an
+/// unbounded allocation. Zstd window size is capped as well: the maximum
+/// legal stored block is `4 MiB + 12` bytes, whose power-of-two window log is
+/// 23, so frames from older writers with a window larger than their tiny
+/// output are still accepted up to that block bound.
+pub(crate) fn decompress_bounded(
+    data: &[u8],
+    compress_type: u8,
+    max_output: usize,
+) -> Result<Vec<u8>> {
+    match compress_type {
+        COMPRESS_TYPE_ZSTD => {
+            let mut decoder = zstd::stream::read::Decoder::new(data)
+                .map_err(|e| TmslError::DecompressionError(format!("zstd decode error: {e}")))?;
+            decoder
+                .window_log_max(zstd_window_log_for_output(max_output))
+                .map_err(|e| TmslError::DecompressionError(format!("zstd window error: {e}")))?;
+            let limit = (max_output as u64).saturating_add(1);
+            let mut out = Vec::new();
+            decoder
+                .take(limit)
+                .read_to_end(&mut out)
+                .map_err(|e| TmslError::DecompressionError(format!("zstd decode error: {e}")))?;
+            if out.len() > max_output {
+                return Err(TmslError::DecompressionError(format!(
+                    "zstd output exceeds limit {max_output}"
+                )));
+            }
+            Ok(out)
+        }
+        COMPRESS_TYPE_DEFLATE => {
+            miniz_oxide::inflate::decompress_to_vec_with_limit(data, max_output).map_err(|e| {
+                TmslError::DecompressionError(format!("miniz_oxide inflate error: {e:?}"))
+            })
+        }
+        _ => Err(TmslError::InvalidData(format!(
+            "unknown compress_type {compress_type}"
+        ))),
+    }
+}
+
+/// Zstd window log cap for bounded decompression.
+///
+/// `ZSTD_WINDOWLOG_MIN` is 10. The floor at 23 preserves older legitimate
+/// frames whose chosen window exceeds their actual (small) output while
+/// staying at the largest window needed by a `4 MiB + 12` block.
+fn zstd_window_log_for_output(max_output: usize) -> u32 {
+    const ZSTD_WINDOW_LOG_MIN: u32 = 10;
+    const ZSTD_BLOCK_MAX_WINDOW_LOG: u32 = 23;
+    const ZSTD_WINDOW_LOG_MAX: u32 = 31;
+
+    let needed = if max_output <= 1 {
+        0
+    } else {
+        usize::BITS - (max_output - 1).leading_zeros()
+    };
+    needed
+        .max(ZSTD_WINDOW_LOG_MIN)
+        .clamp(ZSTD_BLOCK_MAX_WINDOW_LOG, ZSTD_WINDOW_LOG_MAX)
+}
+
 /// Determine if compression was worthwhile.
 ///
 /// Returns true when the compressed data is smaller than the original.
@@ -88,6 +151,68 @@ mod tests {
 
         let decompressed = deflate_decompress(&compressed).unwrap();
         assert_eq!(decompressed, original);
+    }
+
+    #[test]
+    fn test_decompress_bounded_rejects_zstd_output_over_limit() {
+        let original = vec![0x5Au8; 4096];
+        let compressed = zstd_compress(&original, 6).unwrap();
+        let err = decompress_bounded(&compressed, COMPRESS_TYPE_ZSTD, original.len() - 1)
+            .expect_err("zstd output above max_output must fail");
+        assert!(matches!(err, TmslError::DecompressionError(_)));
+    }
+
+    #[test]
+    fn test_decompress_bounded_rejects_deflate_output_over_limit() {
+        let original = vec![0x5Au8; 4096];
+        let compressed = deflate_compress(&original, 6).unwrap();
+        let err = decompress_bounded(&compressed, COMPRESS_TYPE_DEFLATE, original.len() - 1)
+            .expect_err("deflate output above max_output must fail");
+        assert!(matches!(err, TmslError::DecompressionError(_)));
+    }
+
+    fn zstd_frame_with_window_log(data: &[u8], window_log: u32) -> Vec<u8> {
+        let mut encoder = zstd::stream::write::Encoder::new(Vec::new(), 3).unwrap();
+        encoder.window_log(window_log).unwrap();
+        std::io::Write::write_all(&mut encoder, data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn test_decompress_bounded_rejects_oversized_zstd_window() {
+        // Legal frame header, tiny output, but an advertised 128 MiB window.
+        let compressed = zstd_frame_with_window_log(b"tiny zstd window", 27);
+        let err = decompress_bounded(&compressed, COMPRESS_TYPE_ZSTD, 64)
+            .expect_err("oversized zstd window must be rejected");
+        assert!(
+            matches!(err, TmslError::DecompressionError(_)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_decompress_bounded_accepts_legacy_window_at_block_max() {
+        let original = b"legacy window frame";
+        let compressed = zstd_frame_with_window_log(original, 23);
+        let decoded = decompress_bounded(&compressed, COMPRESS_TYPE_ZSTD, 64).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn test_decompress_bounded_accepts_exact_limit() {
+        for (compress_type, compressed) in [
+            (
+                COMPRESS_TYPE_ZSTD,
+                zstd_compress(&vec![0xA5u8; 4096], 6).unwrap(),
+            ),
+            (
+                COMPRESS_TYPE_DEFLATE,
+                deflate_compress(&vec![0xA5u8; 4096], 6).unwrap(),
+            ),
+        ] {
+            let decoded = decompress_bounded(&compressed, compress_type, 4096).unwrap();
+            assert_eq!(decoded, vec![0xA5u8; 4096]);
+        }
     }
 
     #[test]

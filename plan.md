@@ -67,6 +67,10 @@
 
 ## 待完成事项
 
+### 存储加固与性能调整
+
+本轮跨模块修复与性能验证已完成，见 [实施 checklist](docs/plan/storage-hardening-performance.md) 与 [验收及性能对照](docs/review/storage-hardening-performance.md)：队列锁序与领取原子性、flush 失败重试、分段扩容、损坏读取/有界解压、raw 读取拷贝、缓存及查询热点优化。压缩缓存完整 read 路径仍有性能退化，后续需 profile。改动保留供审核，不自动提交。
+
 > 已完成 Phase 的任务详情已合并到对应 `docs/plan/phase-XX-*.md` 文件, 如需查看请参考各 Phase 文档。
 
 ### Phase 46: C ABI Wrapper

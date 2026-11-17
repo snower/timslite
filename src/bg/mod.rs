@@ -901,4 +901,65 @@ mod tests {
         let result = tick_handle.join().unwrap();
         assert_eq!(result.executed_tasks, 1);
     }
+
+    // ── Lane D regression (unique tempdir; safe to run standalone) ──
+
+    #[test]
+    fn bg_flush_retains_failed_targets_until_retry() {
+        let dir = tempfile::Builder::new()
+            .prefix("timslite_lane_d_bg_flush_")
+            .tempdir()
+            .unwrap();
+        let key = DataSetKey {
+            name: "bg_retry".into(),
+            dataset_type: "data".into(),
+        };
+        let ds = DataSet::create(
+            key.clone(),
+            dir.path().to_path_buf(),
+            4096,
+            512,
+            0,
+            0,
+            4096,
+            512,
+            0,
+            0,
+        )
+        .unwrap();
+        let flush_queue = crate::dataset::DataSetRuntimeContext::new_flush_queue();
+        ds.set_runtime_context(crate::dataset::DataSetRuntimeContext::new(
+            None,
+            None,
+            Some(Arc::clone(&flush_queue)),
+        ))
+        .unwrap();
+        ds.write(100, b"first").unwrap();
+        assert_eq!(flush_queue.lock().unwrap().len(), 2);
+
+        let datasets = Arc::new(RwLock::new(HashMap::from([(key.clone(), Arc::new(ds))])));
+        let bg = BackgroundTasks::new(
+            datasets,
+            Arc::clone(&flush_queue),
+            Arc::new(JournalManager::Disabled),
+            Arc::new(BlockCache::new(0)),
+            Duration::from_secs(600),
+            Duration::from_secs(1800),
+            Duration::from_secs(1800),
+            0,
+        );
+
+        {
+            let _guard = crate::dataset::flush_failure_hook::arm_once();
+            bg.run_flush();
+        }
+        assert_eq!(
+            flush_queue.lock().unwrap().len(),
+            2,
+            "bg flush must requeue failed and unattempted targets"
+        );
+
+        bg.run_flush();
+        assert_eq!(flush_queue.lock().unwrap().len(), 0);
+    }
 }

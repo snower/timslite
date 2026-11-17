@@ -588,6 +588,115 @@ impl ConsumerStateFile {
         PendingScanResult { timestamp, changed }
     }
 
+    /// Snapshot the next retryable pending entry without mutating state.
+    ///
+    /// Claiming is deferred to [`Self::commit_retryable_pending`] so a failed
+    /// dataset read does not consume a retry attempt.
+    pub(crate) fn peek_retryable_pending(
+        &self,
+        config: QueueConsumerConfig,
+        now: i64,
+    ) -> PendingRetryScan {
+        let mut has_exhausted = false;
+        for entry in &self.pending_entries {
+            if !pending_retry_expired(entry, config, now) {
+                continue;
+            }
+            if config.max_retry_count > 0 && entry.retry_count >= config.max_retry_count {
+                has_exhausted = true;
+                continue;
+            }
+            return PendingRetryScan {
+                timestamp: Some(entry.timestamp),
+                has_exhausted,
+            };
+        }
+        PendingRetryScan {
+            timestamp: None,
+            has_exhausted,
+        }
+    }
+
+    /// Commit a retry attempt previously selected by [`Self::peek_retryable_pending`].
+    ///
+    /// The entry is only claimed when it is still expired and unclaimed. A
+    /// concurrent consumer that already committed the same entry makes this
+    /// call return `claimed = false`.
+    pub(crate) fn commit_retryable_pending(
+        &mut self,
+        config: QueueConsumerConfig,
+        now: i64,
+        timestamp: Option<i64>,
+    ) -> Result<PendingRetryCommit> {
+        let mut changed = false;
+        for entry in &mut self.pending_entries {
+            if !pending_retry_expired(entry, config, now) {
+                continue;
+            }
+            if config.max_retry_count > 0 && entry.retry_count >= config.max_retry_count {
+                entry.status = PENDING_STATUS_ACKED;
+                changed = true;
+            }
+        }
+
+        let mut claimed = false;
+        if let Some(timestamp) = timestamp {
+            if let Some(entry) = self
+                .pending_entries
+                .iter_mut()
+                .find(|entry| entry.timestamp == timestamp)
+            {
+                let exhausted =
+                    config.max_retry_count > 0 && entry.retry_count >= config.max_retry_count;
+                if pending_retry_expired(entry, config, now) && !exhausted {
+                    entry.retry_count = entry.retry_count.saturating_add(1);
+                    entry.start_time = now;
+                    claimed = true;
+                    changed = true;
+                }
+            }
+        }
+
+        if self.cleanup_acked() > 0 {
+            changed = true;
+        }
+        if changed {
+            self.mark_dirty();
+        }
+        Ok(PendingRetryCommit { claimed, changed })
+    }
+
+    /// Atomically claim a timestamp for this consumer group.
+    ///
+    /// Returns `false` when another consumer in the group already holds the
+    /// timestamp; the caller must not deliver that record.
+    pub(crate) fn try_claim_pending(&mut self, timestamp: i64, now: i64) -> Result<bool> {
+        // Reject timestamps already acknowledged by a concurrent peer: the
+        // snapshot candidate may have been processed while its data was read.
+        if timestamp <= self.processed_ts {
+            return Ok(false);
+        }
+        if self.is_in_pending(timestamp) {
+            return Ok(false);
+        }
+        self.add_pending(PendingEntry {
+            timestamp,
+            start_time: now,
+            status: PENDING_STATUS_UNACKED,
+            retry_count: 0,
+        })?;
+        Ok(true)
+    }
+
+    /// First timestamp after `processed_ts` that is not already pending.
+    pub(crate) fn next_unclaimed_ts(&self) -> Option<i64> {
+        let mut timestamp = self.processed_ts.checked_add(1)?;
+        while self.is_in_pending(timestamp) {
+            timestamp = timestamp.checked_add(1)?;
+        }
+        Some(timestamp)
+    }
+
     /// Get the next timestamp to try; sparse gaps are skipped by index lookup.
     pub fn next_poll_ts(&self) -> i64 {
         self.processed_ts.saturating_add(1)
@@ -632,6 +741,26 @@ impl ConsumerStateFile {
 pub(crate) struct PendingScanResult {
     pub(crate) timestamp: Option<i64>,
     pub(crate) changed: bool,
+}
+
+pub(crate) struct PendingRetryScan {
+    pub(crate) timestamp: Option<i64>,
+    pub(crate) has_exhausted: bool,
+}
+
+pub(crate) struct PendingRetryCommit {
+    pub(crate) claimed: bool,
+    pub(crate) changed: bool,
+}
+
+fn pending_retry_expired(entry: &PendingEntry, config: QueueConsumerConfig, now: i64) -> bool {
+    if entry.status != PENDING_STATUS_UNACKED {
+        return false;
+    }
+    let recovery_expired = entry.start_time == 0;
+    let running_expired = config.running_expired_seconds > 0
+        && now.saturating_sub(entry.start_time) >= config.running_expired_seconds as i64;
+    recovery_expired || running_expired
 }
 
 #[derive(Clone)]
@@ -803,6 +932,12 @@ impl DatasetQueue {
         config: QueueConsumerConfig,
     ) -> Result<DatasetQueueConsumer> {
         validate_consumer_group_name(group_name)?;
+        // Snapshot dataset-derived state before touching QueueInner so the
+        // lock order stays dataset -> queue inner, never the reverse.
+        let queue_dir = self.dataset.queue_dir()?;
+        // Empty datasets start before the signed timestamp domain we poll.
+        let initial_ts = self.dataset.latest_written_timestamp().unwrap_or(i64::MIN);
+
         let callback_slot = Arc::new(Mutex::new(None));
         self.notify.register_callback_slot(&callback_slot)?;
 
@@ -822,8 +957,6 @@ impl DatasetQueue {
             }
         }
 
-        let queue_dir = self.dataset.queue_dir()?;
-
         let (state_file, group_closed) = if let Some(existing) = inner.consumers.get_mut(group_name)
         {
             if existing.is_closed() {
@@ -835,9 +968,9 @@ impl DatasetQueue {
             (existing.state_file(), existing.closed())
         } else {
             let state_path = queue_dir.join(group_name);
-            // Determine initial processed_ts from the dataset.
-            // Empty datasets start before the signed timestamp domain we poll.
-            let initial_ts = self.dataset.latest_written_timestamp().unwrap_or(i64::MIN);
+            // `initial_ts` was snapshotted before taking QueueInner; the
+            // group lookup above is the locked double-check that prevents two
+            // threads from opening separate state objects for one path.
             let sf = Arc::new(Mutex::new(ConsumerStateFile::open_or_create(
                 state_path, initial_ts,
             )?));
@@ -1119,68 +1252,146 @@ impl DatasetQueueConsumer {
     fn try_poll_available(&self) -> Result<Option<(i64, Vec<u8>)>> {
         self.ensure_open()?;
         let now = now_unix_seconds();
+
+        // Retry an expired pending delivery. The retry attempt is only committed
+        // after the unlocked dataset read succeeds, so I/O errors and claim
+        // conflicts never consume a retry.
         let retry_scan = {
+            let sf = self
+                .state_file
+                .lock()
+                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+            sf.peek_retryable_pending(self.config, now)
+        };
+        if let Some(retry_ts) = retry_scan.timestamp {
+            match self.dataset.read(retry_ts) {
+                Ok(Some((ts, data))) => {
+                    let committed = self.commit_retry_claim(Some(retry_ts), now)?;
+                    if committed {
+                        return Ok(Some((ts, data)));
+                    }
+                    // A peer in the same group claimed this retry first.
+                }
+                Ok(None) => {
+                    // The record is gone; consume the retry attempt and keep
+                    // scanning instead of returning a false `None`.
+                    self.commit_retry_claim(Some(retry_ts), now)?;
+                }
+                Err(err) => return Err(err),
+            }
+        } else if retry_scan.has_exhausted {
+            self.commit_retry_claim(None, now)?;
+        }
+
+        let Some(mut scan_ts) = ({
+            let sf = self
+                .state_file
+                .lock()
+                .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+            sf.next_unclaimed_ts()
+        }) else {
+            return Ok(None);
+        };
+
+        loop {
+            // Snapshot the next visible index entry without holding the state
+            // file lock, then read its data outside every queue lock.
+            let Some(entry) = self
+                .dataset
+                .find_next_visible_index_entry(scan_ts, i64::MAX)?
+            else {
+                return Ok(None);
+            };
+            let timestamp = entry.timestamp;
+
+            let already_pending = {
+                let sf = self
+                    .state_file
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+                sf.is_in_pending(timestamp)
+            };
+            if already_pending {
+                let Some(next) = timestamp.checked_add(1) else {
+                    return Ok(None);
+                };
+                scan_ts = next;
+                continue;
+            }
+
+            // Resolve the timestamp against the current index under one
+            // dataset lock. The seek snapshot may have been deleted or
+            // corrected between the two locks; reading its old block offsets
+            // could return stale payload.
+            let Some((read_ts, data)) = self.read_current_candidate(timestamp)? else {
+                let Some(next) = timestamp.checked_add(1) else {
+                    return Ok(None);
+                };
+                scan_ts = next;
+                continue;
+            };
+
+            // Revalidate the snapshot under the state file lock before
+            // returning data. A concurrent same-group claim must not yield a
+            // second delivery.
+            let (claimed, changed) = {
+                let mut sf = self
+                    .state_file
+                    .lock()
+                    .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
+                // Recheck close under the state-file lock: a close that raced
+                // the unlocked dataset read must not be followed by a claim.
+                let claimed = self.try_claim_pending_checked(&mut sf, timestamp, now)?;
+                let changed = claimed && sf.take_flush_enqueue_marker();
+                (claimed, changed)
+            };
+            if changed {
+                self.enqueue_state_flush_target()?;
+            }
+            if claimed {
+                return Ok(Some((read_ts, data)));
+            }
+
+            let Some(next) = timestamp.checked_add(1) else {
+                return Ok(None);
+            };
+            scan_ts = next;
+        }
+    }
+
+    fn read_current_candidate(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
+        self.dataset.read(timestamp)
+    }
+
+    fn try_claim_pending_checked(
+        &self,
+        sf: &mut ConsumerStateFile,
+        timestamp: i64,
+        now: i64,
+    ) -> Result<bool> {
+        if self.is_closed() {
+            return Err(TmslError::QueueClosed("queue consumer is closed".into()));
+        }
+        sf.try_claim_pending(timestamp, now)
+    }
+
+    fn commit_retry_claim(&self, timestamp: Option<i64>, now: i64) -> Result<bool> {
+        let (claimed, changed) = {
             let mut sf = self
                 .state_file
                 .lock()
                 .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-            sf.take_retryable_pending(self.config, now)
-        };
-        if retry_scan.changed {
-            self.enqueue_state_flush()?;
-        }
-        if let Some(ts) = retry_scan.timestamp {
-            return self.read_record_at(ts);
-        }
-
-        let mut sf = self
-            .state_file
-            .lock()
-            .map_err(|_| TmslError::InvalidData("state file mutex poisoned".into()))?;
-        let next_ts = sf.next_poll_ts();
-        let direct = if sf.is_in_pending(next_ts) {
-            None
-        } else {
-            self.dataset.read(next_ts)?
-        };
-        let row = if direct.is_some() {
-            direct
-        } else {
-            let entries = self.dataset.query_index_entries(next_ts, i64::MAX)?;
-            let mut found = None;
-            for entry in entries {
-                if entry.is_filler() || sf.is_in_pending(entry.timestamp) {
-                    continue;
-                }
-                found = Some(self.dataset.read_entry_at_index(&entry)?);
-                break;
+            if self.is_closed() {
+                return Err(TmslError::QueueClosed("queue consumer is closed".into()));
             }
-            found
+            let commit = sf.commit_retryable_pending(self.config, now, timestamp)?;
+            let changed = commit.changed && sf.take_flush_enqueue_marker();
+            (commit.claimed, changed)
         };
-
-        if let Some((ts, data)) = row {
-            if !sf.is_in_pending(ts) {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                sf.add_pending(PendingEntry {
-                    timestamp: ts,
-                    start_time: now,
-                    status: PENDING_STATUS_UNACKED,
-                    retry_count: 0,
-                })?;
-                let should_queue = sf.take_flush_enqueue_marker();
-                drop(sf);
-                if should_queue {
-                    self.enqueue_state_flush_target()?;
-                }
-                return Ok(Some((ts, data)));
-            }
-            Ok(Some((ts, data)))
-        } else {
-            Ok(None)
+        if changed {
+            self.enqueue_state_flush_target()?;
         }
+        Ok(claimed)
     }
 
     fn wait_for_data(&self, timeout: Duration) -> Result<Option<(i64, Vec<u8>)>> {
@@ -1221,10 +1432,6 @@ impl DatasetQueueConsumer {
                 return self.try_poll_available();
             }
         }
-    }
-
-    fn read_record_at(&self, timestamp: i64) -> Result<Option<(i64, Vec<u8>)>> {
-        self.dataset.read(timestamp)
     }
 
     fn enqueue_state_flush(&self) -> Result<()> {
@@ -1342,6 +1549,23 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        use std::sync::atomic::AtomicU64;
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "timslite_queue_{name}_{}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
     }
 
     fn cleanup(dir: &Path) {
@@ -2021,6 +2245,389 @@ mod tests {
         qi.close().unwrap();
         assert!(qi.is_closed());
         drop(qi);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn retry_peek_defers_mutation_until_commit() {
+        let dir = unique_temp_dir("retry_peek");
+        let mut sf = ConsumerStateFile::open_or_create(dir.join("group"), 0).unwrap();
+        let config = QueueConsumerConfig::builder()
+            .running_expired_seconds(10)
+            .max_retry_count(3)
+            .build()
+            .unwrap();
+        sf.add_pending(PendingEntry {
+            timestamp: 42,
+            start_time: 1,
+            status: PENDING_STATUS_UNACKED,
+            retry_count: 1,
+        })
+        .unwrap();
+
+        let now = 1_000i64;
+        let scan = sf.peek_retryable_pending(config, now);
+        assert_eq!(scan.timestamp, Some(42));
+        let entry = sf
+            .pending_entries()
+            .iter()
+            .find(|entry| entry.timestamp == 42)
+            .unwrap();
+        assert_eq!(entry.retry_count, 1, "peek must not consume a retry");
+        assert_eq!(entry.start_time, 1, "peek must not reset the retry clock");
+
+        let commit = sf.commit_retryable_pending(config, now, Some(42)).unwrap();
+        assert!(commit.claimed);
+        let entry = sf
+            .pending_entries()
+            .iter()
+            .find(|entry| entry.timestamp == 42)
+            .unwrap();
+        assert_eq!(entry.retry_count, 2);
+        assert_eq!(entry.start_time, now);
+
+        let commit = sf.commit_retryable_pending(config, now, Some(42)).unwrap();
+        assert!(
+            !commit.claimed,
+            "a concurrent retry claim must not deliver twice"
+        );
+        drop(sf);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn queue_claim_recheck_rejects_closed_consumer() {
+        use crate::{Store, StoreConfig};
+
+        let dir = unique_temp_dir("closed_claim");
+        let mut store = Store::open(
+            &dir,
+            StoreConfig::builder()
+                .enable_background_thread(false)
+                .build(),
+        )
+        .unwrap();
+        let dataset = store
+            .create_dataset(
+                "closed_claim",
+                "data",
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
+            .unwrap();
+        let queue = dataset.open_queue().unwrap();
+        let consumer = queue.open_consumer("group").unwrap();
+        queue.push(b"payload").unwrap();
+        consumer.close().unwrap();
+
+        // Even if a poll's unlocked dataset read completed before close, the
+        // locked claim recheck must reject the closed consumer.
+        let mut sf = consumer.state_file.lock().unwrap();
+        let err = consumer
+            .try_claim_pending_checked(&mut sf, 1, now_unix_seconds())
+            .unwrap_err();
+        assert!(matches!(err, TmslError::QueueClosed(_)));
+        assert!(!sf.is_in_pending(1));
+        drop(sf);
+        drop(queue);
+        drop(dataset);
+        drop(store);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn queue_read_current_candidate_skips_deleted_snapshot() {
+        use crate::{Store, StoreConfig};
+
+        let dir = unique_temp_dir("stale_delete");
+        let mut store = Store::open(
+            &dir,
+            StoreConfig::builder()
+                .enable_background_thread(false)
+                .build(),
+        )
+        .unwrap();
+        let dataset = store
+            .create_dataset(
+                "stale_delete",
+                "data",
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
+            .unwrap();
+        dataset.write(1, b"old-payload").unwrap();
+        let queue = dataset.open_queue().unwrap();
+        let consumer = queue.open_consumer("group").unwrap();
+
+        let snapshot = dataset
+            .find_next_visible_index_entry(1, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.timestamp, 1);
+        dataset.delete(1).unwrap();
+
+        // The seek snapshot still points at the old block offsets. The read
+        // path must resolve visibility by timestamp and skip the deletion.
+        assert!(consumer
+            .read_current_candidate(snapshot.timestamp)
+            .unwrap()
+            .is_none());
+        assert!(!dataset.read_exist(1).unwrap());
+        drop(queue);
+        drop(dataset);
+        drop(store);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn queue_read_current_candidate_uses_corrected_payload() {
+        use crate::{Store, StoreConfig};
+
+        let dir = unique_temp_dir("stale_correction");
+        let mut store = Store::open(
+            &dir,
+            StoreConfig::builder()
+                .enable_background_thread(false)
+                .build(),
+        )
+        .unwrap();
+        let dataset = store
+            .create_dataset(
+                "stale_correction",
+                "data",
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
+            .unwrap();
+        dataset.write(1, b"old-payload").unwrap();
+        let queue = dataset.open_queue().unwrap();
+        let consumer = queue.open_consumer("group").unwrap();
+
+        let snapshot = dataset
+            .find_next_visible_index_entry(1, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.timestamp, 1);
+        dataset.write(1, b"new-payload").unwrap();
+
+        let (timestamp, data) = consumer
+            .read_current_candidate(snapshot.timestamp)
+            .unwrap()
+            .unwrap();
+        assert_eq!(timestamp, 1);
+        assert_eq!(data, b"new-payload");
+        let (_, public_data) = dataset.read(1).unwrap().unwrap();
+        assert_eq!(public_data, b"new-payload");
+        drop(queue);
+        drop(dataset);
+        drop(store);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn queue_same_group_concurrent_open_and_claims_are_unique() {
+        use crate::{Store, StoreConfig};
+        use std::collections::HashSet;
+        use std::sync::mpsc;
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Duration;
+
+        const CONSUMERS: usize = 4;
+        const RECORDS: usize = 120;
+
+        let dir = unique_temp_dir("concurrent_claims");
+        let mut store = Store::open(
+            &dir,
+            StoreConfig::builder()
+                .enable_background_thread(false)
+                .build(),
+        )
+        .unwrap();
+        let dataset = store
+            .create_dataset(
+                "queue_claims",
+                "data",
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
+            .unwrap();
+        let queue = Arc::new(dataset.open_queue().unwrap());
+
+        let start = Arc::new(Barrier::new(CONSUMERS + 1));
+        let opened = Arc::new(Barrier::new(CONSUMERS + 1));
+        let pushing = Arc::new(Barrier::new(CONSUMERS + 1));
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut handles = Vec::new();
+
+        for _ in 0..CONSUMERS {
+            let queue = Arc::clone(&queue);
+            let start = Arc::clone(&start);
+            let opened = Arc::clone(&opened);
+            let pushing = Arc::clone(&pushing);
+            let done_tx = done_tx.clone();
+            handles.push(thread::spawn(move || {
+                start.wait();
+                // Concurrent opens for one group must converge on a single
+                // shared state object (the locked double-check).
+                let consumer = queue.open_consumer("shared").unwrap();
+                opened.wait();
+                pushing.wait();
+                let mut seen = Vec::new();
+                loop {
+                    match consumer.poll(Duration::ZERO) {
+                        Ok(Some((timestamp, _))) => {
+                            seen.push(timestamp);
+                            let _ = consumer.ack(timestamp);
+                        }
+                        Ok(None) => break,
+                        Err(err) => panic!("queue poll failed: {err:?}"),
+                    }
+                }
+                let _ = done_tx.send(seen);
+            }));
+        }
+        drop(done_tx);
+
+        start.wait();
+        opened.wait();
+        for i in 0..RECORDS {
+            queue.push(format!("message-{i}").as_bytes()).unwrap();
+        }
+        pushing.wait();
+
+        let mut claimed = Vec::new();
+        for _ in 0..CONSUMERS {
+            match done_rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(seen) => claimed.extend(seen),
+                Err(_) => panic!("queue concurrent claim test timed out"),
+            }
+        }
+        for handle in handles {
+            handle.join().expect("queue claim worker panicked");
+        }
+
+        let unique: HashSet<i64> = claimed.iter().copied().collect();
+        assert_eq!(
+            claimed.len(),
+            RECORDS,
+            "each queue record must be claimed exactly once"
+        );
+        assert_eq!(unique.len(), RECORDS, "duplicate queue claims detected");
+        drop(queue);
+        drop(dataset);
+        drop(store);
+        cleanup(&dir);
+    }
+
+    #[test]
+    fn queue_open_consumer_flush_and_poll_do_not_deadlock() {
+        use crate::{Store, StoreConfig};
+        use std::sync::mpsc;
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Duration;
+
+        const ITERATIONS: usize = 60;
+
+        let dir = unique_temp_dir("lock_order");
+        let mut store = Store::open(
+            &dir,
+            StoreConfig::builder()
+                .enable_background_thread(false)
+                .build(),
+        )
+        .unwrap();
+        let dataset = store
+            .create_dataset(
+                "lock_order",
+                "data",
+                64 * 1024 * 1024,
+                4 * 1024 * 1024,
+                6,
+                0,
+                0,
+            )
+            .unwrap();
+        let queue = Arc::new(dataset.open_queue().unwrap());
+        let consumer = Arc::new(queue.open_consumer("poller").unwrap());
+        for i in 0..20 {
+            queue.push(format!("payload-{i}").as_bytes()).unwrap();
+        }
+        let flush_dataset = Arc::new(dataset.clone());
+        let start = Arc::new(Barrier::new(4));
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let opener = {
+            let queue = Arc::clone(&queue);
+            let start = Arc::clone(&start);
+            let done_tx = done_tx.clone();
+            thread::spawn(move || {
+                start.wait();
+                for i in 0..ITERATIONS {
+                    queue
+                        .open_consumer(&format!("group_{i}"))
+                        .expect("open consumer");
+                }
+                let _ = done_tx.send("opener");
+            })
+        };
+        let flusher = {
+            let dataset = Arc::clone(&flush_dataset);
+            let start = Arc::clone(&start);
+            let done_tx = done_tx.clone();
+            thread::spawn(move || {
+                start.wait();
+                for _ in 0..ITERATIONS {
+                    dataset.flush().expect("flush dataset");
+                }
+                let _ = done_tx.send("flusher");
+            })
+        };
+        let poller = {
+            let consumer = Arc::clone(&consumer);
+            let start = Arc::clone(&start);
+            let done_tx = done_tx.clone();
+            thread::spawn(move || {
+                start.wait();
+                for _ in 0..1_000 {
+                    if let Some((timestamp, _)) = consumer.poll(Duration::ZERO).expect("poll") {
+                        let _ = consumer.ack(timestamp);
+                    }
+                }
+                let _ = done_tx.send("poller");
+            })
+        };
+        drop(done_tx);
+        start.wait();
+
+        for _ in 0..3 {
+            match done_rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(_) => {}
+                Err(_) => panic!("queue lock-order test timed out (possible deadlock)"),
+            }
+        }
+        opener.join().unwrap();
+        flusher.join().unwrap();
+        poller.join().unwrap();
+
+        drop(consumer);
+        drop(queue);
+        drop(flush_dataset);
+        drop(dataset);
+        drop(store);
         cleanup(&dir);
     }
 }

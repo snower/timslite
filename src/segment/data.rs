@@ -6,6 +6,7 @@
 //! Blocks are compressed when sealed; files use mmap with lazy open/close.
 
 use memmap2::MmapMut;
+use std::borrow::Cow;
 use std::fs::OpenOptions;
 use std::path::Path;
 use std::sync::Arc;
@@ -16,14 +17,14 @@ use crate::block::{
     BlockHeader, BLOCK_FLAG_COMPRESSED, BLOCK_FLAG_SEALED, BLOCK_FLAG_SINGLE_RECORD,
 };
 use crate::cache::{BlockCache, CacheKey, HotBlockCache};
-use crate::compress::{compress, decompress, validate_compress_type, COMPRESS_TYPE_ZSTD};
+use crate::compress::{compress, decompress_bounded, validate_compress_type, COMPRESS_TYPE_ZSTD};
 use crate::error::{Result, TmslError};
 use crate::header::{
     clear_pending_from_mmap, write_data_core_state_to_mmap,
     write_data_invalid_record_count_to_mmap, write_data_pending_state_to_mmap, DataFileMetadata,
     PENDING_NONE, TIMESTAMP_MAX_SENTINEL, TIMESTAMP_MIN_SENTINEL,
 };
-use crate::util::{read_i64_le, read_u16_from_mmap, read_u32_from_mmap, read_u32_le};
+use crate::util::{read_i64_le, read_u32_le};
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -379,10 +380,19 @@ impl DataSegment {
     }
 
     fn ensure_data_capacity(&mut self, required_wrote_position: u64) -> Result<()> {
-        while self.file_size.saturating_sub(self.header_size) < required_wrote_position {
-            self.expand().map_err(|_| TmslError::SegmentFull)?;
+        loop {
+            if self.file_size.saturating_sub(self.header_size) >= required_wrote_position {
+                return Ok(());
+            }
+            if self.file_size >= self.max_file_size {
+                return Err(TmslError::SegmentFull);
+            }
+            let before = self.file_size;
+            self.expand()?;
+            if self.file_size <= before {
+                return Err(TmslError::SegmentFull);
+            }
         }
-        Ok(())
     }
 }
 
@@ -403,6 +413,9 @@ impl Drop for DataSegment {
 pub(crate) const RECORD_HEADER_SIZE: usize = 12;
 pub(crate) const RECORD_OVERHEAD: u64 = RECORD_HEADER_SIZE as u64;
 pub(crate) const MAX_RECORD_DATA_SIZE: usize = 4 * 1024 * 1024;
+const MAX_SINGLE_RECORD_UNCOMPRESSED: usize =
+    (MAX_RECORD_DATA_SIZE + RECORD_HEADER_SIZE + crate::block::RECORD_OFFSET_UNIT_BYTES - 1)
+        & !(crate::block::RECORD_OFFSET_UNIT_BYTES - 1);
 
 fn checked_record_size(data_len: usize) -> Result<usize> {
     if data_len > MAX_RECORD_DATA_SIZE {
@@ -519,6 +532,34 @@ impl DataSegment {
             return Err(TmslError::SegmentFull);
         }
         self.create_pending_and_append(timestamp, data)
+    }
+
+    /// Append a record, expanding the segment file as needed before retrying.
+    ///
+    /// Expands repeatedly until the record fits or `max_file_size` is reached.
+    /// Non-capacity errors (I/O, remap) are propagated unchanged.
+    pub(crate) fn append_record_expanding(
+        &mut self,
+        timestamp: i64,
+        data: &[u8],
+        compress_level: u8,
+    ) -> Result<(u64, u16)> {
+        loop {
+            match self.append_record(timestamp, data, compress_level) {
+                Ok(result) => return Ok(result),
+                Err(TmslError::SegmentFull) => {
+                    if self.file_size >= self.max_file_size {
+                        return Err(TmslError::SegmentFull);
+                    }
+                    let before = self.file_size;
+                    self.expand()?;
+                    if self.file_size <= before {
+                        return Err(TmslError::SegmentFull);
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     /// Write a raw record into the current pending block.
@@ -1092,6 +1133,167 @@ fn is_sealed_compressed_or_pending_raw(flags: u16) -> Result<bool> {
     Ok(is_sealed && is_compressed)
 }
 
+struct BlockPayload<'a> {
+    header: BlockHeader,
+    payload: &'a [u8],
+}
+
+fn read_block_payload<'a>(
+    mmap: &'a [u8],
+    header_size: u64,
+    block_offset: u64,
+    data_wrote_position: u64,
+) -> Result<BlockPayload<'a>> {
+    if block_offset >= data_wrote_position {
+        return Err(TmslError::InvalidData(format!(
+            "block offset {} outside segment data [0, {})",
+            block_offset, data_wrote_position
+        )));
+    }
+
+    let hdr_pos = usize::try_from(
+        header_size
+            .checked_add(block_offset)
+            .ok_or_else(|| TmslError::InvalidData("block header position overflow".into()))?,
+    )
+    .map_err(|_| TmslError::InvalidData("block header position exceeds usize".into()))?;
+    let hdr_end = hdr_pos
+        .checked_add(crate::block::BLOCK_HEADER_SIZE as usize)
+        .ok_or_else(|| TmslError::InvalidData("block header end overflow".into()))?;
+    if hdr_end > mmap.len() {
+        return Err(TmslError::InvalidData("block header out of bounds".into()));
+    }
+
+    let header = BlockHeader::read_from(mmap, hdr_pos);
+    let payload_size = usize::try_from(header.payload_size)
+        .map_err(|_| TmslError::InvalidData("block payload size exceeds usize".into()))?;
+    let payload_end = hdr_end
+        .checked_add(payload_size)
+        .ok_or_else(|| TmslError::InvalidData("block payload end overflow".into()))?;
+    if payload_end > mmap.len() {
+        return Err(TmslError::InvalidData("block payload out of bounds".into()));
+    }
+
+    let block_end = block_offset
+        .checked_add(crate::block::BLOCK_HEADER_SIZE)
+        .and_then(|v| v.checked_add(header.payload_size as u64))
+        .ok_or_else(|| TmslError::InvalidData("block end overflow".into()))?;
+    if block_end > data_wrote_position {
+        return Err(TmslError::InvalidData(
+            "block extends beyond segment wrote_position".into(),
+        ));
+    }
+
+    let is_compressed = is_sealed_compressed_or_pending_raw(header.flags)?;
+    if header.is_single_record() {
+        if header.uncompressed_size as usize > MAX_SINGLE_RECORD_UNCOMPRESSED {
+            return Err(TmslError::InvalidData(format!(
+                "single-record block uncompressed_size {} exceeds limit {}",
+                header.uncompressed_size, MAX_SINGLE_RECORD_UNCOMPRESSED
+            )));
+        }
+    } else if header.uncompressed_size > crate::block::BLOCK_MAX_SIZE {
+        return Err(TmslError::InvalidData(
+            "aggregated block exceeds BLOCK_MAX_SIZE".into(),
+        ));
+    }
+    if !is_compressed && header.payload_size != header.uncompressed_size {
+        return Err(TmslError::InvalidData(
+            "raw block payload_size does not match uncompressed_size".into(),
+        ));
+    }
+
+    Ok(BlockPayload {
+        header,
+        payload: &mmap[hdr_end..payload_end],
+    })
+}
+
+fn validate_block_data_len(block_data: &[u8], header: &BlockHeader) -> Result<()> {
+    if block_data.len() != header.uncompressed_size as usize {
+        return Err(TmslError::InvalidData(format!(
+            "block payload length {} does not match uncompressed_size {}",
+            block_data.len(),
+            header.uncompressed_size
+        )));
+    }
+    Ok(())
+}
+
+fn decode_block_payload<'a>(block: &BlockPayload<'a>, compress_type: u8) -> Result<Cow<'a, [u8]>> {
+    if block.header.is_compressed() {
+        let data = decompress_bounded(
+            block.payload,
+            compress_type,
+            block.header.uncompressed_size as usize,
+        )?;
+        validate_block_data_len(&data, &block.header)?;
+        Ok(Cow::Owned(data))
+    } else {
+        validate_block_data_len(block.payload, &block.header)?;
+        Ok(Cow::Borrowed(block.payload))
+    }
+}
+
+fn record_at(
+    block_data: &[u8],
+    in_block_offset: u16,
+    expected_timestamp: i64,
+) -> Result<(i64, &[u8])> {
+    let pos = in_block_units_to_bytes(in_block_offset);
+    let header_end = pos
+        .checked_add(RECORD_HEADER_SIZE)
+        .ok_or_else(|| TmslError::InvalidData("record header end overflow".into()))?;
+    if header_end > block_data.len() {
+        return Err(TmslError::InvalidData(
+            "record header out of block bounds".into(),
+        ));
+    }
+
+    let data_len = read_u32_le(
+        block_data[pos..pos + 4]
+            .try_into()
+            .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+    ) as usize;
+    if data_len > MAX_RECORD_DATA_SIZE {
+        return Err(TmslError::InvalidData(
+            "record data_len exceeds 4MiB limit".into(),
+        ));
+    }
+    let data_end = header_end
+        .checked_add(data_len)
+        .ok_or_else(|| TmslError::InvalidData("record data end overflow".into()))?;
+    if data_end > block_data.len() {
+        return Err(TmslError::InvalidData(
+            "record data out of block bounds".into(),
+        ));
+    }
+
+    let timestamp = read_i64_le(
+        block_data[pos + 4..pos + 12]
+            .try_into()
+            .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
+    );
+    if timestamp != expected_timestamp {
+        return Err(TmslError::InvalidData(format!(
+            "record timestamp {} does not match index entry timestamp {}",
+            timestamp, expected_timestamp
+        )));
+    }
+
+    Ok((timestamp, &block_data[header_end..data_end]))
+}
+
+fn record_data_len_at(
+    block_data: &[u8],
+    in_block_offset: u16,
+    expected_timestamp: i64,
+) -> Result<u32> {
+    let (_, data) = record_at(block_data, in_block_offset, expected_timestamp)?;
+    u32::try_from(data.len())
+        .map_err(|_| TmslError::InvalidData("record data_len exceeds u32".into()))
+}
+
 impl DataSegment {
     /// Read a record at the given index entry.
     ///
@@ -1106,67 +1308,40 @@ impl DataSegment {
             .mmap
             .as_ref()
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
-
-        let hdr_pos = (self.header_size + entry.block_offset) as usize;
-
-        // Read block header
-        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
-        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
-        let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
-
-        // ── Cache check ──
+        let block = read_block_payload(
+            mmap,
+            self.header_size,
+            entry.block_offset,
+            self.data_wrote_position,
+        )?;
         let cache_key = CacheKey::new(cache_scope_id, self.file_offset, entry.block_offset);
 
         // Only compressed blocks are globally cached; raw blocks may still be mutable.
-        if is_compressed {
+        if block.header.is_compressed() {
             if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
-                let pos = in_block_units_to_bytes(entry.in_block_offset);
-                if pos + RECORD_HEADER_SIZE > cached.len() {
-                    return Err(TmslError::InvalidData("record index out of bounds".into()));
-                }
-                let data_len = read_u32_le(
-                    cached[pos..pos + 4]
-                        .try_into()
-                        .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
-                ) as usize;
-                let timestamp = read_i64_le(
-                    cached[pos + 4..pos + 12]
-                        .try_into()
-                        .map_err(|_| TmslError::InvalidData("cannot read timestamp".into()))?,
-                );
-                if pos + RECORD_HEADER_SIZE + data_len > cached.len() {
-                    return Err(TmslError::InvalidData("record data out of bounds".into()));
-                }
-                let data =
-                    cached[pos + RECORD_HEADER_SIZE..pos + RECORD_HEADER_SIZE + data_len].to_vec();
-                return Ok((timestamp, data));
+                validate_block_data_len(cached.as_slice(), &block.header)?;
+                let (timestamp, data) =
+                    record_at(cached.as_slice(), entry.in_block_offset, entry.timestamp)?;
+                return Ok((timestamp, data.to_vec()));
             }
         }
 
-        // Cache miss or raw block: read from mmap + decode.
-        let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
-        let payload = &mmap[pay_start..pay_start + payload_size];
-
-        let block_data: Vec<u8> = if is_compressed {
-            decompress(payload, self.compress_type)?
-        } else {
-            payload.to_vec()
-        };
-
-        if is_compressed {
+        let block_data = decode_block_payload(&block, self.compress_type)?;
+        if block.header.is_compressed() {
             if let Some(c) = cache {
-                let block_data = Arc::new(block_data);
+                let block_data = Arc::new(block_data.into_owned());
                 let shared = c
                     .put_shared(cache_key, Arc::clone(&block_data))
                     .unwrap_or(block_data);
-                return HotBlockCache::extract_record_from(
-                    shared.as_slice(),
-                    entry.in_block_offset,
-                );
+                let (timestamp, data) =
+                    record_at(shared.as_slice(), entry.in_block_offset, entry.timestamp)?;
+                return Ok((timestamp, data.to_vec()));
             }
         }
 
-        HotBlockCache::extract_record_from(&block_data, entry.in_block_offset)
+        let (timestamp, data) =
+            record_at(block_data.as_ref(), entry.in_block_offset, entry.timestamp)?;
+        Ok((timestamp, data.to_vec()))
     }
 
     /// Read a record at the given index entry, with HotBlockCache support.
@@ -1181,58 +1356,57 @@ impl DataSegment {
             .mmap
             .as_ref()
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
-
-        let hdr_pos = (self.header_size + entry.block_offset) as usize;
+        let block = read_block_payload(
+            mmap,
+            self.header_size,
+            entry.block_offset,
+            self.data_wrote_position,
+        )?;
         let cache_key = CacheKey::new(cache_scope_id, self.file_offset, entry.block_offset);
 
-        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
-        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
-        let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
-
-        if is_compressed {
+        if block.header.is_compressed() {
             if let Some(block_data) =
                 hot_block.hit_data(cache_scope_id, self.file_offset, entry.block_offset)
             {
-                return HotBlockCache::extract_record_from(
+                validate_block_data_len(block_data.as_slice(), &block.header)?;
+                let (timestamp, data) = record_at(
                     block_data.as_slice(),
                     entry.in_block_offset,
-                );
+                    entry.timestamp,
+                )?;
+                return Ok((timestamp, data.to_vec()));
             }
             if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
+                validate_block_data_len(block_data.as_slice(), &block.header)?;
                 hot_block.fill(cache_key, &block_data);
-                return HotBlockCache::extract_record_from(
+                let (timestamp, data) = record_at(
                     block_data.as_slice(),
                     entry.in_block_offset,
-                );
+                    entry.timestamp,
+                )?;
+                return Ok((timestamp, data.to_vec()));
             }
         }
 
-        let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
-        let payload = &mmap[pay_start..pay_start + payload_size];
-
-        let block_data: Vec<u8> = if is_compressed {
-            decompress(payload, self.compress_type)?
-        } else {
-            payload.to_vec()
-        };
-
-        if is_compressed {
+        let block_data = decode_block_payload(&block, self.compress_type)?;
+        if block.header.is_compressed() {
             if let Some(c) = cache {
-                let block_data = Arc::new(block_data);
+                let block_data = Arc::new(block_data.into_owned());
                 let shared = c
                     .put_shared(cache_key.clone(), Arc::clone(&block_data))
                     .unwrap_or(block_data);
                 if c.is_enabled() {
                     hot_block.fill(cache_key, &shared);
                 }
-                return HotBlockCache::extract_record_from(
-                    shared.as_slice(),
-                    entry.in_block_offset,
-                );
+                let (timestamp, data) =
+                    record_at(shared.as_slice(), entry.in_block_offset, entry.timestamp)?;
+                return Ok((timestamp, data.to_vec()));
             }
         }
 
-        HotBlockCache::extract_record_from(&block_data, entry.in_block_offset)
+        let (timestamp, data) =
+            record_at(block_data.as_ref(), entry.in_block_offset, entry.timestamp)?;
+        Ok((timestamp, data.to_vec()))
     }
 
     /// Read only the record header to get data_len.
@@ -1247,51 +1421,42 @@ impl DataSegment {
             .mmap
             .as_ref()
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
-
-        let hdr_pos = (self.header_size + entry.block_offset) as usize;
+        let block = read_block_payload(
+            mmap,
+            self.header_size,
+            entry.block_offset,
+            self.data_wrote_position,
+        )?;
         let cache_key = CacheKey::new(cache_scope_id, self.file_offset, entry.block_offset);
 
         // Try cache first for compressed blocks
-        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
-        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
-        let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
-
-        if is_compressed {
+        if block.header.is_compressed() {
             if let Some(cached) = cache.and_then(|c| c.get(&cache_key)) {
-                let pos = in_block_units_to_bytes(entry.in_block_offset);
-                if pos + RECORD_HEADER_SIZE > cached.len() {
-                    return Err(TmslError::InvalidData("record index out of bounds".into()));
-                }
-                let data_len = read_u32_le(
-                    cached[pos..pos + 4]
-                        .try_into()
-                        .map_err(|_| TmslError::InvalidData("cannot read data_len".into()))?,
+                validate_block_data_len(cached.as_slice(), &block.header)?;
+                return record_data_len_at(
+                    cached.as_slice(),
+                    entry.in_block_offset,
+                    entry.timestamp,
                 );
-                return Ok(data_len);
             }
         }
 
-        // Cache miss or raw block: read from mmap
-        let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
-        let payload = &mmap[pay_start..pay_start + payload_size];
-
-        let block_data: Vec<u8> = if is_compressed {
-            decompress(payload, self.compress_type)?
-        } else {
-            payload.to_vec()
-        };
-
-        if is_compressed {
+        let block_data = decode_block_payload(&block, self.compress_type)?;
+        if block.header.is_compressed() {
             if let Some(c) = cache {
-                let block_data = Arc::new(block_data);
+                let block_data = Arc::new(block_data.into_owned());
                 let shared = c
                     .put_shared(cache_key, Arc::clone(&block_data))
                     .unwrap_or(block_data);
-                return HotBlockCache::read_data_len_from(shared.as_slice(), entry.in_block_offset);
+                return record_data_len_at(
+                    shared.as_slice(),
+                    entry.in_block_offset,
+                    entry.timestamp,
+                );
             }
         }
 
-        HotBlockCache::read_data_len_from(&block_data, entry.in_block_offset)
+        record_data_len_at(block_data.as_ref(), entry.in_block_offset, entry.timestamp)
     }
 
     /// Read record data_len with HotBlockCache support.
@@ -1306,60 +1471,59 @@ impl DataSegment {
             .mmap
             .as_ref()
             .ok_or_else(|| TmslError::MmapError("segment is closed, cannot read".into()))?;
-
-        let hdr_pos = (self.header_size + entry.block_offset) as usize;
+        let block = read_block_payload(
+            mmap,
+            self.header_size,
+            entry.block_offset,
+            self.data_wrote_position,
+        )?;
         let cache_key = CacheKey::new(cache_scope_id, self.file_offset, entry.block_offset);
 
-        let payload_size = read_u32_from_mmap(mmap, hdr_pos) as usize;
-        let flags = read_u16_from_mmap(mmap, hdr_pos + 4);
-        let is_compressed = is_sealed_compressed_or_pending_raw(flags)?;
-
-        if is_compressed {
+        if block.header.is_compressed() {
             if let Some(block_data) =
                 hot_block.hit_data(cache_scope_id, self.file_offset, entry.block_offset)
             {
-                return HotBlockCache::read_data_len_from(
+                validate_block_data_len(block_data.as_slice(), &block.header)?;
+                return record_data_len_at(
                     block_data.as_slice(),
                     entry.in_block_offset,
+                    entry.timestamp,
                 );
             }
         }
 
         // Try global cache
-        if is_compressed {
+        if block.header.is_compressed() {
             if let Some(block_data) = cache.and_then(|c| c.get(&cache_key)) {
+                validate_block_data_len(block_data.as_slice(), &block.header)?;
                 hot_block.fill(cache_key, &block_data);
-                return HotBlockCache::read_data_len_from(
+                return record_data_len_at(
                     block_data.as_slice(),
                     entry.in_block_offset,
+                    entry.timestamp,
                 );
             }
         }
 
-        // Read from mmap
-        let pay_start = hdr_pos + crate::block::BLOCK_HEADER_SIZE as usize;
-        let payload = &mmap[pay_start..pay_start + payload_size];
-
-        let block_data: Vec<u8> = if is_compressed {
-            decompress(payload, self.compress_type)?
-        } else {
-            payload.to_vec()
-        };
-
-        if is_compressed {
+        let block_data = decode_block_payload(&block, self.compress_type)?;
+        if block.header.is_compressed() {
             if let Some(c) = cache {
-                let block_data = Arc::new(block_data);
+                let block_data = Arc::new(block_data.into_owned());
                 let shared = c
                     .put_shared(cache_key.clone(), Arc::clone(&block_data))
                     .unwrap_or(block_data);
                 if c.is_enabled() {
                     hot_block.fill(cache_key, &shared);
                 }
-                return HotBlockCache::read_data_len_from(shared.as_slice(), entry.in_block_offset);
+                return record_data_len_at(
+                    shared.as_slice(),
+                    entry.in_block_offset,
+                    entry.timestamp,
+                );
             }
         }
 
-        HotBlockCache::read_data_len_from(&block_data, entry.in_block_offset)
+        record_data_len_at(block_data.as_ref(), entry.in_block_offset, entry.timestamp)
     }
 }
 
@@ -1367,6 +1531,7 @@ impl DataSegment {
 mod tests {
     use super::*;
     use crate::header::{DataFileMetadata, DATA_HEADER_SIZE};
+    use crate::util::{read_u16_from_mmap, read_u32_from_mmap};
     use std::fs;
 
     fn temp_dir() -> std::path::PathBuf {
@@ -1815,6 +1980,185 @@ mod tests {
         assert_eq!(seg.lifecycle, SegmentLifecycle::OpenReady);
         assert_eq!(seg.pending_block_offset, Some(block_off));
         assert_eq!(block_flags(&seg, block_off), 0);
+    }
+
+    fn entry(ts: i64, block_offset: u64, in_block_offset: u16) -> ReadIndexEntry {
+        ReadIndexEntry {
+            timestamp: ts,
+            block_offset,
+            in_block_offset,
+        }
+    }
+
+    fn single_record_block_buffer(advertised_uncompressed: u32) -> Vec<u8> {
+        let payload_size = 4u32;
+        let mut buf = vec![0u8; crate::block::BLOCK_HEADER_SIZE as usize + payload_size as usize];
+        buf[0..4].copy_from_slice(&payload_size.to_le_bytes());
+        buf[4..6].copy_from_slice(
+            &(BLOCK_FLAG_SEALED | BLOCK_FLAG_COMPRESSED | BLOCK_FLAG_SINGLE_RECORD).to_le_bytes(),
+        );
+        buf[6..8].copy_from_slice(&1u16.to_le_bytes());
+        buf[8..12].copy_from_slice(&advertised_uncompressed.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn test_read_block_rejects_single_record_uncompressed_size_over_limit() {
+        let over = (MAX_RECORD_DATA_SIZE
+            + RECORD_HEADER_SIZE
+            + crate::block::RECORD_OFFSET_UNIT_BYTES) as u32;
+        let buf = single_record_block_buffer(over);
+
+        let err = match read_block_payload(&buf, 0, 0, buf.len() as u64) {
+            Ok(_) => panic!("expected over-limit single-record header to be rejected"),
+            Err(err) => err,
+        };
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn test_read_block_accepts_single_record_uncompressed_size_at_limit() {
+        let at = (MAX_RECORD_DATA_SIZE + RECORD_HEADER_SIZE) as u32;
+        let buf = single_record_block_buffer(at);
+
+        assert!(read_block_payload(&buf, 0, 0, buf.len() as u64).is_ok());
+    }
+
+    #[test]
+    fn test_read_rejects_block_outside_wrote_position() {
+        let (mut seg, _path) = make_segment("read_reject_wrote_position");
+        let (off, ib) = seg.append_record(1_000, b"payload", 6).unwrap();
+        let idx = entry(1_000, off, ib);
+
+        let saved = seg.data_wrote_position;
+        seg.data_wrote_position = off;
+        let err = seg.read_at_index(1, &idx, None).unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+        seg.data_wrote_position = saved;
+    }
+
+    #[test]
+    fn test_read_rejects_block_payload_out_of_bounds() {
+        let (mut seg, _path) = make_segment("read_reject_payload_bounds");
+        let (off, ib) = seg.append_record(1_001, b"payload", 6).unwrap();
+        let idx = entry(1_001, off, ib);
+        let hdr_pos = (seg.header_size + off) as usize;
+        seg.mmap.as_mut().unwrap()[hdr_pos..hdr_pos + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let err = seg.read_at_index(1, &idx, None).unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn test_read_rejects_record_timestamp_mismatch() {
+        let (mut seg, _path) = make_segment("read_reject_ts_mismatch");
+        let (off, ib) = seg.append_record(1_002, b"payload", 6).unwrap();
+        let idx = entry(9_999, off, ib);
+
+        let err = seg.read_at_index(1, &idx, None).unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn test_length_rejects_record_timestamp_mismatch() {
+        let (mut seg, _path) = make_segment("length_reject_ts_mismatch");
+        let (off, ib) = seg.append_record(1_003, b"payload", 6).unwrap();
+        let idx = entry(9_999, off, ib);
+
+        let err = seg.read_record_data_len(1, &idx, None).unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn test_read_rejects_compressed_uncompressed_size_mismatch() {
+        let (mut seg, _path) = make_segment("read_reject_uncomp_mismatch");
+        let data = vec![0u8; 300_000];
+        let (off, ib) = seg.append_record(1_004, &data, 6).unwrap();
+        let idx = entry(1_004, off, ib);
+        let hdr_pos = (seg.header_size + off) as usize;
+        let old_uncomp = read_u32_from_mmap(seg.mmap.as_ref().unwrap(), hdr_pos + 8);
+        for delta in [-1i64, 1] {
+            let advertised = (old_uncomp as i64 + delta) as u32;
+            seg.mmap.as_mut().unwrap()[hdr_pos + 8..hdr_pos + 12]
+                .copy_from_slice(&advertised.to_le_bytes());
+
+            let err = seg.read_at_index(1, &idx, None).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    TmslError::InvalidData(_) | TmslError::DecompressionError(_)
+                ),
+                "got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_read_rejects_cached_compressed_size_mismatch() {
+        let (mut seg, _path) = make_segment("read_reject_cache_size");
+        let data = vec![0u8; 300_000];
+        let (off, ib) = seg.append_record(1_005, &data, 6).unwrap();
+        let idx = entry(1_005, off, ib);
+        let hdr_pos = (seg.header_size + off) as usize;
+        let uncomp = read_u32_from_mmap(seg.mmap.as_ref().unwrap(), hdr_pos + 8) as usize;
+        let cache = BlockCache::new(4 * 1024 * 1024);
+        cache.put(
+            CacheKey::new(7, seg.file_offset, off),
+            vec![0u8; uncomp - 1],
+        );
+
+        let err = seg.read_at_index(7, &idx, Some(&cache)).unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn test_read_with_hot_cache_rejects_timestamp_mismatch() {
+        let (mut seg, _path) = make_segment("hot_reject_ts_mismatch");
+        let data = vec![0u8; 300_000];
+        let (off, ib) = seg.append_record(1_006, &data, 6).unwrap();
+        let cache = BlockCache::new(4 * 1024 * 1024);
+        let mut hot = HotBlockCache::new();
+
+        let good = entry(1_006, off, ib);
+        seg.read_at_index_with_hot_cache(7, &good, Some(&cache), &mut hot)
+            .unwrap();
+        let bad = entry(1_007, off, ib);
+        let err = seg
+            .read_at_index_with_hot_cache(7, &bad, Some(&cache), &mut hot)
+            .unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn test_length_rejects_cached_timestamp_mismatch() {
+        let (mut seg, _path) = make_segment("length_reject_cache_ts");
+        let data = vec![0u8; 300_000];
+        let (off, ib) = seg.append_record(1_007, &data, 6).unwrap();
+        let cache = BlockCache::new(4 * 1024 * 1024);
+        let good = entry(1_007, off, ib);
+        assert_eq!(
+            seg.read_record_data_len(7, &good, Some(&cache)).unwrap(),
+            data.len() as u32
+        );
+        let bad = entry(1_008, off, ib);
+        let err = seg.read_record_data_len(7, &bad, Some(&cache)).unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn test_ensure_data_capacity_propagates_io_errors() {
+        let dir = temp_dir();
+        let path = dir.join("capacity_io_error");
+        let _ = fs::remove_file(&path);
+        let mut seg = DataSegment::create(&path, 0, 1024 * 1024, 2 * 1024 * 1024).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        let err = seg.ensure_data_capacity(u64::MAX).unwrap_err();
+        assert!(!matches!(err, TmslError::SegmentFull), "got {err:?}");
+        assert!(
+            matches!(err, TmslError::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound),
+            "got {err:?}"
+        );
     }
 
     #[test]

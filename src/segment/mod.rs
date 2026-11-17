@@ -453,18 +453,13 @@ impl DataSegmentSet {
             seg.ensure_open(compress_level)?;
         }
 
-        // Try to append; if SegmentFull, expand and retry, or seal + create new.
+        // Try append, expanding repeatedly until it fits or max_file_size is hit.
         let mut written_segment_offset = current_offset;
-        let (block_rel_off, in_block_off) = match seg.append_record(timestamp, data, compress_level)
-        {
-            Ok(result) => result,
-            Err(crate::error::TmslError::SegmentFull) => {
-                // Try to expand the current segment
-                if seg.expand().is_ok() {
-                    // Expansion succeeded, retry append
-                    seg.append_record(timestamp, data, compress_level)?
-                } else {
-                    // Already at max_file_size → seal current, create new segment
+        let (block_rel_off, in_block_off) =
+            match seg.append_record_expanding(timestamp, data, compress_level) {
+                Ok(result) => result,
+                Err(crate::error::TmslError::SegmentFull) => {
+                    // At max_file_size: seal current, create new segment
                     // Mark this segment as needing seal
                     let seg_offset_to_seal = seg.file_offset;
                     seg.sync()?;
@@ -501,11 +496,10 @@ impl DataSegmentSet {
                         Some(DataSegmentEntry::Open(seg)) => seg,
                         _ => unreachable!(),
                     };
-                    new_seg.append_record(timestamp, data, compress_level)?
+                    new_seg.append_record_expanding(timestamp, data, compress_level)?
                 }
-            }
-            Err(e) => return Err(e),
-        };
+                Err(e) => return Err(e),
+            };
 
         self.last_used_at = Instant::now();
         Ok((written_segment_offset, block_rel_off, in_block_off))
@@ -1151,6 +1145,93 @@ mod tests {
 
         let seg = set.lazy_open(0).unwrap();
         assert!(seg.pending_block_offset.is_some());
+    }
+
+    fn incompressible_bytes(len: usize) -> Vec<u8> {
+        let mut state = 0x1234_5678u32;
+        (0..len)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_append_default_geometry_accepts_700kib_incompressible_record() {
+        let dir = temp_dir("append_700kib_fresh");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir,
+            64 * 1024 * 1024,
+            256 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+        let data = incompressible_bytes(700 * 1024);
+
+        let (seg_off, block_rel, in_block) = set.append(100, &data).unwrap();
+        let idx = ReadIndexEntry {
+            timestamp: 100,
+            block_offset: seg_off + block_rel,
+            in_block_offset: in_block,
+        };
+        let (ts, read) = set.read_at_index(&idx, None).unwrap();
+        assert_eq!(ts, 100);
+        assert_eq!(read, data);
+    }
+
+    #[test]
+    fn test_append_rollover_new_segment_accepts_700kib_incompressible_record() {
+        let dir = temp_dir("append_700kib_rollover");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir,
+            1024 * 1024,
+            256 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+        let first = incompressible_bytes(700 * 1024);
+        let mut second = incompressible_bytes(700 * 1024);
+        second[0] ^= 0xFF;
+
+        let (seg1, block1, ib1) = set.append(100, &first).unwrap();
+        let (seg2, block2, ib2) = set.append(200, &second).unwrap();
+        assert!(seg2 > seg1, "expected rollover to a new segment");
+        assert_eq!(set.total_len(), 2);
+
+        let idx1 = ReadIndexEntry {
+            timestamp: 100,
+            block_offset: seg1 + block1,
+            in_block_offset: ib1,
+        };
+        let idx2 = ReadIndexEntry {
+            timestamp: 200,
+            block_offset: seg2 + block2,
+            in_block_offset: ib2,
+        };
+        assert_eq!(set.read_at_index(&idx1, None).unwrap(), (100, first));
+        assert_eq!(set.read_at_index(&idx2, None).unwrap(), (200, second));
+    }
+
+    #[test]
+    fn test_append_record_larger_than_segment_max_returns_segment_full() {
+        let dir = temp_dir("append_over_max");
+        let mut set = DataSegmentSet::new_with_compression(
+            &dir,
+            512 * 1024,
+            256 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+        )
+        .unwrap();
+        let data = incompressible_bytes(700 * 1024);
+
+        let err = set.append(100, &data).unwrap_err();
+        assert!(matches!(err, TmslError::SegmentFull), "got {err:?}");
     }
 
     #[test]

@@ -45,3 +45,8 @@ path = "benchmarks/bench_single.rs"
 name = "bench_multi"
 harness = false
 path = "benchmarks/bench_multi.rs"
+
+[[bench]]
+name = "bench_hotpaths"
+harness = false
+path = "benchmarks/bench_hotpaths.rs"

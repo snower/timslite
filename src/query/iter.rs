@@ -9,7 +9,6 @@ use super::index_iter::IndexQueryIterator;
 
 /// Public lazy query iterator backed by a Store-managed dataset.
 pub struct QueryIterator {
-    dataset: Arc<Mutex<DataSetInner>>,
     index_iter: IndexQueryIterator,
     hot_block: HotBlockCache,
 }
@@ -17,7 +16,6 @@ pub struct QueryIterator {
 impl QueryIterator {
     pub(crate) fn new(dataset: Arc<Mutex<DataSetInner>>, start_ts: i64, end_ts: i64) -> Self {
         Self {
-            dataset: Arc::clone(&dataset),
             index_iter: IndexQueryIterator::new(dataset, start_ts, end_ts),
             hot_block: HotBlockCache::new(),
         }
@@ -36,21 +34,18 @@ impl QueryIterator {
     }
 
     pub fn next_entry(&mut self) -> Result<Option<(i64, Vec<u8>)>> {
-        loop {
-            let Some(entry) = self.index_iter.next_entry()? else {
-                return Ok(None);
-            };
-
-            let mut inner = self.dataset.lock().map_err(|_| {
-                crate::error::TmslError::InvalidData("dataset mutex poisoned".into())
-            })?;
-            if let Some(record) = inner.try_read_entry_from_hot_cache(&entry, &self.hot_block)? {
+        // Seek and record read run under the single lock held by `next_with`.
+        let Self {
+            index_iter,
+            hot_block,
+            ..
+        } = self;
+        index_iter.next_with(|inner, entry| {
+            if let Some(record) = inner.try_read_entry_from_hot_cache(entry, hot_block)? {
                 return Ok(Some(record));
             }
-            if let Some(record) = inner.read_entry_with_hot_cache(&entry, &mut self.hot_block)? {
-                return Ok(Some(record));
-            }
-        }
+            inner.read_entry_with_hot_cache(entry, hot_block)
+        })
     }
 
     pub fn collect_all(mut self) -> Result<Vec<(i64, Vec<u8>)>> {
@@ -139,5 +134,99 @@ mod tests {
         assert_eq!(second.0, 2);
         assert_eq!(second.1, vec![0xABu8; 20_000]);
         assert_eq!(test_hooks::find_or_open_segment_calls(), 0);
+    }
+
+    // ── Lane D regression (unique tempdir; safe to run standalone) ──
+
+    #[test]
+    fn iterator_skips_fillers_deletes_and_honors_reverse_and_skip() {
+        let dir = tempfile::Builder::new()
+            .prefix("timslite_lane_d_iter_")
+            .tempdir()
+            .unwrap();
+        let config = StoreConfig::builder()
+            .enable_journal(false)
+            .enable_background_thread(false)
+            .build();
+        let mut store = Store::open(dir.path(), config).unwrap();
+        let ds = store
+            .create_dataset("iter_stream", "data", 64 * 1024 * 1024, 256, 6, 1, 0)
+            .unwrap();
+        ds.write(10, b"a").unwrap();
+        ds.write(20, b"bb").unwrap();
+        ds.write(30, b"ccc").unwrap();
+        ds.delete(20).unwrap();
+
+        let forward = ds.query_iter(10, 30).unwrap().collect_all().unwrap();
+        assert_eq!(
+            forward.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![10, 30]
+        );
+
+        let reversed = ds
+            .query_iter(10, 30)
+            .unwrap()
+            .reverse()
+            .collect_all()
+            .unwrap();
+        assert_eq!(
+            reversed.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![30, 10]
+        );
+
+        let skipped = ds
+            .query_iter(10, 30)
+            .unwrap()
+            .skip(1)
+            .collect_all()
+            .unwrap();
+        assert_eq!(
+            skipped.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![30]
+        );
+
+        // Length iterator shares the merged seek+read lock path.
+        let lengths = ds.query_length_iter(10, 30).unwrap().collect_all().unwrap();
+        assert_eq!(lengths, vec![(10, 1u32), (30, 3u32)]);
+
+        // Retention clamps the iterator range at creation time.
+        let retained = store
+            .create_dataset("iter_stream", "retained", 64 * 1024 * 1024, 256, 6, 1, 50)
+            .unwrap();
+        retained.write(100, b"a").unwrap();
+        retained.write(200, b"b").unwrap();
+        let visible = retained.query_iter(0, 200).unwrap().collect_all().unwrap();
+        assert_eq!(
+            visible.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![200]
+        );
+        assert!(retained
+            .query_iter(0, 199)
+            .unwrap()
+            .collect_all()
+            .unwrap()
+            .is_empty());
+
+        // Negative and i64-boundary timestamps survive the cursor advance.
+        let bounds = store
+            .create_dataset("iter_stream", "bounds", 64 * 1024 * 1024, 256, 6, 0, 0)
+            .unwrap();
+        bounds.write(-5, b"neg").unwrap();
+        bounds.write(0, b"zero").unwrap();
+        bounds.write(i64::MAX - 1, b"max").unwrap();
+        let negatives = bounds.query_iter(-5, 0).unwrap().collect_all().unwrap();
+        assert_eq!(
+            negatives.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![-5, 0]
+        );
+        let over_max = bounds
+            .query_iter(i64::MAX - 2, i64::MAX)
+            .unwrap()
+            .collect_all()
+            .unwrap();
+        assert_eq!(
+            over_max.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![i64::MAX - 1]
+        );
     }
 }

@@ -9,7 +9,6 @@ use super::index_iter::IndexQueryIterator;
 
 /// Public lazy iterator for data lengths returned by `DataSet::query_length_iter`.
 pub struct QueryLengthIterator {
-    dataset: Arc<Mutex<DataSetInner>>,
     index_iter: IndexQueryIterator,
     hot_block: HotBlockCache,
 }
@@ -17,7 +16,6 @@ pub struct QueryLengthIterator {
 impl QueryLengthIterator {
     pub(crate) fn new(dataset: Arc<Mutex<DataSetInner>>, start_ts: i64, end_ts: i64) -> Self {
         Self {
-            dataset: Arc::clone(&dataset),
             index_iter: IndexQueryIterator::new(dataset, start_ts, end_ts),
             hot_block: HotBlockCache::new(),
         }
@@ -36,25 +34,22 @@ impl QueryLengthIterator {
     }
 
     pub fn next_entry(&mut self) -> Result<Option<(i64, u32)>> {
-        loop {
-            let Some(entry) = self.index_iter.next_entry()? else {
-                return Ok(None);
-            };
-
-            let mut inner = self.dataset.lock().map_err(|_| {
-                crate::error::TmslError::InvalidData("dataset mutex poisoned".into())
-            })?;
+        // Seek and length read run under the single lock held by `next_with`.
+        let Self {
+            index_iter,
+            hot_block,
+            ..
+        } = self;
+        index_iter.next_with(|inner, entry| {
             if let Some(data_len) =
-                inner.try_read_entry_data_len_from_hot_cache(&entry, &self.hot_block)?
+                inner.try_read_entry_data_len_from_hot_cache(entry, hot_block)?
             {
                 return Ok(Some((entry.timestamp, data_len)));
             }
-            if let Some(data_len) =
-                inner.read_entry_data_len_with_hot_cache(&entry, &mut self.hot_block)?
-            {
-                return Ok(Some((entry.timestamp, data_len)));
-            }
-        }
+            Ok(inner
+                .read_entry_data_len_with_hot_cache(entry, hot_block)?
+                .map(|data_len| (entry.timestamp, data_len)))
+        })
     }
 
     pub fn collect_all(mut self) -> Result<Vec<(i64, u32)>> {

@@ -5,6 +5,8 @@
 
 ## 24.1 设计动机
 
+单次 record 写入必须在当前 segment 或新建 segment 中持续扩容至可容纳所需空间或达到最大容量，不能只倍增一次后要求调用方重试。容量和 offset 运算须检查溢出；非容量 I/O 错误原样传播，不得当作“已达最大容量”而切换 segment。最大容量本身无法容纳的 record 返回 `SegmentFull`。
+
 全量预分配会让少量数据也占用完整 data/index segment 大小。例如只写入少量记录时, 仍可能占用 64MiB data segment + 16MiB index segment。
 
 懒分配方案:

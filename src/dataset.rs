@@ -352,6 +352,16 @@ impl DataSet {
         self.with_inner(|inner| inner.sync_queued_flush_targets(targets))
     }
 
+    /// Find the first non-filler index entry in `[start_ts, end_ts]` without
+    /// materializing the range. Used by queue gap scans and internal readers.
+    pub(crate) fn find_next_visible_index_entry(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Option<IndexEntry>> {
+        self.with_inner(|inner| inner.find_next_visible_index_entry(start_ts, end_ts))
+    }
+
     pub(crate) fn drop_dataset(base_dir: &std::path::Path) -> Result<()> {
         DataSetInner::drop_dataset(base_dir)
     }
@@ -895,6 +905,12 @@ impl DataSetInner {
     }
 
     pub(crate) fn sync_flush_target(&mut self, target: SegmentFlushTarget) -> Result<()> {
+        #[cfg(test)]
+        if flush_failure_hook::take_failure() {
+            return Err(TmslError::Io(std::io::Error::other(
+                "injected flush failure",
+            )));
+        }
         match target {
             SegmentFlushTarget::Data { file_offset } => self.segments.sync_segment(file_offset),
             SegmentFlushTarget::Index { start_timestamp } => {
@@ -916,14 +932,74 @@ impl DataSetInner {
         Ok(())
     }
 
+    /// Synchronize queued targets, retaining the failed target plus every
+    /// not-yet-attempted target in the runtime flush queue so any later flush
+    /// pass (explicit `flush()` or the background executor) can retry them.
     pub(crate) fn sync_queued_flush_targets(
         &mut self,
         targets: Vec<SegmentFlushTarget>,
     ) -> Result<()> {
-        for target in targets {
-            self.sync_flush_target(target)?;
+        let mut remaining = targets.into_iter();
+        while let Some(target) = remaining.next() {
+            match self.sync_flush_target(target.clone()) {
+                Ok(()) => {}
+                Err(err) => {
+                    let mut retained = Vec::with_capacity(1 + remaining.len());
+                    retained.push(target);
+                    retained.extend(remaining);
+                    self.requeue_flush_targets(retained);
+                    return Err(err);
+                }
+            }
         }
         Ok(())
+    }
+
+    fn requeue_flush_targets(&self, targets: Vec<SegmentFlushTarget>) {
+        if targets.is_empty() {
+            return;
+        }
+        let Some(queue) = self.runtime_context.flush_queue.as_ref() else {
+            return;
+        };
+        let mut queue = queue.lock().unwrap();
+        let queued: Vec<DataSetFlushTarget> = queue.drain(..).collect();
+        for segment in targets {
+            queue.push_back(DataSetFlushTarget {
+                dataset: self.id.clone(),
+                segment,
+            });
+        }
+        queue.extend(queued);
+    }
+
+    /// Find the first non-filler index entry in `[start_ts, end_ts]` using the
+    /// cursor-based index seek so the range is never materialized.
+    pub(crate) fn find_next_visible_index_entry(
+        &mut self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Result<Option<IndexEntry>> {
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts)?;
+        if start_ts > end_ts {
+            return Ok(None);
+        }
+        let mut cursor = None;
+        let mut next_ts = start_ts;
+        loop {
+            let Some((position, entry)) = self
+                .time_index
+                .next_query_entry_at_or_after(next_ts, end_ts, cursor)?
+            else {
+                return Ok(None);
+            };
+            cursor = Some(position);
+            next_ts = entry.timestamp.saturating_add(1);
+            if entry.block_offset != BLOCK_OFFSET_FILLER {
+                self.last_used_at = Instant::now();
+                return Ok(Some(entry));
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1348,8 +1424,21 @@ impl DataSetInner {
             in_block_offset: entry.in_block_offset,
         };
         let (ts, data) = self.segments.read_at_index(&re, cache)?;
+        Self::ensure_entry_record_timestamp(&entry, ts)?;
         self.last_used_at = Instant::now();
         Ok(Some((ts, data)))
+    }
+
+    /// Guard every read path: the record header timestamp must match the index
+    /// entry used to locate it.
+    fn ensure_entry_record_timestamp(entry: &IndexEntry, timestamp: i64) -> Result<()> {
+        if entry.timestamp != timestamp {
+            return Err(TmslError::InvalidData(format!(
+                "record timestamp {timestamp} does not match index timestamp {} for block offset {}",
+                entry.timestamp, entry.block_offset
+            )));
+        }
+        Ok(())
     }
 
     /// Read the record at latest_written_timestamp without searching backward.
@@ -1519,6 +1608,7 @@ impl DataSetInner {
         let record =
             self.segments
                 .read_at_index_with_hot_cache(&re, cache.as_deref(), hot_block)?;
+        Self::ensure_entry_record_timestamp(entry, record.0)?;
         self.last_used_at = Instant::now();
         Ok(Some(record))
     }
@@ -1543,6 +1633,7 @@ impl DataSetInner {
         };
         let record =
             HotBlockCache::extract_record_from(block_data.as_slice(), entry.in_block_offset)?;
+        Self::ensure_entry_record_timestamp(entry, record.0)?;
         self.last_used_at = Instant::now();
         Ok(Some(record))
     }
@@ -1586,8 +1677,9 @@ impl DataSetInner {
         ) else {
             return Ok(None);
         };
-        let data_len =
-            HotBlockCache::read_data_len_from(block_data.as_slice(), entry.in_block_offset)?;
+        let (record_timestamp, data_len) =
+            HotBlockCache::read_record_header_from(block_data.as_slice(), entry.in_block_offset)?;
+        Self::ensure_entry_record_timestamp(entry, record_timestamp)?;
         self.last_used_at = Instant::now();
         Ok(Some(data_len))
     }
@@ -1595,10 +1687,15 @@ impl DataSetInner {
     /// Query records in the time range [start_ts, end_ts].
     /// Filler entries (sentinel block_offset) are skipped.
     pub fn query(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<(i64, Vec<u8>)>> {
-        let entries = self.query_index_entries(start_ts, end_ts)?;
+        let (start_ts, end_ts) = self.clamp_query_range(start_ts, end_ts)?;
+        if start_ts > end_ts {
+            return Ok(Vec::new());
+        }
         let mut result = Vec::new();
         let mut hot_block = HotBlockCache::new();
-        for entry in entries {
+        let mut cursor = None;
+        let mut next_ts = start_ts;
+        while let Some(entry) = self.next_query_entry(end_ts, &mut cursor, &mut next_ts)? {
             if entry.block_offset == BLOCK_OFFSET_FILLER {
                 continue;
             }
@@ -1611,6 +1708,24 @@ impl DataSetInner {
             }
         }
         Ok(result)
+    }
+
+    /// Advance the cursor-based query scan without materializing the range.
+    fn next_query_entry(
+        &mut self,
+        end_ts: i64,
+        cursor: &mut Option<IndexEntryPosition>,
+        next_ts: &mut i64,
+    ) -> Result<Option<IndexEntry>> {
+        let Some((position, entry)) = self
+            .time_index
+            .next_query_entry_at_or_after(*next_ts, end_ts, *cursor)?
+        else {
+            return Ok(None);
+        };
+        *cursor = Some(position);
+        *next_ts = entry.timestamp.saturating_add(1);
+        Ok(Some(entry))
     }
 
     pub fn query_index_entries(&mut self, start_ts: i64, end_ts: i64) -> Result<Vec<IndexEntry>> {
@@ -1672,9 +1787,10 @@ impl DataSetInner {
             return Ok(Vec::new());
         }
         let mut result = Vec::new();
-        let entries = self.time_index.query(start_ts, end_ts)?;
         let mut hot_block = HotBlockCache::new();
-        for entry in entries {
+        let mut cursor = None;
+        let mut next_ts = start_ts;
+        while let Some(entry) = self.next_query_entry(end_ts, &mut cursor, &mut next_ts)? {
             if entry.block_offset == BLOCK_OFFSET_FILLER {
                 continue;
             }
@@ -1708,7 +1824,9 @@ impl DataSetInner {
             block_offset: entry.block_offset,
             in_block_offset: entry.in_block_offset,
         };
-        self.segments.read_at_index(&re, cache)
+        let (timestamp, data) = self.segments.read_at_index(&re, cache)?;
+        Self::ensure_entry_record_timestamp(entry, timestamp)?;
+        Ok((timestamp, data))
     }
 
     /// Flush all data.
@@ -5084,5 +5202,277 @@ mod tests {
 
         let err = DataSetInner::open(id, dir.clone()).err().unwrap();
         assert!(format!("{err}").contains("padding"), "err: {err}");
+    }
+
+    // ── Lane D regressions (unique tempfile dirs; safe to run standalone) ──
+
+    fn unique_temp_dir(prefix: &str) -> tempfile::TempDir {
+        tempfile::Builder::new().prefix(prefix).tempdir().unwrap()
+    }
+
+    fn unique_store(dir: &tempfile::TempDir) -> crate::Store {
+        let config = crate::StoreConfig::builder()
+            .enable_journal(false)
+            .enable_background_thread(false)
+            .build();
+        crate::Store::open(dir.path(), config).unwrap()
+    }
+
+    #[test]
+    fn find_next_visible_index_entry_skips_fillers_and_clamps_retention() {
+        let dir = unique_temp_dir("timslite_lane_d_find_next_");
+        let mut store = unique_store(&dir);
+        // Continuous mode materializes filler entries between written timestamps.
+        let ds = store
+            .create_dataset("visible", "gap", 64 * 1024 * 1024, 256, 6, 1, 0)
+            .unwrap();
+        ds.write(10, b"ten").unwrap();
+        ds.write(30, b"thirty").unwrap();
+
+        let first = ds.find_next_visible_index_entry(10, 30).unwrap().unwrap();
+        assert_eq!(first.timestamp, 10);
+        assert!(!first.is_filler());
+
+        // Start inside the filler run: helper must skip fillers without materializing.
+        let second = ds.find_next_visible_index_entry(11, 30).unwrap().unwrap();
+        assert_eq!(second.timestamp, 30);
+        assert!(!second.is_filler());
+
+        assert!(ds.find_next_visible_index_entry(31, 100).unwrap().is_none());
+        assert!(ds.find_next_visible_index_entry(30, 10).unwrap().is_none());
+
+        // Legacy retention clamps the effective start to latest - window.
+        let retained = store
+            .create_dataset("visible", "retained", 64 * 1024 * 1024, 256, 6, 1, 50)
+            .unwrap();
+        retained.write(100, b"a").unwrap();
+        retained.write(200, b"b").unwrap();
+        assert_eq!(
+            retained
+                .find_next_visible_index_entry(0, 200)
+                .unwrap()
+                .unwrap()
+                .timestamp,
+            200
+        );
+        assert!(retained
+            .find_next_visible_index_entry(0, 199)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn query_and_query_length_stream_fillers_and_deleted_records() {
+        let dir = unique_temp_dir("timslite_lane_d_query_stream_");
+        let mut store = unique_store(&dir);
+        let ds = store
+            .create_dataset("stream", "data", 64 * 1024 * 1024, 256, 6, 1, 0)
+            .unwrap();
+        ds.write(10, b"ten").unwrap();
+        ds.write(20, b"twenty").unwrap();
+        ds.write(30, b"thirtyfive").unwrap();
+        ds.delete(20).unwrap();
+
+        let records = ds.query(10, 30).unwrap();
+        assert_eq!(
+            records.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![10, 30]
+        );
+        assert_eq!(records[0].1, b"ten");
+        assert_eq!(records[1].1, b"thirtyfive");
+
+        // query_length is per-record length, not an aggregate count.
+        assert_eq!(
+            ds.query_length(10, 30).unwrap(),
+            vec![(10, 3u32), (30, 10u32)]
+        );
+
+        let iter_records = ds.query_iter(10, 30).unwrap().collect_all().unwrap();
+        assert_eq!(iter_records, records);
+        let reversed = ds
+            .query_iter(10, 30)
+            .unwrap()
+            .reverse()
+            .collect_all()
+            .unwrap();
+        assert_eq!(
+            reversed.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![30, 10]
+        );
+    }
+
+    #[test]
+    fn query_handles_negative_and_i64_boundary_timestamps() {
+        let dir = unique_temp_dir("timslite_lane_d_query_bounds_");
+        let mut store = unique_store(&dir);
+        // Non-continuous mode avoids materializing a timestamp-per-unit filler run.
+        let ds = store
+            .create_dataset("bounds", "data", 64 * 1024 * 1024, 256, 6, 0, 0)
+            .unwrap();
+        ds.write(-5, b"neg").unwrap();
+        ds.write(0, b"zero").unwrap();
+        ds.write(i64::MAX - 1, b"max").unwrap();
+
+        let records = ds.query(-5, i64::MAX).unwrap();
+        assert_eq!(
+            records.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            vec![-5, 0, i64::MAX - 1]
+        );
+        assert_eq!(
+            ds.query_length(-5, i64::MAX).unwrap(),
+            vec![(-5, 3u32), (0, 4u32), (i64::MAX - 1, 3u32)]
+        );
+
+        assert_eq!(
+            ds.find_next_visible_index_entry(i64::MAX - 2, i64::MAX)
+                .unwrap()
+                .unwrap()
+                .timestamp,
+            i64::MAX - 1
+        );
+        assert!(ds
+            .find_next_visible_index_entry(i64::MAX, i64::MAX)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn flush_retains_failed_and_unattempted_targets_for_retry() {
+        let dir = unique_temp_dir("timslite_lane_d_flush_retry_");
+        let key = DataSetKey {
+            name: "flush_retry".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSetInner::create(
+            key,
+            dir.path().to_path_buf(),
+            4096,
+            512,
+            0,
+            0,
+            4096,
+            512,
+            0,
+            0,
+        )
+        .unwrap();
+        ds.set_runtime_context(DataSetRuntimeContext::new(
+            None,
+            None,
+            Some(DataSetRuntimeContext::new_flush_queue()),
+        ));
+        ds.write(100, b"first").unwrap();
+        assert_eq!(ds.flush_queue_len(), 2);
+
+        {
+            let _guard = flush_failure_hook::arm_once();
+            let err = ds.flush().unwrap_err();
+            assert!(matches!(err, TmslError::Io(_)), "err: {err}");
+        }
+
+        let retained = ds.flush_queue_segments();
+        assert_eq!(
+            retained.len(),
+            2,
+            "failed and unattempted targets must remain queued for retry"
+        );
+        assert!(retained
+            .iter()
+            .any(|target| matches!(target, SegmentFlushTarget::Data { file_offset: 0 })));
+        assert!(retained
+            .iter()
+            .any(|target| matches!(target, SegmentFlushTarget::Index { .. })));
+
+        ds.flush().unwrap();
+        assert_eq!(ds.flush_queue_len(), 0);
+        assert!(ds.segments.open_segments().all(|seg| seg.is_flushed));
+        assert!(ds
+            .time_index
+            .open_index_segments()
+            .all(|seg| seg.is_flushed));
+    }
+
+    #[test]
+    fn hot_cache_length_hit_rejects_mismatched_record_timestamp() {
+        use crate::cache::{BlockCache, CacheKey};
+
+        let dir = unique_temp_dir("timslite_lane_d_hot_len_");
+        let key = DataSetKey {
+            name: "hot_len".into(),
+            dataset_type: "data".into(),
+        };
+        let mut ds = DataSetInner::create(
+            key,
+            dir.path().to_path_buf(),
+            4096,
+            512,
+            0,
+            0,
+            4096,
+            512,
+            0,
+            0,
+        )
+        .unwrap();
+
+        // record: data_len=5, ts=100, 5 payload bytes
+        let mut block = Vec::new();
+        block.extend_from_slice(&5u32.to_le_bytes());
+        block.extend_from_slice(&100i64.to_le_bytes());
+        block.extend_from_slice(&[1, 2, 3, 4, 5]);
+
+        let block_cache = BlockCache::new(1024);
+        let cache_key = CacheKey::new(0, 0, 0);
+        let stored = block_cache
+            .put_shared(cache_key.clone(), Arc::new(block))
+            .unwrap();
+        let mut hot_block = HotBlockCache::new();
+        hot_block.fill(cache_key, &stored);
+
+        // Matching timestamp reads the length from the cached header only.
+        let matching = IndexEntry::new(100, 0, 0);
+        assert_eq!(
+            ds.try_read_entry_data_len_from_hot_cache(&matching, &hot_block)
+                .unwrap(),
+            Some(5)
+        );
+
+        // A hot-hit must not bypass the index/record timestamp check.
+        let mismatched = IndexEntry::new(101, 0, 0);
+        let err = ds
+            .try_read_entry_data_len_from_hot_cache(&mismatched, &hot_block)
+            .unwrap_err();
+        assert!(matches!(err, TmslError::InvalidData(_)), "err: {err}");
+        assert!(format!("{err}").contains("does not match"), "err: {err}");
+    }
+}
+
+/// Test-only failure injection for queued flush synchronization.
+#[cfg(test)]
+pub(crate) mod flush_failure_hook {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FAILURE_BUDGET: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) struct FailureGuard;
+
+    impl Drop for FailureGuard {
+        fn drop(&mut self) {
+            FAILURE_BUDGET.store(0, Ordering::SeqCst);
+        }
+    }
+
+    /// Fail the next queued sync attempt once. The guard resets the budget on drop.
+    pub(crate) fn arm_once() -> FailureGuard {
+        FAILURE_BUDGET.store(1, Ordering::SeqCst);
+        FailureGuard
+    }
+
+    pub(crate) fn take_failure() -> bool {
+        FAILURE_BUDGET
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                (remaining > 0).then(|| remaining - 1)
+            })
+            .is_ok()
     }
 }

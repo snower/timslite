@@ -157,6 +157,10 @@ append record 必须遵守“payload → block header/state → index”的发�
 2. 若 index 已写入, 正常运行期间同一 `DataSet` 的 mutex 保证查询只能在 append 完成后看到该 entry。
 3. crash/reopen 后不保证 data/index mmap 文件的落盘顺序; 因此通过 index 读取时必须校验 block 边界和 record 内嵌 timestamp, 校验失败时按缺失/损坏处理, 不能返回旧数据或错误数据。
 
+读取校验使用 checked offset/length 运算，并在切片前验证完整 block header、payload 和 record 范围；损坏数据返回可控错误，不能依赖越界 panic。raw payload 可在 dataset/segment 的受保护生命周期内直接解析，仅复制最终返回的 record，借用不得跨越 remap、close 或公开 API。损坏读取不触发自动尾部截断。
+
+压缩读取还需在分配输出前限制解压大小：普通聚合 block 不超过 `BLOCK_MAX_SIZE`，single-record block 不超过 record 上限加 record header/对齐空间。解压过程受已校验的 `uncompressed_size` 约束，不能先无界分配后才验证长度。
+
 本设计不引入事务、WAL 或二次提交状态。最近写入可以丢失, 但索引不得先于 payload/header 发布。
 
 **block offset 坐标约定**:

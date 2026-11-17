@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::error::{Result, TmslError};
 use crate::journal::log::JournalLog;
 use crate::queue::{
-    now_unix_seconds, ConsumerStateFile, PendingEntry, QueueConsumerConfig, QueueNotifier,
-    QueuePollCallback, QueuePollCallbackSlot, PENDING_STATUS_UNACKED,
+    now_unix_seconds, ConsumerStateFile, QueueConsumerConfig, QueueNotifier, QueuePollCallback,
+    QueuePollCallbackSlot,
 };
 use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
@@ -242,63 +242,106 @@ impl JournalQueueConsumer {
     }
 
     fn try_poll_available(&self) -> Result<Option<(i64, Vec<u8>)>> {
+        let now = now_unix_seconds();
+
+        // Retry an expired pending delivery. Commit the retry attempt only
+        // after the unlocked log read succeeds.
         let retry_scan = {
-            let mut state = self
-                .state_file
-                .lock()
-                .map_err(|_| TmslError::InvalidData("journal state file mutex poisoned".into()))?;
-            let scan = state.take_retryable_pending(self.config, now_unix_seconds());
-            if scan.changed {
-                state.sync()?;
-            }
-            scan
-        };
-        if let Some(sequence) = retry_scan.timestamp {
-            return self.read_sequence(sequence);
-        }
-
-        let next_sequence = self
-            .log
-            .lock()
-            .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
-            .next_sequence();
-
-        let next = {
             let state = self
                 .state_file
                 .lock()
                 .map_err(|_| TmslError::InvalidData("journal state file mutex poisoned".into()))?;
-            let mut candidate = state.next_poll_ts();
-            while candidate < next_sequence && state.is_in_pending(candidate) {
-                candidate = candidate.saturating_add(1);
-            }
-            candidate
+            state.peek_retryable_pending(self.config, now)
         };
-        if next >= next_sequence {
-            return Ok(None);
+        if let Some(sequence) = retry_scan.timestamp {
+            match self.read_sequence(sequence) {
+                Ok(Some((seq, data))) => {
+                    if self.commit_retry_claim(Some(sequence), now)? {
+                        return Ok(Some((seq, data)));
+                    }
+                    // A peer in the same group claimed this retry first.
+                }
+                Ok(None) => {
+                    // The sequence is gone; consume the retry attempt and keep
+                    // scanning instead of returning a false `None`.
+                    self.commit_retry_claim(Some(sequence), now)?;
+                }
+                Err(err) => return Err(err),
+            }
+        } else if retry_scan.has_exhausted {
+            self.commit_retry_claim(None, now)?;
         }
 
-        let row = self.read_sequence(next)?;
-        if row.is_some() {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64;
-            let mut state = self
-                .state_file
+        loop {
+            let next_sequence = self
+                .log
                 .lock()
-                .map_err(|_| TmslError::InvalidData("journal state file mutex poisoned".into()))?;
-            if !state.is_in_pending(next) {
-                state.add_pending(PendingEntry {
-                    timestamp: next,
-                    start_time: now,
-                    status: PENDING_STATUS_UNACKED,
-                    retry_count: 0,
+                .map_err(|_| TmslError::InvalidData("journal log mutex poisoned".into()))?
+                .next_sequence();
+
+            let candidate = {
+                let state = self.state_file.lock().map_err(|_| {
+                    TmslError::InvalidData("journal state file mutex poisoned".into())
                 })?;
-                state.sync()?;
+                let mut candidate = state.next_poll_ts();
+                while candidate < next_sequence && state.is_in_pending(candidate) {
+                    candidate = candidate.saturating_add(1);
+                }
+                candidate
+            };
+            if candidate >= next_sequence {
+                return Ok(None);
             }
+
+            // Read outside the state lock, then revalidate + claim.
+            let Some((sequence, data)) = self.read_sequence(candidate)? else {
+                // Journal sequences are contiguous; do not skip ahead.
+                return Ok(None);
+            };
+            let claimed = {
+                let mut state = self.state_file.lock().map_err(|_| {
+                    TmslError::InvalidData("journal state file mutex poisoned".into())
+                })?;
+                // Recheck close under the state-file lock: a close that raced
+                // the unlocked log read must not be followed by a claim.
+                let claimed = self.try_claim_pending_checked(&mut state, candidate, now)?;
+                if claimed {
+                    state.sync()?;
+                }
+                claimed
+            };
+            if claimed {
+                return Ok(Some((sequence, data)));
+            }
+            // A peer claimed the candidate; recompute the next candidate.
         }
-        Ok(row)
+    }
+
+    fn try_claim_pending_checked(
+        &self,
+        state: &mut ConsumerStateFile,
+        sequence: i64,
+        now: i64,
+    ) -> Result<bool> {
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(TmslError::QueueClosed("journal queue is closed".into()));
+        }
+        state.try_claim_pending(sequence, now)
+    }
+
+    fn commit_retry_claim(&self, sequence: Option<i64>, now: i64) -> Result<bool> {
+        let mut state = self
+            .state_file
+            .lock()
+            .map_err(|_| TmslError::InvalidData("journal state file mutex poisoned".into()))?;
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(TmslError::QueueClosed("journal queue is closed".into()));
+        }
+        let commit = state.commit_retryable_pending(self.config, now, sequence)?;
+        if commit.changed {
+            state.sync()?;
+        }
+        Ok(commit.claimed)
     }
 
     fn read_sequence(&self, sequence: i64) -> Result<Option<(i64, Vec<u8>)>> {
@@ -368,6 +411,105 @@ mod tests {
         let row = consumer.poll(Duration::from_millis(100)).unwrap().unwrap();
         assert_eq!(row.0, 1);
         assert_eq!(row.1, b"first");
+    }
+
+    #[test]
+    fn journal_claim_recheck_rejects_closed_queue() {
+        let (log, dir) = make_log("closed_claim");
+        let queue = JournalQueue::new(log.clone(), dir.join("queue"));
+        let consumer = queue.open_consumer("group").unwrap();
+        log.lock().unwrap().append(b"payload").unwrap();
+
+        // Close only after data exists so the poll's unlocked log read can
+        // complete before the locked claim recheck observes the closed flag.
+        queue.close().unwrap();
+        let err = consumer.try_poll_available().unwrap_err();
+        assert!(matches!(err, TmslError::QueueClosed(_)));
+
+        let state = consumer.state_file.lock().unwrap();
+        assert!(!state.is_in_pending(1));
+        drop(state);
+
+        // The retry commit path must reject close under the same lock too.
+        let err = consumer
+            .commit_retry_claim(Some(1), now_unix_seconds())
+            .unwrap_err();
+        assert!(matches!(err, TmslError::QueueClosed(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn journal_queue_same_group_concurrent_claims_are_unique() {
+        use std::collections::HashSet;
+        use std::sync::mpsc;
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        const CONSUMERS: usize = 4;
+        const RECORDS: i64 = 200;
+
+        let (log, dir) = make_log("concurrent_unique");
+        let queue = JournalQueue::new(log.clone(), dir.join("queue"));
+        // Consumers must be opened before the records exist: a fresh group
+        // starts at the current latest sequence.
+        let consumers: Vec<_> = (0..CONSUMERS)
+            .map(|_| queue.open_consumer("same_group").unwrap())
+            .collect();
+        for i in 0..RECORDS {
+            log.lock()
+                .unwrap()
+                .append(format!("record-{i}").as_bytes())
+                .unwrap();
+        }
+
+        let barrier = Arc::new(Barrier::new(CONSUMERS));
+        let (done_tx, done_rx) = mpsc::channel();
+        let mut handles = Vec::new();
+        for consumer in consumers {
+            let barrier = Arc::clone(&barrier);
+            let done_tx = done_tx.clone();
+            handles.push(thread::spawn(move || {
+                barrier.wait();
+                let mut seen = Vec::new();
+                loop {
+                    match consumer.poll(Duration::ZERO) {
+                        Ok(Some((sequence, _))) => {
+                            seen.push(sequence);
+                            // Acking is best-effort here: a duplicate claim may
+                            // already have been cleaned up by the winning peer.
+                            let _ = consumer.ack(sequence);
+                        }
+                        Ok(None) => break,
+                        Err(err) => panic!("journal poll failed: {err:?}"),
+                    }
+                }
+                let _ = done_tx.send(seen);
+            }));
+        }
+        drop(done_tx);
+
+        let mut claimed = Vec::new();
+        for _ in 0..CONSUMERS {
+            match done_rx.recv_timeout(Duration::from_secs(10)) {
+                Ok(seen) => claimed.extend(seen),
+                Err(_) => panic!("journal concurrent claim test timed out"),
+            }
+        }
+        for handle in handles {
+            handle.join().expect("journal claim worker panicked");
+        }
+
+        let unique: HashSet<i64> = claimed.iter().copied().collect();
+        assert_eq!(
+            claimed.len(),
+            RECORDS as usize,
+            "each journal record must be claimed exactly once"
+        );
+        assert_eq!(unique.len(), RECORDS as usize, "duplicate claims detected");
+        for expected in 1..=RECORDS {
+            assert!(unique.contains(&expected), "missing sequence {expected}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

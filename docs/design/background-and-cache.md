@@ -39,6 +39,8 @@ Read-only Store mode does not create `BackgroundTasks` at all, even when `StoreC
 
 ### 17.1 Flush 行为
 
+**失败重试不变量**: 从等待队列取出 target 不等于完成同步。同步失败的 target 以及尚未尝试的 target 必须保留或重新入队；`queued_for_flush` 不能保持为 true 而对应工作已丢失。后台 flush 和显式 `DataSet::flush()` 使用同一错误恢复路径，调用方在 I/O 错误消失后可再次同步。此行为不提供跨 data/index 文件的事务或 WAL 保证。
+
 ```
 flush (默认每 15 秒):
   1. 从 Store 级共享 flush_queue drain 全部 DataSetFlushTarget
@@ -408,9 +410,9 @@ struct CacheKey {
 }
 
 struct CacheEntry {
-    data: Vec<u8>,                 // 解压后的 block payload
-    last_access_at: Instant,
-    access_count: u64,
+data: Arc<Vec<u8>>, // Immutable decompressed payload
+last_access_tick: AtomicU64,
+last_access_seq: AtomicU64,
     memory_footprint: usize,       // data.len() + ~96 bytes overhead
 }
 ```
@@ -420,7 +422,7 @@ struct CacheEntry {
 ```rust
 impl BlockCache {
     pub fn new(max_memory: usize) -> Self;
-    pub fn get(&self, key: &CacheKey) -> Option<Vec<u8>>;
+pub fn get(&self, key: &CacheKey) -> Option<Arc<Vec<u8>>>;
     pub fn put(&self, key: CacheKey, data: Vec<u8>);
     pub fn invalidate(&self, key: &CacheKey) -> bool;
     pub fn evict_idle(&self, idle_timeout: Duration) -> usize;
@@ -431,16 +433,18 @@ impl BlockCache {
 
 `invalidate` 用于纠正写入、删除、乱序覆盖索引等会改变 record 可见位置的路径。即使目标 block 当前不在缓存中也必须允许调用, 返回值仅表示是否实际删除了缓存项。
 
+缓存命中持 map 读锁，以原子访问元数据更新近似访问顺序。tick 基于 cache 内部 monotonic epoch，不使用 wall clock；idle 仍按 Duration 判断。插入和删除在 map 写锁内维护容量计数，插入不扫描全部 entry 求和；单条 footprint 超过容量时不缓存，也不驱逐其他条目。
+
 ### 18.4 LRU 淘汰策略
 
 ```
 put 时淘汰流程:
   1. 计算新增内存: new_used = used_memory + entry.memory_footprint
   2. 如果 new_used > max_memory:
-     a. 收集所有 entry, 按 last_access_at 排序 (从旧到新)
+a. 收集所有 entry 的 monotonic access tick 和 sequence，以最旧优先构建候选堆
      b. 依次淘汰最旧的 entry, 直到 used_memory + entry_footprint <= max_memory × 0.85
-     c. 留出 15% 余量, 避免每次 put 都触发淘汰
-  3. 插入新 entry
+c. 留出 15% 余量, 避免每次 put 都触发淘汰
+3. 插入新 entry
 ```
 
 ### 18.5 LRU vs Idle 回收

@@ -421,7 +421,9 @@ QueueInner (Arc<Mutex<QueueInner>>)
 ConsumerStateFile (Arc<Mutex<ConsumerStateFile>>)
 ```
 
-**严格遵循**: 外层锁未释放时, 不能获取内层锁。避免死锁。
+**严格遵循**: 仅按上述从外到内顺序获取锁，不能持有内层锁反向获取外层锁。尤其不能持有 `QueueInner` 或 `ConsumerStateFile` 调用 dataset I/O。
+
+消费采用候选读取与领取分离：state 锁内获取候选信息，锁外 seek/read，重新获取 state 锁检查 processed/pending/closed 状态后才能登记并返回。竞争失效时重新选择，不能返回已被其他同组 consumer 领取的记录；Journal queue 使用相同排他原则。稀疏 timestamp fallback 使用索引 seek，不物化从候选到最大 timestamp 的全部条目。
 
 `Condvar pair: (Mutex<bool>, Condvar)` 不属于上述 dataset/state 锁层级。它的 mutex 只保护一个通知 flag, `Condvar::wait_timeout` 只会释放并重新获取这个 notify mutex, 不会释放 `Dataset` 或 `ConsumerStateFile` 锁。进入 wait 前必须已经释放 dataset/state 相关锁。
 

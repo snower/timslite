@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
@@ -22,6 +23,7 @@ impl CacheKey {
     }
 }
 
+// Approximate per-entry metadata: HashMap slot, CacheKey, Arc header.
 const ENTRY_OVERHEAD: usize = 96;
 fn entry_footprint(data_len: usize) -> usize {
     data_len.saturating_add(ENTRY_OVERHEAD)
@@ -29,9 +31,14 @@ fn entry_footprint(data_len: usize) -> usize {
 
 struct CacheEntry {
     data: CachedBlockData,
-    last_access_at: Instant,
-    access_count: u64,
+    last_access_tick: AtomicU64,
+    last_access_seq: AtomicU64,
     footprint: usize,
+}
+
+/// Nanoseconds since the cache epoch, saturating at `u64::MAX`.
+fn duration_ticks(duration: Duration) -> u64 {
+    duration.as_nanos().min(u64::MAX as u128) as u64
 }
 
 pub(crate) type CachedBlockData = Arc<Vec<u8>>;
@@ -50,6 +57,10 @@ pub struct BlockCache {
     entries: RwLock<HashMap<CacheKey, CacheEntry>>,
     cache_hit_count: AtomicU64,
     cache_miss_count: AtomicU64,
+    /// Monotonic reference point for access ticks.
+    clock_epoch: Instant,
+    /// Global sequence used to order accesses that share a tick.
+    access_seq: AtomicU64,
 }
 
 impl BlockCache {
@@ -60,6 +71,8 @@ impl BlockCache {
             entries: RwLock::new(HashMap::new()),
             cache_hit_count: AtomicU64::new(0),
             cache_miss_count: AtomicU64::new(0),
+            clock_epoch: Instant::now(),
+            access_seq: AtomicU64::new(1),
         }
     }
     pub fn is_enabled(&self) -> bool {
@@ -69,15 +82,28 @@ impl BlockCache {
         self.max_memory
     }
 
+    fn now_tick(&self) -> u64 {
+        duration_ticks(self.clock_epoch.elapsed())
+    }
+
+    fn next_access_seq(&self) -> u64 {
+        self.access_seq.fetch_add(1, Ordering::Relaxed)
+    }
+
     pub fn get(&self, key: &CacheKey) -> Option<CachedBlockData> {
         if !self.is_enabled() {
             return None;
         }
-        let mut guard = self.entries.write().unwrap();
-        match guard.get_mut(key) {
+        let guard = self.entries.read().unwrap();
+        match guard.get(key) {
             Some(entry) => {
-                entry.last_access_at = Instant::now();
-                entry.access_count += 1;
+                // A hit may resume after a newer hit; max keeps metadata monotonic.
+                entry
+                    .last_access_tick
+                    .fetch_max(self.now_tick(), Ordering::Relaxed);
+                entry
+                    .last_access_seq
+                    .fetch_max(self.next_access_seq(), Ordering::Relaxed);
                 self.cache_hit_count.fetch_add(1, Ordering::Relaxed);
                 Some(Arc::clone(&entry.data))
             }
@@ -101,23 +127,27 @@ impl BlockCache {
             return None;
         }
         let footprint = entry_footprint(data.len());
+        // Oversized entries are never cached or accounted; the caller still gets the payload.
+        if footprint > self.max_memory {
+            return Some(data);
+        }
         let mut guard = self.entries.write().unwrap();
         if let Some(existing) = guard.get(&key) {
             return Some(Arc::clone(&existing.data));
         }
         let target = (self.max_memory as f64 * 0.85) as usize;
-        let current: usize = guard.values().map(|v| v.footprint).sum();
-        if current + footprint > self.max_memory {
+        let current = self.used_memory.load(Ordering::Relaxed);
+        if current.saturating_add(footprint) > self.max_memory {
             let needed = target.saturating_sub(footprint);
-            let freed = Self::evict_lru(&mut guard, needed);
+            let freed = Self::evict_lru(&mut guard, current, needed);
             self.used_memory.fetch_sub(freed, Ordering::Relaxed);
         }
         guard.insert(
             key,
             CacheEntry {
                 data: Arc::clone(&data),
-                last_access_at: Instant::now(),
-                access_count: 0,
+                last_access_tick: AtomicU64::new(self.now_tick()),
+                last_access_seq: AtomicU64::new(self.next_access_seq()),
                 footprint,
             },
         );
@@ -161,23 +191,33 @@ impl BlockCache {
         removed
     }
 
-    fn evict_lru(guard: &mut HashMap<CacheKey, CacheEntry>, target_used: usize) -> usize {
-        let current: usize = guard.values().map(|v| v.footprint).sum();
-        if current <= target_used {
+    fn evict_lru(
+        guard: &mut HashMap<CacheKey, CacheEntry>,
+        current_used: usize,
+        target_used: usize,
+    ) -> usize {
+        if current_used <= target_used {
             return 0;
         }
-        let need = current - target_used;
-        let mut sorted: Vec<_> = guard
-            .iter()
-            .map(|(k, v)| (k.clone(), v.last_access_at, v.footprint))
-            .collect();
-        sorted.sort_by_key(|a| a.1);
+        let need = current_used - target_used;
+        let mut keys = Vec::with_capacity(guard.len());
+        let mut order = Vec::with_capacity(guard.len());
+        for (index, (key, entry)) in guard.iter().enumerate() {
+            keys.push(key.clone());
+            order.push(Reverse((
+                entry.last_access_tick.load(Ordering::Relaxed),
+                entry.last_access_seq.load(Ordering::Relaxed),
+                index,
+            )));
+        }
+        // O(n) heapify, then O(k log n) for k evictions; no persistent heap.
+        let mut heap = BinaryHeap::from(order);
         let mut freed = 0usize;
-        for (k, _ts, _fp) in sorted.iter() {
-            if freed >= need {
+        while freed < need {
+            let Some(Reverse((_tick, _seq, index))) = heap.pop() else {
                 break;
-            }
-            if let Some(entry) = guard.remove(k) {
+            };
+            if let Some(entry) = guard.remove(&keys[index]) {
                 freed += entry.footprint;
             }
         }
@@ -189,11 +229,13 @@ impl BlockCache {
             return 0;
         }
         let mut guard = self.entries.write().unwrap();
-        let now = Instant::now();
+        let now = self.now_tick();
+        let idle_ticks = duration_ticks(idle_timeout);
         let mut count = 0;
         let mut freed = 0usize;
         guard.retain(|_key, entry| {
-            if now.duration_since(entry.last_access_at) >= idle_timeout {
+            let idle = now.saturating_sub(entry.last_access_tick.load(Ordering::Relaxed));
+            if idle >= idle_ticks {
                 freed += entry.footprint;
                 count += 1;
                 false
@@ -209,9 +251,8 @@ impl BlockCache {
 
     pub fn clear(&self) {
         let mut guard = self.entries.write().unwrap();
-        let freed = guard.values().map(|e| e.footprint).sum::<usize>();
         guard.clear();
-        self.used_memory.fetch_sub(freed, Ordering::Relaxed);
+        self.used_memory.store(0, Ordering::Relaxed);
     }
 
     pub fn stats(&self) -> CacheStats {
@@ -228,6 +269,9 @@ impl BlockCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
+    use std::thread;
+
     #[test]
     fn test_cache_disabled_when_zero() {
         let c = BlockCache::new(0);
@@ -279,16 +323,12 @@ mod tests {
     }
     #[test]
     fn test_idle_eviction() {
-        let c = BlockCache::new(10240);
+        let mut c = BlockCache::new(10240);
         let k = CacheKey::new(1, 0, 0);
         c.put(k.clone(), vec![1u8; 100]);
         assert_eq!(c.evict_idle(Duration::from_secs(10)), 0);
-        {
-            let mut g = c.entries.write().unwrap();
-            if let Some(e) = g.get_mut(&k) {
-                e.last_access_at = Instant::now() - Duration::from_secs(20);
-            }
-        }
+        // Age every access by shifting the tick epoch 20s into the past.
+        c.clock_epoch = Instant::now() - Duration::from_secs(20);
         assert_eq!(c.evict_idle(Duration::from_secs(10)), 1);
         assert_eq!(c.stats().entry_count, 0);
     }
@@ -342,6 +382,253 @@ mod tests {
         c.put(k.clone(), vec![2u8; 10]);
         assert_eq!(c.get(&k).unwrap().as_slice(), &[1u8; 10]);
         assert_eq!(c.stats().entry_count, 1);
+    }
+
+    #[test]
+    fn test_oversized_entry_is_not_cached() {
+        let c = BlockCache::new(1024);
+        let k = CacheKey::new(1, 0, 0);
+        c.put(k.clone(), vec![1u8; 2048]);
+        let stats = c.stats();
+        assert_eq!(stats.entry_count, 0);
+        assert_eq!(stats.used_memory, 0);
+        assert!(c.get(&k).is_none());
+    }
+
+    #[test]
+    fn test_put_shared_oversized_returns_payload_uncached() {
+        let c = BlockCache::new(1024);
+        let k = CacheKey::new(1, 0, 0);
+        let payload = Arc::new(vec![3u8; 4096]);
+        let returned = c
+            .put_shared(k.clone(), Arc::clone(&payload))
+            .expect("oversized put must still return a usable payload");
+        assert!(Arc::ptr_eq(&returned, &payload));
+        assert_eq!(c.stats().entry_count, 0);
+        assert_eq!(c.stats().used_memory, 0);
+    }
+
+    #[test]
+    fn test_oversized_put_preserves_existing_entries_and_accounting() {
+        let c = BlockCache::new(1000);
+        c.put(CacheKey::new(1, 0, 0), vec![1u8; 100]);
+        c.put(CacheKey::new(1, 1, 0), vec![2u8; 100]);
+        let before = c.stats();
+
+        c.put(CacheKey::new(1, 2, 0), vec![3u8; 5000]);
+
+        let after = c.stats();
+        assert_eq!(after.entry_count, before.entry_count);
+        assert_eq!(after.used_memory, before.used_memory);
+        assert_eq!(
+            c.get(&CacheKey::new(1, 0, 0)).unwrap().as_slice(),
+            &[1u8; 100]
+        );
+    }
+
+    #[test]
+    fn test_used_memory_matches_retained_footprints() {
+        let c = BlockCache::new(2000);
+        for i in 0..20u64 {
+            let len = (i as usize % 5 + 1) * 100;
+            c.put(CacheKey::new(1, i, i * 7), vec![0u8; len]);
+        }
+        let expected: usize = {
+            let guard = c.entries.read().unwrap();
+            guard.values().map(|entry| entry.footprint).sum()
+        };
+        let stats = c.stats();
+        assert_eq!(stats.used_memory, expected);
+        assert!(stats.used_memory <= 2000);
+    }
+
+    #[test]
+    fn test_lru_same_tick_uses_access_sequence() {
+        let c = BlockCache::new(1000);
+        let first = CacheKey::new(1, 0, 0);
+        let second = CacheKey::new(1, 1, 0);
+        let third = CacheKey::new(1, 2, 0);
+        c.put(first.clone(), vec![0u8; 200]);
+        c.put(second.clone(), vec![0u8; 200]);
+        c.put(third.clone(), vec![0u8; 200]);
+
+        let tick = c.now_tick();
+        {
+            let mut guard = c.entries.write().unwrap();
+            let first_entry = guard.get_mut(&first).unwrap();
+            first_entry.last_access_tick.store(tick, Ordering::Relaxed);
+            first_entry.last_access_seq.store(1, Ordering::Relaxed);
+            let second_entry = guard.get_mut(&second).unwrap();
+            second_entry.last_access_tick.store(tick, Ordering::Relaxed);
+            second_entry.last_access_seq.store(2, Ordering::Relaxed);
+        }
+
+        // Forces eviction; the shared-tick entries must be ordered by sequence.
+        c.put(CacheKey::new(1, 3, 0), vec![0u8; 200]);
+
+        assert!(c.get(&first).is_none());
+        assert!(c.get(&second).is_some());
+    }
+
+    #[test]
+    fn test_late_hit_does_not_regress_access_metadata() {
+        let c = BlockCache::new(1024);
+        let k = CacheKey::new(1, 0, 0);
+        c.put(k.clone(), vec![1u8; 10]);
+
+        // Emulate a hit that already stored newer metadata before a stale hit
+        // resumes with an older tick/sequence and updates the same entry.
+        let newer_tick = c.now_tick() + 1_000_000_000;
+        let newer_seq = u64::MAX - 1;
+        {
+            let mut guard = c.entries.write().unwrap();
+            let entry = guard.get_mut(&k).unwrap();
+            entry.last_access_tick.store(newer_tick, Ordering::Relaxed);
+            entry.last_access_seq.store(newer_seq, Ordering::Relaxed);
+        }
+
+        assert!(c.get(&k).is_some());
+
+        let guard = c.entries.read().unwrap();
+        let entry = guard.get(&k).unwrap();
+        assert_eq!(entry.last_access_tick.load(Ordering::Relaxed), newer_tick);
+        assert_eq!(entry.last_access_seq.load(Ordering::Relaxed), newer_seq);
+    }
+
+    fn test_entry(tick: u64, seq: u64, footprint: usize) -> CacheEntry {
+        CacheEntry {
+            data: Arc::new(Vec::new()),
+            last_access_tick: AtomicU64::new(tick),
+            last_access_seq: AtomicU64::new(seq),
+            footprint,
+        }
+    }
+
+    #[test]
+    fn test_evict_lru_matches_sorted_oracle() {
+        let mut entries = HashMap::new();
+        let specs = [
+            (10u64, 1u64, 100usize),
+            (10, 3, 200),
+            (10, 2, 300),
+            (5, 9, 150),
+            (20, 0, 250),
+        ];
+        for (index, (tick, seq, footprint)) in specs.iter().enumerate() {
+            entries.insert(
+                CacheKey::new(1, index as u64, 0),
+                test_entry(*tick, *seq, *footprint),
+            );
+        }
+        let current_used: usize = specs.iter().map(|spec| spec.2).sum();
+        let target_used = current_used - 350;
+
+        // Oracle: full sort by (tick, seq), remove until enough is freed.
+        let mut ordered: Vec<_> = entries
+            .iter()
+            .map(|(key, entry)| {
+                (
+                    key.clone(),
+                    entry.last_access_tick.load(Ordering::Relaxed),
+                    entry.last_access_seq.load(Ordering::Relaxed),
+                    entry.footprint,
+                )
+            })
+            .collect();
+        ordered.sort_by_key(|item| (item.1, item.2));
+        let mut expected_freed = 0usize;
+        let mut expected_removed = Vec::new();
+        for (key, _tick, _seq, footprint) in ordered {
+            if expected_freed >= 350 {
+                break;
+            }
+            expected_freed += footprint;
+            expected_removed.push(key);
+        }
+
+        let freed = BlockCache::evict_lru(&mut entries, current_used, target_used);
+
+        assert_eq!(freed, expected_freed);
+        assert_eq!(entries.len(), specs.len() - expected_removed.len());
+        for key in &expected_removed {
+            assert!(!entries.contains_key(key), "oracle oldest entry survived");
+        }
+        for (index, _) in specs.iter().enumerate() {
+            let key = CacheKey::new(1, index as u64, 0);
+            if !expected_removed.contains(&key) {
+                assert!(entries.contains_key(&key), "oracle survivor was evicted");
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalidate_accounting_is_exact() {
+        let c = BlockCache::new(10240);
+        c.put(CacheKey::new(1, 0, 0), vec![0u8; 100]);
+        c.put(CacheKey::new(1, 0, 1), vec![0u8; 200]);
+        assert_eq!(
+            c.stats().used_memory,
+            entry_footprint(100) + entry_footprint(200)
+        );
+
+        assert!(c.invalidate(&CacheKey::new(1, 0, 0)));
+        assert_eq!(c.stats().used_memory, entry_footprint(200));
+
+        assert_eq!(c.invalidate_scope(1), 1);
+        assert_eq!(c.stats().used_memory, 0);
+    }
+
+    #[test]
+    fn test_concurrent_hits_are_consistent() {
+        let c = Arc::new(BlockCache::new(1024));
+        let k = CacheKey::new(1, 0, 0);
+        c.put(k.clone(), vec![7u8; 100]);
+
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let c = Arc::clone(&c);
+                let k = k.clone();
+                thread::spawn(move || {
+                    for _ in 0..100 {
+                        let hit = c.get(&k).expect("entry must stay cached");
+                        assert!(hit.iter().all(|&b| b == 7));
+                    }
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let stats = c.stats();
+        assert_eq!(stats.hit_count, 800);
+        assert_eq!(stats.miss_count, 0);
+        assert_eq!(stats.entry_count, 1);
+        assert_eq!(stats.used_memory, entry_footprint(100));
+    }
+
+    #[test]
+    fn test_get_uses_shared_lock() {
+        let c = Arc::new(BlockCache::new(1024));
+        let k = CacheKey::new(1, 0, 0);
+        c.put(k.clone(), vec![1u8; 10]);
+
+        let guard = c.entries.read().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker_cache = Arc::clone(&c);
+        let worker_key = k.clone();
+        let worker = thread::spawn(move || {
+            let _ = tx.send(worker_cache.get(&worker_key).is_some());
+        });
+
+        let observed = rx.recv_timeout(Duration::from_secs(2));
+        drop(guard);
+        worker.join().unwrap();
+
+        assert!(
+            observed.expect("get must not require the exclusive entries lock"),
+            "get must not require the exclusive entries lock"
+        );
     }
 }
 

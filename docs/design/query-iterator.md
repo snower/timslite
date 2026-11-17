@@ -6,7 +6,7 @@
 
 | 层级 | 当前状态 | 说明 |
 |------|---------|------|
-| `DataSet::query()` | 兼容便利 API | 内部调用 `query_iter().collect_all()`, 最终仍返回 `Vec<(i64, Vec<u8>)>` |
+| `DataSet::query()` | 兼容便利 API | 单次 dataset 锁内按索引 cursor 读取，最终仍返回 `Vec<(i64, Vec<u8>)>`，不物化完整中间索引列表 |
 | `DataSet::query_iter()` | dataset-managed lazy iterator | `QueryIterator` 持有 `Arc<Mutex<DataSetInner>>`, `IndexQueryIterator`, `HotBlockCache` |
 | `DataSet::query_length_iter()` | dataset-managed lazy length iterator | `QueryLengthIterator` 复用 `IndexQueryIterator` 推进, 只读取 record header/data_len |
 | `TimeIndex` | mmap-backed index segments | `add_entry()` 直接写入 index segment; 不维护额外的待刷索引列表 |
@@ -14,6 +14,8 @@
 | C ABI iterator | snapshot wrapper | `wrapper/cffi` 通过 public API 收集结果或 length snapshot, 不暴露 crate-private iterator 内部 |
 
 ## 二、当前流程
+
+Vec 查询在一次 dataset 锁内完成，保留调用期间的一致性边界。lazy iterator 创建时固定有效查询范围，每次推进在一次 dataset 锁内完成索引定位和 record 读取；两次推进之间允许并发修改，不承诺创建时的完整数据快照。cursor 不保存 mmap 借用。`query_length` 返回每条可见 record 的长度，不等同于索引条数统计。
 
 ```text
 DataSet::query_iter(start_ts, end_ts)
