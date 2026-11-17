@@ -216,7 +216,7 @@ dataset 由 `(name, dataset_type)` 标识，例如 `("sensor", "temperature")`�
 - `query(start, end)`: 范围查询，左右闭区间。
 - `read_exist` / `query_exist` / `read_length` / `query_length`: 轻量存在性和长度查询。
 
-单条逻辑 record 最大 4 MiB。普通聚合 block payload 上限为 64 KiB；更大的 record 会使用 single-record block。
+单条逻辑 record 最大 4 MiB。普通聚合 block payload 上限为 256 KiB；更大的 record 会使用 single-record block。
 
 ### Timestamp
 

@@ -2,7 +2,7 @@
  * timslite - Time-Series Data Storage Library (C Header)
  *
  * A high-performance, mmap-backed time-series data store with:
- * - Block-level aggregation (max 64KB per block)
+ * - Block-level aggregation (max 256KB per block)
  * - Delayed compression (seal on overflow)
  * - Lazy segment lifecycle (on-demand open, idle-close after 30min)
  * - Time-indexed queries with binary search

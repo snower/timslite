@@ -134,9 +134,9 @@ try (Dataset ds = store.openDataset("metrics", "cpu")) {
 
 ### Blocks and Compression
 
-- Records are aggregated into blocks (max 64KB payload)
+- Records are aggregated into blocks (max 256KB payload)
 - Blocks are lazily compressed on seal (zstd or deflate)
-- Large records (>64KB) get their own single-record block
+- Large records (>256KB) get their own single-record block
 - Max record size: 4 MiB
 
 ### Index Modes

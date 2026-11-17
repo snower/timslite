@@ -116,7 +116,7 @@ cargo test --manifest-path wrapper/cffi/Cargo.toml -- --test-threads=1
 
 - Record header 为 `data_len: u32` 加 `timestamp: i64`。
 - 普通 write 和 append 都拒绝超过 4 MiB 的逻辑 record。
-- `BLOCK_MAX_SIZE` 固定为 65536 bytes，是编译期 block payload 上限。
+- `BLOCK_MAX_SIZE` 固定为 262144 bytes (256 KiB)，是编译期普通聚合 block 未压缩 payload 上限。
 - `single_record` 表示 block 内只有一条逻辑 record，不再等同于原始“超大 record”路径。
 
 ### 压缩与缓存

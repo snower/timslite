@@ -550,7 +550,7 @@ DataSet::delete(timestamp):
 > - **HotBlockCache**: 读取循环中保持最后解压的 Block, 同 Block 内连续读取跳过 mmap+解压
 > - **无锁热点**: HotBlockCache 属于单个 QueryIterator 实例, 不涉及全局锁竞争
 > - **全局缓存不可变性**: 只有 compressed block 的解压 payload 可进入全局 BlockCache; HotBlockCache 为查询局部缓存, 可持有本次读取的 raw payload, 但不跨越写入操作
-> - **内存边界**: 当前 Rust QueryIterator 主要持有 dataset handle、timestamp cursor、当前 hot block 和当前 record; FFI `tmsl_iter_next` 仍按条 `malloc` 返回数据。严格 64KB 级常量内存属于后续零拷贝/buffer API 目标, 不能作为当前 FFI 性能承诺
+> - **内存边界**: 当前 Rust QueryIterator 主要持有 dataset handle、timestamp cursor、当前 hot block 和当前 record; FFI `tmsl_iter_next` 仍按条 `malloc` 返回数据。严格 256KB 级常量内存属于后续零拷贝/buffer API 目标, 不能作为当前 FFI 性能承诺
 >
 > **旧 API 兼容**: `DataSet::query()` 方法保留, 内部改为 `query_iter().collect()`
 

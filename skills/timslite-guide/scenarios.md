@@ -488,25 +488,25 @@ assert_eq!(ds.read(2)?, Some((2, b"updated_second".to_vec())));
 
 ## Scenario 12: Large Record (Single-Record Block)
 
-**When**: A single record's encoded size exceeds 64KB (the normal block payload limit).
+**When**: A single record's encoded size exceeds 256KB (the normal block payload limit).
 
 ```rust
 let ds = /* ... */;
 
-// Records larger than 64KB get their own exclusive block
+// Records larger than 256KB get their own exclusive block
 // (SINGLE_RECORD flag set, immediately compressed)
-let large_data = vec![0u8; 100_000];  // ~100KB
+let large_data = vec![0u8; 300_000];  // ~300KB
 ds.write(1, &large_data)?;
 
 // Reading works normally
 let (_, data) = ds.read(1)?.unwrap();
-assert_eq!(data.len(), 100_000);
+assert_eq!(data.len(), 300_000);
 ```
 
 **Rules**:
 - Single record max: 4 MiB (`write` and `append` both enforce this)
-- Records > 64KB encoded → exclusive single-record block (SINGLE_RECORD | SEALED | COMPRESSED)
-- Records ≤ 64KB → aggregated into normal blocks (pending → sealed on overflow)
+- Records > 256KB encoded → exclusive single-record block (SINGLE_RECORD | SEALED | COMPRESSED)
+- Records ≤ 256KB → aggregated into normal blocks (pending → sealed on overflow)
 
 ---
 

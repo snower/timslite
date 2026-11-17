@@ -7,7 +7,7 @@
 
 `DataSetMeta` 是打开已有数据集时的唯一持久化真源。`StoreConfig` 和 FFI config 只提供创建新数据集时的默认值以及后台任务、缓存等运行时配置; `DataSet::open()` 不拿当前 `StoreConfig` 默认值与 meta 做“不一致”比较。
 
-`block_max_size` 不属于 `DataSetMeta`: 普通聚合 Block 的 payload 上限固定为代码/文件格式常量 `BLOCK_MAX_SIZE = 65536`。该值与 `IndexEntry.in_block_offset: u16` 的哨兵空间绑定, 不可按数据集配置修改; 未来若要改变必须升级文件格式版本。
+`block_max_size` 不属于 `DataSetMeta`: 普通聚合 Block 的 payload 上限固定为代码/文件格式常量 `BLOCK_MAX_SIZE = 262144`。该值与 `IndexEntry.in_block_offset: u16` 的哨兵空间绑定, 不可按数据集配置修改; 未来若要改变必须升级文件格式版本。
 
 ### 文件格式
 

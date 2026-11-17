@@ -215,13 +215,12 @@ class StoreConfig:
         index_segment_size: int = 16777216,  # 16 MiB
         initial_data_segment_size: int = 262144,   # 256 KiB
         initial_index_segment_size: int = 16384,   # 16 KiB
-        block_max_size: int = 65536,         # 64 KiB
         compress_level: int = 6,             # 0-9
         cache_max_memory: int = 268435456,   # 256 MiB (0 = disabled)
         cache_idle_timeout: int = 1800,      # seconds
         retention_check_hour: int = 0,       # UTC hour 0..=23
         enable_background_thread: bool = True,
-        enable_journal: bool = False,
+        enable_journal: bool = True,
         read_only: bool | None = None,       # None=auto, False=writable, True=read-only
     ) -> None:
         ...
@@ -546,7 +545,7 @@ class DatasetQueueConsumer:
 | `i64` | `int` | Timestamps; Python handles arbitrary precision |
 | `u64` | `int` | Sizes; may exceed 2^63 but Python int handles it |
 | `u8` | `int` | compress_level, flags |
-| `u32` | `int` | block_max_size |
+| `u32` | `int` | record lengths |
 | `usize` | `int` | cache_max_memory |
 | `&[u8]` / `Vec<u8>` | `bytes` | Data payloads; zero-copy where possible |
 | `Vec<(i64, Vec<u8>)>` | `list[tuple[int, bytes]]` | Query results |

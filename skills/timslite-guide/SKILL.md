@@ -9,7 +9,7 @@ description: Use when integrating or using the timslite time-series storage libr
 
 timslite is a high-performance **mmap-backed time-series data storage library** written in Rust. It can be used as a Rust crate, a C ABI dynamic library (`cdylib`), or through language bindings for Python, Node.js, Java, and .NET.
 
-**Core principle**: Multiple records are aggregated into Blocks (max 64KB), blocks are lazily compressed on seal, and a time index points to `(block_offset, in_block_offset)`. Each `(dataset_name, dataset_type)` pair has independent meta, data segments, index segments, and optional queue state.
+**Core principle**: Multiple records are aggregated into Blocks (max 256KB), blocks are lazily compressed on seal, and a time index points to `(block_offset, in_block_offset)`. Each `(dataset_name, dataset_type)` pair has independent meta, data segments, index segments, and optional queue state.
 
 ## When to Use
 
@@ -37,7 +37,7 @@ Store (facade, data_dir level)
 └── BlockCache (global immutable compressed-block cache)
 ```
 
-**Storage hierarchy**: Record → Block (≤64KB payload) → DataSegment (file) → DataSet → Store.
+**Storage hierarchy**: Record → Block (≤256KB payload) → DataSegment (file) → DataSet → Store.
 
 **Key concepts**:
 - `block_offset`: logical global offset from data area start, points to BlockHeader
