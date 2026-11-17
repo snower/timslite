@@ -24,7 +24,8 @@ pub const INDEX_HEADER_SIZE: u64 = 128;
 
 pub const MAGIC: [u8; 4] = *b"TMSL";
 pub const VERSION: u16 = 1;
-pub const INDEX_VERSION: u16 = VERSION;
+/// Compact index format version, independent from the data file `VERSION`.
+pub const INDEX_VERSION: u16 = 2;
 
 /// File type constants
 pub const FILE_TYPE_INDEX: u8 = 1;
@@ -36,9 +37,13 @@ const META_TYPE_FILE_OFFSET: u8 = 0x02; // i64 LE
 const META_TYPE_FILE_SIZE: u8 = 0x03; // u64 LE
 const META_TYPE_COMPRESS_LEVEL: u8 = 0x04; // u8
 const META_TYPE_COMPRESS_TYPE: u8 = 0x05; // u8
+const META_TYPE_BASE_BLOCK_OFFSET: u8 = 0x06; // u64 LE, index files only
+const META_TYPE_INDEX_DATA_SIZE: u8 = 0x07; // u32 LE, index files only
 
 /// Meta TLV total length for v1: (1+2+8)+(1+2+8)+(1+2+8)+(1+2+1)+(1+2+1) = 41
 const META_LENGTH_V1: u16 = 41;
+/// Index meta length: v1 plus base_block_offset(11) + index_data_size(7) = 59
+const META_LENGTH_INDEX: u16 = META_LENGTH_V1 + 11 + 7;
 
 /// Data state: 9 fields × 8 bytes = 72 bytes
 const DATA_STATE_LENGTH_V1: u16 = 72;
@@ -457,6 +462,8 @@ pub struct IndexFileMetadata {
     pub file_size: u64,
     pub compress_level: u8,
     pub compress_type: u8,
+    pub base_block_offset: u64,
+    pub index_data_size: u32,
     pub meta_length: u16,
     pub header_size: u64,
 
@@ -472,6 +479,8 @@ impl IndexFileMetadata {
         file_size: u64,
         compress_level: u8,
         compress_type: u8,
+        base_block_offset: u64,
+        index_data_size: u32,
     ) -> Self {
         Self {
             magic: MAGIC,
@@ -485,7 +494,9 @@ impl IndexFileMetadata {
             file_size,
             compress_level,
             compress_type,
-            meta_length: META_LENGTH_V1,
+            base_block_offset,
+            index_data_size,
+            meta_length: META_LENGTH_INDEX,
             header_size: INDEX_HEADER_SIZE,
             wrote_position: INDEX_HEADER_SIZE,
             state_length: INDEX_STATE_LENGTH_V1,
@@ -505,13 +516,15 @@ impl IndexFileMetadata {
             self.file_type,
             self.meta_length,
         );
-        write_meta_tlv(
+        write_index_meta_tlv(
             mmap,
             self.created_at,
             self.file_offset,
             self.file_size,
             self.compress_level,
             self.compress_type,
+            self.base_block_offset,
+            self.index_data_size,
         );
 
         let state_length_offset = state_length_offset(self.meta_length);
@@ -530,8 +543,19 @@ impl IndexFileMetadata {
                 version, INDEX_VERSION
             )));
         }
-        let (created_at, file_offset, file_size, compress_level, compress_type) =
-            parse_meta_tlv(mmap, META_START, meta_length as usize)?;
+        if file_type != FILE_TYPE_INDEX {
+            return Err(TmslError::InvalidData(format!(
+                "unsupported index file_type {file_type}, expected {FILE_TYPE_INDEX}"
+            )));
+        }
+        let index_meta = parse_index_meta_tlv(mmap, META_START, meta_length as usize)?;
+        let created_at = index_meta.created_at;
+        let file_offset = index_meta.file_offset;
+        let file_size = index_meta.file_size;
+        let compress_level = index_meta.compress_level;
+        let compress_type = index_meta.compress_type;
+        let base_block_offset = index_meta.base_block_offset;
+        let index_data_size = index_meta.index_data_size;
         validate_compress_type(compress_type)?;
         let state_length_offset = state_length_offset(meta_length);
         ensure_len(
@@ -556,6 +580,13 @@ impl IndexFileMetadata {
         }
         let header_size = INDEX_HEADER_SIZE;
         ensure_len(mmap, header_size as usize, "index header reserved area")?;
+        let stride = crate::config::index_entry_stride(index_data_size)?;
+        let min_capacity = INDEX_HEADER_SIZE + stride as u64;
+        if file_size < min_capacity {
+            return Err(TmslError::InvalidData(format!(
+                "index file_size {file_size} cannot hold header {INDEX_HEADER_SIZE} plus one {stride}-byte entry (minimum {min_capacity})"
+            )));
+        }
         let wrote_position = read_u64_from_mmap(mmap, state_start + IS_WROTE_POSITION);
 
         Ok(Self {
@@ -567,6 +598,8 @@ impl IndexFileMetadata {
             file_size,
             compress_level,
             compress_type,
+            base_block_offset,
+            index_data_size,
             meta_length,
             header_size,
             wrote_position,
@@ -646,6 +679,144 @@ fn write_meta_tlv(
     write_u16_to_mmap(mmap, off, 1);
     off += 2;
     mmap[off] = compress_type;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_index_meta_tlv(
+    mmap: &mut MmapMut,
+    created_at: i64,
+    file_offset: i64,
+    file_size: u64,
+    compress_level: u8,
+    compress_type: u8,
+    base_block_offset: u64,
+    index_data_size: u32,
+) {
+    write_meta_tlv(
+        mmap,
+        created_at,
+        file_offset,
+        file_size,
+        compress_level,
+        compress_type,
+    );
+    let mut off = META_START + META_LENGTH_V1 as usize;
+    // base_block_offset
+    mmap[off] = META_TYPE_BASE_BLOCK_OFFSET;
+    off += 1;
+    write_u16_to_mmap(mmap, off, 8);
+    off += 2;
+    write_u64_to_mmap(mmap, off, base_block_offset);
+    off += 8;
+    // index_data_size
+    mmap[off] = META_TYPE_INDEX_DATA_SIZE;
+    off += 1;
+    write_u16_to_mmap(mmap, off, 4);
+    off += 2;
+    write_u32_to_mmap(mmap, off, index_data_size);
+}
+
+struct IndexMetaTlv {
+    created_at: i64,
+    file_offset: i64,
+    file_size: u64,
+    compress_level: u8,
+    compress_type: u8,
+    base_block_offset: u64,
+    index_data_size: u32,
+}
+
+/// Parse index meta TLVs. Base offset and index_data_size are required, unique
+/// and must have their exact widths; unknown tags are skipped.
+fn parse_index_meta_tlv(mmap: &[u8], start: usize, total_len: usize) -> Result<IndexMetaTlv> {
+    let mut created_at = 0i64;
+    let mut file_offset = 0i64;
+    let mut file_size = 0u64;
+    let mut compress_level = 0u8;
+    let mut compress_type = COMPRESS_TYPE_ZSTD;
+    let mut base_block_offset: Option<u64> = None;
+    let mut index_data_size: Option<u32> = None;
+
+    let mut off = start;
+    let end = start
+        .checked_add(total_len)
+        .ok_or_else(|| TmslError::InvalidData("index meta length overflow".into()))?;
+    ensure_len(mmap, end, "index meta tlv")?;
+    while off + 3 <= end {
+        let t = mmap[off];
+        off += 1;
+        let len = read_u16_from_mmap(mmap, off) as usize;
+        off += 2;
+        if off + len > end {
+            return Err(TmslError::InvalidData(
+                "index meta TLV entry exceeds meta length".into(),
+            ));
+        }
+        match t {
+            META_TYPE_CREATED_AT if len == 8 => {
+                created_at = read_i64_from_mmap(mmap, off);
+            }
+            META_TYPE_FILE_OFFSET if len == 8 => {
+                file_offset = read_i64_from_mmap(mmap, off);
+            }
+            META_TYPE_FILE_SIZE if len == 8 => {
+                file_size = read_u64_from_mmap(mmap, off);
+            }
+            META_TYPE_COMPRESS_LEVEL if len == 1 => {
+                compress_level = mmap[off];
+            }
+            META_TYPE_COMPRESS_TYPE if len == 1 => {
+                compress_type = mmap[off];
+            }
+            META_TYPE_BASE_BLOCK_OFFSET => {
+                if len != 8 {
+                    return Err(TmslError::InvalidData(format!(
+                        "index base_block_offset TLV must be 8 bytes, got {len}"
+                    )));
+                }
+                if base_block_offset.is_some() {
+                    return Err(TmslError::InvalidData(
+                        "index has duplicate base_block_offset TLV".into(),
+                    ));
+                }
+                base_block_offset = Some(read_u64_from_mmap(mmap, off));
+            }
+            META_TYPE_INDEX_DATA_SIZE => {
+                if len != 4 {
+                    return Err(TmslError::InvalidData(format!(
+                        "index index_data_size TLV must be 4 bytes, got {len}"
+                    )));
+                }
+                if index_data_size.is_some() {
+                    return Err(TmslError::InvalidData(
+                        "index has duplicate index_data_size TLV".into(),
+                    ));
+                }
+                index_data_size = Some(read_u32_from_mmap(mmap, off));
+            }
+            _ => {} // Skip unknown type
+        }
+        off += len;
+    }
+    if off != end {
+        return Err(TmslError::InvalidData(
+            "index meta TLV data has trailing partial entry".into(),
+        ));
+    }
+
+    let base_block_offset = base_block_offset
+        .ok_or_else(|| TmslError::InvalidData("index missing base_block_offset".into()))?;
+    let index_data_size = index_data_size
+        .ok_or_else(|| TmslError::InvalidData("index missing index_data_size".into()))?;
+    Ok(IndexMetaTlv {
+        created_at,
+        file_offset,
+        file_size,
+        compress_level,
+        compress_type,
+        base_block_offset,
+        index_data_size,
+    })
 }
 
 fn read_shared_prefix(mmap: &[u8]) -> Result<([u8; 4], u16, u8, u16)> {
@@ -810,6 +981,8 @@ mod tests {
             4 * 1024 * 1024,
             6,
             crate::compress::COMPRESS_TYPE_ZSTD,
+            0x1234_5678_9ABC,
+            16,
         );
         meta.write_to(&mut mmap);
 
@@ -817,6 +990,8 @@ mod tests {
         assert_eq!(read.file_type, FILE_TYPE_INDEX);
         assert_eq!(read.file_offset, 1700000000);
         assert_eq!(read.wrote_position, INDEX_HEADER_SIZE);
+        assert_eq!(read.base_block_offset, 0x1234_5678_9ABC);
+        assert_eq!(read.index_data_size, 16);
     }
 
     #[test]
@@ -826,6 +1001,8 @@ mod tests {
             4 * 1024 * 1024,
             6,
             crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
         );
 
         assert_eq!(meta.header_size, 128);
@@ -881,7 +1058,7 @@ mod tests {
     #[test]
     fn test_index_header_reads_state_after_extended_meta() {
         let extra_meta = [0xEF, 3, 0, 7, 8, 9];
-        let meta_length = META_LENGTH_V1 + extra_meta.len() as u16;
+        let meta_length = META_LENGTH_INDEX + extra_meta.len() as u16;
         let state_length_offset = META_START + meta_length as usize;
         let state_start = state_length_offset + 2;
         let dynamic_header_size = state_start as u64 + INDEX_STATE_LENGTH_V1 as u64;
@@ -894,15 +1071,17 @@ mod tests {
             FILE_TYPE_INDEX,
             meta_length,
         );
-        write_meta_tlv(
+        write_index_meta_tlv(
             &mut mmap,
             1000,
             1700000000,
             4096,
             6,
             crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
         );
-        let extra_start = META_START + META_LENGTH_V1 as usize;
+        let extra_start = META_START + META_LENGTH_INDEX as usize;
         mmap[extra_start..extra_start + extra_meta.len()].copy_from_slice(&extra_meta);
         write_u16_to_mmap(&mut mmap, state_length_offset, INDEX_STATE_LENGTH_V1);
         write_u64_to_mmap(
@@ -921,19 +1100,22 @@ mod tests {
     }
 
     #[test]
-    fn test_index_header_version_remains_v1() {
+    fn test_index_header_uses_bumped_index_version() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
         let meta = IndexFileMetadata::create_default(
             1700000000,
             4 * 1024 * 1024,
             6,
             crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
         );
         meta.write_to(&mut mmap);
 
-        assert_eq!(read_u16_from_mmap(&mmap, OFF_VERSION), VERSION);
+        assert_ne!(INDEX_VERSION, VERSION);
+        assert_eq!(read_u16_from_mmap(&mmap, OFF_VERSION), INDEX_VERSION);
         let read = IndexFileMetadata::read_from(&mmap).unwrap();
-        assert_eq!(read.version, VERSION);
+        assert_eq!(read.version, INDEX_VERSION);
     }
 
     #[test]
@@ -1018,6 +1200,8 @@ mod tests {
             4 * 1024 * 1024,
             6,
             crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
         );
         meta.write_to(&mut mmap);
         meta.write_wrote_position(
@@ -1025,7 +1209,7 @@ mod tests {
             INDEX_HEADER_SIZE + crate::index::INDEX_ENTRY_SIZE as u64,
         );
         assert_eq!(
-            read_u64_from_mmap(&mmap, STATE_START + IS_WROTE_POSITION),
+            read_u64_from_mmap(&mmap, state_start(META_LENGTH_INDEX) + IS_WROTE_POSITION),
             INDEX_HEADER_SIZE + crate::index::INDEX_ENTRY_SIZE as u64
         );
     }
@@ -1105,8 +1289,14 @@ mod tests {
     #[test]
     fn test_index_read_from_invalid_magic_returns_invalid_magic() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
         mmap[0..4].copy_from_slice(b"NOPE");
 
@@ -1117,8 +1307,14 @@ mod tests {
     #[test]
     fn test_index_read_from_wrong_version_returns_error() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
         write_u16_to_mmap(&mut mmap, OFF_VERSION, 0);
 
@@ -1142,10 +1338,16 @@ mod tests {
     #[test]
     fn test_index_read_from_state_length_too_small() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
-        let state_len_off = state_length_offset(META_LENGTH_V1);
+        let state_len_off = state_length_offset(META_LENGTH_INDEX);
         write_u16_to_mmap(&mut mmap, state_len_off, 0);
 
         let result = IndexFileMetadata::read_from(&mmap);
@@ -1155,8 +1357,14 @@ mod tests {
     #[test]
     fn test_write_data_core_state_rejects_wrong_file_type() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
 
         let result = write_data_core_state_to_mmap(&mut mmap, 100, 200, 256, 10, 2000);
@@ -1189,8 +1397,14 @@ mod tests {
     #[test]
     fn test_write_data_pending_state_rejects_wrong_file_type() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
 
         let result = write_data_pending_state_to_mmap(&mut mmap, 128, 1000, 5);
@@ -1200,8 +1414,14 @@ mod tests {
     #[test]
     fn test_write_data_invalid_record_count_rejects_wrong_file_type() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
 
         let result = write_data_invalid_record_count_to_mmap(&mut mmap, 3);
@@ -1256,8 +1476,14 @@ mod tests {
     #[test]
     fn test_write_index_wrote_position_roundtrip() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
 
         let new_pos = INDEX_HEADER_SIZE + 128;
@@ -1295,8 +1521,14 @@ mod tests {
 
     #[test]
     fn test_index_header_size_field_matches_constant() {
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         assert_eq!(meta.header_size, INDEX_HEADER_SIZE);
         assert_eq!(meta.header_size, 128);
     }
@@ -1315,8 +1547,14 @@ mod tests {
     #[test]
     fn test_index_header_size_preserved_after_read() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
 
         let read = IndexFileMetadata::read_from(&mmap).unwrap();
@@ -1409,8 +1647,14 @@ mod tests {
     #[test]
     fn test_index_boundary_wrote_position_reset() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
 
         write_index_wrote_position_to_mmap(&mut mmap, INDEX_HEADER_SIZE).unwrap();
@@ -1450,12 +1694,20 @@ mod tests {
 
     #[test]
     fn test_index_create_default_values() {
-        let meta =
-            IndexFileMetadata::create_default(100, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            100,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         assert_eq!(meta.file_offset, 100);
         assert_eq!(meta.wrote_position, INDEX_HEADER_SIZE);
         assert_eq!(meta.state_length, INDEX_STATE_LENGTH_V1);
-        assert_eq!(meta.meta_length, META_LENGTH_V1);
+        assert_eq!(meta.meta_length, META_LENGTH_INDEX);
+        assert_eq!(meta.base_block_offset, 0);
+        assert_eq!(meta.index_data_size, 0);
     }
 
     #[test]
@@ -1527,8 +1779,14 @@ mod tests {
     #[test]
     fn test_index_compress_type_roundtrip() {
         let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
-        let meta =
-            IndexFileMetadata::create_default(0, 4096, 6, crate::compress::COMPRESS_TYPE_ZSTD);
+        let meta = IndexFileMetadata::create_default(
+            0,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
         meta.write_to(&mut mmap);
 
         let read = IndexFileMetadata::read_from(&mmap).unwrap();
@@ -1553,6 +1811,249 @@ mod tests {
                 assert!(msg.contains("state field offset"), "msg: {}", msg);
             }
             other => panic!("expected InvalidData, got: {other:?}"),
+        }
+    }
+
+    const INDEX_BASE_TLV: usize = META_START + META_LENGTH_V1 as usize;
+    const INDEX_SIZE_TLV: usize = INDEX_BASE_TLV + 11;
+
+    fn write_valid_index_header(mmap: &mut MmapMut, index_data_size: u32) {
+        let meta = IndexFileMetadata::create_default(
+            1_000,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            123,
+            index_data_size,
+        );
+        meta.write_to(mmap);
+    }
+
+    #[test]
+    fn test_index_meta_rejects_trailing_partial_tlv() {
+        for extra in [1u16, 2] {
+            let meta_length = META_LENGTH_INDEX + extra;
+            let state_length_offset = META_START + meta_length as usize;
+            let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+            write_shared_prefix(
+                &mut mmap,
+                MAGIC,
+                INDEX_VERSION,
+                FILE_TYPE_INDEX,
+                meta_length,
+            );
+            write_index_meta_tlv(
+                &mut mmap,
+                1_000,
+                1700000000,
+                4096,
+                6,
+                crate::compress::COMPRESS_TYPE_ZSTD,
+                0,
+                0,
+            );
+            write_u16_to_mmap(&mut mmap, state_length_offset, INDEX_STATE_LENGTH_V1);
+
+            let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+            assert!(format!("{err}").contains("trailing partial"), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_index_read_from_rejects_wrong_file_type() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        write_valid_index_header(&mut mmap, 0);
+        mmap[OFF_FILE_TYPE] = FILE_TYPE_DATA;
+
+        let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+        assert!(format!("{err}").contains("file_type"), "{err}");
+    }
+
+    #[test]
+    fn test_index_meta_requires_base_block_offset_tlv() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        write_valid_index_header(&mut mmap, 0);
+        mmap[INDEX_BASE_TLV] = 0x7F; // unknown tag: base TLV disappears
+
+        let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+        assert!(
+            format!("{err}").contains("missing base_block_offset"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_index_meta_requires_index_data_size_tlv() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        write_valid_index_header(&mut mmap, 0);
+        mmap[INDEX_SIZE_TLV] = 0x7F;
+
+        let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+        assert!(
+            format!("{err}").contains("missing index_data_size"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_index_meta_rejects_duplicate_base_block_offset_tlv() {
+        let extra = [META_TYPE_BASE_BLOCK_OFFSET, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let meta_length = META_LENGTH_INDEX + extra.len() as u16;
+        let state_length_offset = META_START + meta_length as usize;
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        write_shared_prefix(
+            &mut mmap,
+            MAGIC,
+            INDEX_VERSION,
+            FILE_TYPE_INDEX,
+            meta_length,
+        );
+        write_index_meta_tlv(
+            &mut mmap,
+            1_000,
+            1700000000,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
+        let extra_start = META_START + META_LENGTH_INDEX as usize;
+        mmap[extra_start..extra_start + extra.len()].copy_from_slice(&extra);
+        write_u16_to_mmap(&mut mmap, state_length_offset, INDEX_STATE_LENGTH_V1);
+
+        let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+        assert!(
+            format!("{err}").contains("duplicate base_block_offset"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_index_meta_rejects_duplicate_index_data_size_tlv() {
+        let extra = [META_TYPE_INDEX_DATA_SIZE, 4, 0, 0, 0, 0, 0];
+        let meta_length = META_LENGTH_INDEX + extra.len() as u16;
+        let state_length_offset = META_START + meta_length as usize;
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        write_shared_prefix(
+            &mut mmap,
+            MAGIC,
+            INDEX_VERSION,
+            FILE_TYPE_INDEX,
+            meta_length,
+        );
+        write_index_meta_tlv(
+            &mut mmap,
+            1_000,
+            1700000000,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
+        let extra_start = META_START + META_LENGTH_INDEX as usize;
+        mmap[extra_start..extra_start + extra.len()].copy_from_slice(&extra);
+        write_u16_to_mmap(&mut mmap, state_length_offset, INDEX_STATE_LENGTH_V1);
+
+        let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+        assert!(
+            format!("{err}").contains("duplicate index_data_size"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_index_meta_rejects_wrong_size_sizing_tlvs() {
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        write_valid_index_header(&mut mmap, 16);
+        write_u16_to_mmap(&mut mmap, INDEX_BASE_TLV + 1, 4);
+        let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+        assert!(format!("{err}").contains("base_block_offset TLV"), "{err}");
+
+        let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+        write_valid_index_header(&mut mmap, 16);
+        write_u16_to_mmap(&mut mmap, INDEX_SIZE_TLV + 1, 2);
+        let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+        assert!(format!("{err}").contains("index_data_size TLV"), "{err}");
+    }
+
+    #[test]
+    fn test_index_header_rejects_content_beyond_reserved_bytes() {
+        // 60 zero bytes parse as twenty complete empty TLVs, so only the
+        // dynamic-header bound is violated.
+        let meta_length = META_LENGTH_INDEX + 60;
+        let state_length_offset = META_START + meta_length as usize;
+        let (mut mmap, _path) = create_test_mmap(160);
+        write_shared_prefix(
+            &mut mmap,
+            MAGIC,
+            INDEX_VERSION,
+            FILE_TYPE_INDEX,
+            meta_length,
+        );
+        write_index_meta_tlv(
+            &mut mmap,
+            1_000,
+            1700000000,
+            4096,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            0,
+            0,
+        );
+        write_u16_to_mmap(&mut mmap, state_length_offset, INDEX_STATE_LENGTH_V1);
+
+        let err = IndexFileMetadata::read_from(&mmap).unwrap_err();
+        assert!(format!("{err}").contains("exceeds reserved"), "{err}");
+    }
+
+    #[test]
+    fn test_index_capacity_must_fit_header_plus_one_entry() {
+        // Default N=0 → stride 16, minimum 144 bytes.
+        for file_size in [143u64, 144] {
+            let meta = IndexFileMetadata::create_default(
+                0,
+                file_size,
+                6,
+                crate::compress::COMPRESS_TYPE_ZSTD,
+                0,
+                0,
+            );
+            let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+            meta.write_to(&mut mmap);
+            let result = IndexFileMetadata::read_from(&mmap);
+            assert_eq!(result.is_ok(), file_size == 144, "N=0 size {file_size}");
+        }
+        // N=3 → stride 24, minimum 152 bytes.
+        for file_size in [151u64, 152] {
+            let meta = IndexFileMetadata::create_default(
+                0,
+                file_size,
+                6,
+                crate::compress::COMPRESS_TYPE_ZSTD,
+                0,
+                3,
+            );
+            let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+            meta.write_to(&mut mmap);
+            let result = IndexFileMetadata::read_from(&mmap);
+            assert_eq!(result.is_ok(), file_size == 152, "N=3 size {file_size}");
+        }
+        // N=16 → stride 32, minimum 160 bytes.
+        for file_size in [159u64, 160] {
+            let meta = IndexFileMetadata::create_default(
+                0,
+                file_size,
+                6,
+                crate::compress::COMPRESS_TYPE_ZSTD,
+                0,
+                16,
+            );
+            let (mut mmap, _path) = create_test_mmap(INDEX_HEADER_SIZE);
+            meta.write_to(&mut mmap);
+            let result = IndexFileMetadata::read_from(&mmap);
+            assert_eq!(result.is_ok(), file_size == 160, "N=16 size {file_size}");
         }
     }
 }

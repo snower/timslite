@@ -14,6 +14,7 @@ public sealed record DatasetConfig
     public byte? IndexContinuous { get; init; }
     public ulong? RetentionWindow { get; init; }
     public ulong? TimestampUnitsPerSeconds { get; init; }
+    public uint? IndexDataSize { get; init; }
     public bool? EnableJournal { get; init; }
 
     internal uniffi.timslite.DatasetConfig ToNative()
@@ -28,6 +29,7 @@ public sealed record DatasetConfig
             IndexContinuous: IndexContinuous,
             RetentionWindow: RetentionWindow,
             TimestampUnitsPerSeconds: TimestampUnitsPerSeconds,
+            IndexDataSize: IndexDataSize,
             EnableJournal: EnableJournal
         );
     }

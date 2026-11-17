@@ -33,6 +33,7 @@ pub struct CreateDatasetOptions {
     pub index_continuous: Option<bool>,
     pub retention_window: Option<Either<BigInt, f64>>,
     pub timestamp_units_per_seconds: Option<Either<BigInt, f64>>,
+    pub index_data_size: Option<u32>,
     pub enable_journal: Option<bool>,
 }
 
@@ -160,6 +161,9 @@ pub fn build_dataset_config(
     if let Some(ref v) = opts.timestamp_units_per_seconds {
         builder = builder
             .timestamp_units_per_seconds(number_or_bigint_to_u64(v, "timestampUnitsPerSeconds")?);
+    }
+    if let Some(v) = opts.index_data_size {
+        builder = builder.index_data_size(v);
     }
     if let Some(v) = opts.enable_journal {
         builder = builder.enable_journal(v);

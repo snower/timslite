@@ -28,6 +28,7 @@ pub struct DataSetInfoResult {
     pub index_continuous: u8,
     pub retention_window: BigInt,
     pub timestamp_units_per_seconds: BigInt,
+    pub index_data_size: u32,
     pub enable_journal: bool,
     pub create_time: BigInt,
 }
@@ -75,6 +76,7 @@ pub fn info_to_result(info: &timslite::DataSetInfo) -> DataSetInfoResult {
         index_continuous: info.index_continuous,
         retention_window: types::u64_to_bigint(info.retention_window),
         timestamp_units_per_seconds: types::u64_to_bigint(info.timestamp_units_per_seconds),
+        index_data_size: info.index_data_size,
         enable_journal: info.enable_journal,
         create_time: types::i64_to_bigint(info.create_time),
     }

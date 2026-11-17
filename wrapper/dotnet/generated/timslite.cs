@@ -5254,6 +5254,7 @@ internal record DataSetInfo (
     byte IndexContinuous, 
     ulong RetentionWindow, 
     ulong TimestampUnitsPerSeconds,
+    uint IndexDataSize,
     bool EnableJournal, 
     long CreateTime
 ) {
@@ -5277,6 +5278,7 @@ class FfiConverterTypeDataSetInfo: FfiConverterRustBuffer<DataSetInfo> {
             IndexContinuous: FfiConverterUInt8.INSTANCE.Read(stream),
             RetentionWindow: FfiConverterUInt64.INSTANCE.Read(stream),
             TimestampUnitsPerSeconds: FfiConverterUInt64.INSTANCE.Read(stream),
+            IndexDataSize: FfiConverterUInt32.INSTANCE.Read(stream),
             EnableJournal: FfiConverterBoolean.INSTANCE.Read(stream),
             CreateTime: FfiConverterInt64.INSTANCE.Read(stream)
         );
@@ -5297,6 +5299,7 @@ class FfiConverterTypeDataSetInfo: FfiConverterRustBuffer<DataSetInfo> {
             + FfiConverterUInt8.INSTANCE.AllocationSize(value.IndexContinuous)
             + FfiConverterUInt64.INSTANCE.AllocationSize(value.RetentionWindow)
             + FfiConverterUInt64.INSTANCE.AllocationSize(value.TimestampUnitsPerSeconds)
+            + FfiConverterUInt32.INSTANCE.AllocationSize(value.IndexDataSize)
             + FfiConverterBoolean.INSTANCE.AllocationSize(value.EnableJournal)
             + FfiConverterInt64.INSTANCE.AllocationSize(value.CreateTime);
     }
@@ -5315,6 +5318,7 @@ class FfiConverterTypeDataSetInfo: FfiConverterRustBuffer<DataSetInfo> {
             FfiConverterUInt8.INSTANCE.Write(value.IndexContinuous, stream);
             FfiConverterUInt64.INSTANCE.Write(value.RetentionWindow, stream);
             FfiConverterUInt64.INSTANCE.Write(value.TimestampUnitsPerSeconds, stream);
+            FfiConverterUInt32.INSTANCE.Write(value.IndexDataSize, stream);
             FfiConverterBoolean.INSTANCE.Write(value.EnableJournal, stream);
             FfiConverterInt64.INSTANCE.Write(value.CreateTime, stream);
     }
@@ -5456,6 +5460,7 @@ internal record DatasetConfig (
     byte? IndexContinuous, 
     ulong? RetentionWindow, 
     ulong? TimestampUnitsPerSeconds,
+    uint? IndexDataSize,
     bool? EnableJournal
 ) {
 }
@@ -5474,6 +5479,7 @@ class FfiConverterTypeDatasetConfig: FfiConverterRustBuffer<DatasetConfig> {
             IndexContinuous: FfiConverterOptionalUInt8.INSTANCE.Read(stream),
             RetentionWindow: FfiConverterOptionalUInt64.INSTANCE.Read(stream),
             TimestampUnitsPerSeconds: FfiConverterOptionalUInt64.INSTANCE.Read(stream),
+            IndexDataSize: FfiConverterOptionalUInt32.INSTANCE.Read(stream),
             EnableJournal: FfiConverterOptionalBoolean.INSTANCE.Read(stream)
         );
     }
@@ -5489,6 +5495,7 @@ class FfiConverterTypeDatasetConfig: FfiConverterRustBuffer<DatasetConfig> {
             + FfiConverterOptionalUInt8.INSTANCE.AllocationSize(value.IndexContinuous)
             + FfiConverterOptionalUInt64.INSTANCE.AllocationSize(value.RetentionWindow)
             + FfiConverterOptionalUInt64.INSTANCE.AllocationSize(value.TimestampUnitsPerSeconds)
+            + FfiConverterOptionalUInt32.INSTANCE.AllocationSize(value.IndexDataSize)
             + FfiConverterOptionalBoolean.INSTANCE.AllocationSize(value.EnableJournal);
     }
 
@@ -5502,6 +5509,7 @@ class FfiConverterTypeDatasetConfig: FfiConverterRustBuffer<DatasetConfig> {
             FfiConverterOptionalUInt8.INSTANCE.Write(value.IndexContinuous, stream);
             FfiConverterOptionalUInt64.INSTANCE.Write(value.RetentionWindow, stream);
             FfiConverterOptionalUInt64.INSTANCE.Write(value.TimestampUnitsPerSeconds, stream);
+            FfiConverterOptionalUInt32.INSTANCE.Write(value.IndexDataSize, stream);
             FfiConverterOptionalBoolean.INSTANCE.Write(value.EnableJournal, stream);
     }
 }

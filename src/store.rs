@@ -21,7 +21,7 @@ use crate::journal::{
     meta_values_from_file, validate_create_drop_record_inputs, JournalIndexInfo, JournalManager,
     JournalQueue, JOURNAL_DATASET_NAME, JOURNAL_DATASET_TYPE,
 };
-use crate::meta::META_VALUES_LEN_V1;
+use crate::meta::META_VALUES_LEN_V3;
 use crate::util::{is_path_safe_component, PATH_COMPONENT_MAX_LEN};
 
 const MAX_IDENTIFIER_FILE: &str = "max_identifier";
@@ -412,7 +412,7 @@ impl Store {
             .checked_add(1)
             .ok_or_else(|| TmslError::InvalidData("dataset identifier overflow".into()))?;
         if effective_journal {
-            validate_create_drop_record_inputs(identifier, &key, META_VALUES_LEN_V1)?;
+            validate_create_drop_record_inputs(identifier, &key, META_VALUES_LEN_V3)?;
         }
         write_identifier_file(&self.data_dir.join(MAX_IDENTIFIER_FILE), identifier)?;
         self.max_identifier = identifier;
@@ -431,6 +431,7 @@ impl Store {
             config.retention_window,
             config.timestamp_units_per_seconds,
             config.enable_journal,
+            config.index_data_size,
         )?;
         write_identifier_file(&dataset_identifier_path(&dir), identifier)?;
         ds.set_identifier(identifier)?;

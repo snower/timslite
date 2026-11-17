@@ -61,39 +61,27 @@ impl TimeIndex {
 }
 ```
 
-### 7.3 IndexEntry 序列化 (32 字节)
+### 7.3 IndexEntry 序列化 (16 字节核心 + 固定扩展区)
 
-`IndexEntry.block_offset` 字段存储 Block 在数据流中的逻辑全局偏移: 相对各数据段数据区起点, 指向 BlockHeader 起始, 不包含任何数据段 header。读取 data segment 时必须先定位所属 `segment`, 再以 `segment.header_len + (block_offset - segment.file_offset)` 定位 BlockHeader。
+每个 dataset 创建时指定不可变 `index_data_size: u32`，默认 0；dataset meta 和每个 index segment immutable meta 均持久化该值。每条索引的步长为 `align_up(16 + index_data_size, 8)`，所有容量、定位、扩容、恢复和连续时间网格计算使用该步长。
 
-```rust
-const INDEX_ENTRY_SIZE: usize = 32;
-
-impl IndexEntry {
-    fn to_bytes_for_segment(&self) -> Result<[u8; INDEX_ENTRY_SIZE]> {
-        let mut buf = [0u8; INDEX_ENTRY_SIZE];
-        buf[0..8].copy_from_slice(&self.timestamp.to_le_bytes());
-        buf[8..16].copy_from_slice(&self.block_offset.to_le_bytes());
-        buf[16..18].copy_from_slice(&self.in_block_offset_units.to_le_bytes());
-        // buf[18..32] remains zero reserved bytes.
-        Ok(buf)
-    }
-
-    fn from_bytes(buf: &[u8; INDEX_ENTRY_SIZE]) -> Result<Self> {
-        if buf[18..32] != [0; 14] {
-            return Err(TmslError::InvalidData("index reserved bytes are non-zero"));
-        }
-        Ok(Self {
-            timestamp: i64::from_le_bytes(buf[0..8].try_into().unwrap()),
-            block_offset: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
-            in_block_offset_units: u16::from_le_bytes(buf[16..18].try_into().unwrap()),
-        })
-    }
-}
+```text
+0..8    timestamp: i64 LE
+8..14   block_offset_delta: u48 LE
+14..16  in_block_offset_units: u16 LE (4-byte units)
+16..16+N  自定义数据预留区
+剩余至 entry_stride  对齐 padding，必须为零
 ```
 
-`IndexEntry` 内存态和 index segment 落盘格式都使用完整 `timestamp: i64 LE`。`block_offset` 为 `u64 LE`，`in_block_offset_units` 为 `u16 LE`，读取 record 时以 `in_block_offset_units * 4` 得到 Block Payload 内的字节偏移。最后 14 字节为固定零 reserved bytes，写入必须清零，读取必须拒绝非零值。
+内存 `IndexEntry.block_offset` 仍为绝对 u64 逻辑偏移，指向 BlockHeader，不含数据段 header。磁盘解码为 `base_block_offset + delta`，使用 checked arithmetic。真实 delta 范围为 `0..=0xFFFFFFFFFFFE`；全 1 delta 与 `in_block_offset_units=0xFFFF` 组成 filler/delete 编码，解析时恢复既有内存哨兵，不对 filler 做 base 加法。真实 entry 禁止使用任一哨兵字段。
 
-这是不兼容的 index entry 落盘格式调整。不保留旧 14 字节 timestamp-delta、旧 18 字节 entry 或任何既有 index 文件的读取、迁移或自动升级逻辑；已有 data_dir 必须删除后重建。JournalRecord 中的 `JournalIndexInfo` 不属于 index segment 物理格式，继续使用完整 `timestamp:i64 + block_offset:u64 + in_block_offset:u16` 的 18 字节格式。
+每段 immutable meta 新增 `base_block_offset: u64`。取触发创建的真实 entry 的绝对 block 起点，不取追加后的写游标；为补 filler 而创建的段，也接收本次真实写入的 block 起点。base 创建后不变。历史更新指向新 tail 时仍必须校验范围，负差值或超限显式报错，禁止截断或自动换段。
+
+本轮不增加自定义数据读写 API。新 entry/filler 的预留区初始化为零；已有真实 entry 的定位字段更新仅修改核心，保留预留区；delete 清零预留区，删除后重写重新初始化。预留区允许非零，不再执行 reserved-zero 校验；对齐 padding 始终校验零。
+
+本次为不兼容格式调整：索引版本升级，旧版本拒绝打开，不提供迁移、兼容读取或自动升级。新 dataset meta 必须包含 index_data_size；segment meta 的该值必须与 dataset 一致。JournalIndexInfo 保持独立 18 字节绝对定位编码，不记录扩展数据。
+
+索引编码与边界校验必须在写 mmap 前完成。若 data 已追加但 index 范围校验失败，可留下不可见孤儿 payload；不得发布新索引、标记旧数据失效、发送成功通知或写成功 journal。此边界不是事务或 WAL。
 
 ### 7.4 IndexSegment
 
@@ -164,20 +152,16 @@ impl IndexSegment {
 │ - State(8B): wrote_position (1×8B)          │
 │ - Reserved padding to byte 128               │
 ├──────────────────────────────────────────────┤
-│ Index Area (starts at absolute offset 128)   │
-│ ┌─────────┬──────────┬──────┐                │
-│ │ dts:4   │ block:8  │ ib:2 │ entry 1        │
-│ └─────────┴──────────┴──────┘                │
-│ ┌─────────┬──────────┬──────┐                │
-│ │ dts:4   │ block:8  │ ib:2 │ entry 2        │
-│ └─────────┴──────────┴──────┘                │
-│ ...                                           │
+│ Index Area (starts at absolute offset 128)     │
+│ timestamp:8 + delta:6 + in_block_units:2        │
+│ index_data_size bytes + zero alignment padding│
 └──────────────────────────────────────────────┘
 ```
 
-> **与数据段的差异**: 索引段 state 仅保留 `wrote_position` (8 bytes), 无需 `record_count` (可计算: `(wrote_position - 128) / 14`), 无需 `pending` 相关字段 (索引无 pending 概念), 无需 `min/max_timestamp` (索引按 `start_timestamp` 路由, 无需额外范围字段)。索引段的 Meta TLV/state 仍按可变 header 解析, 但 entry area 起点固定为 128, 不随已知 header 内容长度变化。
+索引段 state 仅保存 wrote_position；entry count 为 `(wrote_position - 128) / entry_stride`。新增 immutable TLV 仍位于固定 128B header 保留区内，header 内容不得越界。initial/max index segment 必须至少容纳一条 entry。
+创建时最大文件大小归一化为 `128 + floor((configured_max - 128) / entry_stride) * entry_stride`；加载时必须与持久化最大大小一致。连续模式加载验证每条 slot 的 timestamp 等于 segment_start + slot，并验证分段起点处于最大容量网格。非连续模式验证段内严格递增及跨段不重叠；损坏文件导致 open 失败，不按空段处理。
 
-> **发布边界**: `IndexEntry` 是 record 对查询可见的发布点。Data segment append 必须先写 payload 与 block/header state, 最后才追加或覆盖 index entry。若 crash 发生在 index 写入前, data segment 中的孤儿 payload 不可见并按丢失处理。若 crash/reopen 后出现已持久化 index 指向不完整 data 的情况, 读取路径必须通过 block 边界和 record timestamp 校验拒绝返回错误数据; 本库不通过索引事务恢复该写入。
+**发布边界**: `IndexEntry` 是 record 对查询可见的发布点。Data segment append 必须先写 payload 与 block/header state, 最后才追加或覆盖 index entry。若 crash 发生在 index 写入前, data segment 中的孤儿 payload 不可见并按丢失处理。若 crash/reopen 后出现已持久化 index 指向不完整 data 的情况, 读取路径必须通过 block 边界和 record timestamp 校验拒绝返回错误数据; 本库不通过索引事务恢复该写入。
 
 ### 7.6 查找算法
 
@@ -217,7 +201,7 @@ impl IndexSegment {
 连续模式仍保持 O(1) 定位, 但不再要求所有缺失 timestamp 都落盘为 filler。它使用固定逻辑网格:
 
 ```text
-segment_capacity = floor((index_segment_size - 128) / 14)
+segment_capacity = floor((index_segment_size - 128) / entry_stride)
 time_step        = 1
 base_timestamp   = first real write timestamp
 segment_ordinal  = floor((ts - base_timestamp) / segment_capacity)
@@ -254,7 +238,7 @@ reclaim_expired_segments(expiration_threshold: i64):
 
 **`last_entry_timestamp` 实现**:
 - 仅打开文件一次 (read-only mmap, 不使用 `MmapMut::map_mut` 避免 Windows 锁定)
-- 从文件 header 的 `wrote_position` 推算最后条目位置: `128 + (wrote_count - 1) * 14`
+- 从文件 header 的 `wrote_position` 推算最后条目位置: `128 + (wrote_count - 1) * entry_stride`
 - 立即 drop(mmap) + drop(file), 检查完成后不保持打开状态
 - 返回 `Ok(Some(last_ts))`, `Ok(None)` 或 `Err`; 空段/`wrote_count==0` 返回 `Ok(None)`
 - `DataSet::open` 恢复 `latest_written_timestamp` 时, 只需要读取最新非空 index segment 文件的最后一条 entry; delete/filler entry 的 timestamp 仍计入 latest, 因此 `read_latest()` 不会回退到更早有效记录；没有任何 entry 时 latest 为 `None`

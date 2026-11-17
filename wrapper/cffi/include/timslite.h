@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 #define TMSL_STORE_CONFIG_FFI_VERSION 5u
-#define TMSL_DATASET_CONFIG_FFI_VERSION 4u
+#define TMSL_DATASET_CONFIG_FFI_VERSION 5u
 #define TMSL_QUEUE_CONSUMER_CONFIG_FFI_VERSION 1u
 
 #define TMSL_STORE_READ_ONLY_AUTO 0u  /**< Auto: writable if .lock can be locked, otherwise read-only */
@@ -56,6 +56,7 @@ typedef struct TmslDatasetConfigFFI {
     uint8_t compress_type; /* 0=zstd (default), 1=deflate */
     uint8_t index_continuous;
     uint8_t enable_journal; /* 0=false, non-zero=true; default false */
+    uint32_t index_data_size; /* immutable per-entry custom index bytes, default 0 */
 } TmslDatasetConfigFFI;
 
 typedef struct TmslQueueConsumerConfigFFI {
@@ -1109,6 +1110,7 @@ typedef struct TmslDataSetInfo {
     uint8_t index_continuous;         /**< Index mode: 0=sparse, 1=continuous */
     uint64_t retention_window;        /**< Data retention window (0=no limit) */
     uint64_t timestamp_units_per_seconds; /**< Timestamp units per Unix second (0=legacy retention) */
+    uint32_t index_data_size;         /**< Immutable custom index bytes per entry (0=core only) */
     uint8_t enable_journal;           /**< Whether this dataset records journal entries */
     int64_t create_time;              /**< Dataset creation time (Unix milliseconds) */
 } TmslDataSetInfo;

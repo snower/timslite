@@ -57,6 +57,7 @@
 | 46 | Rust API 简化与 C ABI Wrapper 拆分 | ✅ 完成 | [phase-46-rust-api-simplify-cffi-split.md](docs/plan/phase-46-rust-api-simplify-cffi-split.md) |
 | 47 | 不兼容存储格式重设计 | ⏳ 待实现 | [phase-47-storage-format-redesign.md](docs/plan/phase-47-storage-format-redesign.md) |
 | 48 | Wall-clock Retention Timestamp Units | ⏳ 待实现 | `timestamp_units_per_seconds` 配置、持久化、retention 与 wrapper 同步 |
+| 49 | Compact Index | ✅ 完成 | [phase-49-compact-index.md](docs/plan/phase-49-compact-index.md) |
 | PY | Python Package (PyO3) | ✅ 完成 | [wrapper/python/plan.md](wrapper/python/plan.md) |
 | NODE | Node.js Package (Node-API) | ✅ 完成 | [wrapper/nodejs/plan.md](wrapper/nodejs/plan.md) |
 | JAVA | Java Package (UniFFI) | ✅ 完成 | [wrapper/java/plan.md](wrapper/java/plan.md) |

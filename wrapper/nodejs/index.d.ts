@@ -27,6 +27,7 @@ export interface CreateDatasetOptions {
   indexContinuous?: boolean
   retentionWindow?: number | bigint
   timestampUnitsPerSeconds?: number | bigint
+  indexDataSize?: number
   enableJournal?: boolean
 }
 
@@ -72,6 +73,7 @@ export interface DataSetInfo {
   indexContinuous: number
   retentionWindow: bigint
   timestampUnitsPerSeconds: bigint
+  indexDataSize: number
   enableJournal: boolean
   createTime: bigint
 }

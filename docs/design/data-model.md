@@ -80,21 +80,16 @@ Offset  Size  Field                    Description
 
 ### 3.4 IndexEntry (索引条目)
 
-当前 index segment 中每个索引条目固定 **32 字节**:
+当前 index segment 使用 **16 字节核心 + 固定扩展区 + 8 字节对齐 padding**：
 
-```
-┌─────────────────┬────────────────────┬───────────────────────────┬────────────────┐
-│ timestamp (i64) │ block_offset (u64) │ in_block_offset_units(u16) │ reserved       │
-│ 8 bytes         │ 8 bytes            │ 2 bytes                   │ 14 zero bytes  │
-└─────────────────┴────────────────────┴───────────────────────────┴────────────────┘
+```text
+timestamp:i64 LE | block_offset_delta:u48 LE | in_block_offset_units:u16 LE
+index_data_size bytes | zero padding to align_up(16 + index_data_size, 8)
 ```
 
-- `timestamp`: 全局业务时间戳, little-endian `i64`。不再使用 segment-relative timestamp delta。
-- `block_offset`: 对应 Block 在数据流中的**逻辑全局偏移** (相对各数据段数据区起点, 指向 BlockHeader 起始), 不包含任何数据段文件 header 长度。落到具体段后, 物理文件偏移 = `segment.header_len + (block_offset - segment.file_offset)`。
-- `in_block_offset_units`: record 在 Block Payload 中的相对位置，以 4 字节为单位，little-endian `u16`，指向该 record 的 `data_len` 字段。字节偏移必须以 `in_block_offset_units * 4` 解码。普通聚合 Block 的未压缩 payload 受 256KiB 上限和 4 字节对齐约束，真实 record 起始偏移可由此字段表示；exclusive/single-record block 只包含一条 record，值固定为 0。
-- `reserved`: 固定 14 个零字节。写入时必须置零，读取时必须验证全为零。
+`index_data_size: u32` 默认 0，仅创建 dataset 时指定，dataset meta 和 index segment immutable meta 都保存。segment immutable `base_block_offset:u64` 来自触发创建的真实 entry 的 block 起点；filler 创建流程传递同一次真实写入的 block 起点。内存使用绝对 u64 offset，磁盘为相对 base 的差值。真实 delta 最大 `0xFFFFFFFFFFFE`，不足 base 或超限显式报错。磁盘 filler 为全 1 u48 与全 1 u16，解码恢复内存 `u64::MAX/u16::MAX`。
 
-这是不兼容的存储格式重设计。不保留既有 data_dir、index segment 或旧索引条目的兼容读取、迁移或自动升级逻辑；已有数据必须删除后重建。
+in_block_offset_units 仍以 4 字节为单位；真实 record 禁止使用 0xFFFF。预留自定义区本轮没有读写 API，新建时清零，定位字段更新保留，删除清零；允许读取非零预留区。对齐 padding 必须全零。完整格式及校验见 [时间索引 §7.3](time-index.md)。不提供旧格式兼容或迁移。
 
 #### Block Offset 坐标系
 
@@ -134,7 +129,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 读取已有文件时必须执行以下校验:
 
 - `meta_length + state_length` 计算 `header_len` 时不得溢出, 且 `header_len <= file_len`; v1 已知 state 长度不得短于对应最小值。
-- data segment 的 `wrote_position` 必须满足 `header_len <= wrote_position <= file_len`。index segment 的 entry area 固定从文件内绝对偏移 128 开始, 因此 index `wrote_position` 必须满足 `128 <= wrote_position <= file_len`, 且 `wrote_position - 128` 必须是 `INDEX_ENTRY_SIZE` 的整数倍。
+- data segment 的 `wrote_position` 必须满足 `header_len <= wrote_position <= file_len`。index segment 的 entry area 固定从文件内绝对偏移 128 开始, 因此 index `wrote_position` 必须满足 `128 <= wrote_position <= file_len`, 且 `wrote_position - 128` 必须是 `entry_stride` 的整数倍。
 - `block_payload_size` 必须完全落在所属 segment 文件内; compressed block 解压后的长度必须等于 `uncompressed_size`。
 - 遍历 record 时, 每个 `data_len` 必须满足 `record_pos + align_up(12 + data_len, 4) <= block_payload_len`; record padding 必须全为零, `timestamp` 直接按 `i64 LE` 读取。
 - real `IndexEntry` 不得使用 filler sentinel: `block_offset != u64::MAX` 且 `in_block_offset_units != 0xFFFF`; filler 必须同时使用 `block_offset = u64::MAX` 与 `in_block_offset_units = 0xFFFF`。
@@ -152,7 +147,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 │ 固定前缀 (9 bytes)                                        │
 │  magic:4 + version:2 + fileType:1 + meta_length:2         │
 ├──────────────────────────────────────────────────────────┤
-│ Meta 不可变 TLV 区 (variable, 当前 41 bytes)              │  ← 创建时写入一次, 永不修改
+│ Meta 不可变 TLV 区 (data 41B, index 59B)              │  ← 创建时写入一次, 永不修改
 │  {type:1}{len:2}{value}, 可多个, 可跳过未知 type          │
 ├──────────────────────────────────────────────────────────┤
 │ state_length: u16 (2 bytes)                               │  ← 告知后续 state 总字节数
@@ -168,7 +163,7 @@ physical_file_offset  = segment.header_len + block_segment_offset
 ```
 Offset  Size  Field                    Description
 0-3     4     magic = b"TMSL"
-4-5     u16   version                  data segment = 1, index segment = 1
+4-5     u16   version                  data segment = 1, index segment = 2
 6       u8    fileType                 1 = index segment, 2 = data segment
 7-8     u16   meta_length              Meta TLV 区总字节数
 ```
@@ -209,7 +204,7 @@ Offset  (相对 state 起始)    Size  Field                    Description
 0       u64(8)  wrote_position           当前写入位置(文件内绝对偏移, index entry area 固定从 128 开始)
 ```
 
-> `wrote_count` 可从 `wrote_position` 计算: `wrote_count = (wrote_position - 128) / INDEX_ENTRY_SIZE`。不再单独持久化 `record_count`、`total_uncompressed_size` 等数据段相关字段。
+> `wrote_count` 可从 `wrote_position` 计算: `wrote_count = (wrote_position - 128) / entry_stride`。不再单独持久化 `record_count`、`total_uncompressed_size` 等数据段相关字段。
 
 #### Header 长度与数据区起点
 
@@ -257,7 +252,7 @@ pub const INDEX_HEADER_SIZE: u64 = 128;   // index entry area fixed start
 ```
 
 > 新建 v1 文件时 data Block 区起点为 124, index Entry 区起点为 128。打开已有 data 文件时, Block 区起点必须使用文件 header 中计算出的 `header_len`; 打开 index 文件时仍解析可变 header 内容, 但 Entry 区起点固定为 128。
-> `wrote_position` 是文件内绝对偏移。data 运行时可派生 `data_wrote_position = wrote_position - header_len` 作为数据区相对已用字节数; index 运行时可派生 `wrote_count = (wrote_position - 128) / INDEX_ENTRY_SIZE`。
+> `wrote_position` 是文件内绝对偏移。data 运行时可派生 `data_wrote_position = wrote_position - header_len` 作为数据区相对已用字节数; index 运行时可派生 `wrote_count = (wrote_position - 128) / entry_stride`。
 
 #### 兼容性设计
 
@@ -464,3 +459,7 @@ pub struct DataSetConfig {
 `timestamp_units_per_seconds` is an immutable dataset setting. It defines how many dataset timestamp units equal one Unix second and is persisted as `DataSetMeta` TLV `0x0B` (`u64 LE`). The default `0` preserves legacy retention: its threshold remains `latest_written_timestamp - retention_window` and does not read wall-clock time. A nonzero value enables wall-clock retention in the same timestamp domain. This integer scale has no float representation. On reopen the value comes from meta and cannot be changed by current Store defaults or mutable state.
 
 `DataSetConfig.enable_journal` is a dataset creation/open setting, not a Store runtime setting. Journal records for a dataset are emitted only when `StoreConfig.enable_journal && DataSetConfig.enable_journal` is true.
+
+## Compact Index Metadata Generation
+
+Dataset meta version is exactly 2; index file version is exactly 2, independently from data-file version 1. Required dataset TLV `0x0C` is `index_data_size:u32 LE` (4B); index-only TLVs `0x06` and `0x07` are `base_block_offset:u64 LE` (8B) and `index_data_size:u32 LE` (4B). Missing, duplicate or incorrectly sized new fields are errors. Dataset metadata TLV values total 100B. Dataset and segment sizing must agree. Old versions are rejected without migration.

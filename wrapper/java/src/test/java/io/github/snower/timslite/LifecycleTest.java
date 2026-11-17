@@ -79,6 +79,32 @@ class LifecycleTest {
     }
 
     @Test
+    void indexDataSizeDefaultsToZeroAndRoundTrips() {
+        Store store = Store.open(tempDir.toString());
+        try {
+            store.createDataset("compact-default", "micro",
+                    CreateDatasetOptionsBuilder.builder().build());
+            store.createDataset("compact-three", "micro",
+                    CreateDatasetOptionsBuilder.builder()
+                            .config(DatasetConfigBuilder.builder().indexDataSize(3L).build())
+                            .build());
+            store.createDataset("compact-sixteen", "micro",
+                    CreateDatasetOptionsBuilder.builder()
+                            .config(DatasetConfigBuilder.builder().indexDataSize(16L).build())
+                            .build());
+
+            assertEquals(0L, store.inspectDataset("compact-default", "micro")
+                    .getInfo().getIndexDataSize());
+            assertEquals(3L, store.inspectDataset("compact-three", "micro")
+                    .getInfo().getIndexDataSize());
+            assertEquals(16L, store.inspectDataset("compact-sixteen", "micro")
+                    .getInfo().getIndexDataSize());
+        } finally {
+            store.close();
+        }
+    }
+
+    @Test
     void openDatasetByIdentifier() {
         Store store = Store.open(tempDir.toString());
         try {

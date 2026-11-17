@@ -110,6 +110,33 @@ public class ConfigTests : IDisposable
     }
 
     [Fact]
+    public void DatasetConfig_IndexDataSize_DefaultsToZero()
+    {
+        using var store = Store.Open(_tempDir);
+        store.CreateDataset("compact-default", "ds", new CreateDatasetOptions());
+
+        var result = store.InspectDataset("compact-default", "ds");
+        Assert.Equal(0U, result.Info.IndexDataSize);
+    }
+
+    [Fact]
+    public void DatasetConfig_IndexDataSize_RoundTripsThreeAndSixteen()
+    {
+        using var store = Store.Open(_tempDir);
+        store.CreateDataset("compact-three", "ds", new CreateDatasetOptions
+        {
+            Config = new DatasetConfig { IndexDataSize = 3 },
+        });
+        store.CreateDataset("compact-sixteen", "ds", new CreateDatasetOptions
+        {
+            Config = new DatasetConfig { IndexDataSize = 16 },
+        });
+
+        Assert.Equal(3U, store.InspectDataset("compact-three", "ds").Info.IndexDataSize);
+        Assert.Equal(16U, store.InspectDataset("compact-sixteen", "ds").Info.IndexDataSize);
+    }
+
+    [Fact]
     public void CreateDatasetOptions_DefaultConfig_CreateSucceeds()
     {
         using var store = Store.Open(_tempDir);

@@ -24,7 +24,7 @@
 | 压缩时机 | 延迟 (pending→sealed, 仅 next write overflow 或 exclusive/single-record block) | 写入时零 CPU, 避免重复压缩 |
 | exclusive/single-record block | 单条 record 独占 block | 支持编码后大小超过普通聚合 Block 上限的单条 record |
 | Record 编码 | data_len(4)+ts(8)+data+zero padding | record stored span 按 4 字节对齐，支持以 4 字节单位定位 block 内 record |
-| 索引条目 | 32 字节 | 保存完整 `i64` timestamp、逻辑 block offset、4 字节单位 in-block offset 和 14 个零 reserved bytes |
+| 索引条目 | 16 字节核心 + 对齐扩展区 | 完整 i64 timestamp、相对 immutable base 的 u48 block offset、u16 in-block units；stride=align_up(16+index_data_size,8) |
 | 文件头 | 可变长度 | meta(不可变TLV)/state(可变)分离, 打开文件时按 header 中长度计算数据区起点 |
 | meta 扩展 | TLV {type:1}{len:2}{value:N} | 未知 type 通过 length 跳过, 向前兼容 |
 | 索引目录 | `data/` + `index/` 独立子目录 | 数据与索引物理隔离 |

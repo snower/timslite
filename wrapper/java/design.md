@@ -229,10 +229,12 @@ CreateDatasetOptions options = CreateDatasetOptions.builder()
     .indexContinuous(true)
     .retentionWindow(0L)
     .timestampUnitsPerSeconds(0L)
+    .indexDataSize(0L)
     .build();
 ```
 
 `timestampUnitsPerSeconds` defaults to `0L`. At `0L`, `retentionWindow` keeps legacy retention based on the latest written timestamp. A nonzero value specifies dataset timestamp units per Unix second and makes retention wall-clock based.
+`indexDataSize` defaults to `0L` and is immutable after creation. It reserves that many custom bytes per index entry; `0` stores the 16-byte core only.
 
 `StoreReadOnly` is a Java enum:
 

@@ -150,6 +150,36 @@ describe("config", () => {
     }
   });
 
+  it("CreateDatasetOptions indexDataSize defaults to 0", () => {
+    const dir = makeTmpDir();
+    try {
+      const store = Store.open(dir, { enableBackgroundThread: false });
+      store.createDataset("compact-default", "data", {});
+      const result = store.inspectDataset("compact-default", "data");
+      assert.equal(result.info.indexDataSize, 0);
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("CreateDatasetOptions indexDataSize roundtrips 3 and 16", () => {
+    const dir = makeTmpDir();
+    try {
+      const store = Store.open(dir, { enableBackgroundThread: false });
+      store.createDataset("compact-three", "data", { indexDataSize: 3 });
+      store.createDataset("compact-sixteen", "data", { indexDataSize: 16 });
+      assert.equal(store.inspectDataset("compact-three", "data").info.indexDataSize, 3);
+      assert.equal(
+        store.inspectDataset("compact-sixteen", "data").info.indexDataSize,
+        16,
+      );
+      store.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("CreateDatasetOptions segment sizes accept plain numbers", () => {
     const dir = makeTmpDir();
     try {

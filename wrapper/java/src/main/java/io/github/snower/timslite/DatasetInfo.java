@@ -19,6 +19,7 @@ public final class DatasetInfo {
     private final short indexContinuous;
     private final long retentionWindow;
     private final long timestampUnitsPerSeconds;
+    private final long indexDataSize;
     private final boolean enableJournal;
     private final long createTime;
 
@@ -36,6 +37,8 @@ public final class DatasetInfo {
         this.indexContinuous = (short) (KotlinConversions.getUByte(kotlinInfo, "getIndexContinuous") & 0xFF);
         this.retentionWindow = KotlinConversions.getULong(kotlinInfo, "getRetentionWindow");
         this.timestampUnitsPerSeconds = KotlinConversions.getULong(kotlinInfo, "getTimestampUnitsPerSeconds");
+        this.indexDataSize = Integer.toUnsignedLong(
+                KotlinConversions.getUInt(kotlinInfo, "getIndexDataSize"));
         this.enableJournal = kotlinInfo.getEnableJournal();
         this.createTime = kotlinInfo.getCreateTime();
     }
@@ -157,6 +160,16 @@ public final class DatasetInfo {
      */
     public long getTimestampUnitsPerSeconds() {
         return timestampUnitsPerSeconds;
+    }
+
+    /**
+     * Returns the immutable custom index bytes reserved per entry.
+     * 0 means the compact 16-byte core only.
+     *
+     * @return custom index bytes
+     */
+    public long getIndexDataSize() {
+        return indexDataSize;
     }
 
     /**

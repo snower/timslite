@@ -140,6 +140,7 @@ class Store:
         index_continuous: bool = False,
         retention_window: int = None,
         timestamp_units_per_seconds: int = 0,
+        index_data_size: int = 0,
         initial_data_segment_size: int = None,
         initial_index_segment_size: int = None,
     ) -> None:
@@ -157,6 +158,7 @@ class Store:
             index_continuous: Allow out-of-order / backfill writes.
             retention_window: Retention duration in dataset timestamp units; 0 disables retention.
             timestamp_units_per_seconds: Dataset timestamp units per Unix second. Default 0 keeps legacy latest-written-timestamp retention; a nonzero value makes retention wall-clock based.
+            index_data_size: Immutable custom index bytes reserved per entry at creation. Default 0 uses the 16-byte core only.
             initial_data_segment_size: Initial file size (lazy alloc).
             initial_index_segment_size: Initial index file size.
 

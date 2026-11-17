@@ -91,6 +91,23 @@ class ConfigTest {
     }
 
     @Test
+    void datasetConfigIndexDataSizePreserved() {
+        DatasetConfig config = DatasetConfigBuilder.builder()
+                .dataSegmentSize(65536)
+                .indexDataSize(16L)
+                .build();
+        assertNotNull(config);
+    }
+
+    @Test
+    void indexDataSizeRejectsOutOfRangeValues() {
+        assertThrows(IllegalArgumentException.class, () ->
+                DatasetConfigBuilder.builder().indexDataSize(-1L));
+        assertThrows(IllegalArgumentException.class, () ->
+                DatasetConfigBuilder.builder().indexDataSize(0x1_0000_0000L));
+    }
+
+    @Test
     void defaultQueueConsumerConfigProducesNonNullResult() {
         QueueConsumerConfig config = QueueConsumerConfigBuilder.builder().build();
         assertNotNull(config);

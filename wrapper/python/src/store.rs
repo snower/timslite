@@ -56,6 +56,9 @@ pub struct PyDataSetInfo {
     /// Timestamp units per Unix second (0=legacy retention)
     #[pyo3(get)]
     pub timestamp_units_per_seconds: u64,
+    /// Immutable custom index bytes per entry configured at dataset creation
+    #[pyo3(get)]
+    pub index_data_size: u32,
     /// Whether this dataset records journal entries when Store journal is enabled
     #[pyo3(get)]
     pub enable_journal: bool,
@@ -152,6 +155,7 @@ impl From<timslite::DataSetInfo> for PyDataSetInfo {
             index_continuous: info.index_continuous,
             retention_window: info.retention_window,
             timestamp_units_per_seconds: info.timestamp_units_per_seconds,
+            index_data_size: info.index_data_size,
             enable_journal: info.enable_journal,
             create_time: info.create_time,
         }
@@ -276,7 +280,7 @@ impl PyStore {
     /// inherit from StoreConfig defaults unless overridden.
     ///
     /// Returns a Dataset object for read/write operations.
-    #[pyo3(signature = (name, dataset_type, *, data_segment_size=None, index_segment_size=None, compress_level=None, index_continuous=false, initial_data_segment_size=None, initial_index_segment_size=None, timestamp_units_per_seconds=0, enable_journal=false))]
+    #[pyo3(signature = (name, dataset_type, *, data_segment_size=None, index_segment_size=None, compress_level=None, index_continuous=false, initial_data_segment_size=None, initial_index_segment_size=None, timestamp_units_per_seconds=0, index_data_size=0, enable_journal=false))]
     #[allow(clippy::too_many_arguments)]
     fn create_dataset(
         &mut self,
@@ -289,6 +293,7 @@ impl PyStore {
         initial_data_segment_size: Option<u64>,
         initial_index_segment_size: Option<u64>,
         timestamp_units_per_seconds: u64,
+        index_data_size: u32,
         enable_journal: bool,
     ) -> PyResult<PyDataset> {
         let store = self
@@ -316,6 +321,7 @@ impl PyStore {
             builder = builder.initial_index_segment_size(v);
         }
         builder = builder.timestamp_units_per_seconds(timestamp_units_per_seconds);
+        builder = builder.index_data_size(index_data_size);
         builder = builder.enable_journal(enable_journal);
 
         let dataset = wrap(store.create_dataset_with_config(name, dataset_type, Some(builder)))?;

@@ -23,6 +23,7 @@ public final class DatasetConfigBuilder {
     private Byte indexContinuous;
     private Long retentionWindow;
     private Long timestampUnitsPerSeconds;
+    private Long indexDataSize;
     private Boolean enableJournal;
 
     private DatasetConfigBuilder() {
@@ -158,6 +159,22 @@ public final class DatasetConfigBuilder {
     }
 
     /**
+     * Sets the immutable custom index bytes reserved per entry.
+     * 0 keeps the compact 16-byte core only.
+     *
+     * @param indexDataSize custom index bytes, 0..=4294967295
+     * @return this builder
+     */
+    public DatasetConfigBuilder indexDataSize(long indexDataSize) {
+        if (indexDataSize < 0 || indexDataSize > 0xFFFF_FFFFL) {
+            throw new IllegalArgumentException(
+                    "indexDataSize must be in 0..=4294967295, got " + indexDataSize);
+        }
+        this.indexDataSize = indexDataSize;
+        return this;
+    }
+
+    /**
      * Enables or disables journal for this dataset.
      *
      * @param enableJournal {@code true} to enable
@@ -184,6 +201,7 @@ public final class DatasetConfigBuilder {
                 indexContinuous,
                 retentionWindow,
                 timestampUnitsPerSeconds,
+                indexDataSize,
                 enableJournal
         );
     }

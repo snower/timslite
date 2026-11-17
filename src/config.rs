@@ -42,6 +42,19 @@ pub(crate) fn validate_retention_window(retention_window: u64) -> Result<()> {
     Ok(())
 }
 
+/// Compact index core entry size: timestamp + relative offset + in-block units.
+pub(crate) const INDEX_ENTRY_CORE_SIZE: usize = 16;
+
+/// Checked `align_up(16 + index_data_size, 8)` entry stride.
+pub(crate) fn index_entry_stride(index_data_size: u32) -> Result<usize> {
+    let core = INDEX_ENTRY_CORE_SIZE
+        .checked_add(index_data_size as usize)
+        .ok_or_else(|| TmslError::InvalidData("index entry stride overflow".into()))?;
+    core.checked_add(7)
+        .map(|v| v & !7usize)
+        .ok_or_else(|| TmslError::InvalidData("index entry stride overflow".into()))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn validate_dataset_config_values(
     data_segment_size: u64,
@@ -52,6 +65,7 @@ pub(crate) fn validate_dataset_config_values(
     initial_data_segment_size: u64,
     initial_index_segment_size: u64,
     retention_window: u64,
+    index_data_size: u32,
 ) -> Result<()> {
     validate_nonzero_size("data_segment_size", data_segment_size)?;
     validate_nonzero_size("index_segment_size", index_segment_size)?;
@@ -71,6 +85,21 @@ pub(crate) fn validate_dataset_config_values(
     crate::compress::validate_compress_type(compress_type)?;
     validate_index_continuous(index_continuous)?;
     validate_retention_window(retention_window)?;
+
+    let stride = index_entry_stride(index_data_size)?;
+    let min_index_size = crate::header::INDEX_HEADER_SIZE
+        .checked_add(stride as u64)
+        .ok_or_else(|| TmslError::InvalidData("index file capacity overflow".into()))?;
+    if initial_index_segment_size < min_index_size {
+        return Err(TmslError::InvalidData(format!(
+            "initial_index_segment_size must be >= {min_index_size} (header + one {stride}-byte index entry), got {initial_index_segment_size}"
+        )));
+    }
+    if index_segment_size < min_index_size {
+        return Err(TmslError::InvalidData(format!(
+            "index_segment_size must be >= {min_index_size} (header + one {stride}-byte index entry), got {index_segment_size}"
+        )));
+    }
     Ok(())
 }
 
@@ -219,6 +248,7 @@ impl StoreConfig {
             0,
             self.initial_data_segment_size,
             self.initial_index_segment_size,
+            0,
             0,
         )?;
         if self.retention_check_hour > 23 {
@@ -395,6 +425,8 @@ pub struct DataSetConfig {
     pub(crate) enable_journal: bool,
     /// Dataset creation time (Unix milliseconds).
     pub(crate) create_time: i64,
+    /// Immutable per-entry custom index bytes (default 0).
+    pub(crate) index_data_size: u32,
 }
 
 #[allow(dead_code)]
@@ -412,6 +444,7 @@ impl DataSetConfig {
             timestamp_units_per_seconds: 0,
             enable_journal: false,
             create_time: 0,
+            index_data_size: 0,
         }
     }
 
@@ -465,6 +498,11 @@ impl DataSetConfig {
         self.create_time
     }
 
+    /// Immutable per-entry custom index bytes configured at dataset creation.
+    pub fn index_data_size(&self) -> u32 {
+        self.index_data_size
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
         validate_dataset_config_values(
             self.data_segment_size,
@@ -475,6 +513,7 @@ impl DataSetConfig {
             self.initial_data_segment_size,
             self.initial_index_segment_size,
             self.retention_window,
+            self.index_data_size,
         )
     }
 }
@@ -511,6 +550,7 @@ pub struct DataSetConfigBuilder {
     retention_window: Option<u64>,
     timestamp_units_per_seconds: Option<u64>,
     enable_journal: Option<bool>,
+    index_data_size: Option<u32>,
 }
 
 impl DataSetConfigBuilder {
@@ -528,6 +568,7 @@ impl DataSetConfigBuilder {
             retention_window: Some(0),
             timestamp_units_per_seconds: Some(0),
             enable_journal: Some(false),
+            index_data_size: Some(0),
         }
     }
 
@@ -591,6 +632,12 @@ impl DataSetConfigBuilder {
         self
     }
 
+    /// Set immutable per-entry custom index bytes. Only applied at dataset creation.
+    pub fn index_data_size(mut self, size: u32) -> Self {
+        self.index_data_size = Some(size);
+        self
+    }
+
     /// Build the `DataSetConfig`.
     pub fn build(self) -> Result<DataSetConfig> {
         let defaults = DataSetConfig::from_store(&StoreConfig::default());
@@ -615,6 +662,7 @@ impl DataSetConfigBuilder {
             timestamp_units_per_seconds,
             enable_journal: self.enable_journal.unwrap_or(false),
             create_time: 0, // Set at dataset creation
+            index_data_size: self.index_data_size.unwrap_or(0),
         };
         config.validate()?;
         Ok(config)
@@ -838,7 +886,7 @@ mod tests {
 
     #[test]
     fn test_validate_dataset_config_values_initial_over_max() {
-        let result = validate_dataset_config_values(1024, 2048, 6, 0, 0, 2048, 1024, 0);
+        let result = validate_dataset_config_values(1024, 2048, 6, 0, 0, 2048, 1024, 0, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("initial_data_segment_size"));
@@ -958,13 +1006,14 @@ mod tests {
             256 * 1024,
             16 * 1024,
             0,
+            0,
         );
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_validate_dataset_config_values_zero_index_segment() {
-        let result = validate_dataset_config_values(1024, 0, 6, 0, 0, 512, 512, 0);
+        let result = validate_dataset_config_values(1024, 0, 6, 0, 0, 512, 512, 0, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("index_segment_size"));
@@ -972,7 +1021,7 @@ mod tests {
 
     #[test]
     fn test_validate_dataset_config_values_zero_initial_data_segment() {
-        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 0, 512, 0);
+        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 0, 512, 0, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("initial_data_segment_size"));
@@ -980,7 +1029,7 @@ mod tests {
 
     #[test]
     fn test_validate_dataset_config_values_zero_initial_index_segment() {
-        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 512, 0, 0);
+        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 512, 0, 0, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("initial_index_segment_size"));
@@ -989,7 +1038,7 @@ mod tests {
     #[test]
     fn test_validate_dataset_config_values_initial_index_over_max() {
         // initial_index_segment_size > index_segment_size
-        let result = validate_dataset_config_values(1024, 512, 6, 0, 0, 512, 1024, 0);
+        let result = validate_dataset_config_values(1024, 512, 6, 0, 0, 512, 1024, 0, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("initial_index_segment_size"));
@@ -998,7 +1047,7 @@ mod tests {
 
     #[test]
     fn test_validate_dataset_config_values_invalid_compress_type() {
-        let result = validate_dataset_config_values(1024, 1024, 6, 99, 0, 512, 512, 0);
+        let result = validate_dataset_config_values(1024, 1024, 6, 99, 0, 512, 512, 0, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("compress_type"));
@@ -1006,20 +1055,20 @@ mod tests {
 
     #[test]
     fn test_validate_dataset_config_values_invalid_compress_level() {
-        let result = validate_dataset_config_values(1024, 1024, 10, 0, 0, 512, 512, 0);
+        let result = validate_dataset_config_values(1024, 1024, 10, 0, 0, 512, 512, 0, 0);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_validate_dataset_config_values_invalid_index_continuous() {
-        let result = validate_dataset_config_values(1024, 1024, 6, 0, 5, 512, 512, 0);
+        let result = validate_dataset_config_values(1024, 1024, 6, 0, 5, 512, 512, 0, 0);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_validate_dataset_config_values_retention_above_i64_max() {
         let result =
-            validate_dataset_config_values(1024, 1024, 6, 0, 0, 512, 512, i64::MAX as u64 + 1);
+            validate_dataset_config_values(1024, 1024, 6, 0, 0, 512, 512, i64::MAX as u64 + 1, 0);
         assert!(result.is_err());
     }
 
@@ -1227,7 +1276,7 @@ mod tests {
 
     #[test]
     fn test_validate_dataset_config_initial_equals_max_allowed() {
-        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 1024, 1024, 0);
+        let result = validate_dataset_config_values(1024, 1024, 6, 0, 0, 1024, 1024, 0, 0);
         assert!(result.is_ok());
     }
 
@@ -1244,5 +1293,46 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(config.timestamp_units_per_seconds(), 1_000);
+    }
+
+    #[test]
+    fn test_index_entry_stride_default_and_aligned_sizes() {
+        // Core 16B, stride is align_up(16 + N, 8).
+        assert_eq!(index_entry_stride(0).unwrap(), 16);
+        assert_eq!(index_entry_stride(3).unwrap(), 24);
+        assert_eq!(index_entry_stride(8).unwrap(), 24);
+        assert_eq!(index_entry_stride(16).unwrap(), 32);
+        assert_eq!(index_entry_stride(u32::MAX).unwrap(), 4_294_967_312);
+    }
+
+    #[test]
+    fn dataset_config_index_data_size_defaults_to_zero() {
+        let config = DataSetConfig::builder().build().unwrap();
+        assert_eq!(config.index_data_size(), 0);
+        assert_eq!(config.index_data_size, 0);
+    }
+
+    #[test]
+    fn dataset_config_builder_preserves_index_data_size() {
+        let config = DataSetConfig::builder()
+            .index_data_size(16)
+            .build()
+            .unwrap();
+        assert_eq!(config.index_data_size(), 16);
+    }
+
+    #[test]
+    fn test_validate_dataset_config_rejects_index_capacity_below_one_entry() {
+        // N=0 → stride 16, minimum index file is 128 + 16 = 144 bytes.
+        let err = validate_dataset_config_values(1024, 143, 6, 0, 0, 143, 143, 0, 0).unwrap_err();
+        assert!(format!("{err}").contains("initial_index_segment_size"));
+
+        let err = validate_dataset_config_values(1024, 143, 6, 0, 0, 144, 143, 0, 0).unwrap_err();
+        assert!(format!("{err}").contains("index_segment_size"));
+
+        // N=16 → stride 32, minimum index file is 160 bytes.
+        let err = validate_dataset_config_values(1024, 159, 6, 0, 0, 159, 159, 0, 16).unwrap_err();
+        assert!(format!("{err}").contains("initial_index_segment_size"));
+        assert!(validate_dataset_config_values(1024, 160, 6, 0, 0, 160, 160, 0, 16).is_ok());
     }
 }

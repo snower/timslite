@@ -49,6 +49,7 @@ object UniFFIBridge {
         indexContinuous: java.lang.Byte?,
         retentionWindow: java.lang.Long?,
         timestampUnitsPerSeconds: java.lang.Long?,
+        indexDataSize: java.lang.Long?,
         enableJournal: java.lang.Boolean?
     ): DatasetConfig = DatasetConfig(
         dataSegmentSize?.toLong()?.toULong(),
@@ -60,6 +61,7 @@ object UniFFIBridge {
         indexContinuous?.toByte()?.toUByte(),
         retentionWindow?.toLong()?.toULong(),
         timestampUnitsPerSeconds?.toLong()?.toULong(),
+        indexDataSize?.toInt()?.toUInt(),
         enableJournal?.let { it.booleanValue() }
     )
 

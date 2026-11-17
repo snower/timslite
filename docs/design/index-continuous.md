@@ -183,7 +183,7 @@ entry_index = entry_index(ts)
 if entry_index >= segment.wrote_count:
     return None
 
-read entry at 128 + entry_index * INDEX_ENTRY_SIZE
+read entry at 128 + entry_index * entry_stride
 validate entry.timestamp == ts
 ```
 

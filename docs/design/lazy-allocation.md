@@ -24,7 +24,7 @@
 约束:
 
 - `initial_data_segment_size >= data header_len + 最小可用空间`。
-- `initial_index_segment_size >= 128 + INDEX_ENTRY_SIZE`。
+- `initial_index_segment_size >= 128 + entry_stride`。
 - `initial_* <= 对应 segment_size`。
 - `initial_* == segment_size` 时退化为全量预分配。
 
@@ -82,7 +82,7 @@ Index segment:
 wrote_count >= entries_capacity
 ```
 
-Index entry area 固定从文件偏移 128 开始, 扩容后重新根据当前物理文件长度计算 `entries_capacity = (current_file_size - 128) / INDEX_ENTRY_SIZE`。
+Index entry area 固定从文件偏移 128 开始, 扩容后重新根据当前物理文件长度计算 `entries_capacity = (current_file_size - 128) / entry_stride`。
 
 ## 24.5 达到上限
 

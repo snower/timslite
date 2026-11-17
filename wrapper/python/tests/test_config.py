@@ -124,6 +124,21 @@ class TestConfig:
             inspect = store.inspect_dataset("scale", "data")
             assert inspect.info.timestamp_units_per_seconds == 1_000_000
 
+    def test_index_data_size_defaults_to_zero(self, tmpdir):
+        """Immutable creation-only index data size defaults to 0."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("compact-default", "data")
+            inspect = store.inspect_dataset("compact-default", "data")
+            assert inspect.info.index_data_size == 0
+
+    def test_index_data_size_kwarg_roundtrip(self, tmpdir):
+        """create_dataset index_data_size persists for 3 and 16 bytes."""
+        with timslite.Store.open(tmpdir) as store:
+            store.create_dataset("compact-three", "data", index_data_size=3)
+            store.create_dataset("compact-sixteen", "data", index_data_size=16)
+            assert store.inspect_dataset("compact-three", "data").info.index_data_size == 3
+            assert store.inspect_dataset("compact-sixteen", "data").info.index_data_size == 16
+
     def test_create_dataset_enable_journal_true(self, tmpdir):
         """Dataset-level enable_journal=True records this dataset's records."""
         with timslite.Store.open(tmpdir) as store:

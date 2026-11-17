@@ -286,6 +286,7 @@ impl DataSet {
         retention_window: u64,
         timestamp_units_per_seconds: u64,
         enable_journal: bool,
+        index_data_size: u32,
     ) -> Result<Self> {
         DataSetInner::create_with_compression(
             id,
@@ -300,6 +301,7 @@ impl DataSet {
             retention_window,
             timestamp_units_per_seconds,
             enable_journal,
+            index_data_size,
         )
         .map(Self::new)
     }
@@ -594,9 +596,11 @@ impl DataSetInner {
             retention_window,
             timestamp_units_per_seconds,
             true,
+            0,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_with_compression(
         id: DataSetKey,
         base_dir: PathBuf,
@@ -610,6 +614,7 @@ impl DataSetInner {
         retention_window: u64,
         timestamp_units_per_seconds: u64,
         enable_journal: bool,
+        index_data_size: u32,
     ) -> Result<Self> {
         validate_dataset_config_values(
             data_segment_size,
@@ -620,6 +625,7 @@ impl DataSetInner {
             initial_data_segment_size,
             initial_index_segment_size,
             retention_window,
+            index_data_size,
         )?;
         let meta_path = base_dir.join("meta");
         if meta_path.exists() {
@@ -648,6 +654,7 @@ impl DataSetInner {
             retention_window,
             enable_journal,
             timestamp_units_per_seconds,
+            index_data_size,
         );
         meta.write_to_file(&meta_path)?;
 
@@ -665,6 +672,7 @@ impl DataSetInner {
             index_continuous != 0,
             compress_level,
             compress_type,
+            index_data_size,
         )?;
         let dataset_state = DatasetStateFile::open_or_create(&base_dir)?;
 
@@ -684,6 +692,7 @@ impl DataSetInner {
                 timestamp_units_per_seconds,
                 enable_journal,
                 create_time: meta.create_time,
+                index_data_size,
             },
             segments,
             time_index,
@@ -734,6 +743,7 @@ impl DataSetInner {
             timestamp_units_per_seconds: meta.timestamp_units_per_seconds,
             enable_journal: meta.enable_journal,
             create_time: meta.create_time,
+            index_data_size: meta.index_data_size,
         };
         config.validate()?;
         let retention_window = meta.retention_window;
@@ -753,6 +763,7 @@ impl DataSetInner {
             config.index_continuous != 0,
             config.compress_level,
             config.compress_type,
+            config.index_data_size,
         )?;
         let dataset_state = if read_only {
             DatasetStateFile::open_read_only_or_default(&base_dir)?
@@ -1970,6 +1981,7 @@ impl DataSetInner {
             timestamp_units_per_seconds: self.config.timestamp_units_per_seconds,
             enable_journal: self.config.enable_journal,
             create_time: self.config.create_time,
+            index_data_size: self.config.index_data_size,
         };
 
         let archived = self.dataset_state.snapshot();
@@ -2068,6 +2080,8 @@ pub struct DataSetInfo {
     pub enable_journal: bool,
     /// Dataset creation time (Unix milliseconds)
     pub create_time: i64,
+    /// Immutable per-entry custom index bytes.
+    pub index_data_size: u32,
 }
 
 /// Mutable dataset state info.
@@ -2762,7 +2776,7 @@ mod tests {
             6,
             1,
             256 * 1024,
-            128,
+            512,
             0,
             0,
         )
@@ -2815,7 +2829,7 @@ mod tests {
             6,
             1,
             256 * 1024,
-            128,
+            512,
             0,
             0,
         )
@@ -2858,15 +2872,15 @@ mod tests {
             6,
             1,
             256 * 1024,
-            128,
+            512,
             0,
             0,
         )
         .unwrap();
 
         ds.write(first_ts, b"first").unwrap();
-        ds.time_index.add_filler_entry(filler_start).unwrap();
-        ds.time_index.add_filler_entry(filler_start + 1).unwrap();
+        ds.time_index.add_filler_entry(filler_start, 0).unwrap();
+        ds.time_index.add_filler_entry(filler_start + 1, 0).unwrap();
         assert!(ds.time_index.index_segments.contains_key(&filler_start));
 
         ds.flush().unwrap();
@@ -2900,7 +2914,7 @@ mod tests {
                 6,
                 1,
                 256 * 1024,
-                128,
+                512,
                 0,
                 0,
             )
@@ -4981,5 +4995,94 @@ mod tests {
             assert_eq!(r.0, 500);
             assert_eq!(r.1, b"latest");
         }
+    }
+
+    fn create_with_index_data_size(
+        name: &str,
+        index_data_size: u32,
+        index_continuous: u8,
+    ) -> (DataSetKey, PathBuf, DataSetInner) {
+        let dir = temp_dir(name);
+        let id = DataSetKey {
+            name: name.into(),
+            dataset_type: "data".into(),
+        };
+        let ds = DataSetInner::create_with_compression(
+            id.clone(),
+            dir.clone(),
+            64 * 1024 * 1024,
+            4 * 1024 * 1024,
+            6,
+            crate::compress::COMPRESS_TYPE_ZSTD,
+            index_continuous,
+            256 * 1024,
+            4 * 1024,
+            0,
+            0,
+            false,
+            index_data_size,
+        )
+        .unwrap();
+        (id, dir, ds)
+    }
+
+    #[test]
+    fn test_index_data_size_roundtrip_and_reopen() {
+        let (id, dir, mut ds) = create_with_index_data_size("index_data_size_reopen", 16, 0);
+        ds.write(100, b"a").unwrap();
+        ds.write(200, b"bb").unwrap();
+        ds.write(200, b"corrected").unwrap();
+        ds.flush().unwrap();
+        drop(ds);
+
+        let mut reopened = DataSetInner::open(id, dir).unwrap();
+        assert_eq!(reopened.inspect().unwrap().info.index_data_size, 16);
+        assert_eq!(reopened.read(100).unwrap().unwrap().1, b"a");
+        assert_eq!(reopened.read(200).unwrap().unwrap().1, b"corrected");
+
+        // Same-index-segment correction after lazy close/reopen.
+        reopened.time_index.idle_close_all().unwrap();
+        reopened.write(200, b"again").unwrap();
+        assert_eq!(reopened.read(200).unwrap().unwrap().1, b"again");
+    }
+
+    #[test]
+    fn test_delete_and_reinsert_with_custom_index_bytes() {
+        let (_id, _dir, mut ds) =
+            create_with_index_data_size("index_data_size_delete_reinsert", 16, 1);
+        ds.write(100, b"a").unwrap();
+        ds.write(200, b"b").unwrap();
+        ds.write(300, b"c").unwrap();
+        ds.delete(200).unwrap();
+        assert!(ds.read(200).unwrap().is_none());
+        ds.out_of_order_write(200, b"reinserted", None).unwrap();
+        assert_eq!(ds.read(200).unwrap().unwrap().1, b"reinserted");
+        assert_eq!(ds.read(300).unwrap().unwrap().1, b"c");
+    }
+
+    #[test]
+    fn test_dataset_open_rejects_corrupt_discovered_index_segment() {
+        let (id, dir, mut ds) = create_with_index_data_size("strict_index_load_dataset", 3, 0);
+        ds.write(100, b"a").unwrap();
+        ds.flush().unwrap();
+        drop(ds);
+
+        let start = numeric_index_files(&dir)[0];
+        let path = dir.join("index").join(format!("{:020}", start));
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            // stride 24 for N=3; padding starts at 128 + 16 + 3.
+            file.seek(SeekFrom::Start(128 + 16 + 3)).unwrap();
+            file.write_all(&[1]).unwrap();
+            file.sync_all().unwrap();
+        }
+
+        let err = DataSetInner::open(id, dir.clone()).err().unwrap();
+        assert!(format!("{err}").contains("padding"), "err: {err}");
     }
 }

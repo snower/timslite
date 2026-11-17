@@ -13,11 +13,13 @@ use std::path::Path;
 
 pub use self::segment::INDEX_ENTRY_SIZE;
 use self::segment::{
-    IndexEntry, IndexSegment, IndexSegmentMeta, BLOCK_OFFSET_FILLER, IN_BLOCK_OFFSET_FILLER,
+    inspect_index_file, IndexEntry, IndexSegment, IndexSegmentMeta, BLOCK_OFFSET_FILLER,
+    IN_BLOCK_OFFSET_FILLER,
 };
 use crate::bg::SegmentDirtySink;
+use crate::config::index_entry_stride;
 use crate::error::{Result, TmslError};
-use crate::header::{IndexFileMetadata, INDEX_HEADER_SIZE};
+use crate::header::INDEX_HEADER_SIZE;
 
 pub(crate) enum IndexSegmentEntryState {
     Open(IndexSegment),
@@ -46,6 +48,8 @@ pub struct TimeIndex {
     pub index_continuous: bool, // true = continuous mode (O(1) lookup enabled)
     pub base_timestamp: Option<i64>,
     pub index_header_size: u64,
+    pub index_data_size: u32,
+    pub entry_stride: usize,
     dirty_sink: Option<SegmentDirtySink>,
 }
 
@@ -182,9 +186,12 @@ impl TimeIndex {
 
     fn open_index_segment(&mut self, start_timestamp: i64) -> Result<&mut IndexSegment> {
         match self.index_segments.entry(start_timestamp) {
-            Entry::Occupied(entry) => {
-                Self::open_occupied_index_segment(entry, self.segment_size, self.dirty_sink.clone())
-            }
+            Entry::Occupied(entry) => Self::open_occupied_index_segment(
+                entry,
+                self.segment_size,
+                self.index_data_size,
+                self.dirty_sink.clone(),
+            ),
             Entry::Vacant(_) => Err(TmslError::NotFound(format!(
                 "no index segment at {}",
                 start_timestamp
@@ -195,6 +202,7 @@ impl TimeIndex {
     fn open_occupied_index_segment(
         entry: OccupiedEntry<'_, i64, IndexSegmentEntryState>,
         segment_size: u64,
+        index_data_size: u32,
         dirty_sink: Option<SegmentDirtySink>,
     ) -> Result<&mut IndexSegment> {
         let start_timestamp = *entry.key();
@@ -202,7 +210,7 @@ impl TimeIndex {
         if let IndexSegmentEntryState::Closed(meta) = entry {
             let path = meta.path.clone();
             let meta_start = meta.start_timestamp;
-            let mut seg = IndexSegment::open(&path, meta_start, segment_size)?;
+            let mut seg = IndexSegment::open(&path, meta_start, segment_size, index_data_size)?;
             seg.set_dirty_sink(dirty_sink);
             *entry = IndexSegmentEntryState::Open(seg);
         }
@@ -275,6 +283,7 @@ impl TimeIndex {
         segment_size: u64,
         initial_segment_size: u64,
         index_continuous: bool,
+        index_data_size: u32,
     ) -> Result<Self> {
         Self::new_with_compression(
             base_dir,
@@ -283,9 +292,11 @@ impl TimeIndex {
             index_continuous,
             6,
             crate::compress::COMPRESS_TYPE_ZSTD,
+            index_data_size,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_compression(
         base_dir: &Path,
         segment_size: u64,
@@ -293,8 +304,21 @@ impl TimeIndex {
         index_continuous: bool,
         compress_level: u8,
         compress_type: u8,
+        index_data_size: u32,
     ) -> Result<Self> {
         std::fs::create_dir_all(base_dir)?;
+        let entry_stride = index_entry_stride(index_data_size)?;
+        let min_size = INDEX_HEADER_SIZE + entry_stride as u64;
+        if segment_size < min_size || initial_segment_size < min_size {
+            return Err(TmslError::InvalidData(format!(
+                "index segment sizes must be >= {min_size} for {entry_stride}-byte entries"
+            )));
+        }
+        if initial_segment_size > segment_size {
+            return Err(TmslError::InvalidData(
+                "initial_index_segment_size must be <= index_segment_size".into(),
+            ));
+        }
         Ok(Self {
             base_dir: base_dir.to_path_buf(),
             segment_size,
@@ -305,12 +329,17 @@ impl TimeIndex {
             index_continuous,
             base_timestamp: None,
             index_header_size: INDEX_HEADER_SIZE,
+            index_data_size,
+            entry_stride,
             dirty_sink: None,
         })
     }
 
     /// Add a filler entry (sentinel for continuous mode).
-    pub fn add_filler_entry(&mut self, timestamp: i64) -> Result<()> {
+    ///
+    /// `base_block_offset` is the triggering real entry's absolute block start;
+    /// filler-only segment creation must never capture a post-write cursor.
+    pub fn add_filler_entry(&mut self, timestamp: i64, base_block_offset: u64) -> Result<()> {
         let entry = IndexEntry::new(
             timestamp,
             crate::index::segment::BLOCK_OFFSET_FILLER,
@@ -318,9 +347,9 @@ impl TimeIndex {
         );
         if self.index_continuous {
             self.ensure_base_timestamp(timestamp)?;
-            self.append_continuous_entry_to_disk(&entry, None)
+            self.append_continuous_entry_to_disk(&entry, base_block_offset, None)
         } else {
-            self.append_noncontinuous_entry_to_disk(&entry, None)
+            self.append_noncontinuous_entry_to_disk(&entry, base_block_offset, None)
         }
     }
 
@@ -346,9 +375,9 @@ impl TimeIndex {
         }
         let entry = IndexEntry::new(timestamp, block_offset, in_block_offset);
         if self.index_continuous {
-            self.append_continuous_entry_to_disk(&entry, archived_range_sink)?;
+            self.append_continuous_entry_to_disk(&entry, block_offset, archived_range_sink)?;
         } else {
-            self.append_noncontinuous_entry_to_disk(&entry, archived_range_sink)?;
+            self.append_noncontinuous_entry_to_disk(&entry, block_offset, archived_range_sink)?;
         }
         Ok(())
     }
@@ -390,27 +419,31 @@ impl TimeIndex {
         self.ensure_base_timestamp(timestamp)?;
         let real_entry = IndexEntry::new(timestamp, block_offset, in_block_offset);
 
+        // Preflight the real entry before filler materialization or archived
+        // range publication.
+        let curr_segment_start = self.segment_start_for(timestamp)?;
+        self.preflight_real_entry(&real_entry, curr_segment_start)?;
+
         if let Some(previous_latest) = previous_latest {
             let prev_segment_start = self.segment_start_for(previous_latest)?;
-            let curr_segment_start = self.segment_start_for(timestamp)?;
             // checked: i64::MIN timestamps have no predecessor, so the
             // filler gap before them is empty rather than an overflow.
             if let (Some(gap_start), Some(gap_end)) =
                 (previous_latest.checked_add(1), timestamp.checked_sub(1))
             {
                 if prev_segment_start == curr_segment_start {
-                    self.push_filler_range(gap_start, gap_end)?;
+                    self.push_filler_range(gap_start, gap_end, block_offset)?;
                 } else {
                     let segment_capacity = self.segment_capacity()? as i64;
                     // A boundary segment truncated by i64::MAX ends at MAX.
                     let prev_segment_end = prev_segment_start.saturating_add(segment_capacity - 1);
-                    self.push_filler_range(gap_start, prev_segment_end)?;
-                    self.push_filler_range(curr_segment_start, gap_end)?;
+                    self.push_filler_range(gap_start, prev_segment_end, block_offset)?;
+                    self.push_filler_range(curr_segment_start, gap_end, block_offset)?;
                 }
             }
         }
 
-        self.append_continuous_entry_to_disk(&real_entry, archived_range_sink)?;
+        self.append_continuous_entry_to_disk(&real_entry, block_offset, archived_range_sink)?;
         Ok(())
     }
 
@@ -437,7 +470,7 @@ impl TimeIndex {
             )));
         }
         let capacity =
-            ((self.segment_size - self.index_header_size) / INDEX_ENTRY_SIZE as u64) as usize;
+            ((self.segment_size - self.index_header_size) / self.entry_stride as u64) as usize;
         if capacity == 0 {
             return Err(TmslError::InvalidData(format!(
                 "index segment size {} cannot hold an index entry",
@@ -486,12 +519,12 @@ impl TimeIndex {
         Ok((timestamp - segment_start) as usize)
     }
 
-    fn push_filler_range(&mut self, start: i64, end: i64) -> Result<()> {
+    fn push_filler_range(&mut self, start: i64, end: i64, base_block_offset: u64) -> Result<()> {
         if start > end {
             return Ok(());
         }
         for ts in start..=end {
-            self.add_filler_entry(ts)?;
+            self.add_filler_entry(ts, base_block_offset)?;
         }
         Ok(())
     }
@@ -643,12 +676,19 @@ impl TimeIndex {
             )));
         }
 
+        let entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
+        // Preflight before any filler materialization.
+        self.preflight_real_entry(&entry, segment_start)?;
+
         // checked_sub: timestamp i64::MIN leaves no room for a gap before it.
         if let Some(gap_end) = timestamp.checked_sub(1) {
-            self.push_filler_range(segment_start + materialized_count as i64, gap_end)?;
+            self.push_filler_range(
+                segment_start + materialized_count as i64,
+                gap_end,
+                new_block_offset,
+            )?;
         }
-        let entry = IndexEntry::new(timestamp, new_block_offset, new_in_block_offset);
-        self.append_continuous_entry_to_disk(&entry, archived_range_sink)?;
+        self.append_continuous_entry_to_disk(&entry, new_block_offset, archived_range_sink)?;
 
         Ok(IndexEntry::new(
             timestamp,
@@ -717,9 +757,52 @@ impl TimeIndex {
         }
     }
 
+    fn preflight_against_base(&self, entry: &IndexEntry, base_block_offset: u64) -> Result<()> {
+        if entry.is_filler() {
+            return Ok(());
+        }
+        let custom_storage;
+        let custom: &[u8] = if self.index_data_size == 0 {
+            &[]
+        } else {
+            custom_storage = vec![0u8; self.index_data_size as usize];
+            &custom_storage
+        };
+        entry
+            .to_bytes_for_disk(
+                base_block_offset,
+                self.entry_stride,
+                self.index_data_size,
+                custom,
+            )
+            .map(|_| ())
+    }
+
+    fn segment_base_for_start(&self, segment_start: i64) -> Option<u64> {
+        match self.index_segments.get(&segment_start) {
+            Some(IndexSegmentEntryState::Open(seg)) => Some(seg.base_block_offset),
+            Some(IndexSegmentEntryState::Closed(meta)) => Some(meta.base_block_offset),
+            None => None,
+        }
+    }
+
+    /// Validate a real entry against the base of its target segment (or the
+    /// entry's own block start when the segment does not exist yet) before any
+    /// index/filler/archive side effect.
+    fn preflight_real_entry(&self, entry: &IndexEntry, segment_start: i64) -> Result<()> {
+        if entry.is_filler() {
+            return Ok(());
+        }
+        let base = self
+            .segment_base_for_start(segment_start)
+            .unwrap_or(entry.block_offset);
+        self.preflight_against_base(entry, base)
+    }
+
     fn append_noncontinuous_entry_to_disk(
         &mut self,
         entry: &IndexEntry,
+        creation_base_block_offset: u64,
         mut archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
     ) -> Result<()> {
         if let Some(latest) = self.latest_materialized_timestamp() {
@@ -730,9 +813,29 @@ impl TimeIndex {
                 )));
             }
         }
+
+        // Determine the exact base that will be used by the first append and
+        // preflight before creating/syncing/publishing any segment state.
+        let preflight_base =
+            if let Some(latest_key) = self.index_segments.last_key_value().map(|(key, _)| *key) {
+                let base = {
+                    let latest = self.open_index_segment(latest_key)?;
+                    if latest.is_full() {
+                        creation_base_block_offset
+                    } else {
+                        latest.base_block_offset
+                    }
+                };
+                base
+            } else {
+                creation_base_block_offset
+            };
+        self.preflight_against_base(entry, preflight_base)?;
+
         loop {
             let seg = self.get_or_create_segment_for_ts_with_sink(
                 entry.timestamp,
+                creation_base_block_offset,
                 &mut archived_range_sink,
             )?;
             match Self::append_with_expansion(seg, entry) {
@@ -746,13 +849,22 @@ impl TimeIndex {
     fn append_continuous_entry_to_disk(
         &mut self,
         entry: &IndexEntry,
+        creation_base_block_offset: u64,
         archived_range_sink: Option<&mut dyn ArchivedIndexTimestampRangeSink>,
     ) -> Result<()> {
         let segment_start = self.segment_start_for(entry.timestamp)?;
         let entry_index = self.entry_index_for(entry.timestamp)?;
+        let base = self
+            .segment_base_for_start(segment_start)
+            .unwrap_or(creation_base_block_offset);
+        self.preflight_against_base(entry, base)?;
+
         let mut archived_range_sink = archived_range_sink;
-        let seg =
-            self.get_or_create_segment_by_start_with_sink(segment_start, &mut archived_range_sink)?;
+        let seg = self.get_or_create_segment_by_start_with_sink(
+            segment_start,
+            creation_base_block_offset,
+            &mut archived_range_sink,
+        )?;
         if seg.wrote_count != entry_index {
             return Err(TmslError::InvalidData(format!(
                 "continuous index append expected entry_index {}, got wrote_count {}",
@@ -771,6 +883,7 @@ impl TimeIndex {
     fn get_or_create_segment_for_ts_with_sink(
         &mut self,
         start_ts: i64,
+        creation_base_block_offset: u64,
         archived_range_sink: &mut Option<&mut dyn ArchivedIndexTimestampRangeSink>,
     ) -> Result<&mut IndexSegment> {
         if let Some(latest_key) = self.index_segments.last_key_value().map(|(key, _)| *key) {
@@ -784,17 +897,30 @@ impl TimeIndex {
             }
         }
 
-        self.get_or_create_segment_by_start_with_sink(start_ts, archived_range_sink)
+        self.get_or_create_segment_by_start_with_sink(
+            start_ts,
+            creation_base_block_offset,
+            archived_range_sink,
+        )
     }
 
-    fn get_or_create_segment_by_start(&mut self, segment_start: i64) -> Result<&mut IndexSegment> {
+    fn get_or_create_segment_by_start(
+        &mut self,
+        segment_start: i64,
+        creation_base_block_offset: u64,
+    ) -> Result<&mut IndexSegment> {
         let mut archived_range_sink = None;
-        self.get_or_create_segment_by_start_with_sink(segment_start, &mut archived_range_sink)
+        self.get_or_create_segment_by_start_with_sink(
+            segment_start,
+            creation_base_block_offset,
+            &mut archived_range_sink,
+        )
     }
 
     fn get_or_create_segment_by_start_with_sink(
         &mut self,
         segment_start: i64,
+        creation_base_block_offset: u64,
         archived_range_sink: &mut Option<&mut dyn ArchivedIndexTimestampRangeSink>,
     ) -> Result<&mut IndexSegment> {
         if self.index_segments.contains_key(&segment_start) {
@@ -817,6 +943,8 @@ impl TimeIndex {
             self.segment_size,
             self.compress_level,
             self.compress_type,
+            creation_base_block_offset,
+            self.index_data_size,
         )?;
         seg.set_dirty_sink(self.dirty_sink.clone());
         self.index_segments
@@ -1022,6 +1150,8 @@ impl TimeIndex {
                 seg.entries_capacity,
                 seg.wrote_count,
                 seg.header_size,
+                seg.base_block_offset,
+                seg.index_data_size,
                 last_timestamp,
             );
             seg.idle_close()?;
@@ -1076,6 +1206,7 @@ impl TimeIndex {
         segment_size: u64,
         initial_segment_size: u64,
         index_continuous: bool,
+        index_data_size: u32,
     ) -> Result<Self> {
         Self::load_existing_with_compression(
             base_dir,
@@ -1084,9 +1215,11 @@ impl TimeIndex {
             index_continuous,
             6,
             crate::compress::COMPRESS_TYPE_ZSTD,
+            index_data_size,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn load_existing_with_compression(
         base_dir: &Path,
         segment_size: u64,
@@ -1094,7 +1227,9 @@ impl TimeIndex {
         index_continuous: bool,
         compress_level: u8,
         compress_type: u8,
+        index_data_size: u32,
     ) -> Result<Self> {
+        let entry_stride = index_entry_stride(index_data_size)?;
         let mut metas: Vec<IndexSegmentMeta> = Vec::new();
         if base_dir.exists() {
             for entry in std::fs::read_dir(base_dir)? {
@@ -1105,10 +1240,22 @@ impl TimeIndex {
                 if let Some(stem) = p.file_stem().and_then(|n| n.to_str()) {
                     if let Ok(start_ts) = stem.parse::<i64>() {
                         let file_size = std::fs::metadata(&p)?.len();
-                        let (wrote_count, header_size, last_timestamp) =
-                            Self::read_record_count_from_file(&p);
+                        let (wrote_count, header_size, last_timestamp, base_block_offset) =
+                            inspect_index_file(
+                                &p,
+                                start_ts,
+                                index_data_size,
+                                segment_size,
+                                index_continuous,
+                            )
+                            .map_err(|e| {
+                                TmslError::InvalidData(format!(
+                                    "malformed index segment {:?}: {e}",
+                                    p
+                                ))
+                            })?;
                         let entries_capacity = ((file_size.saturating_sub(header_size))
-                            / INDEX_ENTRY_SIZE as u64)
+                            / entry_stride as u64)
                             as usize;
                         metas.push(IndexSegmentMeta::new_with_last_timestamp(
                             p,
@@ -1116,6 +1263,8 @@ impl TimeIndex {
                             entries_capacity,
                             wrote_count,
                             header_size,
+                            base_block_offset,
+                            index_data_size,
                             last_timestamp,
                         ));
                     }
@@ -1123,6 +1272,7 @@ impl TimeIndex {
             }
         }
         metas.sort_by_key(|m| m.start_timestamp);
+        validate_loaded_segment_layout(&metas, segment_size, entry_stride, index_continuous)?;
         let base_timestamp = if index_continuous {
             metas.first().map(|meta| meta.start_timestamp)
         } else {
@@ -1146,38 +1296,53 @@ impl TimeIndex {
             index_continuous,
             base_timestamp,
             index_header_size,
+            index_data_size,
+            entry_stride,
             dirty_sink: None,
         })
     }
+}
 
-    /// Read wrote_count from the file header without fully opening the segment.
-    fn read_record_count_from_file(path: &Path) -> (usize, u64, Option<i64>) {
-        if let Ok(file) = std::fs::OpenOptions::new().read(true).open(path) {
-            if let Ok(mmap) = unsafe { memmap2::MmapOptions::new().map(&file) } {
-                if let Ok(metadata) = IndexFileMetadata::read_from(&mmap) {
-                    let header_size = metadata.header_size;
-                    let count = ((metadata.wrote_position.saturating_sub(header_size))
-                        / INDEX_ENTRY_SIZE as u64) as usize;
-                    let last_timestamp = if count == 0 {
-                        None
-                    } else {
-                        let pos = header_size as usize + (count - 1) * INDEX_ENTRY_SIZE;
-                        if pos + INDEX_ENTRY_SIZE <= mmap.len() {
-                            let buf: [u8; INDEX_ENTRY_SIZE] =
-                                mmap[pos..pos + INDEX_ENTRY_SIZE].try_into().unwrap();
-                            IndexEntry::from_bytes_for_segment(&buf)
-                                .ok()
-                                .map(|entry| entry.timestamp)
-                        } else {
-                            None
-                        }
-                    };
-                    return (count, header_size, last_timestamp);
+/// Validate cross-segment timestamp layout after strict inspection.
+///
+/// Continuous segments must start on the dataset base grid
+/// (`base_timestamp + ordinal * max_capacity`); non-continuous segments must
+/// stay strictly ordered with each segment ending before the next start.
+fn validate_loaded_segment_layout(
+    metas: &[IndexSegmentMeta],
+    segment_size: u64,
+    entry_stride: usize,
+    index_continuous: bool,
+) -> Result<()> {
+    if metas.is_empty() {
+        return Ok(());
+    }
+    if index_continuous {
+        let capacity =
+            segment::capacity_for_file_size(segment_size, INDEX_HEADER_SIZE, entry_stride)? as i128;
+        let base = metas[0].start_timestamp as i128;
+        for meta in metas {
+            let delta = meta.start_timestamp as i128 - base;
+            if delta < 0 || delta % capacity != 0 {
+                return Err(TmslError::InvalidData(format!(
+                    "continuous index segment start {} is not on base {} capacity {} grid",
+                    meta.start_timestamp, base, capacity
+                )));
+            }
+        }
+    } else {
+        for pair in metas.windows(2) {
+            if let Some(previous_last) = pair[0].last_timestamp {
+                if previous_last >= pair[1].start_timestamp {
+                    return Err(TmslError::InvalidData(format!(
+                        "non-continuous index segment range ending {} overlaps next segment start {}",
+                        previous_last, pair[1].start_timestamp
+                    )));
                 }
             }
         }
-        (0, INDEX_HEADER_SIZE, None)
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1221,13 +1386,15 @@ mod tests {
             4,
             4,
             INDEX_HEADER_SIZE,
+            0,
+            0,
         )
     }
 
     #[test]
     fn test_time_index_dirty_sink_enqueues_from_index_write() {
         let sub = fresh_subdir("dirty_sink_index_append");
-        let mut idx = TimeIndex::new(&sub, 512, 512, false).unwrap();
+        let mut idx = TimeIndex::new(&sub, 512, 512, false, 0).unwrap();
         let dataset = DataSetKey {
             name: "test".into(),
             dataset_type: "data".into(),
@@ -1253,8 +1420,8 @@ mod tests {
     #[test]
     fn test_time_index_archived_range_sink_runs_before_new_segment_create() {
         let sub = fresh_subdir("archived_range_sink_before_index_create");
-        // 288-byte segment = capacity 5 with 32-byte entries.
-        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
+        // 208-byte segment = capacity 5 with 16-byte entries.
+        let mut idx = TimeIndex::new(&sub, 208, 208, true, 0).unwrap();
         let mut sink = CaptureArchivedRangeSink::default();
 
         for ts in 100..105 {
@@ -1274,16 +1441,23 @@ mod tests {
     #[test]
     fn test_index_entry_roundtrip() {
         let entry = IndexEntry::new(1234567890, 1024, 42);
-        let bytes = entry.to_bytes_for_segment();
-        let parsed = IndexEntry::from_bytes_for_segment(&bytes).unwrap();
+        let bytes = entry.to_bytes_for_disk(1000, 16, 0, &[]).unwrap();
+        let parsed = IndexEntry::from_bytes_for_disk(&bytes, 1000, 16, 0).unwrap();
         assert_eq!(entry, parsed);
     }
 
     #[test]
     fn test_index_entry_binary_size() {
-        assert_eq!(INDEX_ENTRY_SIZE, 32);
-        let entry = IndexEntry::new(42, u64::MAX, u16::MAX);
-        assert_eq!(entry.to_bytes_for_segment().len(), 32);
+        assert_eq!(INDEX_ENTRY_SIZE, 16);
+        let entry = IndexEntry::new(42, 1000, u16::MAX - 1);
+        assert_eq!(entry.to_bytes_for_disk(1000, 16, 0, &[]).unwrap().len(), 16);
+        assert_eq!(
+            entry
+                .to_bytes_for_disk(1000, 32, 16, &[0; 16])
+                .unwrap()
+                .len(),
+            32
+        );
     }
 
     #[test]
@@ -1293,14 +1467,14 @@ mod tests {
         let _ = fs::remove_dir_all(&sub);
         fs::create_dir_all(&sub).unwrap();
 
-        // 288-byte segment = capacity 5 with 32-byte entries.
-        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
+        // 288-byte segment = capacity 10 with 16-byte entries.
+        let mut idx = TimeIndex::new(&sub, 288, 288, true, 0).unwrap();
         idx.ensure_base_timestamp(1000).unwrap();
 
-        assert_eq!(idx.segment_capacity().unwrap(), 5);
+        assert_eq!(idx.segment_capacity().unwrap(), 10);
         assert_eq!(idx.segment_start_for(1003).unwrap(), 1000);
-        assert_eq!(idx.segment_start_for(1004).unwrap(), 1000);
-        assert_eq!(idx.segment_start_for(1005).unwrap(), 1005);
+        assert_eq!(idx.segment_start_for(1009).unwrap(), 1000);
+        assert_eq!(idx.segment_start_for(1010).unwrap(), 1010);
     }
 
     #[test]
@@ -1310,7 +1484,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 1000, 4096, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 1000, 4096, 4096, 0, 0).unwrap();
 
         for i in 0..50 {
             let entry = IndexEntry::new(1000 + i, 128 + i as u64 * 100, (i * 5) as u16);
@@ -1326,8 +1500,8 @@ mod tests {
     #[test]
     fn test_time_index_registries_stay_sorted_across_lazy_open() {
         let sub = fresh_subdir("ordered_registry_lazy_open");
-        // 288-byte segment = capacity 5 with 32-byte entries.
-        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
+        // 208-byte segment = capacity 5 with 16-byte entries.
+        let mut idx = TimeIndex::new(&sub, 208, 208, true, 0).unwrap();
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
         }
@@ -1348,8 +1522,8 @@ mod tests {
             vec![100, 105]
         );
 
-        idx.get_or_create_segment_by_start(105).unwrap();
-        idx.get_or_create_segment_by_start(100).unwrap();
+        idx.get_or_create_segment_by_start(105, 0).unwrap();
+        idx.get_or_create_segment_by_start(100, 0).unwrap();
         assert_eq!(
             idx.open_index_segments()
                 .map(|seg| seg.start_timestamp)
@@ -1361,7 +1535,7 @@ mod tests {
     #[test]
     fn test_add_entry_writes_index_segment_immediately() {
         let sub = fresh_subdir("add_entry_immediate_segment_write");
-        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false, 0).unwrap();
 
         idx.add_entry(100, 2048, 7).unwrap();
 
@@ -1370,7 +1544,7 @@ mod tests {
             IndexSegmentEntryState::Open(seg) => seg.path.clone(),
             IndexSegmentEntryState::Closed(meta) => meta.path.clone(),
         };
-        let reopened = IndexSegment::open(&segment_path, 100, 4096).unwrap();
+        let reopened = IndexSegment::open(&segment_path, 100, 4096, 0).unwrap();
         let entry = reopened.find_exact(100).unwrap();
         assert_eq!(entry.block_offset, 2048);
         assert_eq!(entry.in_block_offset, 7);
@@ -1379,11 +1553,11 @@ mod tests {
     #[test]
     fn test_sparse_continuous_add_does_not_cleanup_pure_filler_segments() {
         let sub = fresh_subdir("sparse_continuous_add_no_inline_cleanup");
-        let mut idx = TimeIndex::new(&sub, 512, 512, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 512, 512, true, 0).unwrap();
 
         idx.ensure_base_timestamp(100).unwrap();
         let capacity = idx.segment_capacity().unwrap() as i64;
-        idx.push_filler_range(100 + capacity, 100 + capacity + 1)
+        idx.push_filler_range(100 + capacity, 100 + capacity + 1, 0)
             .unwrap();
         assert!(idx.index_segments.contains_key(&(100 + capacity)));
 
@@ -1399,7 +1573,7 @@ mod tests {
     #[test]
     fn test_sparse_continuous_add_flushes_previous_edge_segment() {
         let sub = fresh_subdir("sparse_continuous_add_flushes_previous_edge");
-        let mut idx = TimeIndex::new(&sub, 512, 512, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 512, 512, true, 0).unwrap();
 
         idx.add_sparse_continuous_entry(None, 100, 1000, 0).unwrap();
         idx.sync_segment(100).unwrap();
@@ -1432,7 +1606,7 @@ mod tests {
     #[test]
     fn test_add_entry_rejects_out_of_order_direct_append() {
         let sub = fresh_subdir("add_entry_rejects_out_of_order");
-        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false, 0).unwrap();
 
         idx.add_entry(100, 1000, 0).unwrap();
         idx.add_entry(200, 2000, 0).unwrap();
@@ -1443,7 +1617,7 @@ mod tests {
     #[test]
     fn test_continuous_find_entry_uses_computed_closed_segment() {
         let sub = fresh_subdir("continuous_direct_closed_lookup");
-        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 200, 200, true, 0).unwrap();
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
         }
@@ -1461,7 +1635,7 @@ mod tests {
     #[test]
     fn test_noncontinuous_update_delete_skip_unrelated_closed_segment() {
         let sub = fresh_subdir("noncontinuous_candidate_closed_lookup");
-        let mut idx = TimeIndex::new(&sub, 200, 200, false).unwrap();
+        let mut idx = TimeIndex::new(&sub, 200, 200, false, 0).unwrap();
         idx.add_entry(100, 1000, 1).unwrap();
         idx.add_entry(101, 1001, 1).unwrap();
         idx.sync_all().unwrap();
@@ -1487,7 +1661,7 @@ mod tests {
     #[test]
     fn test_noncontinuous_global_i64_timestamp_does_not_split_segment() {
         let sub = fresh_subdir("noncontinuous_global_ts_no_split");
-        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false, 0).unwrap();
 
         idx.add_entry(0, 100, 0).unwrap();
         idx.add_entry(u32::MAX as i64 + 1, 200, 0).unwrap();
@@ -1511,7 +1685,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 0, 4096, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 0, 4096, 4096, 0, 0).unwrap();
         for i in 0..10 {
             seg.append_entry(&IndexEntry::new(i * 10, i as u64, 0))
                 .unwrap();
@@ -1538,7 +1712,7 @@ mod tests {
         std::fs::create_dir_all(&sub).unwrap();
 
         // Create segment starting at ts=100, continuous entries
-        let mut seg = IndexSegment::create(&sub, 100, 4096, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 100, 4096, 4096, 0, 0).unwrap();
         for i in 0..20 {
             seg.append_entry(&IndexEntry::new(100 + i, i as u64, (i * 3) as u16))
                 .unwrap();
@@ -1570,7 +1744,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096, 0, 0).unwrap();
         for i in 0..10 {
             seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
                 .unwrap();
@@ -1595,7 +1769,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096, 0, 0).unwrap();
         for i in 0..10 {
             seg.append_entry(&IndexEntry::new(10 + i, i as u64 * 100, 0))
                 .unwrap();
@@ -1618,7 +1792,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096, 0, 0).unwrap();
         for i in 0..20 {
             seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
                 .unwrap();
@@ -1650,7 +1824,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&sub);
         std::fs::create_dir_all(&sub).unwrap();
 
-        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096).unwrap();
+        let mut seg = IndexSegment::create(&sub, 10, 4096, 4096, 0, 0).unwrap();
         for i in 0..10 {
             seg.append_entry(&IndexEntry::new(10 + i, i as u64, 0))
                 .unwrap();
@@ -1674,7 +1848,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let mut idx = TimeIndex::new(&dir, 4096, 4096, false).unwrap();
+        let mut idx = TimeIndex::new(&dir, 4096, 4096, false, 0).unwrap();
 
         for i in 0..20 {
             idx.add_entry(1000 + i, i as u64 * 200, (i * 3) as u16)
@@ -1692,7 +1866,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
 
-        let mut idx = TimeIndex::new(&dir, 4096, 4096, false).unwrap();
+        let mut idx = TimeIndex::new(&dir, 4096, 4096, false, 0).unwrap();
 
         for i in 0..100 {
             idx.add_entry(2000 + i, i as u64 * 300, (i * 7) as u16)
@@ -1701,7 +1875,7 @@ mod tests {
         idx.sync_all().unwrap();
 
         // Load fresh
-        let mut idx2 = TimeIndex::load_existing(&dir, 4096, 4096, false).unwrap();
+        let mut idx2 = TimeIndex::load_existing(&dir, 4096, 4096, false, 0).unwrap();
         // Query all
         let entries = idx2.query(2000, 2099).unwrap();
         assert_eq!(entries.len(), 100);
@@ -1710,12 +1884,12 @@ mod tests {
     #[test]
     fn test_time_index_sync_keeps_pure_filler_segments() {
         let sub = fresh_subdir("pure_filler_retained");
-        let mut idx = TimeIndex::new(&sub, 512, 512, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 512, 512, true, 0).unwrap();
 
         idx.ensure_base_timestamp(1000).unwrap();
         let capacity = idx.segment_capacity().unwrap() as i64;
         let filler_start = 1000 + capacity;
-        idx.push_filler_range(filler_start, filler_start + 2)
+        idx.push_filler_range(filler_start, filler_start + 2, 0)
             .unwrap();
         assert!(idx.index_segments.contains_key(&filler_start));
 
@@ -1733,7 +1907,7 @@ mod tests {
     #[test]
     fn test_timestamp_range_snapshot() {
         let sub = fresh_subdir("ts_range_snapshot");
-        let mut idx = TimeIndex::new(&sub, 4096, 4096, false).unwrap();
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false, 0).unwrap();
 
         // Empty index has no range
         assert_eq!(idx.timestamp_range_snapshot(), None);
@@ -1756,7 +1930,7 @@ mod tests {
     #[test]
     fn test_archived_timestamp_range_snapshot() {
         let sub = fresh_subdir("archived_ts_range");
-        let mut idx = TimeIndex::new(&sub, 200, 200, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 200, 200, true, 0).unwrap();
 
         // Single segment 鈥?nothing is archived (the only segment is active)
         idx.add_entry(100, 100, 0).unwrap();
@@ -1782,7 +1956,7 @@ mod tests {
     fn test_active_timestamp_range_snapshot() {
         let sub = fresh_subdir("active_ts_range");
         // 288-byte segment = capacity 5 with 32-byte entries.
-        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 288, 288, true, 0).unwrap();
 
         // Nothing active when empty
         assert_eq!(idx.active_timestamp_range_snapshot(), None);
@@ -1806,7 +1980,7 @@ mod tests {
     fn test_open_len_closed_len() {
         let sub = fresh_subdir("open_closed_len");
         // 288-byte segment = capacity 5 with 32-byte entries.
-        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 288, 288, true, 0).unwrap();
 
         // Start: all segments are open, none closed
         idx.add_entry(100, 100, 0).unwrap();
@@ -1822,7 +1996,7 @@ mod tests {
         assert_eq!(idx.closed_len(), 1);
 
         // Re-open a segment
-        idx.get_or_create_segment_by_start(100).unwrap();
+        idx.get_or_create_segment_by_start(100, 0).unwrap();
         assert_eq!(idx.open_len(), 1);
         assert_eq!(idx.closed_len(), 0);
     }
@@ -1831,7 +2005,7 @@ mod tests {
     fn test_timestamp_range_snapshot_with_closed_segments() {
         let sub = fresh_subdir("ts_range_closed");
         // 288-byte segment = capacity 5 with 32-byte entries.
-        let mut idx = TimeIndex::new(&sub, 288, 288, true).unwrap();
+        let mut idx = TimeIndex::new(&sub, 288, 288, true, 0).unwrap();
 
         for ts in 100..108 {
             idx.add_entry(ts, ts as u64, 0).unwrap();
@@ -1848,11 +2022,134 @@ mod tests {
     }
 
     #[test]
+    fn test_compact_index_roundtrip_for_n_0_3_16() {
+        for index_data_size in [0u32, 3, 16] {
+            let sub = fresh_subdir(&format!("compact_roundtrip_n{index_data_size}"));
+            let mut idx = TimeIndex::new(&sub, 4096, 4096, true, index_data_size).unwrap();
+            // Same-block rollover: identical block offset, increasing units.
+            idx.add_sparse_continuous_entry(None, 100, 5_000, 0)
+                .unwrap();
+            idx.add_entry(101, 5_000, 1).unwrap();
+            idx.add_entry(102, 5_000, 2).unwrap();
+            idx.add_sparse_continuous_entry(Some(102), 105, 7_000, 3)
+                .unwrap();
+            idx.sync_all().unwrap();
+            idx.idle_close_all().unwrap();
+
+            let mut reopened =
+                TimeIndex::load_existing(&sub, 4096, 4096, true, index_data_size).unwrap();
+            let entries = reopened.query(100, 105).unwrap();
+            assert_eq!(entries.len(), 6);
+            assert_eq!(entries[0].block_offset, 5_000);
+            assert_eq!(entries[0].in_block_offset, 0);
+            assert_eq!(entries[1].block_offset, 5_000);
+            assert_eq!(entries[1].in_block_offset, 1);
+            assert_eq!(entries[2].in_block_offset, 2);
+            assert!(entries[3].is_filler());
+            assert!(entries[4].is_filler());
+            assert_eq!(entries[5].block_offset, 7_000);
+            assert_eq!(entries[5].in_block_offset, 3);
+        }
+    }
+
+    #[test]
+    fn test_sparse_filler_segment_uses_triggering_real_block_base() {
+        let sub = fresh_subdir("sparse_filler_base");
+        // 208 bytes => 5 entries of stride 16.
+        let mut idx = TimeIndex::new(&sub, 208, 208, true, 0).unwrap();
+        idx.add_sparse_continuous_entry(None, 100, 1_000, 0)
+            .unwrap();
+        idx.add_sparse_continuous_entry(Some(100), 112, 9_000, 4)
+            .unwrap();
+
+        let filler_segment = match idx.index_segments.get(&110).unwrap() {
+            IndexSegmentEntryState::Open(seg) => seg,
+            IndexSegmentEntryState::Closed(meta) => {
+                panic!("expected open filler segment, got closed {:?}", meta.path)
+            }
+        };
+        assert_eq!(filler_segment.base_block_offset, 9_000);
+        assert_eq!(filler_segment.wrote_count, 3); // fillers 110,111 + real 112
+        assert!(filler_segment.find_exact(110).unwrap().is_filler());
+
+        idx.sync_all().unwrap();
+        idx.idle_close_all().unwrap();
+        match idx.index_segments.get(&110).unwrap() {
+            IndexSegmentEntryState::Closed(meta) => assert_eq!(meta.base_block_offset, 9_000),
+            IndexSegmentEntryState::Open(_) => panic!("expected closed"),
+        }
+
+        let mut reopened = TimeIndex::load_existing(&sub, 208, 208, true, 0).unwrap();
+        let entries = reopened.query(110, 112).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(entries[0].is_filler());
+        assert!(entries[1].is_filler());
+        assert_eq!(entries[2].block_offset, 9_000);
+        assert_eq!(entries[2].in_block_offset, 4);
+    }
+
+    #[test]
+    fn test_historical_overwrite_out_of_range_preserves_old_entry() {
+        let sub = fresh_subdir("historical_overwrite_range");
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false, 0).unwrap();
+        idx.add_entry(100, 1_000, 0).unwrap();
+        idx.add_entry(200, 2_000, 1).unwrap();
+        let before = idx.find_entry(200).unwrap().unwrap();
+
+        // 500 is below the segment's immutable base block offset.
+        assert!(idx.update_entry(200, 500, 9).is_err());
+        assert_eq!(idx.find_entry(200).unwrap().unwrap(), before);
+        assert_eq!(idx.total_len(), 1);
+
+        // Excessive delta is also rejected without touching the slot.
+        assert!(idx
+            .update_entry(
+                200,
+                1_000 + crate::index::segment::MAX_REAL_BLOCK_OFFSET_DELTA + 1,
+                9
+            )
+            .is_err());
+        assert_eq!(idx.find_entry(200).unwrap().unwrap(), before);
+    }
+
+    #[test]
+    fn test_load_existing_rejects_discovered_corrupt_segment() {
+        let sub = fresh_subdir("strict_load_corrupt");
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false, 3).unwrap();
+        idx.add_entry(100, 1_000, 0).unwrap();
+        idx.sync_all().unwrap();
+        idx.idle_close_all().unwrap();
+
+        let path = match idx.index_segments.get(&100).unwrap() {
+            IndexSegmentEntryState::Closed(meta) => meta.path.clone(),
+            IndexSegmentEntryState::Open(seg) => seg.path.clone(),
+        };
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
+            // stride 24 (N=3): padding begins at 128 + 16 + 3.
+            file.seek(SeekFrom::Start(128 + 16 + 3)).unwrap();
+            file.write_all(&[1]).unwrap();
+            file.sync_all().unwrap();
+        }
+        let err = TimeIndex::load_existing(&sub, 4096, 4096, false, 3)
+            .err()
+            .expect("corrupt discovered segment must fail load");
+        assert!(format!("{err}").contains("padding"), "err: {err}");
+        // Sizing metadata mismatch is also rejected.
+        assert!(TimeIndex::load_existing(&sub, 4096, 4096, false, 0).is_err());
+    }
+
+    #[test]
     fn test_continuous_segment_start_for_i64_extremes() {
         let sub = fresh_subdir("continuous_i64_extremes");
         // segment_size 512 -> capacity = (512 - 128) / 32 = 12 entries.
-        let mut idx = TimeIndex::new(&sub, 512, 512, true).unwrap();
-        idx.add_filler_entry(i64::MIN).unwrap();
+        let mut idx = TimeIndex::new(&sub, 512, 512, true, 0).unwrap();
+        idx.add_filler_entry(i64::MIN, 0).unwrap();
 
         // MAX - MIN exceeds i64 range: boundary math must not overflow/panic.
         let start = idx.segment_start_for(i64::MAX).unwrap();
@@ -1862,5 +2159,69 @@ mod tests {
         let entry_index = idx.entry_index_for(i64::MAX).unwrap();
         assert!((entry_index as i128) < cap);
         assert_eq!(start as i128 + entry_index as i128, i64::MAX as i128);
+    }
+
+    #[test]
+    fn test_load_existing_validates_continuous_grid_at_i64_extremes() {
+        for (name, start) in [("grid_min", i64::MIN), ("grid_max", i64::MAX - 2)] {
+            let sub = fresh_subdir(name);
+            // 208 bytes => 5 entries of stride 16.
+            let mut idx = TimeIndex::new(&sub, 208, 208, true, 0).unwrap();
+            idx.add_entry(start, 1_000, 0).unwrap();
+            idx.add_entry(start + 1, 1_016, 0).unwrap();
+            idx.sync_all().unwrap();
+            idx.idle_close_all().unwrap();
+
+            let loaded = TimeIndex::load_existing(&sub, 208, 208, true, 0).unwrap();
+            assert!(loaded.index_segments.contains_key(&start));
+        }
+    }
+
+    #[test]
+    fn test_load_existing_rejects_off_grid_continuous_segment_start() {
+        let sub = fresh_subdir("off_grid_start");
+        // 208 bytes => 5 entry capacity; valid segment starts are 0 and 5.
+        let mut idx = TimeIndex::new(&sub, 208, 208, true, 0).unwrap();
+        for ts in 0..10 {
+            idx.add_entry(ts, 1_000 + ts as u64 * 16, 0).unwrap();
+        }
+        idx.sync_all().unwrap();
+        idx.idle_close_all().unwrap();
+
+        // A self-consistent segment whose start (7) is not on the 0/5 grid.
+        let mut off_grid = IndexSegment::create(&sub, 7, 208, 208, 9_000, 0).unwrap();
+        off_grid
+            .append_entry(&IndexEntry::new(7, 9_000, 0))
+            .unwrap();
+        off_grid.sync().unwrap();
+        drop(off_grid);
+
+        let err = TimeIndex::load_existing(&sub, 208, 208, true, 0)
+            .err()
+            .expect("off-grid continuous segment start must fail load");
+        assert!(format!("{err}").contains("grid"), "err: {err}");
+    }
+
+    #[test]
+    fn test_load_existing_rejects_overlapping_noncontinuous_segments() {
+        let sub = fresh_subdir("overlap_noncontinuous");
+        let mut idx = TimeIndex::new(&sub, 4096, 4096, false, 0).unwrap();
+        idx.add_entry(100, 1_000, 0).unwrap();
+        idx.add_entry(200, 1_016, 0).unwrap();
+        idx.sync_all().unwrap();
+        idx.idle_close_all().unwrap();
+
+        // Segment starting at 150 overlaps the [100, 200] range already loaded.
+        let mut overlapping = IndexSegment::create(&sub, 150, 4096, 4096, 5_000, 0).unwrap();
+        overlapping
+            .append_entry(&IndexEntry::new(150, 5_000, 0))
+            .unwrap();
+        overlapping.sync().unwrap();
+        drop(overlapping);
+
+        let err = TimeIndex::load_existing(&sub, 4096, 4096, false, 0)
+            .err()
+            .expect("overlapping non-continuous segments must fail load");
+        assert!(format!("{err}").contains("overlaps"), "err: {err}");
     }
 }

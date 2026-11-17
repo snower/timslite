@@ -257,10 +257,13 @@ var createOptions = new CreateDatasetOptions
     {
         IndexContinuous = false,
         RetentionWindow = 0,
+        IndexDataSize = 0,
         EnableJournal = true,
     },
 };
 ```
+
+`IndexDataSize` defaults to `0` and is immutable after creation. It reserves that many custom bytes per index entry; `0` stores the 16-byte core only.
 
 `StoreReadOnly` maps to Rust `Option<bool>`:
 

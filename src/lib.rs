@@ -121,10 +121,10 @@ mod tests {
         assert_eq!(crate::INDEX_HEADER_SIZE, 128);
         assert_eq!(crate::BLOCK_HEADER_SIZE, 16);
         assert_eq!(crate::BLOCK_MAX_SIZE, 262_144);
-        assert_eq!(crate::INDEX_ENTRY_SIZE, 32);
+        assert_eq!(crate::INDEX_ENTRY_SIZE, 16);
         assert_eq!(&crate::MAGIC, b"TMSL");
         assert_eq!(crate::VERSION, 1);
-        assert_eq!(crate::INDEX_VERSION, 1);
+        assert_eq!(crate::INDEX_VERSION, 2);
         assert_eq!(crate::FILE_TYPE_DATA, 2);
         assert_eq!(crate::FILE_TYPE_INDEX, 1);
     }
