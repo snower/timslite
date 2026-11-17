@@ -5469,10 +5469,6 @@ pub(crate) mod flush_failure_hook {
     }
 
     pub(crate) fn take_failure() -> bool {
-        FAILURE_BUDGET
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                (remaining > 0).then(|| remaining - 1)
-            })
-            .is_ok()
+        FAILURE_BUDGET.swap(0, Ordering::SeqCst) != 0
     }
 }
