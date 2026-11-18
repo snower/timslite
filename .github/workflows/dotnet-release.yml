@@ -69,7 +69,7 @@ jobs:
             cargo-target: aarch64-unknown-linux-musl
             native-lib: libtimslite_dotnet.so
             rustflags: '-C target-feature=-crt-static -C link-arg=-Wl,-rpath,$ORIGIN'
-          - os: macos-14
+          - os: macos-latest
             rid: osx-arm64
             artifact: native-osx-arm64
             cargo-target: aarch64-apple-darwin

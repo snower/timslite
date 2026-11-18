@@ -26,7 +26,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-latest
             platform: macos-aarch64
             artifact: native-macos-aarch64
             native-lib: libtimslite_java.dylib
